@@ -22,7 +22,7 @@
 local addonName, ns = ...
 local Frame, L = ns.Frame, ns.L
 
-local VERSION = "0.9.3"
+local VERSION = "0.9.4"
 local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true, toasts = true }   -- /wb set <key> on|off
 
 local WB = {}

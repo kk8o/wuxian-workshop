@@ -3,7 +3,7 @@
 ## Title-zhCN: 无限工坊
 ## Notes: Wuxian Workshop: make WoW addons with AI. Loads before other addons and collects their Lua errors for the app (/wxw report on|off|status).
 ## Notes-zhCN: 无限工坊：用 AI 写魔兽插件。最先加载，收集所有插件的 Lua 报错交给无限工坊 App（/wxw report on|off|status）。
-## Version: 0.9.3
+## Version: 0.9.4
 ## X-Website: https://wuxianwow.com/workshop
 ## IconTexture: Interface\AddOns\!WuxianWorkshop\Media\logo-small
 ## SavedVariables: WuxianWorkshopDB
