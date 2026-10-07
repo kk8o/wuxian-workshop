@@ -115,12 +115,30 @@ def manual(codex, docs):
     return zh, client, c.get("PROTECTED_GLOBALS", [])
 
 
+# the words 无限图鉴's api/source/update.py describe() writes a change note with, in English
+NOTE_WORDS = (("新增标记 ", "new flag "), ("去掉标记 ", "flag removed: "), ("说明文字改了", "description changed"),
+              ("无返回值", "no returns"), ("参数 ", "arguments "), ("返回值 ", "returns "), ("载荷 ", "payload "),
+              ("新增 ", "added "), ("删除 ", "removed "), ("改为 ", "changed "), ("；", "; "), ("、", ", "), ("，", ", "))
+
+
+def note_en(note):
+    """a change note in English: its fixed words replaced, "N 项" as "N entries", a lone 无 as none"""
+    for zh, en in NOTE_WORDS:
+        note = note.replace(zh, en)
+    note = re.sub(r"(\d+) 项", r"\1 entries", note)
+    return re.sub(r"(?<![\w\u4e00-\u9fff])无(?![\w\u4e00-\u9fff])", "none", note)
+
+
 def build(codex, version):
     docs = json.loads((codex / "api" / "apidocs.json").read_text(encoding="utf-8"))
     usage = [line.strip() for line in (codex / "api" / "api_usage.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     man, client, protected = manual(codex, docs)
     cpath = codex / "api" / "changes.json"
     changes = json.loads(cpath.read_text(encoding="utf-8")) if cpath.is_file() else []
+    for record in changes:                         # the notes in English as well (the App's English pages)
+        for item in record.get("added", []) + record.get("changed", []):
+            if item.get("note"):
+                item["note_en"] = note_en(item["note"])
     return dict(pack="api", version=version, client=client, interface=16001, built=time.strftime("%Y-%m-%d"),
                 source=SOURCE, namespaces=docs["namespaces"], usage=usage, manual=man, changes=changes,
                 protected_globals=protected)

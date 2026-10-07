@@ -254,7 +254,9 @@ def select_events(spec=None):
         else:
             chosen.append(w)                       # also a name the manual lacks: the game says whether it knows it
     if refused:
-        raise ValueError("这些事件插件不能注册（客户端会拦截并提示禁用插件）：" + "、".join(sorted(set(refused))))
+        from ..i18n import tr
+        raise ValueError(tr("这些事件插件不能注册（客户端会拦截并提示禁用插件）：", "addons may not register these events (the client "
+                            "blocks the addon and asks to disable it): ") + tr("、", ", ").join(sorted(set(refused))))
     chosen = sorted(set(chosen))
     if not chosen:
         raise ValueError(f"events: nothing matches {spec!r} (names or globs like BAG_*, LOOT_*)")

@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .. import __version__, agents, apidocs, content, scaffold
+from .. import __version__, agents, apidocs, content, i18n, scaffold
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
 from ..agent.snap import SnapError, snap_image
@@ -401,7 +401,7 @@ class Service:
             res = await asyncio.to_thread(scaffold.create, addons, name, title, notes or "", template or "basic",
                                           interface or scaffold.INTERFACE, "", client)
         except scaffold.ScaffoldError as e:
-            raise ApiError(400, "bad_addon", str(e)) from None
+            raise ApiError(400, e.code, str(e)) from None          # bad_addon, or addon_exists
         self.journal.add("INFO", f"new addon {name} ({res['template']}) in {res['path']}")
         await asyncio.to_thread(self.keep, name, "new")
         return dict(res, hint=f"`load {name}` hot-loads it now; the game itself lists it after a full restart")
@@ -930,7 +930,7 @@ class Service:
             self.journal.add("INFO", f"{fix}: {e}")
             raise ApiError(502, "install_failed", str(e)) from None
         self.journal.add("INFO", f"{fix}: started {started['path']} (pid {started['pid']})")
-        return dict(fix=fix, started=True, title=runtimes.RUNTIMES[name].title, path=started["path"])
+        return dict(fix=fix, started=True, title=runtimes.RUNTIMES[name].label(), path=started["path"])
 
     async def addons(self, game_dir=None):
         """the addons in the client's AddOns folder with their .toc, AddOns.txt state and collected errors
@@ -1013,6 +1013,8 @@ class Service:
                 raise ApiError(400, "bad_request", 'capture: "gdi" or "wgc"')
             if "mode" in update and update["mode"] not in ("player", "developer"):
                 raise ApiError(400, "bad_request", 'mode: "player" or "developer"')
+            if "language" in update and update["language"] not in ("auto", "zh-CN", "en"):
+                raise ApiError(400, "bad_request", 'language: "auto", "zh-CN" or "en"')
             if "game_dir" in update and update["game_dir"] is not None and not isinstance(update["game_dir"], str):
                 raise ApiError(400, "bad_request", "game_dir: the client folder, or null")
             if "capture" in update:
@@ -1025,6 +1027,8 @@ class Service:
             for key in ("autostart", "language", "onboarded"):
                 if key in update:
                     stored[key] = update[key]
+            if "language" in update:                     # what the program says from now on (i18n.py)
+                i18n.set_language(update["language"])
             stored.update(mode=self.mode, capture=self.worker.capture_wanted, game_dir=self.game_dir)
             path = settings_file()
             tmp = path.with_name(path.name + ".tmp")
@@ -1033,7 +1037,7 @@ class Service:
             self.journal.add("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in update.items()))
         answer = dict(mode=self.mode, capture=self.worker.capture_wanted, capture_in_use=self.worker.capture,
                       game_dir=self.game_dir, autostart=bool(stored.get("autostart", False)),
-                      language=stored.get("language", "zh-CN"), onboarded=bool(stored.get("onboarded", False)))
+                      language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)))
         if update and self.mode != mode_before:
             try:
                 answer["install"] = await self.install()

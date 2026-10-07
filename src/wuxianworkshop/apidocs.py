@@ -23,10 +23,12 @@ What an addon may do with an entry (`call`, with `why`: the documentation fields
 import re
 
 from . import content
+from .i18n import tr
 
 KINDS =("function", "event", "table")
 CALLS = ("ok", "limited", "protected")
-SECRET_TAGS = {"AllowedWhenTainted": "插件可以传机密值", "NotAllowed": "不接受机密值"}
+SECRET_TAGS = {"AllowedWhenTainted": ("插件可以传机密值", "an addon may pass secret values"),
+               "NotAllowed": ("不接受机密值", "takes no secret values")}
 
 
 def param(p):
@@ -41,29 +43,32 @@ def param(p):
 def function_flags(raw):
     flags = []
     if raw.get("IsProtectedFunction"):
-        flags.append("受保护（只有安全代码能调用，战斗中对安全框体不可用）")
+        flags.append(tr("受保护（只有安全代码能调用，战斗中对安全框体不可用）",
+                        "protected (secure code only; not on secure frames in combat)"))
     if raw.get("SecretArguments") in SECRET_TAGS:
-        flags.append(SECRET_TAGS[raw["SecretArguments"]])
+        flags.append(tr(*SECRET_TAGS[raw["SecretArguments"]]))
     secret = sorted(k for k, v in raw.items() if v and (k == "SecretReturns" or k.startswith(("SecretWhen", "SecretIn"))))
     if secret:
-        flags.append("可能返回机密值：" + "、".join(secret))
+        flags.append(tr("可能返回机密值：" + "、".join(secret), "may return secret values: " + ", ".join(secret)))
     if raw.get("HasRestrictions"):
-        flags.append("有使用限制")
+        flags.append(tr("有使用限制", "usage restrictions"))
     return flags
 
 
 def event_flags(raw):
     flags = []
     if raw.get("HasRestrictions"):
-        flags.append("受限：插件注册它会被客户端拦截（ADDON_ACTION_FORBIDDEN）")
+        flags.append(tr("受限：插件注册它会被客户端拦截（ADDON_ACTION_FORBIDDEN）",
+                        "restricted: the client blocks an addon that registers it (ADDON_ACTION_FORBIDDEN)"))
     if raw.get("CallbackEvent"):
-        flags.append("回调事件（CallbackEvent）：由客户端的回调分发，插件不一定能用 RegisterEvent 收到")
+        flags.append(tr("回调事件（CallbackEvent）：由客户端的回调分发，插件不一定能用 RegisterEvent 收到",
+                        "callback event (CallbackEvent): delivered through the client's callbacks, RegisterEvent may not get it"))
     if raw.get("SecretPayloads"):
-        flags.append("载荷可能是机密值")
+        flags.append(tr("载荷可能是机密值", "its payload may be secret values"))
     if raw.get("UniqueEvent"):
-        flags.append("同一帧只触发一次")
+        flags.append(tr("同一帧只触发一次", "fires at most once a frame"))
     if raw.get("SynchronousEvent"):
-        flags.append("同步事件")
+        flags.append(tr("同步事件", "synchronous event"))
     return flags
 
 
@@ -115,7 +120,8 @@ class ApiIndex:
             c = changes[0]
             for what, key in (("added", "added"), ("changed", "changed")):
                 for x in c.get(key, []):
-                    self.since[x["name"]] = dict(build=c.get("to"), what=what, note=x.get("note") or "")
+                    self.since[x["name"]] = dict(build=c.get("to"), what=what, note=x.get("note") or "",
+                                                 note_en=x.get("note_en") or x.get("note") or "")
 
     # --- what the pack is ------------------------------------------------------------------------------------------
 
@@ -142,16 +148,18 @@ class ApiIndex:
                 sig += " → " + ", ".join(param(r) for r in rets)
             flags = function_flags(item.get("raw") or {})
         elif kind == "event":
-            sig = f"{e['name']}: " + (", ".join(param(a) for a in item.get("payload", [])) or "（无载荷）")
+            sig = f"{e['name']}: " + (", ".join(param(a) for a in item.get("payload", [])) or tr("（无载荷）", "(no payload)"))
             flags = event_flags(item.get("raw") or {})
         else:
-            sig = f"{e['name']}（{item.get('type')}，{len(item.get('fields', []))} 项）"
+            n = len(item.get("fields", []))
+            sig = tr(f"{e['name']}（{item.get('type')}，{n} 项）", f"{e['name']} ({item.get('type')}, {n} entries)")
             flags = []
         out = dict(kind=kind, name=e["name"], ns=e["ns"], sig=sig, flags=flags, call=e["call"], why=e["why"], doc=item.get("doc") or "")
         if kind == "table":
             out.update(type=item.get("type"), size=len(item.get("fields", [])))
         if e["name"] in self.since:
-            out["since"] = self.since[e["name"]]
+            s = self.since[e["name"]]
+            out["since"] = dict(build=s["build"], what=s["what"], note=tr(s["note"], s["note_en"]))
         return out
 
     def full(self, e):
@@ -225,7 +233,7 @@ class ApiIndex:
         results = [self.brief(e) for e in found[:max(1, min(int(limit), 200))]]
         if not kind and not call and len(results) < limit:   # the exe's Usage strings fill up an unfiltered search
             usage = [u for u in self.pack.get("usage", []) if all(w in u.lower() for w in words)]
-            results += [dict(kind="usage", name=u, ns="", sig=u, flags=[], call="ok", why=[], doc="exe 里的用法字符串（%s 是函数名）")
+            results += [dict(kind="usage", name=u, ns="", sig=u, flags=[], call="ok", why=[], doc=tr("exe 里的用法字符串（%s 是函数名）", "a Usage string of the exe (%s is the function's name)"))
                         for u in usage[:limit - len(results)]]
         return results
 

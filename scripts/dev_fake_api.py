@@ -82,7 +82,7 @@ class Fake:
         self.last_job = 1700000
         self.subscribers = set()
         self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR, "autostart": False,
-                         "language": "zh-CN", "onboarded": False}   # the daemon's shape (daemon/service.py settings())
+                         "language": "auto", "onboarded": False}   # the daemon's shape (daemon/service.py settings())
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex is not connected, no Cursor
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
@@ -466,6 +466,9 @@ class Fake:
         for key in ("mode", "capture", "game_dir", "language"):
             if key in changes:
                 self.settings[key] = changes[key] or (None if key == "game_dir" else self.settings[key])
+        if "language" in changes:                       # the daemon's words follow, as in daemon/service.py
+            from wuxianworkshop import i18n
+            i18n.set_language(self.settings["language"])
         if "autostart" in changes:
             self.settings["autostart"] = bool(changes["autostart"])
         if "onboarded" in changes:
@@ -788,7 +791,7 @@ def create_app(fake=None, ticker=True):
             res = scaffold.create(fake.new_addons, body.get("name"), body.get("title"), body.get("notes") or "",
                                   body.get("template") or "basic")
         except scaffold.ScaffoldError as e:
-            return error("bad_addon", str(e), 400)
+            return error(e.code, str(e), 400)
         fake.entry("INFO", f"new addon {res['name']} in {res['path']} (fake: a temporary folder)")
         return JSONResponse(dict(res, hint=f"`load {res['name']}` hot-loads it now; the game lists it after a full restart"))
 

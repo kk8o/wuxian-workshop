@@ -14,7 +14,7 @@
 - `cli/`：`main.py`（`wuxian` 入口，全部子命令）、`client.py`（urllib 客户端，守护进程没起就拉起它）、`mcpconfig.py`（`wuxian mcp-config` 片段）。
 - `mcp/server.py`：MCP 工具（status / check / try / run / load / watch / snap / reload / logs / history / checkpoint / restore / trace / inspect / addons / errors / install / new_addon / API 手册的 api_search / api_get / api_manual）；挂在守护进程 `/mcp`，也可 `wuxian mcp` 走 stdio（stdout 只放协议）。
 - `installer/`：`install.py`（先清后装；开发者模式装两个插件与信箱；.toc 写入客户端的 Interface 号；删旧版本与早期实验的残留；绝不碰 `WoWBridge\mail\`；`restart_for_link` 区分"新增文件、链路要等游戏重启"和只改 toc）、`doctor.py`（自检与修复）、`addons.py`（已装插件清单；客户端的 Interface 号：游戏报告的 > 已验证的 > 按版本号推算）、`runtimes.py`（WebView2、.NET Framework、WGC 所需的系统版本）、`__init__.py`（`addon_source_dir()`：开发时仓库 `addon/`，冻结时 `_internal\addon\`）。
-- `ui/`：`static/`（index.html、app.js、app.css、htmx、Alpine，零外链，由守护进程在 `/` 提供）、`shell.py`（pywebview 壳）、`tray.py`、`webview2.py`、`icon.py`。
+- `ui/`：`static/`（index.html、i18n.js、app.js、app.css、htmx、Alpine，零外链，由守护进程在 `/` 提供）、`shell.py`（pywebview 壳）、`tray.py`、`webview2.py`、`icon.py`。
 - `updater.py`：程序更新（Velopack，源在 wuxianwow.com/workshop/releases）；`content.py`：内容包（程序自带一份，网站上有新的就下载）；`apidocs.py`：读 API 手册内容包；`scaffold.py`：新建插件（模板 + AGENTS.md）；`agents.py`：一键接入 Agent（Claude Code 经它自己的命令行，Codex、Cursor 直接改设置文件，先备份）；`data/`：程序自带的内容包；`paths.py`：运行时目录。
 - `addon/!WuxianWorkshop/`：平台插件（名字排最前）：早期错误钩子 + 错误收集写 `WuxianWorkshopDB`，`/wxw report on|off|status`、`/wxw clear`。
 - `addon/WoWBridge/`：开发组件：Config、Locale（全部文案的中英两份，`ns.L`）、Debug、Codec、Frame（含帧码位置与拖动框）、FontProbe、Mailbox、Agent（热加载、Dump、reset 钩子）、UI（对话框、重载按钮）、Link（传输）、WoWBridge（斜杠命令、设置、链路开关、语言）、Panel（面板：概览、设置、诊断）、Minimap（小地图按钮）、Skin（样式）。
@@ -37,7 +37,7 @@
 - 都在 `%LOCALAPPDATA%\WuxianWorkshop\` 下（环境变量 `WUXIAN_HOME` 可改根目录，测试里指向临时目录）：`state\daemon.json`（端口、token、pid）、`state\settings.json`、`state\install.json`、`state\clients.json`（游戏报告的 Interface 号）、`logs\debug.log`、`snaps\*.png`、`history\`、`webview\`。
 
 ## 约定
-- 注释密度与现有代码一致：模块顶部一段说明用途与协议，函数一行 docstring，只在"为什么"不显然处加行内注释；注释一律英文。界面文案中文。插件里给玩家看的文字一律放 `Locale.lua`（`!WuxianWorkshop` 放 `Core.lua` 的 `WORDS`），中英两份都写；发给守护进程的内容（调试、RUN/RELOAD 结果、测试消息）保持英文。
+- 注释密度与现有代码一致：模块顶部一段说明用途与协议，函数一行 docstring，只在"为什么"不显然处加行内注释；注释一律英文。界面文案中英两份：页面的中文直接写在 index.html / app.js 里（它也是词条的键：静态文字由 `x-t` 翻译，表达式里用 `t('…{名}…', {名})` 整句模板，不拼接碎片），英文写进 `ui/static/i18n.js` 的 `EN`（`tests/ui/test_i18n.py` 查每条都有英文）；Python 给人看的文字（自检、Agent、新建插件、托盘与对话框）用 `i18n.tr(中文, 英文)`，跟设置里的语言走（自动 = 跟随 Windows 显示语言）。插件里给玩家看的文字一律放 `Locale.lua`（`!WuxianWorkshop` 放 `Core.lua` 的 `WORDS`），中英两份都写；发给守护进程的内容（调试、RUN/RELOAD 结果、测试消息）保持英文。
 - 不改协议格式：帧格式 v1（`core/frame.py` 与 `Codec.lua`/`Frame.lua` 互为镜像）、信箱包格式（`mailbox.py` 与 `Mailbox.lua`）、控制帧与上行消息的格式（`link.py` 与 `Link.lua`）、CODE 头部（`commands.py` 与 `Agent.lua`）；改一边必须同时改另一边并补测试。
 - 不模拟输入、不读游戏内存、不注入代码；只允许抓屏和读写插件目录里的文件。
 - 游戏客户端只在启动时发现新文件，运行中新增/删除文件无效；替换运行中的文件用 `core.game.atomic_write`。

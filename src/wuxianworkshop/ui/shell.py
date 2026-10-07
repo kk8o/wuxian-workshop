@@ -31,10 +31,10 @@ import urllib.request
 from pathlib import Path
 
 from .. import __version__, paths
+from ..i18n import tr
 from . import webview2
 
 ROOT = Path(__file__).resolve().parents[3]       # the repository: scripts/dev_fake_api.py lives there (development only)
-TITLE = "无限工坊"
 BACKGROUND = "#16171d"                                   # the page's --bg: no white flash while it loads
 SIZE = (1200, 760)
 MIN_SIZE = (960, 600)                                   # the layout: navigation, a list and its detail side by side
@@ -42,14 +42,27 @@ EXIT_NO_WEBVIEW2 = 3
 WATCH_EVERY = 2.0                                # seconds between looks at an attached daemon
 log = logging.getLogger(__name__)
 
-ERROR_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
-<title>无限工坊</title><style>
+ERROR_HTML = """<!doctype html><html lang="%s"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
+<title>%s</title><style>
 body{font:15px/1.6 "Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;margin:0;display:grid;place-items:center;height:100vh;
 background:#f3f4f6;color:#1f2328}@media(prefers-color-scheme:dark){body{background:#0f1216;color:#e5e7eb}}
 .box{max-width:560px;padding:32px}h1{font-size:20px;margin:0 0 12px}pre{white-space:pre-wrap;opacity:.75;font-size:12.5px}
-</style></head><body><div class="box"><h1>守护进程未就绪</h1>
-<p>无限工坊的守护进程没有启动，所以这里暂时没有内容。可以关掉窗口（它会留在托盘里），稍后从托盘菜单「打开」再试。</p>
+</style></head><body><div class="box"><h1>%s</h1>
+<p>%s</p>
 <pre>%s</pre></div></body></html>"""
+
+
+def title():
+    return tr("无限工坊", "Wuxian Workshop")
+
+
+def error_html(note):
+    """the page the window shows when there is no daemon"""
+    from html import escape
+    return ERROR_HTML % (tr("zh-CN", "en"), title(), tr("守护进程未就绪", "The daemon is not ready"),
+                         tr("无限工坊的守护进程没有启动，所以这里暂时没有内容。可以关掉窗口（它会留在托盘里），稍后从托盘菜单「打开」再试。",
+                            "Wuxian Workshop's daemon did not start, so there is nothing here for now. Close the window (it "
+                            "stays in the tray) and try again later with Open in the tray menu."), escape(note))
 
 
 def dark_title_bar(hwnd):
@@ -155,7 +168,7 @@ def start_backend(args):
         from ..daemon import server
     except ImportError as e:                     # the daemon is not written yet: develop against the fake API
         log.warning("daemon not importable (%s); using the fake API", e)
-        return start_fake(), f"守护进程未就绪（{e}）"
+        return start_fake(), tr(f"守护进程未就绪（{e}）", f"the daemon is not ready ({e})")
     try:
         handle = server.start(mode=args.mode, capture=args.capture, game_dir=args.game)
     except getattr(server, "AlreadyRunning", ()) as e:
@@ -231,21 +244,21 @@ class Shell:
         storage.mkdir(parents=True, exist_ok=True)
         hidden = bool(getattr(self.args, "background", False))
         if self.backend is not None:
-            self.window = webview.create_window(TITLE, self.backend.url, width=SIZE[0], height=SIZE[1], min_size=MIN_SIZE,
+            self.window = webview.create_window(title(), self.backend.url, width=SIZE[0], height=SIZE[1], min_size=MIN_SIZE,
                                                 text_select=True, hidden=hidden, background_color=BACKGROUND,
                                                 js_api=PageApi(self))
         else:
-            self.window = webview.create_window(TITLE, html=ERROR_HTML % (self.note,), width=SIZE[0], height=SIZE[1],
+            self.window = webview.create_window(title(), html=error_html(self.note), width=SIZE[0], height=SIZE[1],
                                                 min_size=MIN_SIZE, text_select=True, background_color=BACKGROUND)
         self.window.events.closing += self.on_closing
         self.window.events.before_show += self.on_before_show
-        self.tray = traymod.Tray(TITLE + "：用 AI 写魔兽插件", [
-            traymod.Item("打开", self.show, default=True),
-            traymod.Item("开发台", self.open_dev),
-            traymod.Item("打开日志文件夹", self.open_logs),
-            traymod.Item("检查更新", self.check_update),
+        self.tray = traymod.Tray(tr("无限工坊：用 AI 写魔兽插件", "Wuxian Workshop: write WoW addons with AI"), [
+            traymod.Item(tr("打开", "Open"), self.show, default=True),
+            traymod.Item(tr("开发台", "Console"), self.open_dev),
+            traymod.Item(tr("打开日志文件夹", "Open the logs folder"), self.open_logs),
+            traymod.Item(tr("检查更新", "Check for updates"), self.check_update),
             traymod.SEPARATOR,
-            traymod.Item("退出", self.quit),
+            traymod.Item(tr("退出", "Quit"), self.quit),
         ])
         from . import icon as iconmod
         webview.start(self.after_start, private_mode=False, storage_path=str(storage), gui="edgechromium", debug=self.args.debug,
@@ -389,7 +402,8 @@ def run_app(argv=None):
         if found is not None:
             return join_running(found, args)
         log.error("the daemon is already running but does not answer")
-        backend, note = None, "另一个无限工坊已经在运行，但它没有响应；请先从托盘退出它。"
+        backend, note = None, tr("另一个无限工坊已经在运行，但它没有响应；请先从托盘退出它。",
+                                 "Another Wuxian Workshop is running but does not answer; quit it from its tray icon first.")
     except Exception as e:                           # neither the daemon nor the fake API: show an error page
         log.exception("no backend")
         backend, note = None, f"{type(e).__name__}: {e}"

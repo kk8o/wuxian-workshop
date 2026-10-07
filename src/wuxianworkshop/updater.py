@@ -15,6 +15,8 @@ import os
 import threading
 import time
 
+from .i18n import tr
+
 FEED = "https://wuxianwow.com/workshop/releases"
 CHECK_EVERY = 6 * 3600
 FIRST_CHECK = 20
@@ -53,7 +55,9 @@ class Updater:
             self.supported, self.reason = True, ""
         except Exception as e:                  # not installed by the Setup exe, or no velopack module
             self.um, self.current = None, None
-            self.supported, self.reason = False, "不是用安装包装的（开发版或解压版），不能自动更新：" + _short(e)
+            self.supported, self.reason = False, tr("不是用安装包装的（开发版或解压版），不能自动更新：",
+                                                    "not installed by the setup program (a development or portable copy), so no "
+                                                    "automatic updates: ") + _short(e)
             self.state = "unsupported"
             return
         try:
@@ -85,7 +89,7 @@ class Updater:
         try:
             info = self.um.check_for_updates()
         except Exception as e:
-            self._set(state="error", error="检查更新失败：" + _short(e), checked=self.clock())
+            self._set(state="error", error=tr("检查更新失败：", "the update check failed: ") + _short(e), checked=self.clock())
             self.note(f"update check failed: {_short(e)}")
             return self.status()
         if info is None:
@@ -105,7 +109,7 @@ class Updater:
         try:
             self.um.download_updates(self.info, lambda p: self._set(progress=int(p)))
         except Exception as e:
-            self._set(state="error", error="下载更新失败：" + _short(e))
+            self._set(state="error", error=tr("下载更新失败：", "the update download failed: ") + _short(e))
             self.note(f"update download failed: {_short(e)}")
             return self.status()
         self._set(state="ready", progress=100)

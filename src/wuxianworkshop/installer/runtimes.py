@@ -38,11 +38,17 @@ class Runtime:
     url: str          # Microsoft's fwlink
     file: str         # what it downloads
     args: tuple = ()
+    title_en: str = ""
+
+    def label(self):
+        """its name in the program's language"""
+        from ..i18n import tr
+        return tr(self.title, self.title_en or self.title)
 
 
 RUNTIMES = {
     "webview2": Runtime("Microsoft Edge WebView2 运行时", "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
-                        "MicrosoftEdgeWebview2Setup.exe", ("/install",)),
+                        "MicrosoftEdgeWebview2Setup.exe", ("/install",), "Microsoft Edge WebView2 Runtime"),
     "dotnet": Runtime(".NET Framework 4.8", "https://go.microsoft.com/fwlink/?LinkId=2085155", "ndp48-web.exe"),
 }
 

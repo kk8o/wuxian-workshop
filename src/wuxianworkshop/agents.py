@@ -26,6 +26,7 @@ import tomllib
 from pathlib import Path
 
 from .cli.mcpconfig import mcp_command
+from .i18n import tr
 
 NAME = "wuxian"
 HOSTS = ("claude", "codex", "cursor")
@@ -62,21 +63,23 @@ def run_command(argv, env, timeout=TIMEOUT):
     if Path(argv[0]).suffix.lower() in (".cmd", ".bat"):
         bad = next((a for a in argv[1:] if any(c in a for c in CMD_UNSAFE)), None)
         if bad is not None:
-            raise AgentError(f"参数里有命令行的特殊字符，不能经 {Path(argv[0]).name} 传过去：{bad}")
+            raise AgentError(tr(f"参数里有命令行的特殊字符，不能经 {Path(argv[0]).name} 传过去：{bad}",
+                                f"an argument has characters special to the command line and cannot go through {Path(argv[0]).name}: {bad}"))
     try:
         r = subprocess.run(argv, env=env, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except FileNotFoundError:
-        raise AgentError(f"运行不了 {argv[0]}") from None
+        raise AgentError(tr(f"运行不了 {argv[0]}", f"cannot run {argv[0]}")) from None
     except subprocess.TimeoutExpired:
-        raise AgentError(f"{Path(argv[0]).stem} {' '.join(argv[1:3])} 超过 {timeout} 秒没有结束") from None
+        raise AgentError(tr(f"{Path(argv[0]).stem} {' '.join(argv[1:3])} 超过 {timeout} 秒没有结束",
+                            f"{Path(argv[0]).stem} {' '.join(argv[1:3])} did not finish within {timeout} seconds")) from None
     out = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
     return r.returncode, ANSI.sub("", out)
 
 
 def last_line(text):
     lines = [l.strip() for l in str(text).splitlines() if l.strip()]
-    return lines[-1] if lines else "（没有输出）"
+    return lines[-1] if lines else tr("（没有输出）", "(no output)")
 
 
 def write_file(path, text):
@@ -106,7 +109,7 @@ class Host:
         return True, ""
 
     def status(self, prog):
-        base = dict(id=self.id, title=self.title, where=self.where(), apply=self.apply, entry=None, can_connect=False)
+        base = dict(id=self.id, title=self.title, where=self.where(), apply=tr(*self.apply), entry=None, can_connect=False)
         present, why = self.present()
         if not present:
             return dict(base, present=False, state="missing", detail=why)
@@ -116,14 +119,16 @@ class Host:
             return dict(base, present=True, state="error", detail=str(e))
         can, cant = self.can_connect()
         if entry is None:
-            state, detail = "absent", "还没有接入"
+            state, detail = "absent", tr("还没有接入", "not connected yet")
         elif same(entry, prog):
-            state, detail = "ok", "已接入：会启动 " + " ".join([entry["command"], *entry.get("args", [])])
+            command = " ".join([entry["command"], *entry.get("args", [])])
+            state, detail = "ok", tr(f"已接入：会启动 {command}", f"connected: it starts {command}")
         else:
             shown = entry.get("command") or entry.get("url") or "?"
-            state, detail = "other", f"已接入，但启动的是另一个程序：{shown}（点「接入」改成现在这个）"
+            state, detail = "other", tr(f"已接入，但启动的是另一个程序：{shown}（点「接入」改成现在这个）",
+                                        f"connected, but it starts another program: {shown} (Connect switches it to this one)")
         if not can:
-            detail += "；" + cant
+            detail += tr("；", "; ") + cant
         return dict(base, present=True, can_connect=can, state=state, detail=detail,
                     entry={k: entry.get(k) for k in ("command", "args", "url") if k in entry} if entry else None)
 
@@ -133,7 +138,9 @@ class Host:
 
 class Claude(Host):
     id, title = "claude", "Claude Code"
-    apply = "新开一个 Claude Code 会话就能用（已经开着的会话要重开）；终端、桌面版和 IDE 插件里的 Claude Code 共用这份设置。"
+    apply = ("新开一个 Claude Code 会话就能用（已经开着的会话要重开）；终端、桌面版和 IDE 插件里的 Claude Code 共用这份设置。",
+             "A new Claude Code session has it (restart the sessions already open); Claude Code in the terminal, the desktop "
+             "app and the IDE extensions share this setting.")
 
     def config(self):
         base = self.env.get("CLAUDE_CONFIG_DIR")
@@ -151,12 +158,13 @@ class Claude(Host):
     def present(self):
         if self.cli() or self.config().is_file():
             return True, ""
-        return False, "没有找到 Claude Code（没有 claude 命令，也没有 ~/.claude.json）"
+        return False, tr("没有找到 Claude Code（没有 claude 命令，也没有 ~/.claude.json）", "Claude Code not found (no claude command, no ~/.claude.json)")
 
     def can_connect(self):
         if self.cli():
             return True, ""
-        return False, "找到了 Claude Code 的设置，但没有找到 claude 命令：请在终端里运行下面的命令"
+        return False, tr("找到了 Claude Code 的设置，但没有找到 claude 命令：请在终端里运行下面的命令",
+                         "Claude Code's settings are there but the claude command is not: run the command below in a terminal")
 
     def entry(self):
         path = self.config()
@@ -165,7 +173,7 @@ class Claude(Host):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            raise AgentError(f"读不了 {path}：{e}") from None
+            raise AgentError(tr(f"读不了 {path}：{e}", f"cannot read {path}: {e}")) from None
         servers = data.get("mcpServers") if isinstance(data, dict) else None
         entry = servers.get(NAME) if isinstance(servers, dict) else None
         return entry if isinstance(entry, dict) else None
@@ -173,7 +181,8 @@ class Claude(Host):
     def _cli(self):
         cli = self.cli()
         if not cli:
-            raise AgentError("没有找到 claude 命令：请先装好 Claude Code，或在终端里运行接入命令")
+            raise AgentError(tr("没有找到 claude 命令：请先装好 Claude Code，或在终端里运行接入命令",
+                                "no claude command found: install Claude Code first, or run the command in a terminal"))
         return cli
 
     def connect(self, prog):
@@ -185,16 +194,17 @@ class Claude(Host):
             argv += ["--env", f"{key}={value}"]
         rc, out = self.run([*argv, "--", prog["command"], *prog["args"]], self.env)
         if rc != 0:
-            raise AgentError("claude mcp add 失败：" + last_line(out))
+            raise AgentError(tr("claude mcp add 失败：", "claude mcp add failed: ") + last_line(out))
         if not same(self.entry(), prog):
-            raise AgentError("claude mcp add 说成功了，但设置里没有看到新的 wuxian：" + last_line(out))
+            raise AgentError(tr("claude mcp add 说成功了，但设置里没有看到新的 wuxian：",
+                                "claude mcp add said it worked, but the settings have no new wuxian: ") + last_line(out))
 
     def disconnect(self):
         if self.entry() is None:
             return
         rc, out = self.run([self._cli(), "mcp", "remove", NAME, "-s", "user"], self.env)
         if rc != 0 and self.entry() is not None:
-            raise AgentError("claude mcp remove 失败：" + last_line(out))
+            raise AgentError(tr("claude mcp remove 失败：", "claude mcp remove failed: ") + last_line(out))
 
     def verify(self):
         """`claude mcp get wuxian`: Claude Code starts the server and says whether it answered"""
@@ -202,7 +212,7 @@ class Claude(Host):
         m = re.search(r"Status:\s*(.+)", out)
         state = m.group(1).strip() if m else ""
         ok = rc == 0 and ("Connected" in state or "✔" in state)
-        return dict(ok=ok, text=f"Claude Code 启动它：{state}" if state else last_line(out))
+        return dict(ok=ok, text=tr(f"Claude Code 启动它：{state}", f"Claude Code started it: {state}") if state else last_line(out))
 
 
 TABLE = re.compile(r"^[ \t]*\[\[?[ \t]*([^\]\r\n]+?)[ \t]*\]\]?[ \t]*(?:#.*)?$")
@@ -233,7 +243,8 @@ def _without(data):
 
 class Codex(Host):
     id, title = "codex", "Codex"
-    apply = "新开一个 Codex 会话就能用；命令行、桌面版和 IDE 插件里的 Codex 共用这份设置。"
+    apply = ("新开一个 Codex 会话就能用；命令行、桌面版和 IDE 插件里的 Codex 共用这份设置。",
+             "A new Codex session has it; Codex on the command line, the desktop app and the IDE extensions share this setting.")
 
     def folder(self):
         return Path(self.env.get("CODEX_HOME") or self.home / ".codex")
@@ -247,7 +258,7 @@ class Codex(Host):
     def present(self):
         if self.cli() or self.folder().is_dir():
             return True, ""
-        return False, "没有找到 Codex（没有 codex 命令，也没有 ~/.codex 文件夹）"
+        return False, tr("没有找到 Codex（没有 codex 命令，也没有 ~/.codex 文件夹）", "Codex not found (no codex command, no ~/.codex folder)")
 
     def load(self, text=None):
         path = self.config()
@@ -258,7 +269,8 @@ class Codex(Host):
         try:
             return tomllib.loads(text)
         except (tomllib.TOMLDecodeError, ValueError) as e:
-            raise AgentError(f"{path} 不是合法的 TOML（{e}）：请照下面的配置手动修改") from None
+            raise AgentError(tr(f"{path} 不是合法的 TOML（{e}）：请照下面的配置手动修改",
+                                f"{path} is not valid TOML ({e}): change it by hand as below")) from None
 
     def entry(self):
         servers = self.load().get("mcp_servers")
@@ -294,14 +306,19 @@ class Codex(Host):
         try:
             after = tomllib.loads(text)
         except tomllib.TOMLDecodeError as e:
-            raise AgentError(f"改写后的 {path.name} 解析不了（{e}），没有写入：请手动修改") from None
+            raise AgentError(tr(f"改写后的 {path.name} 解析不了（{e}），没有写入：请手动修改",
+                                f"{path.name} would not parse after the change ({e}), so nothing was written: change it by hand")) from None
         if _without(after) != _without(before):
-            raise AgentError(f"{path} 里 wuxian 的写法认不出来，改写会动到别的设置，没有写入：请手动修改")
+            raise AgentError(tr(f"{path} 里 wuxian 的写法认不出来，改写会动到别的设置，没有写入：请手动修改",
+                                f"the wuxian entry in {path} is written in a way not understood, and the change would touch other "
+                                f"settings, so nothing was written: change it by hand"))
         servers = after.get("mcp_servers") or {}
         if prog is not None and not same(servers.get(NAME), prog):
-            raise AgentError(f"{path} 里还有别处定义了 wuxian，没有写入：请手动修改")
+            raise AgentError(tr(f"{path} 里还有别处定义了 wuxian，没有写入：请手动修改",
+                                f"{path} defines wuxian somewhere else too, so nothing was written: change it by hand"))
         if prog is None and NAME in servers:
-            raise AgentError(f"{path} 里 wuxian 的写法认不出来，没有删掉：请手动修改")
+            raise AgentError(tr(f"{path} 里 wuxian 的写法认不出来，没有删掉：请手动修改",
+                                f"the wuxian entry in {path} is written in a way not understood, so it was not removed: change it by hand"))
         write_file(path, text)
 
     def connect(self, prog):
@@ -317,12 +334,14 @@ class Codex(Host):
         if not cli:
             return None
         rc, out = self.run([cli, "mcp", "get", NAME], self.env)
-        return dict(ok=rc == 0, text="Codex 读到了 wuxian 的设置" if rc == 0 else "Codex 读设置出错：" + last_line(out))
+        return dict(ok=rc == 0, text=tr("Codex 读到了 wuxian 的设置", "Codex reads the wuxian settings") if rc == 0
+                    else tr("Codex 读设置出错：", "Codex failed reading the settings: ") + last_line(out))
 
 
 class Cursor(Host):
     id, title = "cursor", "Cursor"
-    apply = "在 Cursor 的 设置 → MCP 里能看到 wuxian；第一次可能要手动打开它的开关。"
+    apply = ("在 Cursor 的 设置 → MCP 里能看到 wuxian；第一次可能要手动打开它的开关。",
+             "wuxian shows under Cursor's Settings → MCP; the first time, its switch may need turning on by hand.")
 
     def folder(self):
         return self.home / ".cursor"
@@ -338,7 +357,7 @@ class Cursor(Host):
     def present(self):
         if self.folder().is_dir() or self.app():
             return True, ""
-        return False, "没有找到 Cursor（没有 ~/.cursor 文件夹）"
+        return False, tr("没有找到 Cursor（没有 ~/.cursor 文件夹）", "Cursor not found (no ~/.cursor folder)")
 
     def load(self):
         path = self.config()
@@ -347,9 +366,10 @@ class Cursor(Host):
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as e:
-            raise AgentError(f"{path} 不是合法的 JSON（{e}；也许有注释）：请照下面的配置手动修改") from None
+            raise AgentError(tr(f"{path} 不是合法的 JSON（{e}；也许有注释）：请照下面的配置手动修改",
+                                f"{path} is not valid JSON ({e}; comments, perhaps): change it by hand as below")) from None
         if not isinstance(data, dict) or not isinstance(data.get("mcpServers", {}), dict):
-            raise AgentError(f"{path} 的格式认不出来：请照下面的配置手动修改")
+            raise AgentError(tr(f"{path} 的格式认不出来：请照下面的配置手动修改", f"the layout of {path} is not understood: change it by hand as below"))
         return data
 
     def entry(self):
@@ -376,7 +396,7 @@ CLASSES = {"claude": Claude, "codex": Codex, "cursor": Cursor}
 
 def host(name, home=None, env=None, run=None):
     if name not in CLASSES:
-        raise AgentError(f"不认识的 Agent：{name}（可选 {'、'.join(HOSTS)}）")
+        raise AgentError(tr(f"不认识的 Agent：{name}（可选 {'、'.join(HOSTS)}）", f"unknown agent: {name} (one of {', '.join(HOSTS)})"))
     return CLASSES[name](home, env, run)
 
 
@@ -389,7 +409,8 @@ def manual(prog):
     stdio = {"command": cmd, "args": prog["args"], **({"env": prog["env"]} if prog["env"] else {})}
     return dict(
         claude=f"claude mcp add --scope user --transport stdio {NAME}{env} -- {quoted} {args}",
-        codex="\n".join(["# %USERPROFILE%\\.codex\\config.toml 末尾加上：", *Codex.block(prog)]),
+        codex="\n".join([tr("# %USERPROFILE%\\.codex\\config.toml 末尾加上：", "# add at the end of %USERPROFILE%\\.codex\\config.toml:"),
+                         *Codex.block(prog)]),
         cursor=json.dumps({"mcpServers": {NAME: stdio}}, indent=2, ensure_ascii=False),
         other=json.dumps({"mcpServers": {NAME: stdio}}, indent=2, ensure_ascii=False))
 

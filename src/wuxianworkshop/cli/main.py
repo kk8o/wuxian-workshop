@@ -43,6 +43,7 @@ import sys
 import time
 
 from .. import __version__
+from ..i18n import tr
 from ..daemon.api import ApiError, read_daemon_json
 from . import mcpconfig
 from .client import connect
@@ -567,8 +568,9 @@ def cmd_doctor(client, args):
     res = client.doctor(args.game)
     marks = {True: "ok", False: "!!", None: "??"}       # ok, failed, unknown (could not be checked here)
     for c in res["checks"]:
-        print(f"[{marks.get(c.get('ok'), '!!')}] {c.get('title') or c.get('id')}：{c.get('detail') or ''}"
-              + (f"\n     修复动作：{c['fix']}（wuxian doctor --fix）" if c.get("fix") and c.get("ok") is False else ""))
+        print(f"[{marks.get(c.get('ok'), '!!')}] {c.get('title') or c.get('id')}{tr('：', ': ')}{c.get('detail') or ''}"
+              + (tr(f"\n     修复动作：{c['fix']}（wuxian doctor --fix）", f"\n     fix: {c['fix']} (wuxian doctor --fix)")
+                 if c.get("fix") and c.get("ok") is False else ""))
     if not res.get("available", True):
         print("(the self-check module is not available yet)", file=sys.stderr)
     return 1 if any(c.get("ok") is False for c in res["checks"]) else 0

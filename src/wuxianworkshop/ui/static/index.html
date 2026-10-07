@@ -45,38 +45,38 @@
 <div id="app" class="app" x-data="app" x-cloak>
 
   <!-- 工具栏：品牌、连接状态、常用操作、更新 -->
-  <header class="topbar">
+  <header class="topbar" x-t>
     <div class="tb-brand"><img src="logo.svg" alt=""><span>无限工坊</span></div>
     <div class="tb-sep"></div>
     <div class="tb-link" :class="'st-' + linkClass" :title="linkWhy || linkHint">
       <span class="dot"></span><span class="tb-link-text" x-text="linkText"></span>
-      <span class="muted" x-show="status && status.link.session" x-text="'会话 ' + val(status, 'link.session')"></span>
+      <span class="muted" x-show="status && status.link.session" x-text="t('会话 {n}', { n: val(status, 'link.session') })"></span>
     </div>
     <div class="tb-actions">
-      <button class="tbtn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found) || snap.busy" title="截一张游戏画面">
+      <button x-t class="tbtn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found) || snap.busy" title="截一张游戏画面">
         <svg class="ico"><use href="#i-camera"/></svg><span>截图</span></button>
-      <button class="tbtn" @click="requestReload()" :disabled="!linkOnline || reload.busy" title="游戏里弹出按钮，点了才会重载界面">
-        <svg class="ico"><use href="#i-reload"/></svg><span x-text="status && status.reload_pending ? '等待点击重载…' : '重载界面'"></span></button>
+      <button x-t class="tbtn" @click="requestReload()" :disabled="!linkOnline || reload.busy" title="游戏里弹出按钮，点了才会重载界面">
+        <svg class="ico"><use href="#i-reload"/></svg><span x-text="status && status.reload_pending ? t('等待点击重载…') : t('重载界面')"></span></button>
     </div>
     <div class="tb-right">
-      <span class="tb-chip fake" x-show="banner" :title="banner" x-text="daemonError ? '服务未就绪' : '假接口'"></span>
+      <span class="tb-chip fake" x-show="banner" :title="banner" x-text="daemonError ? t('服务未就绪') : t('假接口')"></span>
       <button class="tb-chip update" x-show="updateBanner" @click="go('settings')" :title="updateBanner">
         <svg class="ico"><use href="#i-update"/></svg><span x-text="updateChip"></span></button>
     </div>
   </header>
 
   <!-- 导航 -->
-  <nav class="sidebar">
+  <nav class="sidebar" x-t>
     <template x-for="(p, i) in NAV" :key="p.id">
-      <a href="#" class="nav-item" :class="{active: page === p.id}" @click.prevent="go(p.id)" :title="p.label + '（Ctrl+' + (i + 1) + '）'">
+      <a href="#" class="nav-item" :class="{active: page === p.id}" @click.prevent="go(p.id)" :title="t('{label}（Ctrl+{n}）', { label: t(p.label), n: i + 1 })">
         <svg class="ico"><use :href="'#' + p.icon"/></svg>
-        <span class="nav-label" x-text="p.label"></span>
+        <span class="nav-label" x-text="t(p.label)"></span>
         <span class="nav-badge" x-show="p.id === 'dev' && errCount > 0" x-text="errCount"></span>
         <span class="nav-dot" x-show="p.id === 'start' && settingsLoaded && !settings.onboarded"></span>
       </a>
     </template>
     <div class="nav-fill"></div>
-    <a href="#" class="nav-item" :class="{active: page === 'settings'}" @click.prevent="go('settings')" title="设置（Ctrl+8）">
+    <a x-t href="#" class="nav-item" :class="{active: page === 'settings'}" @click.prevent="go('settings')" title="设置（Ctrl+8）">
       <svg class="ico"><use href="#i-gear"/></svg><span class="nav-label">设置</span>
     </a>
   </nav>
@@ -84,12 +84,12 @@
   <main class="content">
 
     <!-- 开始：第一次启动时打开的五步向导；每一步按实际状态自动打勾（自检、链路、Agent 设置、热加载结果） -->
-    <section class="page" x-show="page === 'start'">
+    <section class="page" x-t x-show="page === 'start'">
       <div class="pagebar">
         <h1>开始使用</h1>
-        <span class="muted" x-text="startDone + ' / 5 步完成'"></span>
+        <span class="muted" x-text="t('{n} / 5 步完成', { n: startDone })"></span>
         <div class="spacer"></div>
-        <button class="btn" @click="finishStart()" x-text="startDone === 5 ? '完成' : (settings.onboarded ? '回到概览' : '以后再说')"></button>
+        <button class="btn" @click="finishStart()" x-text="startDone === 5 ? t('完成') : (settings.onboarded ? t('回到概览') : t('以后再说'))"></button>
       </div>
       <div class="pagebody">
         <div class="start-wrap">
@@ -109,19 +109,19 @@
                 <h2>找到游戏</h2>
                 <div class="loader" x-show="!doctor.checks.length && doctor.busy"><svg class="inf"><use href="#inf-line"/></svg>正在检查…</div>
                 <template x-if="stepGame && !start.gameEdit">
-                  <div>
+                  <div x-t>
                     <p>客户端目录：<span class="mono selectable" x-text="gamePath"></span></p>
                     <p class="muted small" x-show="gameVersion" x-text="gameVersion"></p>
                     <a href="#" class="small" @click.prevent="start.gameEdit = true; start.gameInput = gamePath">不是这个？换一个</a>
                   </div>
                 </template>
                 <template x-if="(!stepGame && doctor.checks.length) || start.gameEdit">
-                  <div>
+                  <div x-t>
                     <p x-show="!stepGame">没有找到《魔兽世界：无限》的客户端目录。游戏开着时会自动找到；也可以在这里选它的文件夹（里面有 Interface\AddOns，通常是 <span class="mono">…\World of Warcraft\_cn_beta_</span>）。</p>
                     <div class="row">
                       <input class="input mono grow" x-model="start.gameInput" placeholder="C:\Program Files (x86)\World of Warcraft\_cn_beta_">
                       <button class="btn" x-show="canPick" @click="pickFolder()">浏览…</button>
-                      <button class="btn primary" @click="saveGameDir()" :disabled="start.saving || !start.gameInput.trim()" x-text="start.saving ? '保存中…' : '保存'"></button>
+                      <button class="btn primary" @click="saveGameDir()" :disabled="start.saving || !start.gameInput.trim()" x-text="start.saving ? t('保存中…') : t('保存')"></button>
                       <button class="btn" x-show="start.gameEdit" @click="start.gameEdit = false">取消</button>
                     </div>
                     <p class="small warn-text" x-show="start.gameNote" x-text="start.gameNote"></p>
@@ -145,7 +145,7 @@
                 </ul>
                 <div class="row">
                   <button class="btn" :class="stepInstall ? '' : 'primary'" @click="startInstall()" :disabled="start.installBusy || !stepGame"
-                          x-text="start.installBusy ? '安装中…' : (stepInstall ? '重新安装' : '安装开发组件')"></button>
+                          x-text="start.installBusy ? t('安装中…') : (stepInstall ? t('重新安装') : t('安装开发组件'))"></button>
                   <span class="muted small" x-show="!stepGame">先找到游戏目录。</span>
                 </div>
                 <p class="small" :class="start.installRestart ? 'warn-text' : 'muted'" x-show="start.installNote" x-text="start.installNote"></p>
@@ -160,7 +160,7 @@
                 <p class="state-line">
                   <span class="dot" :class="'d-' + linkClass"></span>
                   <b :class="linkClass + '-text'" x-text="linkText"></b>
-                  <span class="muted small" x-text="linkWhy || (linkOnline ? '游戏里输入 /wb 可以打开开发组件的面板。' : '')"></span>
+                  <span class="muted small" x-text="linkWhy || (linkOnline ? t('游戏里输入 /wb 可以打开开发组件的面板。') : '')"></span>
                 </p>
               </div>
             </li>
@@ -181,14 +181,14 @@
                       </div>
                       <div class="agent-acts">
                         <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="!!agents.busy"
-                                x-text="agents.busy === h.id + ':connect' ? '接入中…' : (h.state === 'other' ? '改成现在这个' : '一键接入')"></button>
+                                x-text="agents.busy === h.id + ':connect' ? t('接入中…') : (h.state === 'other' ? t('改成现在这个') : t('一键接入'))"></button>
                         <button class="btn" x-show="h.state === 'ok' && h.id !== 'cursor'" @click="agentAction(h, 'verify')" :disabled="!!agents.busy"
-                                x-text="agents.busy === h.id + ':verify' ? '检查中…' : '检查'"></button>
+                                x-text="agents.busy === h.id + ':verify' ? t('检查中…') : t('检查')"></button>
                       </div>
                     </div>
                   </template>
                 </div>
-                <p class="muted small" x-show="agentsMissing.length" x-text="'没有找到：' + agentsMissing.join('、') + '。装好后到「接入 Agent」页刷新。'"></p>
+                <p class="muted small" x-show="agentsMissing.length" x-text="t('没有找到：{list}。装好后到「接入 Agent」页刷新。', { list: agentsMissing.join(t('、')) })"></p>
               </div>
             </li>
 
@@ -198,20 +198,20 @@
                 <h2>第一个插件</h2>
                 <p>建一个最小的插件，热加载进游戏，看它在游戏里说话。</p>
                 <form class="row" @submit.prevent="startFirst()">
-                  <input class="input mono first-name" x-model="start.first.name" placeholder="文件夹名（英文）">
-                  <input class="input grow" x-model="start.first.title" placeholder="显示名称">
+                  <input x-t class="input mono first-name" x-model="start.first.name" placeholder="文件夹名（英文）">
+                  <input x-t class="input grow" x-model="start.first.title" placeholder="显示名称">
                   <button class="btn primary" type="submit" :disabled="start.first.busy || !start.first.name.trim() || !stepGame"
-                          x-text="start.first.busy ? '进行中…' : (linkOnline ? '创建并热加载' : '创建')"></button>
+                          x-text="start.first.busy ? t('进行中…') : (linkOnline ? t('创建并热加载') : t('创建'))"></button>
                 </form>
                 <p class="small bad-text" x-show="start.first.error" x-text="start.first.error"></p>
                 <template x-if="start.first.result">
-                  <div class="result" :class="start.first.loaded ? 'ok' : ''">
+                  <div x-t class="result" :class="start.first.loaded ? 'ok' : ''">
                     <div>插件在 <span class="mono selectable" x-text="start.first.result.path"></span></div>
                     <div x-show="start.first.loaded">✓ 已热加载。<span x-show="firstOutput">游戏聊天框里出现了：<span class="mono" x-text="firstOutput"></span></span><span class="muted" x-show="!firstOutput">等它在游戏里说话…</span></div>
                     <div class="muted" x-show="!start.first.loaded && !linkOnline">游戏连上后再点一次「创建并热加载」；或者完整重启游戏，让它自己加载。</div>
                     <ol class="steps">
                       <li>在游戏里输入 <code x-text="start.first.result.slash"></code> 试试。</li>
-                      <li>交给 Agent：<button class="btn tiny" @click="copy(promptFor(start.first.result), '给 Agent 的第一句话')">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
+                      <li>交给 Agent：<button class="btn tiny" @click="copy(promptFor(start.first.result), t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
                       <li>用编辑器打开它：<button class="btn tiny" @click="reveal(start.first.result.name)">打开文件夹</button></li>
                     </ol>
                   </div>
@@ -220,14 +220,14 @@
             </li>
           </ol>
           <div class="row end">
-            <button class="btn primary" @click="finishStart()" x-text="startDone === 5 ? '全部完成，去概览' : '先到这里，去概览'"></button>
+            <button class="btn primary" @click="finishStart()" x-text="startDone === 5 ? t('全部完成，去概览') : t('先到这里，去概览')"></button>
           </div>
         </div>
       </div>
     </section>
 
     <!-- 概览：一条状态带（链路的状态、它意味着什么、常用操作、链路的读数），游戏和开发组件两张卡并排，下面是最近的动态 -->
-    <section class="page" x-show="page === 'status'">
+    <section class="page" x-t x-show="page === 'status'">
       <div class="pagebar">
         <h1 x-t>概览</h1>
         <span class="muted" x-text="status ? t('更新于 {t}', { t: fmtTime(statusAt) }) : t('正在读取…')"></span>
@@ -254,8 +254,8 @@
           </div>
           <dl class="ov-vitals">
             <template x-for="v in ovVitals" :key="v.label">
-              <div class="vital" :title="t(v.tip)">
-                <dt x-text="t(v.label)"></dt>
+              <div class="vital" :title="v.tip">
+                <dt x-text="v.label"></dt>
                 <dd><span x-text="v.value"></span><small x-show="v.unit" x-text="v.unit"></small></dd>
                 <div class="vital-sub" x-show="v.sub" x-text="v.sub"></div>
               </div>
@@ -314,10 +314,10 @@
     </section>
 
     <!-- 开发台：左边日志，右边工具 -->
-    <section class="page" x-show="page === 'dev'">
+    <section class="page" x-t x-show="page === 'dev'">
       <div class="pagebar">
         <h1>开发台</h1>
-        <span class="muted" x-text="visibleLogs.length + ' / ' + logs.length + ' 条日志'"></span>
+        <span class="muted" x-text="t('{a} / {b} 条日志', { a: visibleLogs.length, b: logs.length })"></span>
       </div>
       <div class="pagebody fill dev-split">
         <div class="dev-logs">
@@ -326,7 +326,7 @@
               <button class="chip" :class="[kinds[k] ? 'on' : '', 'k-' + k]" @click="kinds[k] = !kinds[k]" x-text="k"></button>
             </template>
             <div class="spacer"></div>
-            <input class="input small" type="search" placeholder="筛选文字" x-model.debounce.200ms="filterText">
+            <input x-t class="input small" type="search" placeholder="筛选文字" x-model.debounce.200ms="filterText">
             <label class="check-inline"><input type="checkbox" x-model="follow"> 跟随</label>
             <button class="btn small" @click="clearLogs()">清屏</button>
           </div>
@@ -357,13 +357,13 @@
               <div class="row">
                 <label class="muted small">超时 <input class="input tiny" type="number" name="timeout_ms" min="1000" step="1000" x-model.number="run.timeout"> ms</label>
                 <div class="spacer"></div>
-                <button class="btn primary" type="submit" x-text="run.busy ? '运行中…' : '运行（Ctrl+Enter）'"></button>
+                <button class="btn primary" type="submit" x-text="run.busy ? t('运行中…') : t('运行（Ctrl+Enter）')"></button>
               </div>
             </form>
             <template x-if="run.result">
               <div class="result selectable" :class="run.result.ok ? 'ok' : 'bad'">
                 <template x-if="run.result.ok">
-                  <div>
+                  <div x-t>
                     <div class="muted small" x-text="'job ' + run.result.job + ' · ' + run.result.ms + ' ms' + (run.result.chunk ? ' · ' + run.result.chunk : '')"></div>
                     <template x-if="run.result.values && run.result.values.length">
                       <ol class="values"><template x-for="(v, i) in run.result.values" :key="i"><li class="mono" x-text="show(v)"></li></template></ol>
@@ -384,11 +384,11 @@
           </div>
           <div class="tool-body" x-show="devTool === 'snap'">
             <div class="row">
-              <button class="btn primary" @click="takeSnap()" :disabled="snap.busy"><svg class="ico"><use href="#i-camera"/></svg><span x-text="snap.busy ? '截图中…' : '截一张'"></span></button>
+              <button class="btn primary" @click="takeSnap()" :disabled="snap.busy"><svg class="ico"><use href="#i-camera"/></svg><span x-text="snap.busy ? t('截图中…') : t('截一张')"></span></button>
             </div>
             <template x-if="snap.url">
               <figure class="snap">
-                <img :src="snap.url" alt="游戏截图">
+                <img x-t :src="snap.url" alt="游戏截图">
                 <figcaption class="muted small mono selectable" x-text="snap.info.width + ' × ' + snap.info.height + ' · ' + snap.info.path"></figcaption>
               </figure>
             </template>
@@ -397,12 +397,12 @@
           </div>
           <div class="tool-body" x-show="devTool === 'watch'">
             <form class="row" @submit.prevent="watch('start', watchTarget); watchTarget = ''">
-              <input class="input mono grow" placeholder="插件名或 .lua 文件路径" x-model="watchTarget">
+              <input x-t class="input mono grow" placeholder="插件名或 .lua 文件路径" x-model="watchTarget">
               <button class="btn primary" type="submit" :disabled="!watchTarget">开始监视</button>
             </form>
             <ul class="watch">
               <template x-for="w in (status ? status.watch : [])" :key="w">
-                <li><span class="mono selectable" x-text="w"></span><button class="btn tiny" @click="watch('stop', w)">停止</button></li>
+                <li x-t><span class="mono selectable" x-text="w"></span><button class="btn tiny" @click="watch('stop', w)">停止</button></li>
               </template>
             </ul>
             <p class="muted small tool-note" x-show="!status || !status.watch || !status.watch.length">没有在监视的文件：保存被监视的文件时自动热加载（有语法错误的不会送进游戏）。</p>
@@ -410,7 +410,7 @@
           <div class="tool-body" x-show="devTool === 'reload'">
             <div class="row"><button class="btn primary" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button></div>
             <p class="muted small tool-note">这个客户端只允许点击或按键触发重载：请求后游戏里会弹出按钮，点「立即重载」才会 /reload，完成时日志里出现 RELOAD done。</p>
-            <p class="small" x-show="status && status.reload_pending">⏳ 等待游戏里点击「立即重载」<span class="muted mono" x-show="reload.nonce" x-text="'（nonce ' + reload.nonce + '）'"></span></p>
+            <p class="small" x-show="status && status.reload_pending">⏳ 等待游戏里点击「立即重载」<span class="muted mono" x-show="reload.nonce" x-text="t('（nonce {n}）', { n: reload.nonce })"></span></p>
             <pre class="mono err" x-show="reload.error" x-text="reload.error"></pre>
           </div>
         </div>
@@ -418,10 +418,10 @@
     </section>
 
     <!-- 插件：左边列表，右边详情（概况、报错、检查、历史） -->
-    <section class="page" x-show="page === 'addons'">
+    <section class="page" x-t x-show="page === 'addons'">
       <div class="pagebar">
         <h1>插件</h1>
-        <span class="muted" x-show="addons.client" x-text="'客户端 ' + val(addons, 'client.version') + ' · Interface ' + val(addons, 'client.interface')"></span>
+        <span class="muted" x-show="addons.client" x-text="t('客户端 {v} · Interface {i}', { v: val(addons, 'client.version'), i: val(addons, 'client.interface') })"></span>
         <div class="spacer"></div>
         <button class="btn primary" @click="na.open = true; na.result = null; na.error = ''"><svg class="ico"><use href="#i-plus"/></svg>新建插件</button>
         <button class="btn" @click="loadAddons()" :disabled="addons.busy"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
@@ -432,7 +432,7 @@
           <p class="muted pad" x-show="addons.list !== null && !addons.list.length" x-text="addons.note"></p>
           <ul class="mlist">
             <template x-for="a in addonRows" :key="a.name">
-              <li class="mitem" :class="{active: addons.sel === a.name, child: a._child}" @click="selectAddon(a.name)">
+              <li x-t class="mitem" :class="{active: addons.sel === a.name, child: a._child}" @click="selectAddon(a.name)">
                 <div class="mitem-top">
                   <span class="mitem-title" x-text="a.title"></span>
                   <span class="mitem-badge bad" x-show="a.errors.signatures" x-text="a.errors.signatures"></span>
@@ -450,7 +450,7 @@
           <div class="master-foot" x-show="addons.errors">
             <a href="#" class="mfoot-item" :class="{active: addons.sel === '*'}" @click.prevent="selectAddon('*')">
               <span>错误收集</span>
-              <span class="muted" x-text="addons.errors && addons.errors.available ? reportText(addons.errors.report) + ' · ' + addons.errors.signatures + ' 种' : '不可用'"></span>
+              <span class="muted" x-text="addons.errors && addons.errors.available ? reportText(addons.errors.report) + ' · ' + t('{n} 种', { n: addons.errors.signatures }) : t('不可用')"></span>
             </a>
           </div>
         </div>
@@ -458,16 +458,16 @@
         <div class="detail">
           <!-- 错误收集（全部插件的报错） -->
           <template x-if="addons.sel === '*'">
-            <div class="detail-inner">
+            <div x-t class="detail-inner">
               <div class="detail-head">
                 <div><div class="detail-title">错误收集</div><div class="muted small">平台插件 !WuxianWorkshop 收集的全部 Lua 报错</div></div>
               </div>
               <div class="detail-scroll">
                 <template x-if="addons.errors && addons.errors.available">
-                  <dl class="kv">
+                  <dl x-t class="kv">
                     <dt>开关</dt><dd><span class="pill" :class="addons.errors.report === true ? 'ok' : 'off'" x-text="reportText(addons.errors.report)"></span></dd>
-                    <dt>记录</dt><dd x-text="addons.errors.signatures + ' 种报错' + (addons.errors.dropped ? '，限速丢弃 ' + addons.errors.dropped + ' 次' : '')"></dd>
-                    <dt>截至</dt><dd x-text="fmtStamp(addons.errors.written) + '（客户端在登出、/reload、退出时写入）'"></dd>
+                    <dt>记录</dt><dd x-text="t('{n} 种报错', { n: addons.errors.signatures }) + (addons.errors.dropped ? t('，限速丢弃 {n} 次', { n: addons.errors.dropped }) : '')"></dd>
+                    <dt>截至</dt><dd x-text="t('{t}（客户端在登出、/reload、退出时写入）', { t: fmtStamp(addons.errors.written) })"></dd>
                   </dl>
                 </template>
                 <p class="muted" x-show="addons.errors && !addons.errors.available" x-text="addons.errors && addons.errors.reason"></p>
@@ -475,12 +475,12 @@
                 <p class="muted" x-show="addons.entriesBusy">正在读取…</p>
                 <ul class="errlist selectable">
                   <template x-for="(e, i) in addons.entries" :key="i">
-                    <li>
+                    <li x-t>
                       <div class="errhead">
                         <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
                         <b x-text="'×' + e.count"></b>
-                        <span class="mono" x-text="e.addon || '（未归属）'"></span>
-                        <span class="muted" x-text="'最近 ' + fmtStamp(e.last)"></span>
+                        <span class="mono" x-text="e.addon || t('（未归属）')"></span>
+                        <span class="muted" x-text="t('最近 {t}', { t: fmtStamp(e.last) })"></span>
                       </div>
                       <div class="mono errmsg" x-text="e.message"></div>
                       <details x-show="e.stack"><summary>调用栈</summary><pre class="mono" x-text="e.stack"></pre></details>
@@ -493,13 +493,13 @@
 
           <!-- 一个插件 -->
           <template x-if="selAddon">
-            <div class="detail-inner">
+            <div x-t class="detail-inner">
               <div class="detail-head">
                 <div class="grow">
                   <div class="detail-title"><span x-text="selAddon.title"></span><span class="pill ok" x-show="selAddon.ours" x-text="roleText(selAddon.ours)"></span></div>
                   <div class="muted small mono" x-text="selAddon.name + (selAddon.version ? ' · ' + selAddon.version : '')"></div>
                 </div>
-                <button class="btn" x-show="!selAddon.ours" @click="histLoad(selAddon.name)" :disabled="!linkOnline" title="按 toc 顺序把它的 Lua 送进游戏（先检查语法）"><svg class="ico"><use href="#i-bolt"/></svg>热加载</button>
+                <button x-t class="btn" x-show="!selAddon.ours" @click="histLoad(selAddon.name)" :disabled="!linkOnline" title="按 toc 顺序把它的 Lua 送进游戏（先检查语法）"><svg class="ico"><use href="#i-bolt"/></svg>热加载</button>
                 <button class="btn" @click="reveal(selAddon.name)"><svg class="ico"><use href="#i-folder"/></svg>打开文件夹</button>
               </div>
               <div class="tabs">
@@ -517,14 +517,14 @@
                     <dt>Interface</dt>
                     <dd><span x-text="selAddon.interface.length ? selAddon.interface.join(', ') : '—'"></span>
                       <span class="pill ok" x-show="selAddon.current === true">当前</span>
-                      <span class="pill warn" x-show="selAddon.current === false" title="和客户端的 Interface 号不一致：游戏可能把它当作过期插件">过期</span></dd>
+                      <span x-t class="pill warn" x-show="selAddon.current === false" title="和客户端的 Interface 号不一致：游戏可能把它当作过期插件">过期</span></dd>
                     <dt>状态</dt><dd><span class="pill" :class="selAddon.enabled === true ? 'ok' : (selAddon.enabled === false ? 'off' : 'warn')" x-text="enabledText(selAddon)"></span>
                       <span class="pill off" x-show="selAddon.load_on_demand">按需加载</span></dd>
                     <dt>作者</dt><dd x-text="selAddon.author || '—'"></dd>
-                    <dt>依赖</dt><dd class="mono" x-text="(selAddon.deps || []).concat(selAddon.optional_deps || []).join('、') || '—'"></dd>
-                    <dt>存档变量</dt><dd class="mono" x-text="(selAddon.saved_variables || []).join('、') || '—'"></dd>
-                    <dt>报错</dt><dd x-text="selAddon.errors.signatures ? selAddon.errors.signatures + ' 种 · ' + selAddon.errors.count + ' 次' : '没有记录'"></dd>
-                    <dt>历史</dt><dd x-text="selAddon.ours ? '—（开发组件由程序维护）' : (selAddon.history ? selAddon.history.versions + ' 份，最近 #' + selAddon.history.latest_id + '（' + fmtStamp(selAddon.history.latest) + '）' : '还没有存过：热加载、开始监视或手动存时会存')"></dd>
+                    <dt>依赖</dt><dd class="mono" x-text="(selAddon.deps || []).concat(selAddon.optional_deps || []).join(t('、')) || '—'"></dd>
+                    <dt>存档变量</dt><dd class="mono" x-text="(selAddon.saved_variables || []).join(t('、')) || '—'"></dd>
+                    <dt>报错</dt><dd x-text="selAddon.errors.signatures ? t('{n} 种 · {c} 次', { n: selAddon.errors.signatures, c: selAddon.errors.count }) : t('没有记录')"></dd>
+                    <dt>历史</dt><dd x-text="selAddon.ours ? t('—（开发组件由程序维护）') : (selAddon.history ? t('{n} 份，最近 #{id}（{t}）', { n: selAddon.history.versions, id: selAddon.history.latest_id, t: fmtStamp(selAddon.history.latest) }) : t('还没有存过：热加载、开始监视或手动存时会存'))"></dd>
                     <dt>toc</dt><dd class="mono selectable" x-text="selAddon.toc || '—'"></dd>
                   </dl>
                 </div>
@@ -534,12 +534,12 @@
                   <p class="muted" x-show="!addons.entriesBusy && addons.entriesNote" x-text="addons.entriesNote"></p>
                   <ul class="errlist selectable">
                     <template x-for="(e, i) in addons.entries" :key="i">
-                      <li>
+                      <li x-t>
                         <div class="errhead">
                           <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
                           <b x-text="'×' + e.count"></b>
-                          <span class="muted" x-text="'最近 ' + fmtStamp(e.last) + '，首次 ' + fmtStamp(e.first)"></span>
-                          <span class="muted" x-show="e.build" x-text="'构建 ' + e.build"></span>
+                          <span class="muted" x-text="t('最近 {a}，首次 {b}', { a: fmtStamp(e.last), b: fmtStamp(e.first) })"></span>
+                          <span class="muted" x-show="e.build" x-text="t('构建 {b}', { b: e.build })"></span>
                         </div>
                         <div class="mono errmsg" x-text="e.message"></div>
                         <details x-show="e.stack"><summary>调用栈</summary><pre class="mono" x-text="e.stack"></pre></details>
@@ -578,15 +578,15 @@
                     <span class="hist-acts">
                       <button class="btn tiny" @click="histSave(selAddon.name)" :disabled="hist.working === 'save'">存一份</button>
                       <button class="btn tiny" :class="hist.confirm === 'forget' ? 'confirm' : ''" x-show="hist.data && hist.data.versions.length"
-                              @click="histForget(selAddon.name)" x-text="hist.confirm === 'forget' ? '再点一次清空' : '清空历史'"></button>
+                              @click="histForget(selAddon.name)" x-text="hist.confirm === 'forget' ? t('再点一次清空') : t('清空历史')"></button>
                     </span>
                   </div>
                   <template x-if="hist.result">
-                    <div class="result ok hist-result">
-                      <div x-text="'已回退到 #' + hist.result.restored + '：写回 ' + hist.result.written.length + ' 个文件，删除 '
-                        + hist.result.removed.length + ' 个' + (hist.result.saved ? '；回退前的文件存为 #' + hist.result.saved + '，想撤销就回退到它。' : '。')"></div>
+                    <div x-t class="result ok hist-result">
+                      <div x-text="t('已回退到 #{id}：写回 {w} 个文件，删除 {r} 个', { id: hist.result.restored, w: hist.result.written.length, r: hist.result.removed.length })
+                        + (hist.result.saved ? t('；回退前的文件存为 #{s}，想撤销就回退到它。', { s: hist.result.saved }) : t('。'))"></div>
                       <div class="muted small" x-show="hist.result.skipped && hist.result.skipped.length"
-                           x-text="'这些文件太大没有存，没有动：' + (hist.result.skipped || []).join('、')"></div>
+                           x-text="t('这些文件太大没有存，没有动：') + (hist.result.skipped || []).join(t('、'))"></div>
                       <div class="muted small" x-show="hist.result.watched">正在监视这个插件：写回的文件已经自动热加载进游戏。</div>
                       <div class="row tight" x-show="!hist.result.watched">
                         <span class="muted small">游戏里还在跑旧代码：</span>
@@ -603,25 +603,25 @@
                           <span class="muted" x-text="fmtStamp(v.time)"></span>
                           <span class="pill" :class="v.reason === 'manual' ? 'warn' : (v.reason === 'restore' ? 'bad' : '')" x-text="reasonText(v.reason)"></span>
                           <span class="mono small" x-show="v.note" x-text="v.note"></span>
-                          <span class="muted small" x-text="i === hist.data.versions.length - 1 && !(v.counts.changed || v.counts.removed) ? '最早一份：' + v.count + ' 个文件' : changeText(v)"></span>
+                          <span class="muted small" x-text="i === hist.data.versions.length - 1 && !(v.counts.changed || v.counts.removed) ? t('最早一份：{n} 个文件', { n: v.count }) : changeText(v)"></span>
                           <span class="hist-acts">
                             <button class="btn tiny" @click="histDiff(selAddon.name, v.id, 'prev')" :disabled="hist.diffBusy"
-                                    x-text="hist.diffKey === v.id + ':prev' ? '收起' : '这一版改了什么'"></button>
+                                    x-text="hist.diffKey === v.id + ':prev' ? t('收起') : t('这一版改了什么')"></button>
                             <button class="btn tiny" @click="histDiff(selAddon.name, v.id, 'now')" :disabled="hist.diffBusy"
-                                    x-text="hist.diffKey === v.id + ':now' ? '收起' : '和现在比'"></button>
+                                    x-text="hist.diffKey === v.id + ':now' ? t('收起') : t('和现在比')"></button>
                             <button class="btn tiny" :class="hist.confirm === 'r' + v.id ? 'confirm' : ''" @click="histRestore(selAddon.name, v.id)"
-                                    :disabled="hist.working === 'r' + v.id" x-text="hist.confirm === 'r' + v.id ? '再点一次回退' : '回退到这一版'"></button>
+                                    :disabled="hist.working === 'r' + v.id" x-text="hist.confirm === 'r' + v.id ? t('再点一次回退') : t('回退到这一版')"></button>
                           </span>
                         </div>
                         <template x-if="hist.diff && (hist.diffKey === v.id + ':prev' || hist.diffKey === v.id + ':now')">
-                          <div class="hist-diff">
+                          <div x-t class="hist-diff">
                             <p class="muted small" x-show="!hist.diff.files.length">没有差异。</p>
                             <template x-for="f in hist.diff.files" :key="f.path">
                               <div class="diff-file">
                                 <div class="diff-head">
                                   <span class="pill" :class="f.status === 'added' ? 'ok' : (f.status === 'removed' ? 'bad' : 'warn')" x-text="statusText(f.status)"></span>
                                   <span class="mono" x-text="f.path"></span>
-                                  <span class="muted small" x-text="f.binary ? '二进制 ' + f.old_size + ' → ' + f.new_size + ' 字节' : '+' + f.plus + ' −' + f.minus"></span>
+                                  <span class="muted small" x-text="f.binary ? t('二进制 {a} → {b} 字节', { a: f.old_size, b: f.new_size }) : '+' + f.plus + ' −' + f.minus"></span>
                                 </div>
                                 <pre class="diff selectable" x-show="f.diff"><template x-for="(l, j) in diffLines(f.diff)" :key="j"><span :class="l.c" x-text="l.t"></span></template></pre>
                               </div>
@@ -645,12 +645,12 @@
       <!-- 新建插件（对话框） -->
       <div class="modal-back" x-show="na.open" x-transition.opacity @keydown.escape.window="na.open = false" @click.self="na.open = false">
         <div class="modal">
-          <div class="modal-head"><span>新建插件</span><button class="x" @click="na.open = false" title="关闭（Esc）">✕</button></div>
+          <div class="modal-head"><span>新建插件</span><button x-t class="x" @click="na.open = false" title="关闭（Esc）">✕</button></div>
           <div class="modal-body">
             <form class="form" @submit.prevent="newAddon()" x-show="!na.result">
-              <label class="field"><span>文件夹名</span><input class="input mono" x-model="na.name" placeholder="MyFirstAddon（英文字母、数字、下划线，字母开头）"></label>
-              <label class="field"><span>显示名称</span><input class="input" x-model="na.title" placeholder="我的第一个插件（游戏里插件列表显示的名字）"></label>
-              <label class="field"><span>一句话说明</span><input class="input" x-model="na.notes" placeholder="可以不填"></label>
+              <label class="field"><span>文件夹名</span><input x-t class="input mono" x-model="na.name" placeholder="MyFirstAddon（英文字母、数字、下划线，字母开头）"></label>
+              <label class="field"><span>显示名称</span><input x-t class="input" x-model="na.title" placeholder="我的第一个插件（游戏里插件列表显示的名字）"></label>
+              <label class="field"><span>一句话说明</span><input x-t class="input" x-model="na.notes" placeholder="可以不填"></label>
               <div class="field"><span>模板</span>
                 <div class="row tight">
                   <label class="check-inline"><input type="radio" value="basic" x-model="na.template"> 斜杠命令 + 存档变量</label>
@@ -661,16 +661,16 @@
                 <span class="small bad-text" x-text="na.error"></span>
                 <div class="spacer"></div>
                 <button class="btn" type="button" @click="na.open = false">取消</button>
-                <button class="btn primary" type="submit" :disabled="na.busy || !na.name.trim()" x-text="na.busy ? '创建中…' : '创建'"></button>
+                <button class="btn primary" type="submit" :disabled="na.busy || !na.name.trim()" x-text="na.busy ? t('创建中…') : t('创建')"></button>
               </div>
             </form>
             <template x-if="na.result">
-              <div class="result ok">
-                <div>已创建 <span class="mono selectable" x-text="na.result.path"></span>：<span class="mono" x-text="na.result.files.join('、')"></span></div>
+              <div x-t class="result ok">
+                <div>已创建 <span class="mono selectable" x-text="na.result.path"></span>：<span class="mono" x-text="na.result.files.join(t('、'))"></span></div>
                 <ol class="steps">
                   <li>热加载进游戏（不用重启）：<button class="btn tiny" @click="naLoad()" :disabled="!linkOnline">热加载</button>，然后在游戏里输入 <code x-text="na.result.slash"></code>。</li>
                   <li>用编辑器打开它：<button class="btn tiny" @click="naReveal()">打开文件夹</button></li>
-                  <li>交给 Agent：<button class="btn tiny" @click="copy(naPrompt, '给 Agent 的第一句话')">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
+                  <li>交给 Agent：<button class="btn tiny" @click="copy(naPrompt, t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
                 </ol>
                 <p class="muted small">游戏只在启动时发现新文件夹：完整重启游戏后它才会出现在插件列表里、自己加载；在那之前热加载照样能用。</p>
                 <div class="row end"><button class="btn primary" @click="na.open = false; selectAddon(na.result.name)">完成</button></div>
@@ -684,7 +684,7 @@
     <!-- API 手册：左边搜索——按插件能否调用筛选（可调用 / 有限制 / 受保护，带数目），结果按函数、事件、表分组，手册章节在下面；右边
          条目：能否调用与原因、签名（类型可点）、参数与返回值、相关类型（结构的字段、枚举的取值）就地展开、试一下（调用一次、在游戏里
          对照枚举、监听事件，和开发台的运行 Lua 同一条通道）、同命名空间、exe 里的用法；或手册章节（中英两份） -->
-    <section class="page" x-show="page === 'api'">
+    <section class="page" x-t x-show="page === 'api'">
       <div class="pagebar">
         <h1 x-t>API 手册</h1>
         <span class="muted" x-text="docsAbout"></span>
@@ -741,7 +741,7 @@
               <div>
                 <div class="detail-head flat">
                   <button class="btn tiny" x-show="docs.back.length" @click="docsBack()" title="回到上一个条目" x-t>← 返回</button>
-                  <span class="kindtag" x-text="t(KIND_TEXT[docs.sel.kind] || docs.sel.kind)"></span>
+                  <span class="kindtag" x-text="kindTag(docs.sel)"></span>
                   <span class="detail-title grow mono" x-text="docs.sel.name"></span>
                   <span class="since big" x-show="docs.sel.since" x-text="sinceText(docs.sel.since)" :title="docs.sel.since && docs.sel.since.note"></span>
                   <button class="btn tiny" @click="copy(docs.sel.name, docs.sel.name)" x-t>复制名字</button>
@@ -773,11 +773,11 @@
                   <div>
                     <h2 x-text="t(sec.title)"></h2>
                     <table class="table params">
-                      <thead><tr><th x-t>名称</th><th x-t>类型</th><th x-text="t(sec.third)"></th></tr></thead>
+                      <thead><tr><th x-t>名称</th><th x-show="!sec.noType" x-t>类型</th><th x-text="t(sec.third)"></th></tr></thead>
                       <tbody>
                         <template x-for="(p, i) in sec.rows" :key="i">
                           <tr><td class="mono" x-text="p.n"></td>
-                            <td class="mono"><a class="ty" href="#" x-show="docs.sel.types && docs.sel.types[p.t]" @click.prevent="docsToggle(p.t)" x-text="p.t"></a><span x-show="!(docs.sel.types && docs.sel.types[p.t])" x-text="p.t"></span></td>
+                            <td class="mono" x-show="!sec.noType"><a class="ty" href="#" x-show="docs.sel.types && docs.sel.types[p.t]" @click.prevent="docsToggle(p.t)" x-text="p.t"></a><span x-show="!(docs.sel.types && docs.sel.types[p.t])" x-text="p.t"></span></td>
                             <td class="mono muted" x-text="sec.cell(p)"></td></tr>
                         </template>
                       </tbody>
@@ -897,7 +897,7 @@
     </section>
 
     <!-- 接入 Agent -->
-    <section class="page" x-show="page === 'connect'">
+    <section class="page" x-t x-show="page === 'connect'">
       <div class="pagebar">
         <h1>接入 Agent</h1>
         <span class="muted">登记到 Agent 的用户级设置，所有项目都能用</span>
@@ -910,7 +910,7 @@
           <div class="loader" x-show="agents.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在查找 Agent…</div>
           <div class="agent-list" x-show="agents.list !== null">
             <template x-for="h in agentsShown" :key="h.id">
-              <div class="agent-row" :class="'st-' + h.state">
+              <div x-t class="agent-row" :class="'st-' + h.state">
                 <div class="agent-main">
                   <div class="agent-head"><b x-text="h.title"></b><span class="pill" :class="agentPill(h)[0]" x-text="agentPill(h)[1]"></span></div>
                   <div class="small muted" x-text="h.detail"></div>
@@ -919,26 +919,26 @@
                   <details x-show="!h.can_connect || h.state === 'error'">
                     <summary class="small">手动接入</summary>
                     <pre class="code selectable" x-text="agents.manual[h.id]"></pre>
-                    <button class="btn tiny" @click="copy(agents.manual[h.id], h.title + ' 配置')">复制</button>
+                    <button class="btn tiny" @click="copy(agents.manual[h.id], t('{h} 配置', { h: h.title }))">复制</button>
                   </details>
                   <div class="mono tiny-path" :title="h.where" x-text="shortPath(h.where)"></div>
                 </div>
                 <div class="agent-acts">
                   <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="!!agents.busy"
-                          x-text="agents.busy === h.id + ':connect' ? '接入中…' : (h.state === 'other' ? '改成现在这个' : '一键接入')"></button>
+                          x-text="agents.busy === h.id + ':connect' ? t('接入中…') : (h.state === 'other' ? t('改成现在这个') : t('一键接入'))"></button>
                   <button class="btn" x-show="h.state === 'ok' && h.id !== 'cursor'" @click="agentAction(h, 'verify')" :disabled="!!agents.busy"
-                          x-text="agents.busy === h.id + ':verify' ? '检查中…' : '检查'"></button>
+                          x-text="agents.busy === h.id + ':verify' ? t('检查中…') : t('检查')"></button>
                   <button class="btn" x-show="h.state === 'ok' || h.state === 'other'" @click="agentAction(h, 'disconnect')" :disabled="!!agents.busy"
-                          x-text="agents.busy === h.id + ':disconnect' ? '断开中…' : '断开'"></button>
+                          x-text="agents.busy === h.id + ':disconnect' ? t('断开中…') : t('断开')"></button>
                 </div>
               </div>
             </template>
           </div>
-          <p class="muted small pad" x-show="agentsMissing.length" x-text="'没有找到：' + agentsMissing.join('、') + '。装好后点「刷新」。'"></p>
+          <p class="muted small pad" x-show="agentsMissing.length" x-text="t('没有找到：{list}。装好后点「刷新」。', { list: agentsMissing.join(t('、')) })"></p>
         </div>
 
         <div class="panel">
-          <div class="panel-head">其他支持 MCP 的 Agent<div class="spacer"></div><button class="btn tiny" @click="copy(agents.manual.other, 'MCP 配置')">复制</button></div>
+          <div class="panel-head">其他支持 MCP 的 Agent<div class="spacer"></div><button class="btn tiny" @click="copy(agents.manual.other, t('MCP 配置'))">复制</button></div>
           <div class="panel-body">
             <p class="muted small">在它的 MCP 设置里加一个 stdio 服务器；大多数 Agent 都认这个格式：</p>
             <pre class="code selectable" x-text="agents.manual.other"></pre>
@@ -954,14 +954,14 @@
               <dt>Token</dt>
               <dd class="mono">
                 <span class="selectable" x-text="showToken ? conn.token : mask(conn.token)"></span>
-                <button class="btn tiny" @click="showToken = !showToken" x-text="showToken ? '隐藏' : '显示'"></button>
+                <button class="btn tiny" @click="showToken = !showToken" x-text="showToken ? t('隐藏') : t('显示')"></button>
                 <button class="btn tiny" @click="copy(conn.token, 'token')">复制</button>
               </dd>
               <dt>命令行</dt><dd class="mono selectable" x-text="conn.exe"></dd>
             </dl>
             <p class="muted small">token 每次启动守护进程都会换。stdio 方式（<code>wuxian mcp</code>）自己读 daemon.json 去连，不用填 token，推荐；HTTP 方式直接连这个进程的 <code>/mcp</code>，省一个进程，但要把当前 token 写进配置。</p>
             <template x-for="s in snippets" :key="s.id">
-              <details class="snippet">
+              <details x-t class="snippet">
                 <summary><span x-text="s.title"></span> <span class="muted small" x-text="s.file"></span></summary>
                 <div class="row end"><button class="btn tiny" @click="copy(s.text, s.title)">复制</button></div>
                 <pre class="code selectable" x-text="s.text"></pre>
@@ -969,7 +969,7 @@
             </template>
             <details class="snippet">
               <summary>命令行速查</summary>
-              <div class="row end"><button class="btn tiny" @click="copy(cliHelp, '命令行速查')">复制</button></div>
+              <div class="row end"><button class="btn tiny" @click="copy(cliHelp, t('命令行速查'))">复制</button></div>
               <pre class="code selectable" x-text="cliHelp"></pre>
             </details>
           </div>
@@ -978,12 +978,12 @@
     </section>
 
     <!-- 自检与修复 -->
-    <section class="page" x-show="page === 'doctor'">
+    <section class="page" x-t x-show="page === 'doctor'">
       <div class="pagebar">
         <h1>自检与修复</h1>
         <span class="muted" x-show="doctor.checks.length" x-text="doctorSummary"></span>
         <div class="spacer"></div>
-        <button class="btn" @click="runDoctor()" :disabled="doctor.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="doctor.busy ? '检查中…' : '重新检查'"></span></button>
+        <button class="btn" @click="runDoctor()" :disabled="doctor.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="doctor.busy ? t('检查中…') : t('重新检查')"></span></button>
       </div>
       <div class="pagebody">
         <div class="panel">
@@ -995,25 +995,25 @@
                   <div class="check-title" x-text="c.title || c.id"></div>
                   <div class="muted" x-text="c.detail"></div>
                 </div>
-                <button class="btn" x-show="c.ok === false && c.fix" :disabled="doctor.fixing" :title="'修复动作：' + c.fix" @click="fix(c)"
-                        x-text="doctor.fixing === c.id ? '修复中…' : '修复'"></button>
+                <button class="btn" x-show="c.ok === false && c.fix" :disabled="doctor.fixing" :title="t('修复动作：') + c.fix" @click="fix(c)"
+                        x-text="doctor.fixing === c.id ? t('修复中…') : t('修复')"></button>
               </li>
             </template>
           </ul>
           <div class="loader" x-show="doctor.busy && !doctor.checks.length"><svg class="inf"><use href="#inf-line"/></svg>检查中…</div>
-          <p class="muted pad" x-show="!doctor.checks.length && !doctor.busy" x-text="doctor.error || '还没有检查结果。'"></p>
+          <p class="muted pad" x-show="!doctor.checks.length && !doctor.busy" x-text="doctor.error || t('还没有检查结果。')"></p>
           <pre class="result selectable" x-show="doctor.result" x-text="doctor.result"></pre>
         </div>
       </div>
     </section>
 
     <!-- 设置 -->
-    <section class="page" x-show="page === 'settings'">
+    <section class="page" x-t x-show="page === 'settings'">
       <div class="pagebar"><h1>设置</h1></div>
       <div class="pagebody">
         <div class="settings-grid">
           <form class="panel" hx-post="/api/settings" hx-ext="json" hx-swap="none" hx-disabled-elt="find button[type=submit]"
-                @api-start="settingsNote = '保存中…'" @api-done="onSettingsSaved($event.detail)">
+                @api-start="settingsNote = t('保存中…')" @api-done="onSettingsSaved($event.detail)">
             <div class="panel-head">常规</div>
             <div class="panel-body form">
               <label class="field">
@@ -1024,10 +1024,10 @@
                 </select>
               </label>
               <p class="muted small" x-show="settings.capture_in_use && settings.capture_in_use !== settings.capture"
-                 x-text="'当前实际在用 ' + String(settings.capture_in_use).toUpperCase() + '，新的抓图模式在下一次找到游戏窗口时生效。'"></p>
+                 x-text="t('当前实际在用 {m}，新的抓图模式在下一次找到游戏窗口时生效。', { m: String(settings.capture_in_use).toUpperCase() })"></p>
               <label class="field">
                 <span>游戏目录</span>
-                <input class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _cn_beta_">
+                <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _cn_beta_">
               </label>
               <label class="switch">
                 <input type="checkbox" name="autostart" x-model="form.autostart">
@@ -1035,7 +1035,7 @@
               </label>
               <label class="field">
                 <span>语言</span>
-                <select class="input" name="language" x-model="form.language"><option value="auto" x-t>自动（跟随系统）</option><option value="zh-CN">简体中文</option><option value="en">English</option></select>
+                <select class="input" name="language" x-model="form.language"><option value="auto" x-t>自动（跟随系统）</option><option value="zh-CN" lang="zh-CN">简体中文</option><option value="en" lang="en">English</option></select>
               </label>
               <div class="row end">
                 <span class="muted small" x-text="settingsNote"></span>
@@ -1051,19 +1051,19 @@
                 <div>
                   <div class="about-name">无限工坊</div>
                   <div class="about-tag">用 AI 写魔兽插件</div>
-                  <div class="muted small" x-text="status ? '版本 ' + status.daemon.version + ' · 插件 ' + status.daemon.version : '—'"></div>
+                  <div class="muted small" x-text="status ? t('版本 {v} · 插件 {v}', { v: status.daemon.version }) : '—'"></div>
                   <a href="#" class="site-link" @click.prevent="openSite()"><svg class="ico"><use href="#i-globe"/></svg>官网 wuxianwow.com/workshop</a>
                 </div>
               </div>
               <dl class="kv">
-                <dt>本机服务</dt><dd x-text="status ? '进程 ' + status.daemon.pid + ' · 运行 ' + fmtDuration(status.daemon.uptime) : '—'"></dd>
+                <dt>本机服务</dt><dd x-text="status ? t('进程 {pid} · 运行 {d}', { pid: status.daemon.pid, d: fmtDuration(status.daemon.uptime) }) : '—'"></dd>
                 <dt>更新</dt><dd x-text="updateText"></dd>
                 <dt>运行时文件</dt><dd class="mono selectable">%LOCALAPPDATA%\WuxianWorkshop\（logs、snaps、state、history）</dd>
               </dl>
               <div class="row" x-show="upd?.supported">
                 <button class="btn" @click="checkUpdate()" :disabled="updBusy || ['checking', 'downloading'].includes(upd?.state)">检查更新</button>
                 <button class="btn primary" x-show="upd?.state === 'available'" @click="downloadUpdate()" :disabled="updBusy"
-                        x-text="'下载 ' + (upd?.latest || '') + '（' + fmtSize(upd?.size) + '）'"></button>
+                        x-text="t('下载 {v}（{s}）', { v: upd?.latest || '', s: fmtSize(upd?.size) })"></button>
                 <progress max="100" :value="upd?.progress || 0" x-show="upd?.state === 'downloading'"></progress>
                 <button class="btn primary" x-show="upd?.state === 'ready'" @click="applyUpdate()" :disabled="updBusy">重启并更新</button>
               </div>
@@ -1078,14 +1078,14 @@
   </main>
 
   <!-- 状态栏 -->
-  <footer class="statusbar">
-    <div class="sb-item" :class="'st-' + linkClass" :title="linkWhy || linkHint"><span class="dot"></span><span x-text="'链路 ' + linkText"></span></div>
-    <div class="sb-item" x-text="status && status.game.found ? '游戏 ' + clientVersion : '游戏未运行'"></div>
-    <div class="sb-item" x-show="status && status.link.slots_left != null" :title="'这个游戏进程剩下的信箱槽位；完整重启游戏后恢复到 4096'"
-         x-text="'信箱 ' + val(status, 'link.slots_left')"></div>
-    <div class="sb-item" x-show="status && status.link.ping_p50 != null" x-text="'延迟 ' + (status && status.link.ping_p50 != null ? Math.round(status.link.ping_p50 * 1000) + ' ms' : '')"></div>
+  <footer class="statusbar" x-t>
+    <div class="sb-item" :class="'st-' + linkClass" :title="linkWhy || linkHint"><span class="dot"></span><span x-text="t('链路 {s}', { s: linkText })"></span></div>
+    <div class="sb-item" x-text="status && status.game.found ? t('游戏 {v}', { v: clientVersion }) : t('游戏未运行')"></div>
+    <div class="sb-item" x-show="status && status.link.slots_left != null" :title="t('这个游戏进程剩下的信箱槽位；完整重启游戏后恢复到 4096')"
+         x-text="t('信箱 {n}', { n: val(status, 'link.slots_left') })"></div>
+    <div class="sb-item" x-show="status && status.link.ping_p50 != null" x-text="t('延迟 {ms}', { ms: status && status.link.ping_p50 != null ? Math.round(status.link.ping_p50 * 1000) + ' ms' : '' })"></div>
     <a href="#" class="sb-item" x-show="status && status.watch && status.watch.length" @click.prevent="go('dev'); devTool = 'watch'"
-       x-text="'监视 ' + (status && status.watch ? status.watch.length : 0)"></a>
+       x-text="t('监视 {n}', { n: status && status.watch ? status.watch.length : 0 })"></a>
     <a href="#" class="sb-item warn" x-show="addonsUpdateText" @click.prevent="go('doctor')" :title="addonsUpdateText" x-text="addonsUpdateShort"></a>
     <div class="sb-fill"></div>
     <div class="sb-item" :title="connTitle"><span class="dot" :class="'sse-' + sseState"></span><span x-text="connText"></span></div>

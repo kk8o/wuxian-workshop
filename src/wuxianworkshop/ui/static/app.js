@@ -58,6 +58,9 @@ const NAV = PAGES;
 const SITE = 'https://wuxianwow.com/workshop';  // 无限工坊's site: opened in the user's browser (ui/shell.py PageApi.open_url)
 const API_KINDS = [{ id: 'function', label: '函数' }, { id: 'event', label: '事件' }, { id: 'table', label: '枚举与结构' }];
 const KIND_TEXT = { function: '函数', event: '事件', table: '表', usage: '用法' };
+const KIND_ONE = {                             // one entry's tag: [Chinese, English] (the English singular, KIND_TEXT's plural)
+  function: ['函数', 'Function'], event: ['事件', 'Event'], usage: ['用法', 'Usage'], Enumeration: ['枚举', 'Enum'], Structure: ['结构', 'Structure'],
+};
 const CALL_FILTERS = [                         // the API manual's filter by what an addon may do (apidocs.py callability); none on: all
   { id: 'usable', label: '插件可用', tip: '插件能调用或注册的：可调用的和有限制的，不含受保护的' },
   { id: 'ok', label: '可调用', tip: '插件可以直接调用或注册' },
@@ -108,28 +111,28 @@ const MAX_LOGS = 2000;
 const RECONNECT_MS = 2000;
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
-const CLI_HELP = [
-  'wuxian                       打开窗口（守护进程 + 托盘）',
-  'wuxian serve                 只起守护进程（无窗口）',
-  'wuxian status                链路与游戏状态',
-  'wuxian run "return 1+1"      在游戏里运行一行 Lua，打印返回值',
-  'wuxian load <插件|文件>       热加载一个插件或 .lua 文件',
-  'wuxian watch start|stop|list 保存即热加载',
-  'wuxian snap                  游戏截图，存到 snaps 文件夹',
-  'wuxian reload                请求 /reload（游戏里弹按钮）',
-  'wuxian logs [--follow] [--since N]',
-  'wuxian say <文本>            把文本发到游戏聊天框',
-  'wuxian doctor                自检',
-  'wuxian addons                已装插件（版本、Interface、启用、报错数）',
-  'wuxian errors [插件]          平台插件收集到的报错（截至上次登出或重载）',
-  'wuxian check <插件|文件>       送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量',
-  'wuxian history [插件] [编号]   插件的历史版本；带编号是那一版和现在的差异',
-  'wuxian checkpoint <插件> [说明] 给插件存一份',
-  'wuxian restore <插件> <编号>   把插件的文件回退到那一版',
-  'wuxian install               安装插件（先清后装）',
-  'wuxian update [check|download|apply]  程序更新（安装版）：查看、检查、下载、重启更新',
-  'wuxian mcp                   stdio 方式的 MCP 服务器（给 Claude Code / Codex / Cursor）',
-].join('\n');
+const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
+  ['wuxian', '打开窗口（守护进程 + 托盘）'],
+  ['wuxian serve', '只起守护进程（无窗口）'],
+  ['wuxian status', '链路与游戏状态'],
+  ['wuxian run "return 1+1"', '在游戏里运行一行 Lua，打印返回值'],
+  ['wuxian load <插件|文件>', '热加载一个插件或 .lua 文件'],
+  ['wuxian watch start|stop|list', '保存即热加载'],
+  ['wuxian snap', '游戏截图，存到 snaps 文件夹'],
+  ['wuxian reload', '请求 /reload（游戏里弹按钮）'],
+  ['wuxian logs [--follow] [--since N]', '游戏里的报错、print 输出和运行结果'],
+  ['wuxian say <文本>', '把文本发到游戏聊天框'],
+  ['wuxian doctor', '自检'],
+  ['wuxian addons', '已装插件（版本、Interface、启用、报错数）'],
+  ['wuxian errors [插件]', '平台插件收集到的报错（截至上次登出或重载）'],
+  ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量'],
+  ['wuxian history [插件] [编号]', '插件的历史版本；带编号是那一版和现在的差异'],
+  ['wuxian checkpoint <插件> [说明]', '给插件存一份'],
+  ['wuxian restore <插件> <编号>', '把插件的文件回退到那一版'],
+  ['wuxian install', '安装插件（先清后装）'],
+  ['wuxian update [check|download|apply]', '程序更新（安装版）：查看、检查、下载、重启更新'],
+  ['wuxian mcp', 'stdio 方式的 MCP 服务器（给 Claude Code / Codex / Cursor）'],
+];
 
 function appState() {
   return {
@@ -244,9 +247,9 @@ function appState() {
     get updateChip() {                         // the tool bar's short form of updateBanner
       const u = this.upd;
       if (!u || !u.supported) return '';
-      if (u.state === 'available') return '新版本 ' + u.latest;
-      if (u.state === 'downloading') return '下载中 ' + u.progress + '%';
-      if (u.state === 'ready') return '重启更新到 ' + u.latest;
+      if (u.state === 'available') return t('新版本 {v}', { v: u.latest });
+      if (u.state === 'downloading') return t('下载中 {p}%', { p: u.progress });
+      if (u.state === 'ready') return t('重启更新到 {v}', { v: u.latest });
       return '';
     },
     get addonsUpdateText() {                   // the game folder's addons not yet at the program's version, or (a game
@@ -254,33 +257,33 @@ function appState() {
       if (!a) return '';
       const list = a.addons || [];
       const names = list.map(x => x.why === 'interface'
-        ? x.name + ' 的 Interface ' + (x.interface || '?') + ' → ' + x.want_interface
-        : x.name + ' ' + (x.version || '未安装') + ' → ' + a.version).join('、');
-      const game = list.some(x => x.why === 'interface') ? '（游戏更新了，不更新的话游戏会把它们当成过期插件）' : '';
-      if (a.waiting === 'game') return names + game + '：退出游戏后自动安装（也可以在「自检与修复」里马上装）';
-      return names + '：没能自动安装（' + (a.error || '原因不明') + '）';
+        ? t('{name} 的 Interface {from} → {to}', { name: x.name, from: x.interface || '?', to: x.want_interface })
+        : x.name + ' ' + (x.version || t('未安装')) + ' → ' + a.version).join(t('、'));
+      const game = list.some(x => x.why === 'interface') ? t('（游戏更新了，不更新的话游戏会把它们当成过期插件）') : '';
+      if (a.waiting === 'game') return t('{names}{game}：退出游戏后自动安装（也可以在「自检与修复」里马上装）', { names, game });
+      return t('{names}：没能自动安装（{why}）', { names, why: a.error || t('原因不明') });
     },
     get addonsUpdateShort() {
       const a = this.status && this.status.addons_update;
       if (!a) return '';
       const game = (a.addons || []).some(x => x.why === 'interface');
-      if (a.waiting === 'game') return game ? '游戏更新了：插件待更新（退出游戏后自动）' : '插件待更新到 ' + a.version + '（退出游戏后自动）';
-      return game ? '游戏更新后插件没能更新' : '插件没能更新到 ' + a.version;
+      if (a.waiting === 'game') return game ? t('游戏更新了：插件待更新（退出游戏后自动）') : t('插件待更新到 {v}（退出游戏后自动）', { v: a.version });
+      return game ? t('游戏更新后插件没能更新') : t('插件没能更新到 {v}', { v: a.version });
     },
     get doctorSummary() {
       const c = this.doctor.checks;
       const bad = c.filter(x => x.ok === false).length, unknown = c.filter(x => x.ok == null).length;
-      return c.length + ' 项：' + (bad ? bad + ' 项要处理' : '全部通过') + (unknown ? '，' + unknown + ' 项查不了' : '');
+      return t('{n} 项：', { n: c.length }) + (bad ? t('{n} 项要处理', { n: bad }) : t('全部通过')) + (unknown ? t('，{n} 项查不了', { n: unknown }) : '');
     },
     get banner() {
-      if (this.daemonError) return '守护进程未就绪：' + this.daemonError + '。正在重试…';
-      if (this.status && this.status.daemon.fake) return '当前连的是开发用的假接口（scripts/dev_fake_api.py），数据都是假的。';
+      if (this.daemonError) return t('守护进程未就绪：{e}。正在重试…', { e: this.daemonError });
+      if (this.status && this.status.daemon.fake) return t('当前连的是开发用的假接口（scripts/dev_fake_api.py），数据都是假的。');
       return '';
     },
     get connText() {
-      return { open: '日志流已连接', connecting: '连接中…', reconnecting: '重连中…', closed: '未连接' }[this.sseState] || this.sseState;
+      return t({ open: '日志流已连接', connecting: '连接中…', reconnecting: '重连中…', closed: '未连接' }[this.sseState] || this.sseState);
     },
-    get connTitle() { return 'SSE /api/events · 最近日志 id ' + this.lastId; },
+    get connTitle() { return t('SSE /api/events · 最近日志 id {id}', { id: this.lastId }); },
 
     // ---- api
     async session() {
@@ -302,7 +305,7 @@ function appState() {
       try {
         r = await fetch(path, { method: opts.method || (body !== undefined ? 'POST' : 'GET'), headers, body, cache: 'no-store' });
       } catch (e) {
-        throw new Error('无法连接守护进程（' + e.message + '）');
+        throw new Error(t('无法连接守护进程（{e}）', { e: e.message }));
       }
       const text = await r.text();
       let data = null;
@@ -343,7 +346,7 @@ function appState() {
       if (this.daemonStarted !== null && s.daemon.started && s.daemon.started !== this.daemonStarted) {
         this.logs = [];                                 // a new daemon numbers its entries from 1 again
         this.lastId = 0;
-        this.say('守护进程已重启');
+        this.say(t('守护进程已重启'));
         this.connectEvents();
       }
       this.daemonStarted = s.daemon.started || this.daemonStarted;
@@ -354,16 +357,16 @@ function appState() {
     get clientVersion() {
       if (!this.status || !this.status.game.found) return '—';
       const g = this.status.game;
-      if (g.version && g.build && !String(g.version).endsWith('.' + g.build)) return g.version + '（' + g.build + '）';
+      if (g.version && g.build && !String(g.version).endsWith('.' + g.build)) return t('{v}（{b}）', { v: g.version, b: g.build });
       return g.version || g.build || '—';
     },
     get linkOnline() { return !!(this.status && this.status.link.state === 'online'); },
     get linkText() {
       if (!this.status) return '—';
-      if (this.status.link.state !== 'online' && this.status.link.blocked === 'restart') return '等待游戏重启';
-      if (this.status.link.state !== 'online' && this.status.link.blocked === 'player') return '未读取';
+      if (this.status.link.state !== 'online' && this.status.link.blocked === 'restart') return t('等待游戏重启');
+      if (this.status.link.state !== 'online' && this.status.link.blocked === 'player') return t('未读取');
       const st = this.status.link.state || (this.status.game.found ? 'waiting' : 'offline');
-      return LINK_TEXT[st] || st;
+      return t(LINK_TEXT[st] || st);
     },
     get linkClass() {
       if (!this.status) return 'muted';
@@ -374,15 +377,15 @@ function appState() {
     get linkWhy() {                            // one line under 离线: why, and what to do
       const s = this.status;
       if (!s || s.link.state === 'online') return '';
-      if (s.link.blocked === 'restart') return '安装加入了运行中的游戏不认识的新文件：完整退出并重启游戏后才能连接（/reload 不够）。';
-      if (s.link.blocked === 'player') return '旧设置里是玩家模式，正在切回开发模式…';
-      if (!s.game.found) return '没有找到游戏窗口。';
-      if (s.game.minimized) return '游戏窗口最小化了：还原窗口后自动恢复。';
-      return '看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。';
+      if (s.link.blocked === 'restart') return t('安装加入了运行中的游戏不认识的新文件：完整退出并重启游戏后才能连接（/reload 不够）。');
+      if (s.link.blocked === 'player') return t('旧设置里是玩家模式，正在切回开发模式…');
+      if (!s.game.found) return t('没有找到游戏窗口。');
+      if (s.game.minimized) return t('游戏窗口最小化了：还原窗口后自动恢复。');
+      return t('看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。');
     },
     get linkHint() {                           // one line under 在线: what can be done now
       if (!this.linkOnline) return '';
-      return 'Agent 现在可以自己写插件、在游戏里试，读报错和截图来调试；你也可以在开发台里自己试。';
+      return t('Agent 现在可以自己写插件、在游戏里试，读报错和截图来调试；你也可以在开发台里自己试。');
     },
 
     // ---- logs
@@ -418,15 +421,15 @@ function appState() {
       const l = (this.status && this.status.link) || {};
       const left = l.slots_left, hb = l.hb;
       return [
-        { label: '延迟', value: l.ping_p50 != null ? Math.round(l.ping_p50 * 1000) : '—', unit: l.ping_p50 != null ? 'ms' : '',
-          tip: '一来一回的时间：最近 20 次的中位数' },
-        { label: '心跳', value: hb || '—', unit: hb ? t('秒') : '', tip: '开发组件多久报一次平安' },
-        { label: '最近帧', value: l.last_frame ? this.ago(l.last_frame) : '—', unit: '', tip: '最近一次从游戏画面读到帧码' },
-        { label: '信箱槽位', value: left != null ? left : '—', unit: '',
+        { label: t('延迟'), value: l.ping_p50 != null ? Math.round(l.ping_p50 * 1000) : '—', unit: l.ping_p50 != null ? 'ms' : '',
+          tip: t('一来一回的时间：最近 20 次的中位数') },
+        { label: t('心跳'), value: hb || '—', unit: hb ? t('秒') : '', tip: t('开发组件多久报一次平安') },
+        { label: t('最近帧'), value: l.last_frame ? this.ago(l.last_frame) : '—', unit: '', tip: t('最近一次从游戏画面读到帧码') },
+        { label: t('信箱槽位'), value: left != null ? left : '—', unit: '',
           sub: left != null && hb ? t('约够 {h} 小时', { h: Math.max(0, left * hb / 3600).toFixed(1) }) : '',
-          tip: '这个游戏进程还能收的信件数（心跳也占）；用完要完整重启游戏，/reload 不够' },
-        { label: '抓图', value: l.capture ? l.capture.toUpperCase() : '—', unit: '',
-          tip: 'WGC：直接读游戏窗口，被挡住也行；GDI：读屏幕，帧码所在的角不能被遮住' },
+          tip: t('这个游戏进程还能收的信件数（心跳也占）；用完要完整重启游戏，/reload 不够') },
+        { label: t('抓图'), value: l.capture ? l.capture.toUpperCase() : '—', unit: '',
+          tip: t('WGC：直接读游戏窗口，被挡住也行；GDI：读屏幕，帧码所在的角不能被遮住') },
       ];
     },
     get errCount() { return this.logs.reduce((n, e) => n + (e.kind === 'ERR' ? 1 : 0), 0); },
@@ -476,8 +479,8 @@ function appState() {
     onRun(d) {
       this.run.busy = false;
       const j = d.json || {};
-      if (d.status === 0) this.run.result = { ok: false, error: d.error || '无法连接守护进程' };
-      else if (d.status === 504) this.run.result = { ok: false, job: j.job, error: '超时：游戏没有在 ' + this.run.timeout + ' ms 内回话（job ' + (j.job || '?') + '）' };
+      if (d.status === 0) this.run.result = { ok: false, error: d.error || t('无法连接守护进程') };
+      else if (d.status === 504) this.run.result = { ok: false, job: j.job, error: t('超时：游戏没有在 {ms} ms 内回话（job {job}）', { ms: this.run.timeout, job: j.job || '?' }) };
       else if (!d.ok) this.run.result = { ok: false, error: apiMessage(j, { status: d.status }) };
       else this.run.result = j;
     },
@@ -503,7 +506,7 @@ function appState() {
         const r = await this.api('/api/reload', { body: { reason: 'ui' } });
         this.reload.nonce = r.nonce;
         if (this.status) this.status.reload_pending = true;
-        this.say('已请求重载，去游戏里点「立即重载」');
+        this.say(t('已请求重载，去游戏里点「立即重载」'));
       } catch (e) {
         this.reload.error = e.message;
       } finally {
@@ -516,7 +519,7 @@ function appState() {
         const r = await this.api('/api/watch', { body: { action, target } });
         if (this.status) this.status.watch = r.watched || [];
       } catch (e) {
-        this.say('watch 失败：' + e.message);
+        this.say(t('watch 失败：') + e.message);
       }
     },
 
@@ -529,7 +532,7 @@ function appState() {
         this.doctor.checks = d.checks || [];
       } catch (e) {
         this.doctor.checks = [];
-        this.doctor.error = '自检失败：' + e.message;
+        this.doctor.error = t('自检失败：') + e.message;
       } finally {
         this.doctor.busy = false;
       }
@@ -541,20 +544,20 @@ function appState() {
         const d = await this.api('/api/fix', { body: { fix: c.fix } });
         const lines = [];
         if (d.started) {                       // a runtime: Microsoft's installer carries on in its own window
-          lines.push('已启动微软的「' + d.title + '」安装程序（签名已核对），按它的提示装完后点「重新检查」。');
+          lines.push(t('已启动微软的「{title}」安装程序（签名已核对），按它的提示装完后点「重新检查」。', { title: d.title }));
         } else {
           const r = d.install || {};
-          if (r.available === false) lines.push(r.detail || '安装器还没有接入。');
-          if (r.installed && r.installed.length) lines.push('已安装：' + r.installed.length + ' 个文件');
-          if (r.removed && r.removed.length) lines.push('已清理：' + r.removed.length + ' 项');
-          if (r.deferred && r.deferred.length) lines.push('游戏还在运行：' + r.deferred.join('、') + ' 等游戏关闭后再移除。');
-          if (r.restart_for_link) lines.push('需要完整重启游戏（客户端只在启动时发现新文件）。');
-          else if (r.restart_required) lines.push('下次重启游戏后生效（toc 只在启动时读取），现在照常可用。');
+          if (r.available === false) lines.push(r.detail || t('安装器还没有接入。'));
+          if (r.installed && r.installed.length) lines.push(t('已安装：{n} 个文件', { n: r.installed.length }));
+          if (r.removed && r.removed.length) lines.push(t('已清理：{n} 项', { n: r.removed.length }));
+          if (r.deferred && r.deferred.length) lines.push(t('游戏还在运行：{list} 等游戏关闭后再移除。', { list: r.deferred.join(t('、')) }));
+          if (r.restart_for_link) lines.push(t('需要完整重启游戏（客户端只在启动时发现新文件）。'));
+          else if (r.restart_required) lines.push(t('下次重启游戏后生效（toc 只在启动时读取），现在照常可用。'));
         }
         this.doctor.result = lines.join('\n') || JSON.stringify(d);
         await this.runDoctor();
       } catch (e) {
-        this.doctor.result = '修复失败：' + e.message;
+        this.doctor.result = t('修复失败：') + e.message;
       } finally {
         this.doctor.fixing = '';
       }
@@ -567,7 +570,7 @@ function appState() {
         const d = await this.api('/api/addons');
         Object.assign(this.addons, { list: d.addons || [], dir: d.addons_dir || '', client: d.client || null,
                                      errors: d.errors || null, characters: d.characters || 0 });
-        this.addons.note = this.addons.list.length ? '' : '游戏目录里没有找到插件。';
+        this.addons.note = this.addons.list.length ? '' : t('游戏目录里没有找到插件。');
         if (this.addons.open && this.addons.open !== '*' && !this.addons.list.some(a => a.name === this.addons.open)) this.addons.open = null;
         const keep = this.addons.sel === '*' || this.addons.list.some(a => a.name === this.addons.sel);
         if (!keep) {
@@ -577,7 +580,7 @@ function appState() {
         } else if (this.addons.tab === 'errors') await this.loadErrors(this.addons.sel);
       } catch (e) {
         this.addons.list = [];
-        this.addons.note = e.status === 404 ? '没有找到游戏目录（' + e.message + '）。' : '读取失败：' + e.message;
+        this.addons.note = e.status === 404 ? t('没有找到游戏目录（{e}）。', { e: e.message }) : t('读取失败：') + e.message;
       } finally {
         this.addons.busy = false;
       }
@@ -594,10 +597,10 @@ function appState() {
       try {
         const d = await this.api('/api/errors?limit=50' + (name === '*' ? '' : '&addon=' + encodeURIComponent(name)));
         this.addons.entries = d.entries || [];
-        if (!d.available) this.addons.entriesNote = d.reason || '还没有收集到报错。';
-        else if (!this.addons.entries.length) this.addons.entriesNote = '没有记录。';
+        if (!d.available) this.addons.entriesNote = d.reason || t('还没有收集到报错。');
+        else if (!this.addons.entries.length) this.addons.entriesNote = t('没有记录。');
       } catch (e) {
-        this.addons.entriesNote = '读取失败：' + e.message;
+        this.addons.entriesNote = t('读取失败：') + e.message;
       } finally {
         this.addons.entriesBusy = false;
       }
@@ -635,7 +638,7 @@ function appState() {
         const d = await this.api('/api/check', { body: { target: name, live: true } });
         if (this.chk.open === name) this.chk.data = d;
       } catch (e) {
-        this.chk.error = '检查失败：' + e.message;
+        this.chk.error = t('检查失败：') + e.message;
       } finally {
         this.chk.busy = false;
       }
@@ -652,11 +655,12 @@ function appState() {
       const d = this.chk.data;
       if (!d) return '';
       const live = d.live || {};
-      return d.files + ' 个文件：' + (d.errors.length ? d.errors.length + ' 个错误' : '没有错误') + ' · '
-           + (d.warnings.length ? d.warnings.length + ' 个警告' : '没有警告')
-           + (d.libraries ? ' · 跳过 ' + d.libraries + ' 个库文件' : '')
-           + (live.checked ? ' · 问过游戏 ' + live.checked + ' 个名字' : '')
-           + (live.error ? ' · 没能问游戏（' + live.error + '）' : '');
+      const parts = [t('{n} 个文件：', { n: d.files }) + (d.errors.length ? t('{n} 个错误', { n: d.errors.length }) : t('没有错误')),
+                     d.warnings.length ? t('{n} 个警告', { n: d.warnings.length }) : t('没有警告')];
+      if (d.libraries) parts.push(t('跳过 {n} 个库文件', { n: d.libraries }));
+      if (live.checked) parts.push(t('问过游戏 {n} 个名字', { n: live.checked }));
+      if (live.error) parts.push(t('没能问游戏（{e}）', { e: live.error }));
+      return parts.join(' · ');
     },
 
     // ---- kept versions (/api/history): 历史 on the 插件 page
@@ -672,12 +676,12 @@ function appState() {
         const d = await this.api('/api/history?addon=' + encodeURIComponent(name));
         if (this.hist.open !== name) return;
         this.hist.data = d;
-        if (!d.versions.length) this.hist.note = '还没有存过。热加载、开始监视或点「存一份」时会存一份。';
+        if (!d.versions.length) this.hist.note = t('还没有存过。热加载、开始监视或点「存一份」时会存一份。');
         const a = (this.addons.list || []).find(x => x.name === name);
         if (a) a.history = d.versions.length ? { versions: d.versions.length, latest: d.versions[0].time, latest_id: d.versions[0].id } : null;
       } catch (e) {
         this.hist.data = null;
-        this.hist.note = '读取失败：' + e.message;
+        this.hist.note = t('读取失败：') + e.message;
       } finally {
         this.hist.busy = false;
       }
@@ -690,7 +694,7 @@ function appState() {
         this.hist.diff = await this.api('/api/history?addon=' + encodeURIComponent(name) + '&id=' + id + '&against=' + against);
         this.hist.diffKey = key;
       } catch (e) {
-        this.say('对比失败：' + e.message);
+        this.say(t('对比失败：') + e.message);
       } finally {
         this.hist.diffBusy = false;
       }
@@ -705,14 +709,14 @@ function appState() {
       this.hist.working = 'save';
       try {
         const v = await this.api('/api/history', { body: { action: 'checkpoint', addon: name, note: '' } });
-        this.say(v.new ? '已存为 #' + v.id : '没有改动：最新一份 #' + v.id + ' 就是现在的文件');
+        this.say(v.new ? t('已存为 #{id}', { id: v.id }) : t('没有改动：最新一份 #{id} 就是现在的文件', { id: v.id }));
         if (this.hist.open === name) await this.loadHistory(name);
         else {
           const a = (this.addons.list || []).find(x => x.name === name);
           if (a && v.new) a.history = { versions: ((a.history && a.history.versions) || 0) + 1, latest: v.time, latest_id: v.id };
         }
       } catch (e) {
-        this.say('存一份失败：' + e.message);
+        this.say(t('存一份失败：') + e.message);
       } finally {
         this.hist.working = '';
       }
@@ -727,7 +731,7 @@ function appState() {
         this.hist.diffKey = '';
         await this.loadHistory(name);
       } catch (e) {
-        this.say('回退失败：' + e.message);
+        this.say(t('回退失败：') + e.message);
       } finally {
         this.hist.working = '';
       }
@@ -736,39 +740,41 @@ function appState() {
       if (!this.armed('forget')) return;
       try {
         await this.api('/api/history', { body: { action: 'forget', addon: name } });
-        this.say('已清空 ' + name + ' 的历史');
+        this.say(t('已清空 {name} 的历史', { name }));
         this.hist.result = null;
         await this.loadHistory(name);
       } catch (e) {
-        this.say('清空失败：' + e.message);
+        this.say(t('清空失败：') + e.message);
       }
     },
     async histLoad(name) {
       try {
         const r = await this.api('/api/load', { body: { target: name } });
         const bad = (r.files || []).filter(x => !x.ok);
-        this.say(bad.length ? '热加载有 ' + bad.length + ' 个文件出错，看开发台的日志' : '已热加载 ' + name);
-      } catch (e) { this.say('热加载失败：' + e.message); }
+        this.say(bad.length ? t('热加载有 {n} 个文件出错，看开发台的日志', { n: bad.length }) : t('已热加载 {name}', { name }));
+      } catch (e) { this.say(t('热加载失败：') + e.message); }
     },
-    reasonText(r) { return REASON_TEXT[r] || r; },
-    statusText(s) { return STATUS_TEXT[s] || s; },
+    reasonText(r) { return t(REASON_TEXT[r] || r); },
+    statusText(s) { return t(STATUS_TEXT[s] || s); },
     changeText(v) {                            // "改 Core.lua，新增 2 个文件" for a version or the comparison with now
       if (!v) return '';
       const n = v.counts || {};
-      const part = (kind, verb) => {
+      const part = (kind, one, many) => {
         const k = n[kind] || 0;
         if (!k) return '';
-        return verb + ' ' + (k === 1 ? (v[kind] || [])[0] : (v[kind] || [])[0] + ' 等 ' + k + ' 个文件');
+        const f = (v[kind] || [])[0];
+        return k === 1 ? t(one, { f }) : t(many, { f, n: k });
       };
-      return [part('changed', '改'), part('added', '新增'), part('removed', '删除')].filter(Boolean).join('，') || '没有改动';
+      return [part('changed', t('改 {f}'), t('改 {f} 等 {n} 个文件')), part('added', t('新增 {f}'), t('新增 {f} 等 {n} 个文件')),
+              part('removed', t('删除 {f}'), t('删除 {f} 等 {n} 个文件'))].filter(Boolean).join(t('，')) || t('没有改动');
     },
     get histNow() {                            // one line on how the files now compare with the latest version
       const d = this.hist.data;
       const now = d && d.now;
       if (!now) return '';
-      if (now.missing) return '插件文件夹不在了：回退可以把它找回来。';
+      if (now.missing) return t('插件文件夹不在了：回退可以把它找回来。');
       if (now.error) return now.error;
-      return now.same ? '现在的文件和最新一份 #' + now.since + ' 相同。' : '#' + now.since + ' 之后：' + this.changeText(now) + '。';
+      return now.same ? t('现在的文件和最新一份 #{id} 相同。', { id: now.since }) : t('#{id} 之后：{what}。', { id: now.since, what: this.changeText(now) });
     },
     diffLines(text) {                          // the lines of a unified diff, the --- / +++ head left out
       return (text || '').split('\n').slice(2).map(line => ({
@@ -790,9 +796,9 @@ function appState() {
       }
       return rows;
     },
-    roleText(r) { return { platform: '平台', developer: '开发组件', lab: '实验' }[r] || ''; },
-    reportText(r) { return r === true ? '开' : r === false ? '关' : '未设置'; },
-    enabledText(a) { return a.enabled === true ? '已启用' : a.enabled === false ? '已禁用' : a.disabled_in + ' 个角色禁用'; },
+    roleText(r) { return t({ platform: '平台', developer: '开发组件', lab: '实验' }[r] || ''); },
+    reportText(r) { return t(r === true ? '开' : r === false ? '关' : '未设置'); },
+    enabledText(a) { return a.enabled === true ? t('已启用') : a.enabled === false ? t('已禁用') : t('{n} 个角色禁用', { n: a.disabled_in }); },
 
     // ---- the API manual (apidocs.py through /api/apidocs): the search, with what an addon may do with each result (call: ok /
     // limited / protected) and a filter by it; an entry with that said in full, its types in place, its namespace; 试一下 next to
@@ -919,17 +925,22 @@ function appState() {
       if (/^Require/.test(code)) return t('有前提条件，条件不满足时调用不起作用。');
       return '';
     },
+    kindTag(e) {                               // an entry's tag: Function, Event, Enum, Structure
+      const p = KIND_ONE[e.kind === 'table' ? e.type : e.kind];
+      return p ? p[this.lang === 'en' ? 1 : 0] : t(KIND_TEXT[e.kind] || e.kind);
+    },
     sinceText(s) { return s ? t(s.what === 'added' ? '{b} 新增' : '{b} 改动', { b: String(s.build || '').split('.').pop() }) : ''; },
     get docsSections() {                       // the tables under an entry: arguments, returns, payload, fields
       const s = this.docs.sel;
       if (!s) return [];
       const param = p => [p.nil ? t('可以为空') : '', p.def != null && p.def !== '' ? t('默认 {v}', { v: p.def }) : ''].filter(Boolean).join(t('，'));
       const out = [];
-      if (s.args && s.args.length) out.push({ title: '参数', rows: s.args, third: '说明', cell: param });
-      if (s.returns && s.returns.length) out.push({ title: '返回值', rows: s.returns, third: '说明', cell: param });
-      if (s.payload && s.payload.length) out.push({ title: '载荷', rows: s.payload, third: '说明', cell: param });
-      if (s.fields && s.fields.length) out.push({ title: s.type === 'Enumeration' ? '取值' : '字段', rows: s.fields, third: '值',
-                                                 cell: p => p.v != null ? String(p.v) : (p.nil ? t('可以为空') : '') });
+      if (s.args && s.args.length) out.push({ title: t('参数'), rows: s.args, third: t('说明'), cell: param });
+      if (s.returns && s.returns.length) out.push({ title: t('返回值'), rows: s.returns, third: t('说明'), cell: param });
+      if (s.payload && s.payload.length) out.push({ title: t('载荷'), rows: s.payload, third: t('说明'), cell: param });
+      if (s.fields && s.fields.length) out.push({ title: t(s.type === 'Enumeration' ? '取值' : '字段'), rows: s.fields, third: t('值'),
+                                                 cell: p => p.v != null ? String(p.v) : (p.nil ? t('可以为空') : ''),
+                                                 noType: s.type === 'Enumeration' });   // an enum's values are of the enum
       return out;
     },
     async docsCheck() {                        // is it there in the running game? return type(...)
@@ -1087,7 +1098,7 @@ function appState() {
       try {
         this.na.result = await this.api('/api/new_addon', { body: { name: this.na.name.trim(), title: this.na.title.trim() || null,
                                                                    notes: this.na.notes.trim(), template: this.na.template } });
-        this.say('已创建 ' + this.na.result.name);
+        this.say(t('已创建 {name}', { name: this.na.result.name }));
         this.loadAddons();
       } catch (e) {
         this.na.error = e.message;
@@ -1100,19 +1111,19 @@ function appState() {
       try {
         const r = await this.api('/api/load', { body: { target: name } });
         const bad = (r.files || []).filter(x => !x.ok);
-        this.say(bad.length ? '热加载有 ' + bad.length + ' 个文件出错，看开发台的日志' : '已热加载 ' + name);
-      } catch (e) { this.say('热加载失败：' + e.message); }
+        this.say(bad.length ? t('热加载有 {n} 个文件出错，看开发台的日志', { n: bad.length }) : t('已热加载 {name}', { name }));
+      } catch (e) { this.say(t('热加载失败：') + e.message); }
     },
     naReveal() { return this.reveal(this.na.result.name); },
     async reveal(name) {
       try { await this.api('/api/reveal', { body: { name } }); }
-      catch (e) { this.say('打开文件夹：' + e.message); }
+      catch (e) { this.say(t('打开文件夹：') + e.message); }
     },
     get naPrompt() { return this.promptFor(this.na.result); },
     promptFor(r) {                             // the first thing to tell the agent about a new addon
       if (!r) return '';
-      return '请先读 ' + r.path + '\\AGENTS.md。然后在插件 ' + r.name + ' 里实现：（在这里写你想要的功能）。'
-           + '改完用 wuxian 的 load 热加载，用 logs 看报错、snap 截图确认效果；不确定的 API 先用 api_search 查。';
+      return t('请先读 {path}\\AGENTS.md。然后在插件 {name} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 load 热加载，用 logs 看报错、snap 截图确认效果；不确定的 API 先用 api_search 查。',
+               { path: r.path, name: r.name });
     },
 
     // ---- the agents (agents.py through /api/agents): one click registers this program with Claude Code, Codex, Cursor
@@ -1124,7 +1135,7 @@ function appState() {
         this.agents.manual = d.manual || {};
       } catch (e) {
         if (this.agents.list === null) this.agents.list = [];
-        this.say('读取 Agent 失败：' + errText(e));
+        this.say(t('读取 Agent 失败：') + errText(e));
       }
     },
     async agentAction(h, action) {
@@ -1133,7 +1144,7 @@ function appState() {
       try {
         const r = await this.api('/api/agents', { body: { action, host: h.id } });
         this.agents.list = this.agents.list.map(x => (x.id === r.id ? r : x));
-        const done = { connect: '已接入', disconnect: '已断开', verify: '已检查' }[action];
+        const done = t({ connect: '已接入', disconnect: '已断开', verify: '已检查' }[action]);
         const note = r.verify ? { ok: r.verify.ok, text: r.verify.text } : { ok: true, text: done };
         this.agents.note = Object.assign({}, this.agents.note, { [h.id]: note });
         this.say(h.title + ' ' + done);
@@ -1144,8 +1155,9 @@ function appState() {
       }
     },
     agentPill(h) {
-      return { ok: ['ok', '已接入'], other: ['warn', '指向别的程序'], absent: ['off', '未接入'], missing: ['off', '未安装'],
-               error: ['bad', '读不了设置'] }[h.state] || ['off', h.state];
+      const p = { ok: ['ok', t('已接入')], other: ['warn', t('指向别的程序')], absent: ['off', t('未接入')], missing: ['off', t('未安装')],
+                  error: ['bad', t('读不了设置')] }[h.state] || ['off', h.state];
+      return [p[0], t(p[1])];
     },
     get agentsShown() { return (this.agents.list || []).filter(h => h.state !== 'missing'); },
     get agentsMissing() { return (this.agents.list || []).filter(h => h.state === 'missing').map(h => h.title); },
@@ -1167,7 +1179,7 @@ function appState() {
       const a = this.status && this.status.addons_dir;
       return a ? a.replace(/[\\/]Interface[\\/]AddOns[\\/]?$/i, '') : '';
     },
-    get gameVersion() { const c = this.docCheck('client_version'); return c && c.ok !== null ? '客户端 ' + c.detail : ''; },
+    get gameVersion() { const c = this.docCheck('client_version'); return c && c.ok !== null ? t('客户端 {v}', { v: c.detail }) : ''; },
     get installChecks() { return this.doctor.checks.filter(c => /^addon:.*:installed$/.test(c.id) || c.id === 'mailbox'); },
     get stepGame() { const c = this.docCheck('game_dir'); return !!(c && c.ok === true) || !!(this.status && this.status.addons_dir); },
     get stepInstall() {                        // the self-check's word; before it answers, a link that is up says enough
@@ -1194,7 +1206,7 @@ function appState() {
       try {
         const p = await window.pywebview.api.pick_folder(this.start.gameInput || this.gamePath || '');
         if (p) this.start.gameInput = p;
-      } catch (e) { this.say('选择文件夹：' + errText(e)); }
+      } catch (e) { this.say(t('选择文件夹：') + errText(e)); }
     },
     async saveGameDir() {
       this.start.saving = true;
@@ -1202,11 +1214,11 @@ function appState() {
       try {
         this.applySettings(await this.api('/api/settings', { body: { game_dir: this.start.gameInput.trim() } }));
         await this.runDoctor();
-        if (this.stepGame) { this.start.gameEdit = false; this.say('已保存游戏目录'); }
-        else this.start.gameNote = '这个文件夹里没有 Interface\\AddOns：请选《魔兽世界：无限》客户端的文件夹（_cn_beta_）。';
+        if (this.stepGame) { this.start.gameEdit = false; this.say(t('已保存游戏目录')); }
+        else this.start.gameNote = t('这个文件夹里没有 Interface\\AddOns：请选《魔兽世界：无限》客户端的文件夹（_cn_beta_）。');
         this.refreshStatus();
       } catch (e) {
-        this.start.gameNote = '保存失败：' + errText(e);
+        this.start.gameNote = t('保存失败：') + errText(e);
       } finally {
         this.start.saving = false;
       }
@@ -1217,12 +1229,12 @@ function appState() {
       try {
         const r = await this.api('/api/install', { body: { clean: true } });
         this.start.installRestart = !!r.restart_for_link;
-        if (r.available === false) this.start.installNote = r.detail || '安装器不可用';
-        else this.start.installNote = '已安装 ' + (r.installed || []).length + ' 个文件。'
-          + (r.restart_for_link ? '现在请完整退出游戏再启动：游戏只在启动时发现新插件，/reload 不够。' : '');
+        if (r.available === false) this.start.installNote = r.detail || t('安装器不可用');
+        else this.start.installNote = t('已安装 {n} 个文件。', { n: (r.installed || []).length })
+          + (r.restart_for_link ? t('现在请完整退出游戏再启动：游戏只在启动时发现新插件，/reload 不够。') : '');
         await this.runDoctor();
       } catch (e) {
-        this.start.installNote = '安装失败：' + errText(e);
+        this.start.installNote = t('安装失败：') + errText(e);
       } finally {
         this.start.installBusy = false;
       }
@@ -1236,7 +1248,7 @@ function appState() {
         try {
           f.result = await this.api('/api/new_addon', { body: { name, title: f.title.trim() || null, notes: '', template: 'basic' } });
         } catch (e) {
-          if (!(e.status === 400 && /已经有叫/.test(errText(e)))) throw e;
+          if (!(e.status === 400 && e.data && e.data.error && e.data.error.code === 'addon_exists')) throw e;
           f.result = { name, path: (this.status && this.status.addons_dir ? this.status.addons_dir + '\\' : '') + name,
                        slash: '/' + name.toLowerCase(), files: [] };
         }
@@ -1244,7 +1256,7 @@ function appState() {
           f.fromId = this.lastId;
           const r = await this.api('/api/load', { body: { target: name } });
           const bad = (r.files || []).filter(x => !x.ok);
-          if (bad.length) throw new Error('热加载时 ' + bad.length + ' 个文件出错：' + (bad[0].error || '看开发台的日志'));
+          if (bad.length) throw new Error(t('热加载时 {n} 个文件出错：{e}', { n: bad.length, e: bad[0].error || t('看开发台的日志') }));
           f.loaded = true;
         }
         this.addons.list = null;                 // the 插件 page reads them again
@@ -1271,18 +1283,18 @@ function appState() {
     get updateText() {
       const u = this.upd;
       if (!u) return '—';
-      if (!u.supported) return '不支持自动更新';
-      const checked = u.checked ? '（' + this.fmtStamp(u.checked) + ' 检查）' : '';
-      return { idle: '等待第一次检查', checking: '正在检查…', current: '已是最新' + checked, available: '有新版本 ' + u.latest,
-               downloading: '正在下载 ' + u.latest + ' · ' + u.progress + '%', ready: u.latest + ' 已下载，重启后生效',
-               error: u.error || '检查失败' }[u.state] || u.state;
+      if (!u.supported) return t('不支持自动更新');
+      const checked = u.checked ? t('（{t} 检查）', { t: this.fmtStamp(u.checked) }) : '';
+      return { idle: t('等待第一次检查'), checking: t('正在检查…'), current: t('已是最新') + checked, available: t('有新版本 {v}', { v: u.latest }),
+               downloading: t('正在下载 {v} · {p}%', { v: u.latest, p: u.progress }), ready: t('{v} 已下载，重启后生效', { v: u.latest }),
+               error: u.error || t('检查失败') }[u.state] || u.state;
     },
     get updateBanner() {
       const u = this.upd;
       if (!u || !u.supported) return '';
-      if (u.state === 'available') return '无限工坊有新版本 ' + u.latest + '（当前 ' + u.current + '）';
-      if (u.state === 'downloading') return '正在下载新版本 ' + u.latest + ' · ' + u.progress + '%';
-      if (u.state === 'ready') return '新版本 ' + u.latest + ' 已下载，重启 App 即可更新';
+      if (u.state === 'available') return t('无限工坊有新版本 {v}（当前 {c}）', { v: u.latest, c: u.current });
+      if (u.state === 'downloading') return t('正在下载新版本 {v} · {p}%', { v: u.latest, p: u.progress });
+      if (u.state === 'ready') return t('新版本 {v} 已下载，重启 App 即可更新', { v: u.latest });
       return '';
     },
     async updateAction(action) {
@@ -1290,10 +1302,10 @@ function appState() {
       try {
         const s = await this.api('/api/update', { body: { action } });
         if (this.status) this.status.update = s;
-        if (action === 'check') this.say(s.state === 'available' ? '有新版本 ' + s.latest : s.state === 'current' ? '已是最新版本' : (s.error || s.reason || '已检查'));
-        if (action === 'apply') this.say('正在重启并更新…');
+        if (action === 'check') this.say(s.state === 'available' ? t('有新版本 {v}', { v: s.latest }) : s.state === 'current' ? t('已是最新版本') : (s.error || s.reason || t('已检查')));
+        if (action === 'apply') this.say(t('正在重启并更新…'));
       } catch (e) {
-        this.say('更新：' + e.message);
+        this.say(t('更新：') + e.message);
       } finally {
         this.updBusy = false;
       }
@@ -1317,6 +1329,8 @@ function appState() {
       this.lang = v;
       document.documentElement.lang = v;
       document.title = t('无限工坊');
+      const f = this.start.first;                // the first addon's default name, in the language in force
+      if (f.title === '我的第一个插件' || f.title === EN['我的第一个插件']) f.title = t('我的第一个插件');
       if (this.docs.topic) this.docsTopic(this.docs.topic);   // the open chapter in the new language
     },
     async loadSettings() {
@@ -1331,7 +1345,7 @@ function appState() {
       this.migrating = true;
       try {
         this.applySettings(await this.api('/api/settings', { body: { mode: 'developer' } }));
-        this.say('已切回开发模式');
+        this.say(t('已切回开发模式'));
         this.refreshStatus();
       } catch (e) {
         this.migrating = false;                  // the next status tries again
@@ -1339,12 +1353,12 @@ function appState() {
     },
     onSettingsSaved(d) {
       if (!d.ok) {
-        this.settingsNote = '保存失败：' + (d.status ? apiMessage(d.json, { status: d.status }) : (d.error || '无法连接守护进程'));
+        this.settingsNote = t('保存失败：') + (d.status ? apiMessage(d.json, { status: d.status }) : (d.error || t('无法连接守护进程')));
         return;
       }
       this.applySettings(d.json || Object.assign({}, this.form));
       this.settingsNote = '';
-      this.say('设置已保存');
+      this.say(t('设置已保存'));
       this.refreshStatus();
     },
 
@@ -1371,12 +1385,12 @@ function appState() {
       const cmdExe = (/\s/.test(exe) ? '"' + exe + '"' : exe) + c.args.slice(0, -1).map(a => ' ' + a).join('');
       return [
         {
-          id: 'claude-cmd', title: 'Claude Code · 命令', file: '在终端里运行其一',
+          id: 'claude-cmd', title: t('Claude Code · 命令'), file: t('在终端里运行其一'),
           text: 'claude mcp add --transport stdio --scope user wuxian -- ' + cmdExe + ' mcp\n'
               + 'claude mcp add --transport http --scope user wuxian-http ' + c.mcpUrl + ' --header "Authorization: ' + bearer + '"',
         },
         {
-          id: 'claude-json', title: 'Claude Code · .mcp.json', file: '项目根目录 .mcp.json',
+          id: 'claude-json', title: 'Claude Code · .mcp.json', file: t('项目根目录 .mcp.json'),
           text: JSON.stringify({ mcpServers: {
             'wuxian': { type: 'stdio', command: exe, args: c.args },
             'wuxian-http': { type: 'http', url: c.mcpUrl, headers: { Authorization: bearer } },
@@ -1384,7 +1398,7 @@ function appState() {
         },
         {
           id: 'codex', title: 'Codex · config.toml', file: '%USERPROFILE%\\.codex\\config.toml',
-          text: '# 或在终端：codex mcp add wuxian -- ' + cmdExe + ' mcp\n'
+          text: t('# 或在终端：{cmd}', { cmd: 'codex mcp add wuxian -- ' + cmdExe + ' mcp' }) + '\n'
               + '[mcp_servers.wuxian]\n'
               + "command = '" + exe + "'\n"          // single quotes: TOML literal string, backslashes stay
               + 'args = ' + JSON.stringify(c.args) + '\n'
@@ -1394,7 +1408,7 @@ function appState() {
               + 'http_headers = { Authorization = "' + bearer + '" }',
         },
         {
-          id: 'cursor', title: 'Cursor · mcp.json', file: '%USERPROFILE%\\.cursor\\mcp.json，或项目里的 .cursor\\mcp.json',
+          id: 'cursor', title: 'Cursor · mcp.json', file: t('%USERPROFILE%\\.cursor\\mcp.json，或项目里的 .cursor\\mcp.json'),
           text: JSON.stringify({ mcpServers: {
             'wuxian': { command: exe, args: c.args },
             'wuxian-http': { url: c.mcpUrl, headers: { Authorization: bearer } },
@@ -1402,7 +1416,12 @@ function appState() {
         },
       ];
     },
-    cliHelp: CLI_HELP,
+    get cliHelp() {                            // the commands, their descriptions lined up (a CJK character is two columns wide)
+      const cols = x => [...x].reduce((n, ch) => n + (/[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? 2 : 1), 0);
+      const rows = CLI_HELP.map(([cmd, what]) => [t(cmd), what ? t(what) : '']);
+      const w = Math.max(...rows.filter(r => r[1]).map(r => cols(r[0]))) + 2;
+      return rows.map(([cmd, what]) => (what ? cmd + ' '.repeat(Math.max(1, w - cols(cmd))) + what : cmd)).join('\n');
+    },
     mask(tok) { return tok && tok.length > 8 ? tok.slice(0, 4) + '…' + tok.slice(-4) : '••••'; },
     async copy(text, what) {
       try {
@@ -1417,7 +1436,7 @@ function appState() {
         document.execCommand('copy');
         ta.remove();
       }
-      this.say((what ? what + ' ' : '') + '已复制');
+      this.say(what ? t('{what} 已复制', { what }) : t('已复制'));
     },
 
     // ---- helpers
@@ -1523,7 +1542,7 @@ document.addEventListener('htmx:afterRequest', evt => {       // fires for 2xx, 
   const xhr = evt.detail.xhr;
   let json = null;
   try { json = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (e) { json = { raw: xhr.responseText }; }
-  const detail = { ok: xhr.status >= 200 && xhr.status < 400, status: xhr.status, json, error: xhr.status ? '' : '无法连接守护进程' };
+  const detail = { ok: xhr.status >= 200 && xhr.status < 400, status: xhr.status, json, error: xhr.status ? '' : t('无法连接守护进程') };
   evt.detail.elt.dispatchEvent(new CustomEvent('api-done', { detail, bubbles: false }));
 });
 

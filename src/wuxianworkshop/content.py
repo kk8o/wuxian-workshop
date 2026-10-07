@@ -147,7 +147,9 @@ class ContentUpdater:
                 done.append(name)
                 self.note(f"content: {name} {entry['version']} downloaded")
         except Exception as e:
-            self.error = f"内容包更新失败：{str(e).splitlines()[0][:200] if str(e) else type(e).__name__}"
+            from .i18n import tr
+            why = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+            self.error = tr(f"内容包更新失败：{why}", f"the content pack update failed: {why}")
             self.note(f"content check failed: {e}")
         finally:
             self.checked, self.busy = self.clock(), False
