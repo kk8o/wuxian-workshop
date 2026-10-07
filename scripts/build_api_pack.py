@@ -19,6 +19,8 @@ import re
 import time
 from pathlib import Path
 
+from wuxianworkshop.apidocs import object_of
+
 ROOT = Path(__file__).resolve().parent.parent
 BUNDLED = ROOT / "src" / "wuxianworkshop" / "data" / "api.json.gz"
 OUT = ROOT / "dist" / "content"
@@ -87,10 +89,22 @@ def manual(codex, docs):
     c = constants(ast.parse(src))
     page = c["page"]
     fns = [f for n in docs["namespaces"] for f in n["functions"]]
+    protected_globals = set(c["PROTECTED_GLOBALS"])
+    # as the page counts them: protected = secure code only (IsProtectedFunction but not an object's method, or one of the
+    # protected globals); an object's method marked IsProtectedFunction is a protected method (apidocs.object_of)
+    nprot = npmeth = 0
+    for n in docs["namespaces"]:
+        obj = None if n["ns"] else object_of(n["name"])
+        for f in n["functions"]:
+            if (f.get("raw") or {}).get("IsProtectedFunction"):
+                npmeth += bool(obj)
+                nprot += not obj
+            elif not n["ns"] and not obj and f["name"] in protected_globals:
+                nprot += 1
     counts = {"__NNS__": len({n["ns"] for n in docs["namespaces"] if n["ns"]}), "__NF__": len(fns),
               "__NE__": sum(len(n["events"]) for n in docs["namespaces"]),
               "__NT__": sum(len(n["tables"]) for n in docs["namespaces"]),
-              "__NPROT__": sum(1 for f in fns if (f.get("raw") or {}).get("IsProtectedFunction"))}
+              "__NPROT__": nprot, "__NPMETH__": npmeth}
     lists = {"__LIBS__": c["LIBS"], "__WOWGLOBALS__": c["WOWGLOBALS"], "__SECUREFN__": c["SECUREFN"],
              "__CVARS__": c["CVARS"], "__TOCDIRS__": ["## " + x for x in c["TOCDIRS"]],
              "__PROTGLOBALS__": c["PROTECTED_GLOBALS"], "__SECTPL__": c["SECURE_TEMPLATES"], "__GAMERULES__": c["GAMERULES_UI"]}
