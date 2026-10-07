@@ -18,12 +18,14 @@ answer (WINNER_WAIT: it is starting, and writes daemon.json once it listens), th
 answer, or no daemon starts at all, a --background start logs that and exits instead of keeping an error page in a
 hidden window. A daemon that runs without a window (`wuxian serve`) answers /api/show with shown=false: the shell then
 opens a window on that daemon's page (AttachedBackend); its "退出" stops that daemon too, and the window closes when that
-daemon stops.
+daemon stops. That is one window per daemon: it holds a named mutex, and a later start that finds the mutex taken asks
+it to show itself through a named event (WindowSignal) instead of opening another.
 --fake [URL] uses scripts/dev_fake_api.py instead of the daemon (started in this process when no URL is given) to develop
 the page; the shell also falls back to it while the daemon cannot be imported, and otherwise shows a page that says the
 daemon is not ready.
 """
 import argparse
+import ctypes
 import importlib.util
 import json
 import logging
@@ -47,6 +49,8 @@ EXIT_NO_WEBVIEW2 = 3
 WATCH_EVERY = 2.0                                # seconds between looks at an attached daemon
 WINNER_WAIT = 10.0                               # seconds a start that lost the mutex waits for the winner to answer
 WINNER_EVERY = 0.25                              # seconds between looks at it
+WINDOW_NAME = r"Local\WuxianWorkshopWindow"      # + the port: this program's window on a daemon that has none
+ERROR_ALREADY_EXISTS = 183
 log = logging.getLogger(__name__)
 
 ERROR_HTML = """<!doctype html><html lang="%s"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -75,7 +79,6 @@ def error_html(note):
 def dark_title_bar(hwnd):
     """asks DWM for the dark title bar (attribute 20; 19 before Windows 10 20H1) and, where Windows 11 takes them, the
     page's colours for the caption, its text and the border; an attribute this Windows does not know is refused, harmlessly"""
-    import ctypes
     dwm = ctypes.windll.dwmapi
     h, on = ctypes.c_void_p(hwnd), ctypes.c_int(1)
     if dwm.DwmSetWindowAttribute(h, 20, ctypes.byref(on), 4) != 0:
@@ -133,14 +136,107 @@ def _request(info, method, path, timeout=2.0):
         return None
 
 
+class WindowSignal:
+    """this program's one window on a daemon that has none, across processes: the start that opens it holds a named
+    mutex; a later start finds the mutex taken and sets a named event instead, which that window waits on to show
+    itself. The event is made before the mutex is taken and let go before the mutex is: it is there whenever the mutex
+    is (no set is lost on an event nobody holds), and the next window gets a new one (no set is taken by a window that
+    has gone). A set before the window listens is kept (auto-reset: one show however many)"""
+
+    def __init__(self, name):
+        self.k32 = k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateEventW.restype = k32.CreateMutexW.restype = ctypes.c_void_p
+        k32.CreateEventW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p)
+        k32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+        k32.WaitForMultipleObjects.restype = ctypes.c_uint32
+        k32.WaitForMultipleObjects.argtypes = (ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32)
+        k32.SetEvent.argtypes = k32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        self.name, self.mutex, self.listener, self.closed = name, None, None, False
+        self.event = k32.CreateEventW(None, 0, 0, name + ".show")      # the window's, when it has one
+        self.stop = k32.CreateEventW(None, 1, 0, None)                 # close() wakes the listener with it
+
+    def take(self):
+        """True when this process has the window now; False when another one has it, or is opening it"""
+        h = self.k32.CreateMutexW(None, 0, self.name)
+        if h and ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            self.k32.CloseHandle(h)
+            return False
+        self.mutex = h                           # none could be made: do not keep the window from opening
+        return True
+
+    def ask(self):
+        """the window that holds the mutex shows itself"""
+        if self.event:
+            self.k32.SetEvent(self.event)
+
+    def listen(self, callback):
+        """callback() on its own thread for every ask, from now until close()"""
+        if not (self.event and self.stop) or self.listener is not None:
+            return
+        handles = (ctypes.c_void_p * 2)(self.stop, self.event)          # the stop first: it wins when both are set
+
+        def run():
+            while not self.closed and self.k32.WaitForMultipleObjects(2, handles, 0, 0xFFFFFFFF) == 1:  # an ask
+                try:
+                    callback()
+                except Exception:
+                    log.exception("show the window")
+        self.listener = threading.Thread(target=run, name="wuxian-window", daemon=True)
+        self.listener.start()
+
+    def close(self):
+        """the window has gone: the listener stops, the event goes, then the mutex, for a later start's own window. A
+        show that hangs past the join does not wait again (closed), so its handles may go"""
+        self.closed = True
+        if self.stop:
+            self.k32.SetEvent(self.stop)
+        if self.listener is not None:
+            self.listener.join(5)
+        for h in (self.event, self.stop, self.mutex):
+            if h:
+                self.k32.CloseHandle(h)
+        self.event = self.stop = self.mutex = None
+
+
 class AttachedBackend:
     """a daemon in another process that has no window (`wuxian serve`): this window shows its page. 退出 stops it, as
-    it stops the daemon of this process; alive() tells the window when it has gone"""
+    it stops the daemon of this process; alive() tells the window when it has gone. claim() makes this the one such
+    window on that daemon (False when another start's window is: that one is asked to show itself instead); a later
+    start's ask calls on_show, as POST /api/show does on the daemon of this process"""
 
     def __init__(self, info):
         self.info = info
         self.port, self.token = info["port"], info["token"]
         self.url = info.get("url") or f"http://127.0.0.1:{self.port}/"
+        self.signal = None
+        self._on_show = None
+
+    def claim(self):
+        if sys.platform != "win32":                  # no named objects: nothing keeps a second window from opening
+            return True
+        signal = WindowSignal(f"{WINDOW_NAME}{self.port}")
+        if signal.take():
+            self.signal = signal
+            return True
+        signal.ask()
+        signal.close()
+        return False
+
+    def release(self):
+        if self.signal is not None:
+            self.signal.close()
+            self.signal = None
+
+    @property
+    def on_show(self):
+        return self._on_show
+
+    @on_show.setter
+    def on_show(self, callback):
+        """the window is there: asks show it from now on (one that came while it was opening is still set)"""
+        self._on_show = callback
+        if callback is not None and self.signal is not None:
+            self.signal.listen(callback)
 
     def alive(self):
         return _request(self.info, "GET", "/api/status") is not None
@@ -397,12 +493,20 @@ class Shell:
 
 def join_running(found, args):
     """what to do about the daemon found running: its window was shown, or there is nothing to start (--background):
-    done (0); it has no window: open one on its page"""
+    done (0); it has no window: open one on its page, unless another start has one open on it (or is opening it): that
+    one is asked to show itself, done (0)"""
     info, shown = found
     if shown or args.background:
         return 0
+    backend = AttachedBackend(info)
+    if not backend.claim():
+        log.info("the daemon at port %s has this program's window already: showing that one", info.get("port"))
+        return 0
     log.info("the daemon at port %s runs without a window: showing its page", info.get("port"))
-    return Shell(AttachedBackend(info), args).run()
+    try:
+        return Shell(backend, args).run()
+    finally:
+        backend.release()
 
 
 def run_app(argv=None):

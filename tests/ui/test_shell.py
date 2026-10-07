@@ -269,6 +269,22 @@ class LostTheRace(unittest.TestCase):
         self.assertIn("the HTTP server did not start", run.call_args[0][0].note)
 
 
+def start_daemon(case, window):
+    """a daemon in this process for one test (case): the program's, its window not up yet (window=True, no on_show), or
+    one without a window (`wuxian serve`); a test home and mutex, never the user's daemon"""
+    from wuxianworkshop.daemon import server
+    from wuxianworkshop.daemon.companion import CompanionLoop
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    env = patch.dict(os.environ, {"WUXIAN_HOME": tmp.name, "WUXIAN_MUTEX": rf"Local\WuxianWorkshopShell{os.getpid()}"})
+    env.start()
+    case.addCleanup(env.stop)
+    handle = server.start(worker_factory=lambda on_debug, log: CompanionLoop(
+        None, find_window=lambda: None, files=False, on_debug=on_debug, log=log), window=window)
+    case.addCleanup(handle.stop)
+    return handle
+
+
 class WindowComingUp(unittest.TestCase):
     """the program's daemon listens (daemon.json is written) seconds before its window is up: pywebview runs after_start,
     which sets on_show, while it makes the window. A second start in that gap (the program opened twice, or opened while
@@ -282,18 +298,7 @@ class WindowComingUp(unittest.TestCase):
         self.assertIs(start.call_args.kwargs["window"], True)
 
     def start_daemon(self):
-        """the program's daemon, its window not up yet (no on_show); a test home and mutex, never the user's daemon"""
-        from wuxianworkshop.daemon import server
-        from wuxianworkshop.daemon.companion import CompanionLoop
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        env = patch.dict(os.environ, {"WUXIAN_HOME": tmp.name, "WUXIAN_MUTEX": rf"Local\WuxianWorkshopShell{os.getpid()}"})
-        env.start()
-        self.addCleanup(env.stop)
-        handle = server.start(worker_factory=lambda on_debug, log: CompanionLoop(
-            None, find_window=lambda: None, files=False, on_debug=on_debug, log=log), window=True)
-        self.addCleanup(handle.stop)
-        return handle
+        return start_daemon(self, window=True)
 
     def run_app(self, argv, handle):
         with patch.object(webview2, "missing", return_value=[]), \
@@ -321,6 +326,65 @@ class WindowComingUp(unittest.TestCase):
         run.assert_not_called()
         asked.assert_not_called()                                    # only asked whether it answers
         self.assertFalse(shown.is_set())
+
+
+@unittest.skipUnless(sys.platform == "win32", "named kernel objects")
+class OneAttachedWindow(unittest.TestCase):
+    """`wuxian serve` runs, without a window of its own: the program's first start opens one on its page; a later start
+    shows that one instead of opening another (and another tray icon), also while it is still opening"""
+
+    info = {"port": 4321, "token": "t", "url": "http://127.0.0.1:4321/"}
+
+    def setUp(self):
+        name = patch.object(shell, "WINDOW_NAME", rf"Local\WuxianWorkshopWindowTest{os.getpid()}.")    # not the user's
+        name.start()
+        self.addCleanup(name.stop)
+
+    def start(self):
+        """a start that found the daemon running without a window"""
+        return shell.join_running((self.info, False), shell.parse_args([]))
+
+    def test_a_later_start_shows_the_window(self):
+        shown, later = threading.Event(), []
+
+        def window_up(app):                                          # the first start's window: after_start hooks
+            app.backend.on_show = shown.set                          # on_show ...
+            later.append(self.start())                               # ... and the program is opened again
+            self.assertTrue(shown.wait(5))
+            return 7
+        with patch.object(shell.Shell, "run", autospec=True, side_effect=window_up) as run:
+            self.assertEqual(self.start(), 7)
+            self.assertEqual((later, run.call_count), ([0], 1))      # no second window
+            run.side_effect, run.return_value = None, 8
+            self.assertEqual(self.start(), 8)                        # that window has gone: a start opens its own
+
+    def test_an_ask_while_the_window_opens_is_kept(self):
+        shown, later = threading.Event(), []
+
+        def window_up(app):
+            later.append(self.start())                               # opened again before the first window is up
+            app.backend.on_show = shown.set                          # now it is: it shows, as asked
+            self.assertTrue(shown.wait(5))
+            return 7
+        with patch.object(shell.Shell, "run", autospec=True, side_effect=window_up) as run:
+            self.assertEqual(self.start(), 7)
+        self.assertEqual((later, run.call_count), ([0], 1))
+
+    def test_on_a_daemon_without_a_window(self):
+        """the whole way: POST /api/show answers shown=false, the first start attaches, the second shows its window"""
+        start_daemon(self, window=False)
+        shown, later = threading.Event(), []
+
+        def window_up(app):
+            app.backend.on_show = shown.set
+            later.append(shell.run_app([]))
+            self.assertTrue(shown.wait(5))
+            return 7
+        with patch.object(webview2, "missing", return_value=[]), \
+                patch.object(shell.Shell, "run", autospec=True, side_effect=window_up) as run:
+            self.assertEqual(shell.run_app([]), 7)
+        self.assertIsInstance(run.call_args[0][0].backend, shell.AttachedBackend)
+        self.assertEqual((later, run.call_count), ([0], 1))
 
 
 class ClosingAndQuitting(unittest.TestCase):
