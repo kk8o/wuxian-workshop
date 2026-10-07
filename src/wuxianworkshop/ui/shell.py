@@ -11,9 +11,12 @@ the daemon and then the tray icon, in that order. pywebview owns the main thread
 callbacks only call window.show() / hide() (marshalled onto the UI thread by pywebview) or set the flag.
 --background (what the command line's clients start when no daemon answers: cli/client.py) makes the window hidden from
 the start; the tray icon shows that the daemon runs, and opening the program shows the window. Without WebView2 it runs
-the daemon alone instead of asking. A daemon that runs without a window (`wuxian serve`) answers /api/show with
-shown=false: the shell then opens a window on that daemon's page (AttachedBackend); its "退出" stops that daemon too, and
-the window closes when that daemon stops.
+the daemon alone instead of asking. A start that finds the single-instance mutex taken waits for that daemon to answer
+(WINNER_WAIT: it is starting, and writes daemon.json once it listens), then hands over to it; when it does not answer,
+or no daemon starts at all, a --background start logs that and exits instead of keeping an error page in a hidden
+window. A daemon that runs without a window (`wuxian serve`) answers /api/show with shown=false: the shell then opens a
+window on that daemon's page (AttachedBackend); its "退出" stops that daemon too, and the window closes when that daemon
+stops.
 --fake [URL] uses scripts/dev_fake_api.py instead of the daemon (started in this process when no URL is given) to develop
 the page; the shell also falls back to it while the daemon cannot be imported, and otherwise shows a page that says the
 daemon is not ready.
@@ -40,6 +43,8 @@ SIZE = (1200, 760)
 MIN_SIZE = (960, 600)                                   # the layout: navigation, a list and its detail side by side
 EXIT_NO_WEBVIEW2 = 3
 WATCH_EVERY = 2.0                                # seconds between looks at an attached daemon
+WINNER_WAIT = 10.0                               # seconds a start that lost the mutex waits for the winner to answer
+WINNER_EVERY = 0.25                              # seconds between looks at it
 log = logging.getLogger(__name__)
 
 ERROR_HTML = """<!doctype html><html lang="%s"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -186,6 +191,20 @@ def running_instance(info=None):
         return None
     answer = _request(info, "POST", "/api/show")
     return None if answer is None else (info, bool(answer.get("shown")))
+
+
+def wait_for_winner(info, wait=WINNER_WAIT, every=WINNER_EVERY):
+    """running_instance() of the daemon that took the mutex first (start_backend raised AlreadyRunning), tried until it
+    answers; None when it has not within wait seconds. It is normally just starting and writes daemon.json only once it
+    listens: info (daemon.json when the mutex was found taken: None, or what a dead daemon left) is tried first, then
+    daemon.json is read again for each try"""
+    deadline = time.time() + wait
+    while True:
+        found = running_instance(info)
+        if found is not None or time.time() >= deadline:
+            return found
+        time.sleep(every)
+        info = None
 
 
 def run_headless(args):
@@ -397,16 +416,19 @@ def run_app(argv=None):
             return join_running(found, args)
     try:
         backend, note = start_backend(args)
-    except AlreadyRunning as e:                      # lost the race for the mutex: that instance shows its window
-        found = running_instance(e.info)
+    except AlreadyRunning as e:                      # lost the race for the mutex: that instance is starting; once it
+        found = wait_for_winner(e.info)              # answers, it shows its window
         if found is not None:
             return join_running(found, args)
-        log.error("the daemon is already running but does not answer")
+        log.error("the daemon is already running but did not answer within %.0f s", WINNER_WAIT)
         backend, note = None, tr("另一个无限工坊已经在运行，但它没有响应；请先从托盘退出它。",
                                  "Another Wuxian Workshop is running but does not answer; quit it from its tray icon first.")
     except Exception as e:                           # neither the daemon nor the fake API: show an error page
         log.exception("no backend")
         backend, note = None, f"{type(e).__name__}: {e}"
+    if backend is None and args.background:          # no error page in a window nobody sees, which would stay: the
+        log.info("started in the background without a daemon: exiting")   # client that started this one waits for
+        return 1                                     # a daemon itself and reports that none came up
     return Shell(backend, args, note).run()
 
 

@@ -4,7 +4,7 @@ import json
 import sys
 import unittest
 import urllib.request
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from wuxianworkshop.ui import shell, webview2
 
@@ -36,6 +36,19 @@ class StandInBackend:
 
     def stop(self):
         self.stopped = True
+
+
+class Clock:
+    """the shell's time in a test: sleep() moves it on at once"""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 class WithoutWebView2(unittest.TestCase):
@@ -164,6 +177,72 @@ class RunningDaemon(unittest.TestCase):
         app.watch_backend(every=0.01)
         self.assertTrue(app.quitting)
         self.assertEqual(app.window.calls, ["destroy"])
+
+
+class LostTheRace(unittest.TestCase):
+    """another start took the mutex a moment earlier and answers only once it listens (2026-10-08: `wuxian status`
+    started `app --background` half a second after the program; it asked once, too early, and stayed as a hidden error
+    page that kept files in dist open after `wuxian quit`)"""
+
+    info = {"port": 4321, "token": "t", "url": "http://127.0.0.1:4321/"}
+
+    def run_app(self, argv, answers, error=None):
+        """answers: running_instance()'s, the first one for the look before start_backend"""
+        clock = Clock()
+        with patch.object(webview2, "missing", return_value=[]), \
+                patch.object(shell, "time", clock), \
+                patch.object(shell, "start_backend", side_effect=error or shell.AlreadyRunning(None)), \
+                patch.object(shell, "running_instance", side_effect=answers) as found, \
+                patch.object(shell.Shell, "run", autospec=True, return_value=7) as run:
+            code = shell.run_app(argv)
+        return code, found, run, clock
+
+    def test_the_program_waits_for_the_winner(self):
+        """daemon.json is written once the winner listens: the one there when the mutex was found taken (here what a
+        killed daemon left) is tried once, then daemon.json is read again"""
+        stale = {"port": 1, "token": "old"}
+        code, found, run, clock = self.run_app([], [None, None, None, (self.info, True)],
+                                               error=shell.AlreadyRunning(stale))
+        self.assertEqual(code, 0)                                     # its window was shown
+        run.assert_not_called()
+        self.assertEqual(found.call_args_list, [call(), call(stale), call(None), call(None)])
+        self.assertLess(clock.now, shell.WINNER_WAIT)
+
+    def test_background_start_hands_over_to_the_winner(self):
+        code, found, run, clock = self.run_app(["--background"], [None, None, (self.info, False)])
+        self.assertEqual(code, 0)
+        run.assert_not_called()
+        self.assertEqual(found.call_count, 3)
+
+    def test_background_start_without_an_answer_exits(self):
+        """no hidden error page: the client that started it waits for a daemon and reports that none came up"""
+        with self.assertLogs(shell.log, "INFO") as logs:
+            code, found, run, clock = self.run_app(["--background"], lambda info=None: None)
+        self.assertEqual(code, 1)
+        run.assert_not_called()
+        self.assertGreaterEqual(clock.now, shell.WINNER_WAIT)          # it waited for the winner first
+        self.assertIn("ERROR", [r.levelname for r in logs.records])
+
+    def test_the_program_shows_the_note_when_the_winner_hangs(self):
+        with self.assertLogs(shell.log, "ERROR"):
+            code, found, run, clock = self.run_app([], lambda info=None: None)
+        self.assertEqual(code, 7)
+        app = run.call_args[0][0]
+        self.assertIsNone(app.backend)
+        self.assertTrue(app.note)
+        self.assertGreaterEqual(clock.now, shell.WINNER_WAIT)
+
+    def test_a_daemon_that_cannot_start(self):
+        """any other failure: the program shows it on its error page, a background start exits"""
+        error = RuntimeError("the HTTP server did not start")
+        with self.assertLogs(shell.log, "ERROR"):
+            code, found, run, clock = self.run_app(["--background"], [None], error=error)
+        self.assertEqual(code, 1)
+        run.assert_not_called()
+        with self.assertLogs(shell.log, "ERROR"):
+            code, found, run, clock = self.run_app([], [None], error=error)
+        self.assertEqual(code, 7)
+        self.assertIn("the HTTP server did not start", run.call_args[0][0].note)
 
 
 class ClosingAndQuitting(unittest.TestCase):
