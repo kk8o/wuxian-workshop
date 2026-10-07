@@ -2,12 +2,16 @@
 against the real companion code (wuxianworkshop/transport/link.py): handshake, typed messages, pings, a burst, /reload, a
 companion restart, an outage, a skipped mailbox slot, wrapping message ids, hot loading with its lifecycle hooks; and the
 platform addon !WuxianWorkshop: the early stash for WoWBridge and the player's error collection (/wxw)."""
+import asyncio
 import re
 import unittest
 
 from tests.support.wowmock import Session, lupa
 from wuxianworkshop.core import fontpack, mailbox
 from wuxianworkshop.core.game import atomic_write
+from wuxianworkshop.daemon.api import parse_run
+from wuxianworkshop.daemon.journal import Journal
+from wuxianworkshop.daemon.service import Service
 from wuxianworkshop.transport import link
 
 def count(table):
@@ -396,6 +400,64 @@ class DebugWindow(unittest.TestCase):
             s.run(6)
             self.assertEqual((len(console_lines(s)), stats[b"runs"]), (before, runs))
             self.assertNotIn("agent code =probe", s.chat())
+        finally:
+            s.close()
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class ProbeAnswers(unittest.TestCase):
+    def test_inspect_the_debug_window_with_its_details_open(self):
+        """seen in the game (0.9.4): inspect WoWBridgeConsole failed. Its answer, 16821 bytes at depth 2, was cut at the
+        4000 a RUN result carries; with a [详情] box open, the ", " and " (OnUnload " of the box's text were taken for
+        value separators and a note. Through the real Agent.lua and link the answer (agent/probes.py) comes back whole,
+        in pieces"""
+        got = []
+        s = Session(self)
+        comp = link.Companion(s.addons, clock=s.now, log=lambda text: None, on_debug=lambda kind, text: got.append((kind, text)))
+        s.comp = comp
+        svc = Service(lambda **kw: None, journal=Journal())
+
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):     # the daemon's run, over this session
+            job = comp.code(code.encode("utf-8"), chunk, addon or "-")
+            for _ in range(200):
+                s.run(0.25)
+                text = next((t for k, t in got if k == "RUN" and t.startswith(f"{job} ")), None)
+                if text is not None:
+                    return Service.run_result(parse_run(text))
+            self.fail(f"no RUN result for job {job}")
+        svc.run = run
+
+        def boxes(frame):
+            """the edit boxes in an answer's frame and below"""
+            return ([frame] if frame.get("type") == "EditBox" else []) + [b for kid in frame.get("children") or []
+                                                                          for b in boxes(kid)]
+        try:
+            comp.new_process("P1-100")
+            s.login()
+            s.run(8)
+            comp.command('run return ("第一行, a, b (OnUnload ok) \\"引号\\" \\\\ 反斜杠\\t"):rep(60), 2')
+            s.run(8)
+            s.slash("log")
+            shown = s.lua.execute(b"""
+                local log, pane
+                for _, kid in ipairs(WoWBridgeConsole.__kids) do
+                    if kid.kind == "ScrollingMessageFrame" then log = kid elseif kid.edit then pane = kid end
+                end
+                for id = 50, 1, -1 do                                   -- the newest line with a [details] link
+                    pcall(log.scripts.OnHyperlinkClick, log, "wbconsole:" .. id, "", "LeftButton")
+                    if pane:IsShown() then return pane.edit:GetText() end
+                end""").decode("utf-8")
+            self.assertIn(", 2", shown)
+            self.assertIn("(OnUnload ok) \"引号\" \\ 反斜杠\t", shown)
+            for depth in (2, 3):
+                before = len(got)
+                res = asyncio.run(svc.inspect("WoWBridgeConsole", depth=depth))
+                window = res["frames"][0]
+                self.assertEqual((window["name"], window["type"], window["shown"]), ("WoWBridgeConsole", "Frame", True))
+                pieces = [t for k, t in got[before:] if k == "RUN" and " ok =probe " in t]
+                self.assertGreater(len(pieces), 1)
+                self.assertTrue(all(len(t.partition("ms): ")[2].encode()) < 4000 for t in pieces))   # never cut
+            self.assertEqual([b["text"] for b in boxes(window)], [shown])                 # at depth 3: the box's text
         finally:
             s.close()
 

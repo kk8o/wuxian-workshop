@@ -4,12 +4,19 @@ describes frames — place, size, anchors, visibility, strata and level, scripts
 expression, or the ones under the mouse. Each is a Lua chunk sent with `run`; the game answers with JSON made by the
 small encoder J below (secret values come back as "<secret>"), parsed here.
 
+A RUN result brings back at most 4000 bytes of what the code returned (WoWBridge's Agent.lua cuts it there), so the
+answer comes in pieces (answer_chunk): the chunk keeps it in the game and returns the first piece and how many there are,
+piece_chunk brings each of the others. A piece ends between two UTF-8 characters, and the daemon takes it as it came:
+api.parse_run neither splits the "=probe" chunk's result at ", " nor reads notes into it.
+
 The chunks are plain Lua 5.1 with this client's API (RegisterAllEvents, GetMouseFoci, issecretvalue, GetPhysicalScreenSize:
 all in the API manual). Rectangles are in the game window's client pixels, from its top-left corner, as `snap` takes them.
 """
 import json
+import re
 
-# J(value, depth): JSON text of a Lua value; tables as arrays when they have a sequence (or are empty), else objects
+# J(value, depth): JSON text of a Lua value; tables as arrays when they have a sequence (or are empty), else objects;
+# a number that is not finite as null, a string with the quote, the backslash and every byte below 32 escaped
 LUA_JSON = r"""
 local issecret = issecretvalue
 local function J(v, depth)
@@ -19,9 +26,10 @@ local function J(v, depth)
 	if t == "nil" then return "null" end
 	if t == "boolean" then return v and "true" or "false" end
 	if t == "number" then
-		if v ~= v or v == math.huge or v == -math.huge then return "null" end
-		if v == math.floor(v) and math.abs(v) < 2147483648 then return string.format("%d", v) end
-		return string.format("%.4f", v)
+		local s = string.format("%.4f", v)        -- told by its text: on this client NaN equals every number, math.huge too
+		if not s:find("^%-?%d+%.%d+$") then return "null" end          -- inf, -inf, nan, -nan(ind)
+		if v == math.floor(v) and math.abs(v) < 2147483648 then return string.format("%d", v) end   -- %d: 32 bits
+		return s
 	end
 	if t == "string" then
 		return '"' .. (v:gsub('[%z\1-\31"\\]', function(c) return string.format("\\u%04x", c:byte()) end)) .. '"'
@@ -172,7 +180,50 @@ else
 	if target == nil then return '{"error":"target: the expression gave nil (no such frame)"}' end
 	frames[1] = info(target, DEPTH)
 end
-return '{"screen":[' .. physW .. ',' .. physH .. '],"frames":' .. J(frames, 2 + DEPTH * 3 + 4) .. '}'
+return '{"screen":' .. J({ physW, physH }) .. ',"frames":' .. J(frames, 2 + DEPTH * 3 + 4) .. '}'
+"""
+
+# an answer's pieces: at most PIECE bytes each, the others asked for BATCH at a time (their requests share mailbox
+# packets, the link brings the pieces back one after another); an answer over MOST bytes is refused (over a minute to
+# bring)
+PIECE, BATCH, MOST = 3900, 4, 256 * 1024
+
+# after the chunk, run as a function (ANSWER: what it returned): the first piece, the others kept under KEY
+ANSWER_PIECES = r"""
+local s = tostring(ANSWER)
+if #s > MOST then
+	s = ('{"error":"the answer is %d KB, more than the %d KB a probe brings back: ask for less (inspect: a lower depth or a '
+		.. 'frame further down; trace: fewer events or arguments)"}'):format(math.ceil(#s / 1024), MOST / 1024)
+end
+local cuts, from = {}, 1
+repeat
+	local to = math.min(#s, from + PIECE - 1)
+	for _ = 1, 3 do                                -- between two UTF-8 characters: the next byte starts one
+		local b = s:byte(to + 1)
+		if not b or b < 128 or b >= 192 then break end
+		to = to - 1
+	end
+	cuts[#cuts + 1] = to
+	from = to + 1
+until from > #s
+if #cuts > 1 then
+	local kept = _G.WuxianWorkshopAnswers or {}
+	_G.WuxianWorkshopAnswers = kept
+	for k, a in pairs(kept) do
+		if GetTime() - a.at > 300 then kept[k] = nil end   -- left by a daemon that never asked for the rest
+	end
+	kept[KEY] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime() }
+end
+return "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
+"""
+
+PIECE_BODY = r"""
+local kept = _G.WuxianWorkshopAnswers
+local a = kept and kept[KEY]
+if not a then error("the rest of this answer is no longer kept in the game (the UI reloaded?)", 0) end
+a.left = a.left - 1
+if a.left <= 0 then kept[KEY] = nil end
+return I .. "/" .. #a.cuts .. "\n" .. a.s:sub(a.cuts[I - 1] + 1, a.cuts[I])
 """
 
 
@@ -290,18 +341,50 @@ def inspect(target=None, mouse=False, depth=1, limit=30):
     return LUA_JSON + head + INSPECT_BODY
 
 
+def answer_chunk(chunk, key):
+    """a probe chunk run so that its answer comes back in pieces: it returns the first piece after a line "1/<pieces>",
+    and keeps the answer in the game under `key` for piece_chunk when there are more (the chunk's lines keep their
+    numbers)"""
+    return ("local ANSWER = (function(...) " + chunk + "\nend)(...)\n"
+            f"local KEY, PIECE, MOST = {lua_str(key)}, {PIECE}, {MOST}\n" + ANSWER_PIECES)
+
+
+def piece_chunk(key, i):
+    """the chunk that returns piece i (2 and up) of the answer kept under `key`, after a line "<i>/<pieces>" """
+    return f"local KEY, I = {lua_str(key)}, {int(i)}\n" + PIECE_BODY
+
+
+def piece(values, i):
+    """(how many pieces the answer has, the text of piece i) from what answer_chunk / piece_chunk returned; ValueError
+    when it is not that piece"""
+    text = values[0] if values and isinstance(values[0], str) else ""
+    head, sep, rest = text.partition("\n")
+    m = re.fullmatch(r"(\d+)/(\d+)", head)
+    if not sep or not m or int(m[1]) != i or i > int(m[2]):
+        raise ValueError(f"the game answered {str(values)[:200]}, not piece {i} of a probe's answer")
+    return int(m[2]), rest
+
+
 def parse(values):
-    """the JSON a chunk answered with (the first returned value); ValueError when it is not there"""
+    """the JSON a chunk answered with (the first returned value); ValueError when there is none, or it is not JSON
+    (saying where it breaks)"""
     text = values[0] if values else None
     if not isinstance(text, str):
         raise ValueError(f"the game answered {values!r}, not JSON")
     try:
         data = json.loads(text)
-    except ValueError as e:
-        raise ValueError(f"the game's answer is not JSON ({e}): {text[:200]}") from None
+    except json.JSONDecodeError as e:
+        raise ValueError(f"the game's answer is not JSON: {where(text, e)}") from None
     if isinstance(data, dict) and data.get("error"):
         raise ValueError(data["error"])
     return data
+
+
+def where(text, e, around=80):
+    """a JSON error with its place: what is wrong, at which character of how many, the text on either side of it"""
+    a, b = max(0, e.pos - around), min(len(text), e.pos + around)
+    return (f"{e.msg.removesuffix(' at')} at char {e.pos} of {len(text)}: {'…' if a else ''}{text[a:e.pos]}<<HERE>>"
+            f"{text[e.pos:b]}" + ("…" if b < len(text) else "<<END>>"))
 
 
 def trace_result(data, wanted=None):

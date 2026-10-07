@@ -15,6 +15,7 @@ import asyncio
 import inspect
 import json
 import os
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -417,12 +418,30 @@ class Service:
         return dict(res, hint=f"`load {name}` hot-loads it now; the game itself lists it after a full restart")
 
     async def probe(self, code, timeout_ms):
-        """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none"""
+        """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none. The answer
+        comes in pieces (probes.answer_chunk): the first with the chunk, the others asked for probes.BATCH at a time"""
+        key = secrets.token_hex(4)
+        n, first = await self.probe_piece(probes.answer_chunk(code, key), 1, timeout_ms)
+        texts = [first]
+        for start in range(2, n + 1, probes.BATCH):
+            got = await asyncio.gather(*(self.probe_piece(probes.piece_chunk(key, i), i, timeout_ms)
+                                         for i in range(start, min(start + probes.BATCH, n + 1))), return_exceptions=True)
+            for g in got:
+                if isinstance(g, BaseException):
+                    raise g
+            texts += [text for _, text in got]
+        try:
+            return probes.parse(["".join(texts)])
+        except ValueError as e:
+            raise ApiError(400, "probe_failed", str(e)) from None
+
+    async def probe_piece(self, code, i, timeout_ms):
+        """(how many pieces the answer has, the text of piece i): one run of a probe's chunk"""
         res = await self.run(code, timeout_ms=timeout_ms, chunk="=probe")
         if not res.get("ok"):
             raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
         try:
-            return probes.parse(res.get("values"))
+            return probes.piece(res.get("values"), i)
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 

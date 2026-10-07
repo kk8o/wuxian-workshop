@@ -96,6 +96,71 @@ class Probes(unittest.TestCase):
         self.assertEqual(got["hidden"], "<secret>")
         self.assertEqual(got["deep"], [[["<table>"]]])                 # 4 levels, then cut
 
+    def test_numbers_and_strings_json_cannot_hold_as_they_are(self):
+        """a number that is not finite is null (the client prints 0/0 as -nan(ind), and there NaN equals every number,
+        math.huge too: told by the text, not by comparing); %d only within 32 bits (the client's %d raises past them);
+        every byte below 32, the quote and the backslash escaped"""
+        self.lua.execute(r"""
+			local format = string.format
+			string.format = function(f, v, ...)            -- the client's %d: an error past 32 bits, NaN and inf too
+				if f == "%d" and not (v > -2147483649 and v < 2147483648) then
+					error("integer overflow attempting to store " .. tostring(v))
+				end
+				return format(f, v, ...)
+			end
+		""")
+        got = self.run_chunk(P.LUA_JSON + r"""
+			local nan, bytes = 0/0, {}
+			for i = 0, 127 do bytes[#bytes + 1] = string.char(i) end
+			return J({ nan, -nan, math.huge, -math.huge, 2^31, -2^31 - 1, 2^40 + 0.5, -0.0, 1/3, 12, table.concat(bytes),
+				'两 \\ "' })
+		""")
+        self.assertEqual(got[:10], [None, None, None, None, 2 ** 31, -2 ** 31 - 1, 2 ** 40 + 0.5, 0, 0.3333, 12])
+        self.assertEqual(got[10], "".join(map(chr, range(128))))
+        self.assertEqual(got[11], '两 \\ "')
+
+    def test_a_long_answer_comes_in_pieces(self):
+        """answer_chunk keeps an answer longer than PIECE in the game and returns its first piece, piece_chunk each of
+        the others: each fits a RUN result (WoWBridge cuts one at 4000 bytes) with its line "<i>/<pieces>", ends
+        between two UTF-8 characters, and together they are the answer. It is let go after its last piece (or 5
+        minutes on, when the rest was never asked for); an answer over MOST bytes is an error"""
+        lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)    # bytes: a cut character would show
+        lua.execute(STUB.encode())
+
+        def run(chunk):
+            return lua.execute(chunk.encode())
+        chunk = P.LUA_JSON + 'return J({ ("两"):rep(3000), "a, b (OnUnload ok)" })'
+        answer = run(chunk)
+        head, _, text = run(P.answer_chunk(chunk, "k1")).partition(b"\n")
+        n, pieces = int(head.split(b"/")[1]), [text]
+        self.assertEqual(head, b"1/%d" % n)
+        self.assertEqual(n, 3)
+        for i in range(2, n + 1):
+            got = run(P.piece_chunk("k1", i))
+            self.assertLessEqual(len(got), 4000)
+            self.assertEqual(P.piece([got.decode("utf-8")], i)[0], n)       # whole characters: decodes strictly
+            pieces.append(got.partition(b"\n")[2])
+        self.assertTrue(all(len(p) <= P.PIECE for p in pieces))
+        self.assertLess(len(pieces[0]), P.PIECE)                       # P.PIECE would end inside a character
+        self.assertEqual(b"".join(pieces), answer)
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k1"))        # every piece asked for: let go
+        with self.assertRaises(lupa.LuaError) as cm:
+            run(P.piece_chunk("k1", 2))
+        self.assertIn("no longer kept", str(cm.exception))
+
+        self.assertEqual(run(P.answer_chunk(P.LUA_JSON + "return J({ 1, 2 })", "k2")), b"1/1\n[1,2]")
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k2"))        # one piece: nothing kept
+        run(P.answer_chunk(chunk, "k3"))
+        run("__now = __now + 301")
+        run(P.answer_chunk(chunk, "k4"))
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k3"))        # never asked for: gone 5 minutes on
+        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.k4"))
+
+        big = run(P.answer_chunk(f'return ("x"):rep({P.MOST + 1})', "k5")).decode()
+        with self.assertRaises(ValueError) as cm:
+            P.parse([P.piece([big], 1)[1]])
+        self.assertTrue(str(cm.exception).startswith("the answer is 257 KB, more than the 256 KB a probe brings back"))
+
     def test_a_filtered_trace(self):
         self.lua.execute('KNOWN = { BAG_UPDATE = true, LOOT_OPENED = true, UNIT_AURA = true }')
         begun = self.run_chunk(P.trace_start("BAG_UPDATE, loot_opened, NOT_AN_EVENT", max_events=3))

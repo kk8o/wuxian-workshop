@@ -80,8 +80,15 @@ end
 
 local Region = {}
 Region.__index = Region
+local REGIONS = { Texture = true, FontString = true }
 local function new(kind, parent)
-	return setmetatable({ kind = kind, parent = parent, shown = true, scale = 1, alpha = 1, scripts = {}, events = {} }, Region)
+	local r = setmetatable({ kind = kind, parent = parent, shown = true, scale = 1, alpha = 1, scripts = {}, events = {} }, Region)
+	if parent then                                 -- in the order made: what GetChildren and GetRegions give
+		local list = REGIONS[kind] and "__regions" or "__kids"
+		parent[list] = parent[list] or {}
+		table.insert(parent[list], r)
+	end
+	return r
 end
 function Region:SetIgnoreParentScale(v) self.ignoreScale = v end
 function Region:SetIgnoreParentAlpha() end
@@ -204,6 +211,11 @@ function Region:SetScrollChild(c) self.child = c end
 function Region:GetVerticalScroll() return 0 end
 function Region:SetVerticalScroll() end
 function Region:GetVerticalScrollRange() return 0 end
+-- what inspect (agent/probes.py) reads too: the name, the alpha, the children and regions
+function Region:GetName() return self.__name end
+function Region:GetAlpha() return self.alpha end
+function Region:GetChildren() return unpack(self.__kids or {}) end
+function Region:GetRegions() return unpack(self.__regions or {}) end
 -- a font not loaded yet: SetFont says false and the font arrives later; a loaded one applies at once
 local function settle(self)
 	local p = self.pending
@@ -262,7 +274,7 @@ __locale = "enUS"
 function GetLocale() return __locale end
 function CreateFrame(kind, name, parent)
 	local f = new(kind, parent)
-	if name then _G[name] = f end
+	if name then _G[name], f.__name = f, name end
 	frames[#frames + 1] = f
 	return f
 end

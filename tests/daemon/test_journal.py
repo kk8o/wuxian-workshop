@@ -53,6 +53,13 @@ class ParseRun(unittest.TestCase):
         res = parse_run("7 ok @Interface/AddOns/Foo/Extra.lua (102 B, 0.0 ms): done (OnReload error: oops)")
         self.assertEqual((res["values"], res["note"]), (["done"], "(OnReload error: oops)"))
 
+    def test_a_probe_answer_is_one_value_as_it_came(self):
+        """the daemon's own chunk returns one string of JSON: its ", " and " (OnUnload " are text"""
+        text = '1/2\n{"text":"→ a, b (OnUnload ok), 2 (no namespace registered for Foo"}'
+        res = parse_run(f"9 ok =probe (4532 B, 1.4 ms): {text}")
+        self.assertEqual((res["chunk"], res["values"], res["note"]), ("=probe", [text], None))
+        self.assertEqual(parse_run("10 ok =probe (12 B, 0.0 ms)")["values"], [])
+
     def test_not_a_result(self):
         self.assertIsNone(parse_run("load Foo: no such file or addon folder"))
 

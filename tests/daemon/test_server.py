@@ -60,11 +60,11 @@ class FakeGame(CompanionLoop):
             if line.startswith("--emit "):
                 kind, _, text = line[7:].partition(" ")
                 self.comp.on_debug(kind, text.replace("\\n", "\n"))
-        if b"no trace is running" in body:                              # probes.trace_stop(): what it kept
-            self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): {{"seconds":1.0,"events":'
+        if b"no trace is running" in body:                              # probes.trace_stop(): what it kept, one piece
+            self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): 1/1\n{{"seconds":1.0,"events":'
                                       f'[[0.4,"BAG_UPDATE",[0],1]],"counts":{{"BAG_UPDATE":1}},"dropped":0}}')
         elif b"local EVENTS, QUIET" in body:                            # probes.trace_start()
-            self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): {{"tracing":1,"unknown":[]}}')
+            self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): 1/1\n{{"tracing":1,"unknown":[]}}')
         elif b"SlashCmdList" in body:                                   # probes.slash_call(): the handler ran
             self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): shown")
         elif b"error(" in body:
