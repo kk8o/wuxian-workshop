@@ -491,13 +491,17 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
 
 class DaemonHandle:
     """the running daemon, for the program that started it (the shell): where it listens, how to stop it.
-    on_show: called (on its own thread) for POST /api/show, the shell shows its window; on_quit: called once the daemon
-    has stopped, from the API or stop()."""
+    on_show: called (on its own thread) for POST /api/show, the shell shows its window; window: that window is coming
+    (the shell sets on_show while it makes the window, seconds after the daemon listens), so a request before then is
+    kept for it; on_quit: called once the daemon has stopped, from the API or stop()."""
 
-    def __init__(self, service, lock, token, mode, host="127.0.0.1", port=0):
+    def __init__(self, service, lock, token, mode, host="127.0.0.1", port=0, window=False):
         self.service, self.lock, self.token, self.mode = service, lock, token, mode
         self.host, self.port, self.pid = host, port, os.getpid()
-        self.on_show = None
+        self.window = window
+        self._on_show = None
+        self._show_kept = False
+        self._show_lock = threading.Lock()
         self.on_quit = None
         self.access = Access(token, host)
         self.server = self.thread = self.loop = self.mcp = None
@@ -594,11 +598,27 @@ class DaemonHandle:
         """block until the daemon has stopped (Ctrl+C in the main thread gets through); True once it has"""
         return self._finished.wait(timeout)
 
+    @property
+    def on_show(self):
+        return self._on_show
+
+    @on_show.setter
+    def on_show(self, callback):
+        """the shell hooks on its window: a show asked for before is made now (pywebview's show() waits for the window)"""
+        with self._show_lock:
+            self._on_show, kept = callback, self._show_kept
+            self._show_kept = kept and callback is None
+        if kept and callback is not None:
+            threading.Thread(target=callback, name="wuxian-show", daemon=True).start()
+
     def show(self):
-        """POST /api/show: the shell's on_show on its own thread; False when nobody listens"""
-        callback = self.on_show
-        if callback is None:
-            return False
+        """POST /api/show: the shell's on_show on its own thread; while the shell's window is still coming (window, no
+        on_show yet) the request is kept for it; False when no window comes (`wuxian serve`)"""
+        with self._show_lock:
+            callback = self._on_show
+            if callback is None:
+                self._show_kept = self.window
+                return self.window
         threading.Thread(target=callback, name="wuxian-show", daemon=True).start()
         return True
 
@@ -613,11 +633,13 @@ def saved_settings():
 
 
 def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0, wait_restart=True,
-          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0):
+          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0, window=False):
     """the daemon in this process: the HTTP server on its thread, the companion on another; returns a DaemonHandle
     (port, token, url, mcp_url; stop(), wait()). AlreadyRunning when another instance holds the mutex.
     mode / capture / game_dir: None takes what the 设置 page saved (state/settings.json), else developer / wgc.
-    worker_factory(on_debug=, log=) replaces the CompanionLoop (tests: a loop without a screen)."""
+    worker_factory(on_debug=, log=) replaces the CompanionLoop (tests: a loop without a screen).
+    window: the program opens a window on the daemon's page once it listens (the shell): POST /api/show before that
+    window has set on_show is kept for it (DaemonHandle.show)."""
     saved = saved_settings()
     mode = mode or (saved.get("mode") if saved.get("mode") in ("developer", "player") else "developer")
     capture = capture or (saved.get("capture") if saved.get("capture") in ("gdi", "wgc") else "wgc")
@@ -647,7 +669,7 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
                                      installed=installed, log=log, on_debug=on_debug, link=(mode == "developer"),
                                      echo_debug=False)      # the journal gets each debug message once, with its kind
         service = Service(worker_factory, journal=journal, mode=mode, game_dir=game_dir, sync_addons=real)
-        handle = DaemonHandle(service, lock, secrets.token_urlsafe(32), mode, host=host, port=port)
+        handle = DaemonHandle(service, lock, secrets.token_urlsafe(32), mode, host=host, port=port, window=window)
         handle._start()
     except BaseException:
         lock.release()

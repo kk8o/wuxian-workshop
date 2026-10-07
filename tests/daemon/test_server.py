@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -539,6 +540,39 @@ class Lifecycle(unittest.TestCase):
                 self.assertIsNone(read_daemon_json())
             finally:
                 handle.stop()
+
+
+class ShowRequests(unittest.TestCase):
+    """POST /api/show (DaemonHandle.show): the shell's window shows. The shell sets on_show while it makes the window,
+    seconds after the daemon listens: until then a request is kept for that window (window=True)"""
+
+    def handle(self, window):
+        return server.DaemonHandle(None, None, "t", "developer", window=window)
+
+    def test_no_window_comes(self):
+        """`wuxian serve`: shown=false, the program opens a window on the daemon's page itself"""
+        handle = self.handle(False)
+        self.assertFalse(handle.show())
+        shown = threading.Event()
+        handle.on_show = shown.set
+        self.assertFalse(shown.wait(0.2))                                # nothing was kept
+
+    def test_kept_until_the_window_is_up(self):
+        handle = self.handle(True)
+        self.assertTrue(handle.show())
+        self.assertTrue(handle.show())                                   # twice before it is up: it shows once
+        calls, shown = [], threading.Event()
+
+        def on_show():
+            calls.append(threading.current_thread().name)
+            shown.set()
+        handle.on_show = on_show
+        self.assertTrue(shown.wait(5))
+        self.assertEqual(calls, ["wuxian-show"])                         # on its own thread, not the setter's
+        shown.clear()
+        self.assertTrue(handle.show())                                   # from now on at once
+        self.assertTrue(shown.wait(5))
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

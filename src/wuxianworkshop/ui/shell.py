@@ -4,19 +4,21 @@ r"""The desktop shell: `wuxian` with no sub-command = daemon + tray icon + windo
 
 run_app() checks first for what the window needs from Windows, the WebView2 Runtime and the .NET Framework (webview2.py:
 a missing one is offered for install, Microsoft's own installer, signature checked), hands over to a daemon that is
-already running (POST /api/show makes it raise its window), else starts the daemon in
-this process (daemon.server.start), opens its page in a pywebview window and puts an icon in the tray (tray.py). Closing the
+already running (POST /api/show makes it raise its window), else starts the daemon in this process (daemon.server.start
+with window=True: a POST /api/show that comes before the window is up is kept for it, so that a second start meanwhile
+opens no second window), opens its page in a pywebview window and puts an icon in the tray (tray.py). Closing the
 window hides it (the closing handler returns False); "退出" in the tray menu sets the quit flag, destroys the window, stops
 the daemon and then the tray icon, in that order. pywebview owns the main thread; the tray icon has its own thread and its
 callbacks only call window.show() / hide() (marshalled onto the UI thread by pywebview) or set the flag.
 --background (what the command line's clients start when no daemon answers: cli/client.py) makes the window hidden from
 the start; the tray icon shows that the daemon runs, and opening the program shows the window. Without WebView2 it runs
-the daemon alone instead of asking. A start that finds the single-instance mutex taken waits for that daemon to answer
-(WINNER_WAIT: it is starting, and writes daemon.json once it listens), then hands over to it; when it does not answer,
-or no daemon starts at all, a --background start logs that and exits instead of keeping an error page in a hidden
-window. A daemon that runs without a window (`wuxian serve`) answers /api/show with shown=false: the shell then opens a
-window on that daemon's page (AttachedBackend); its "退出" stops that daemon too, and the window closes when that daemon
-stops.
+the daemon alone instead of asking. It asks a running daemon only whether it answers (GET /api/status), never to show
+its window, which may be hidden on purpose. A start that finds the single-instance mutex taken waits for that daemon to
+answer (WINNER_WAIT: it is starting, and writes daemon.json once it listens), then hands over to it; when it does not
+answer, or no daemon starts at all, a --background start logs that and exits instead of keeping an error page in a
+hidden window. A daemon that runs without a window (`wuxian serve`) answers /api/show with shown=false: the shell then
+opens a window on that daemon's page (AttachedBackend); its "退出" stops that daemon too, and the window closes when that
+daemon stops.
 --fake [URL] uses scripts/dev_fake_api.py instead of the daemon (started in this process when no URL is given) to develop
 the page; the shell also falls back to it while the daemon cannot be imported, and otherwise shows a page that says the
 daemon is not ready.
@@ -175,32 +177,36 @@ def start_backend(args):
         log.warning("daemon not importable (%s); using the fake API", e)
         return start_fake(), tr(f"守护进程未就绪（{e}）", f"the daemon is not ready ({e})")
     try:
-        handle = server.start(mode=args.mode, capture=args.capture, game_dir=args.game)
+        handle = server.start(mode=args.mode, capture=args.capture, game_dir=args.game, window=True)
     except getattr(server, "AlreadyRunning", ()) as e:
         raise AlreadyRunning(getattr(e, "info", None)) from e
     return handle, ""
 
 
-def running_instance(info=None):
+def running_instance(info=None, show=True):
     """(info, shown) of a daemon that is already running, None when none answers: info is its daemon.json (read here
-    when not given); shown is True when its window took the request to show itself, False when it has no window"""
+    when not given). show: it is asked to show its window, and shown is True when its window took the request (one
+    still coming up takes it too), False when it has no window; else (a --background start) it is only asked whether it
+    answers, and shown is False: a window hidden on purpose must stay hidden"""
     if info is None:
         from ..daemon.api import read_daemon_json
         info = read_daemon_json()
     if not info or not info.get("port") or not info.get("token"):
         return None
+    if not show:
+        return None if _request(info, "GET", "/api/status") is None else (info, False)
     answer = _request(info, "POST", "/api/show")
     return None if answer is None else (info, bool(answer.get("shown")))
 
 
-def wait_for_winner(info, wait=WINNER_WAIT, every=WINNER_EVERY):
+def wait_for_winner(info, show=True, wait=WINNER_WAIT, every=WINNER_EVERY):
     """running_instance() of the daemon that took the mutex first (start_backend raised AlreadyRunning), tried until it
     answers; None when it has not within wait seconds. It is normally just starting and writes daemon.json only once it
     listens: info (daemon.json when the mutex was found taken: None, or what a dead daemon left) is tried first, then
     daemon.json is read again for each try"""
     deadline = time.time() + wait
     while True:
-        found = running_instance(info)
+        found = running_instance(info, show=show)
         if found is not None or time.time() >= deadline:
             return found
         time.sleep(every)
@@ -411,13 +417,13 @@ def run_app(argv=None):
         if not webview2.ensure(lacking):             # the user said no, or the install did not take
             return EXIT_NO_WEBVIEW2
     if not args.fake:
-        found = running_instance()
+        found = running_instance(show=not args.background)
         if found is not None:
             return join_running(found, args)
     try:
         backend, note = start_backend(args)
     except AlreadyRunning as e:                      # lost the race for the mutex: that instance is starting; once it
-        found = wait_for_winner(e.info)              # answers, it shows its window
+        found = wait_for_winner(e.info, show=not args.background)    # answers, hand over to it
         if found is not None:
             return join_running(found, args)
         log.error("the daemon is already running but did not answer within %.0f s", WINNER_WAIT)

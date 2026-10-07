@@ -1,7 +1,10 @@
 """The shell (wuxianworkshop/ui/shell.py) without opening a window: the WebView2 gate, the arguments, the fake backend,
 and the closing / quit sequence against a stand-in window."""
 import json
+import os
 import sys
+import tempfile
+import threading
 import unittest
 import urllib.request
 from unittest.mock import call, patch
@@ -112,7 +115,7 @@ class FakeBackend(unittest.TestCase):
                 patch.object(shell, "start_backend", side_effect=shell.AlreadyRunning(info)), \
                 patch.object(shell, "running_instance", return_value=(info, True)) as found:
             self.assertEqual(shell.run_app(["--fake"]), 0)
-        found.assert_called_once_with(info)
+        found.assert_called_once_with(info, show=True)
 
 
 class RunningDaemon(unittest.TestCase):
@@ -122,7 +125,7 @@ class RunningDaemon(unittest.TestCase):
 
     def run_app(self, argv, found):
         with patch.object(webview2, "missing", return_value=[]), \
-                patch.object(shell, "running_instance", return_value=found), \
+                patch.object(shell, "running_instance", return_value=found) as self.look, \
                 patch.object(shell, "start_backend") as start, \
                 patch.object(shell.Shell, "run", autospec=True, return_value=7) as run:
             code = shell.run_app(argv)
@@ -133,6 +136,7 @@ class RunningDaemon(unittest.TestCase):
         self.assertEqual(code, 0)
         start.assert_not_called()
         run.assert_not_called()
+        self.look.assert_called_once_with(show=True)
 
     def test_without_a_window_this_one_shows_its_page(self):
         """`wuxian serve` runs: double-clicking the program must still bring up a window, on that daemon's page"""
@@ -148,6 +152,24 @@ class RunningDaemon(unittest.TestCase):
             code, start, run = self.run_app(["--background"], (self.info, shown))
             self.assertEqual(code, 0)
             run.assert_not_called()
+            self.look.assert_called_once_with(show=False)            # not asked to show: its window may be hidden
+
+    def test_background_start_does_not_ask_for_the_window(self):
+        """a --background start only asks whether the daemon answers (GET /api/status): a POST /api/show would bring up
+        the window of a program that a client started with --background a moment earlier"""
+        handle = shell.start_fake()
+        try:
+            info = {"port": handle.port, "token": handle.token}
+
+            def shows():
+                return [e for e in list(handle.fake.logs) if e["text"].startswith("show:")]
+            self.assertEqual(shell.running_instance(info, show=False), (info, False))
+            self.assertEqual(shows(), [])
+            self.assertEqual(shell.running_instance(info), (info, True))
+            self.assertEqual(len(shows()), 1)
+            self.assertIsNone(shell.running_instance({"port": 1, "token": "x"}, show=False))   # nothing listens
+        finally:
+            handle.stop()
 
     def test_background_start_without_webview2_runs_the_daemon_alone(self):
         with patch.object(webview2, "missing", return_value=["webview2"]), \
@@ -205,7 +227,8 @@ class LostTheRace(unittest.TestCase):
                                                error=shell.AlreadyRunning(stale))
         self.assertEqual(code, 0)                                     # its window was shown
         run.assert_not_called()
-        self.assertEqual(found.call_args_list, [call(), call(stale), call(None), call(None)])
+        self.assertEqual(found.call_args_list, [call(show=True), call(stale, show=True), call(None, show=True),
+                                                call(None, show=True)])
         self.assertLess(clock.now, shell.WINNER_WAIT)
 
     def test_background_start_hands_over_to_the_winner(self):
@@ -213,11 +236,12 @@ class LostTheRace(unittest.TestCase):
         self.assertEqual(code, 0)
         run.assert_not_called()
         self.assertEqual(found.call_count, 3)
+        self.assertEqual({c.kwargs["show"] for c in found.call_args_list}, {False})      # its window stays hidden
 
     def test_background_start_without_an_answer_exits(self):
         """no hidden error page: the client that started it waits for a daemon and reports that none came up"""
         with self.assertLogs(shell.log, "INFO") as logs:
-            code, found, run, clock = self.run_app(["--background"], lambda info=None: None)
+            code, found, run, clock = self.run_app(["--background"], lambda info=None, show=True: None)
         self.assertEqual(code, 1)
         run.assert_not_called()
         self.assertGreaterEqual(clock.now, shell.WINNER_WAIT)          # it waited for the winner first
@@ -225,7 +249,7 @@ class LostTheRace(unittest.TestCase):
 
     def test_the_program_shows_the_note_when_the_winner_hangs(self):
         with self.assertLogs(shell.log, "ERROR"):
-            code, found, run, clock = self.run_app([], lambda info=None: None)
+            code, found, run, clock = self.run_app([], lambda info=None, show=True: None)
         self.assertEqual(code, 7)
         app = run.call_args[0][0]
         self.assertIsNone(app.backend)
@@ -243,6 +267,60 @@ class LostTheRace(unittest.TestCase):
             code, found, run, clock = self.run_app([], [None], error=error)
         self.assertEqual(code, 7)
         self.assertIn("the HTTP server did not start", run.call_args[0][0].note)
+
+
+class WindowComingUp(unittest.TestCase):
+    """the program's daemon listens (daemon.json is written) seconds before its window is up: pywebview runs after_start,
+    which sets on_show, while it makes the window. A second start in that gap (the program opened twice, or opened while
+    a client's `app --background` starts) must open no second window and tray icon on that daemon's page; a --background
+    start must not bring up a window that is hidden on purpose"""
+
+    def test_the_program_tells_its_daemon_that_a_window_comes(self):
+        from wuxianworkshop.daemon import server
+        with patch.object(server, "start", return_value="handle") as start:
+            self.assertEqual(shell.start_backend(shell.parse_args(["--background"])), ("handle", ""))
+        self.assertIs(start.call_args.kwargs["window"], True)
+
+    def start_daemon(self):
+        """the program's daemon, its window not up yet (no on_show); a test home and mutex, never the user's daemon"""
+        from wuxianworkshop.daemon import server
+        from wuxianworkshop.daemon.companion import CompanionLoop
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = patch.dict(os.environ, {"WUXIAN_HOME": tmp.name, "WUXIAN_MUTEX": rf"Local\WuxianWorkshopShell{os.getpid()}"})
+        env.start()
+        self.addCleanup(env.stop)
+        handle = server.start(worker_factory=lambda on_debug, log: CompanionLoop(
+            None, find_window=lambda: None, files=False, on_debug=on_debug, log=log), window=True)
+        self.addCleanup(handle.stop)
+        return handle
+
+    def run_app(self, argv, handle):
+        with patch.object(webview2, "missing", return_value=[]), \
+                patch.object(handle, "show", wraps=handle.show) as asked, \
+                patch.object(shell.Shell, "run", autospec=True, return_value=7) as run:
+            code = shell.run_app(argv)
+        return code, asked, run
+
+    def test_a_second_start_before_the_window_is_up(self):
+        handle = self.start_daemon()
+        code, asked, run = self.run_app([], handle)
+        self.assertEqual(code, 0)                                    # handed over ...
+        run.assert_not_called()                                      # ... no second window
+        asked.assert_called()
+        shown = threading.Event()
+        handle.on_show = shown.set                                   # the window is up: it shows, as asked
+        self.assertTrue(shown.wait(5))
+
+    def test_a_background_start_leaves_the_window_hidden(self):
+        handle = self.start_daemon()
+        shown = threading.Event()
+        handle.on_show = shown.set                                   # the window is up, hidden
+        code, asked, run = self.run_app(["--background"], handle)
+        self.assertEqual(code, 0)
+        run.assert_not_called()
+        asked.assert_not_called()                                    # only asked whether it answers
+        self.assertFalse(shown.is_set())
 
 
 class ClosingAndQuitting(unittest.TestCase):
