@@ -1,0 +1,946 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>无限工坊</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css?v=9">
+<!-- Vendored libraries, no CDN (public CDNs are unreliable in mainland China): htmx 2.0.11 (0BSD) and Alpine.js 3.17.4 (MIT),
+     both taken from the npm tarballs on registry.npmmirror.com with the sha512 checked against the registry metadata
+     (see wuxianworkshop/ui/__init__.py). app.js registers the Alpine component and the htmx json extension, so it loads
+     first; the two libraries are deferred.
+     The layout is a desktop program's: a tool bar, the navigation on the left, the page filling
+     the rest (its lists scroll inside it, the window never does), a status bar. -->
+<script src="app.js?v=9"></script>
+<script src="htmx.min.js" defer></script>
+<script src="alpine.min.js" defer></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="inf-line" viewBox="0 0 64 40"><path d="M32,20 C40,8 54,8 54,20 C54,32 40,32 32,20 C24,8 10,8 10,20 C10,32 24,32 32,20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <!-- the icons: 24 x 24, drawn with the current colour -->
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11 12 4l8.5 7M6 9.5V20h4.5v-5h3v5H18V9.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+    <symbol id="i-console" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-addons" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="4" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="4" y="13" width="7" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M16.5 13.5v6M13.5 16.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.5C10.3 5.2 7.8 4.8 4.5 5v13c3.3-.2 5.8.2 7.5 1.5 1.7-1.3 4.2-1.7 7.5-1.5V5c-3.3-.2-5.8.2-7.5 1.5Zm0 0v13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4M15 3.5v4M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0v-3ZM12 16v4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4.3 3 7.7 7 9 4-1.3 7-4.7 7-9V6l-7-2.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m8.8 12 2.2 2.2 4.3-4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 20.5V4m0 .5h10.5l-2 3.5 2 3.5H6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.5v2.3M12 18.2v2.3M3.5 12h2.3M18.2 12h2.3M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5h3.2L8.8 6h6.4l1.6 2.5H20V18H4Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="13" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5M19 4.5V9h-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 12h16M12 4c2.2 2.3 3.2 5 3.2 8s-1 5.7-3.2 8c-2.2-2.3-3.2-5-3.2-8s1-5.7 3.2-8Z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-4.9L19 9M19 4.5V9h-4.5M19 12a7 7 0 0 1-12 4.9L5 15M5 19.5V15h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3.5 6 13.5h5l-1 7 7-10h-5l1-7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5v10.5h17V9H12l-2-2.5H3.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-update" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+<div id="app" class="app" x-data="app" x-cloak>
+
+  <!-- 工具栏：品牌、连接状态、常用操作、更新 -->
+  <header class="topbar">
+    <div class="tb-brand"><img src="logo.svg" alt=""><span>无限工坊</span></div>
+    <div class="tb-sep"></div>
+    <div class="tb-link" :class="'st-' + linkClass" :title="linkWhy || linkHint">
+      <span class="dot"></span><span class="tb-link-text" x-text="linkText"></span>
+      <span class="muted" x-show="status && status.link.session" x-text="'会话 ' + val(status, 'link.session')"></span>
+    </div>
+    <div class="tb-actions">
+      <button class="tbtn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found) || snap.busy" title="截一张游戏画面">
+        <svg class="ico"><use href="#i-camera"/></svg><span>截图</span></button>
+      <button class="tbtn" @click="requestReload()" :disabled="!linkOnline || reload.busy" title="游戏里弹出按钮，点了才会重载界面">
+        <svg class="ico"><use href="#i-reload"/></svg><span x-text="status && status.reload_pending ? '等待点击重载…' : '重载界面'"></span></button>
+    </div>
+    <div class="tb-right">
+      <span class="tb-chip fake" x-show="banner" :title="banner" x-text="daemonError ? '服务未就绪' : '假接口'"></span>
+      <button class="tb-chip update" x-show="updateBanner" @click="go('settings')" :title="updateBanner">
+        <svg class="ico"><use href="#i-update"/></svg><span x-text="updateChip"></span></button>
+    </div>
+  </header>
+
+  <!-- 导航 -->
+  <nav class="sidebar">
+    <template x-for="(p, i) in NAV" :key="p.id">
+      <a href="#" class="nav-item" :class="{active: page === p.id}" @click.prevent="go(p.id)" :title="p.label + '（Ctrl+' + (i + 1) + '）'">
+        <svg class="ico"><use :href="'#' + p.icon"/></svg>
+        <span class="nav-label" x-text="p.label"></span>
+        <span class="nav-badge" x-show="p.id === 'dev' && errCount > 0" x-text="errCount"></span>
+        <span class="nav-dot" x-show="p.id === 'start' && settingsLoaded && !settings.onboarded"></span>
+      </a>
+    </template>
+    <div class="nav-fill"></div>
+    <a href="#" class="nav-item" :class="{active: page === 'settings'}" @click.prevent="go('settings')" title="设置（Ctrl+8）">
+      <svg class="ico"><use href="#i-gear"/></svg><span class="nav-label">设置</span>
+    </a>
+  </nav>
+
+  <main class="content">
+
+    <!-- 开始：第一次启动时打开的五步向导；每一步按实际状态自动打勾（自检、链路、Agent 设置、热加载结果） -->
+    <section class="page" x-show="page === 'start'">
+      <div class="pagebar">
+        <h1>开始使用</h1>
+        <span class="muted" x-text="startDone + ' / 5 步完成'"></span>
+        <div class="spacer"></div>
+        <button class="btn" @click="finishStart()" x-text="startDone === 5 ? '完成' : (settings.onboarded ? '回到概览' : '以后再说')"></button>
+      </div>
+      <div class="pagebody">
+        <div class="start-wrap">
+          <div class="panel start-intro">
+            <img class="start-logo" src="logo.svg" alt="">
+            <div>
+              <h2>用 AI 写魔兽插件</h2>
+              <p>无限工坊让你的 AI Agent（Claude Code、Codex、Cursor 等）自己写插件、自己调试：从零写一个新插件，或修改你已经装着的插件（别人写的也行）；写完先检查，再在正在运行的游戏里试，看报错、print 输出和截图，在游戏里执行 Lua 查状态，对照这个客户端自己的 API 手册找到原因、改好再试。你只需说清想要什么，在游戏里验收。</p>
+              <p class="muted small">下面五步走一遍大约 5 分钟；做完的步骤会自动打勾，随时可以回到这一页（左边的「开始」）。</p>
+            </div>
+          </div>
+
+          <ol class="wizard">
+            <li class="wstep" :class="stepClass('game')">
+              <div class="wmark" x-text="stepMark('game')"></div>
+              <div class="panel wbody">
+                <h2>找到游戏</h2>
+                <div class="loader" x-show="!doctor.checks.length && doctor.busy"><svg class="inf"><use href="#inf-line"/></svg>正在检查…</div>
+                <template x-if="stepGame && !start.gameEdit">
+                  <div>
+                    <p>客户端目录：<span class="mono selectable" x-text="gamePath"></span></p>
+                    <p class="muted small" x-show="gameVersion" x-text="gameVersion"></p>
+                    <a href="#" class="small" @click.prevent="start.gameEdit = true; start.gameInput = gamePath">不是这个？换一个</a>
+                  </div>
+                </template>
+                <template x-if="(!stepGame && doctor.checks.length) || start.gameEdit">
+                  <div>
+                    <p x-show="!stepGame">没有找到《魔兽世界：无限》的客户端目录。游戏开着时会自动找到；也可以在这里选它的文件夹（里面有 Interface\AddOns，通常是 <span class="mono">…\World of Warcraft\_cn_beta_</span>）。</p>
+                    <div class="row">
+                      <input class="input mono grow" x-model="start.gameInput" placeholder="C:\Program Files (x86)\World of Warcraft\_cn_beta_">
+                      <button class="btn" x-show="canPick" @click="pickFolder()">浏览…</button>
+                      <button class="btn primary" @click="saveGameDir()" :disabled="start.saving || !start.gameInput.trim()" x-text="start.saving ? '保存中…' : '保存'"></button>
+                      <button class="btn" x-show="start.gameEdit" @click="start.gameEdit = false">取消</button>
+                    </div>
+                    <p class="small warn-text" x-show="start.gameNote" x-text="start.gameNote"></p>
+                  </div>
+                </template>
+              </div>
+            </li>
+
+            <li class="wstep" :class="stepClass('install')">
+              <div class="wmark" x-text="stepMark('install')"></div>
+              <div class="panel wbody">
+                <h2>装开发组件</h2>
+                <p>开发组件是两个普通插件（无限工坊、WoWBridge）。装进游戏的 AddOns 之后，无限工坊才能和游戏说话。</p>
+                <ul class="checks mini" x-show="installChecks.length">
+                  <template x-for="c in installChecks" :key="c.id">
+                    <li class="check" :class="c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'skip'">
+                      <span class="mark" x-text="c.ok === true ? '✓' : c.ok === false ? '✕' : '?'"></span>
+                      <div class="check-body"><div class="check-title" x-text="c.title"></div><div class="muted" x-text="c.detail"></div></div>
+                    </li>
+                  </template>
+                </ul>
+                <div class="row">
+                  <button class="btn" :class="stepInstall ? '' : 'primary'" @click="startInstall()" :disabled="start.installBusy || !stepGame"
+                          x-text="start.installBusy ? '安装中…' : (stepInstall ? '重新安装' : '安装开发组件')"></button>
+                  <span class="muted small" x-show="!stepGame">先找到游戏目录。</span>
+                </div>
+                <p class="small" :class="start.installRestart ? 'warn-text' : 'muted'" x-show="start.installNote" x-text="start.installNote"></p>
+              </div>
+            </li>
+
+            <li class="wstep" :class="stepClass('enter')">
+              <div class="wmark" x-text="stepMark('enter')"></div>
+              <div class="panel wbody">
+                <h2>进入游戏</h2>
+                <p>启动游戏，选角色进入游戏世界（装完开发组件后要<b>完整退出游戏再启动</b>，/reload 不够）。连上后这里自动打勾。</p>
+                <p class="state-line">
+                  <span class="dot" :class="'d-' + linkClass"></span>
+                  <b :class="linkClass + '-text'" x-text="linkText"></b>
+                  <span class="muted small" x-text="linkWhy || (linkOnline ? '游戏里输入 /wb 可以打开开发组件的面板。' : '')"></span>
+                </p>
+              </div>
+            </li>
+
+            <li class="wstep" :class="stepClass('agent')">
+              <div class="wmark" x-text="stepMark('agent')"></div>
+              <div class="panel wbody">
+                <h2>接上 Agent</h2>
+                <p>把无限工坊登记给你的 Agent（用户级设置，所有项目都能用），它就能自己写插件，在游戏里试、看报错和截图来调试。</p>
+                <div class="loader" x-show="agents.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在查找 Agent…</div>
+                <div class="agent-list" x-show="agents.list !== null">
+                  <template x-for="h in agentsShown" :key="h.id">
+                    <div class="agent-row" :class="'st-' + h.state">
+                      <div class="agent-main">
+                        <div class="agent-head"><b x-text="h.title"></b><span class="pill" :class="agentPill(h)[0]" x-text="agentPill(h)[1]"></span></div>
+                        <div class="small muted" x-text="h.detail"></div>
+                        <p class="small" x-show="agents.note[h.id]" :class="agents.note[h.id] && agents.note[h.id].ok ? 'ok-text' : 'warn-text'" x-text="agents.note[h.id] && agents.note[h.id].text"></p>
+                      </div>
+                      <div class="agent-acts">
+                        <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="!!agents.busy"
+                                x-text="agents.busy === h.id + ':connect' ? '接入中…' : (h.state === 'other' ? '改成现在这个' : '一键接入')"></button>
+                        <button class="btn" x-show="h.state === 'ok' && h.id !== 'cursor'" @click="agentAction(h, 'verify')" :disabled="!!agents.busy"
+                                x-text="agents.busy === h.id + ':verify' ? '检查中…' : '检查'"></button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+                <p class="muted small" x-show="agentsMissing.length" x-text="'没有找到：' + agentsMissing.join('、') + '。装好后到「接入 Agent」页刷新。'"></p>
+              </div>
+            </li>
+
+            <li class="wstep" :class="stepClass('first')">
+              <div class="wmark" x-text="stepMark('first')"></div>
+              <div class="panel wbody">
+                <h2>第一个插件</h2>
+                <p>建一个最小的插件，热加载进游戏，看它在游戏里说话。</p>
+                <form class="row" @submit.prevent="startFirst()">
+                  <input class="input mono first-name" x-model="start.first.name" placeholder="文件夹名（英文）">
+                  <input class="input grow" x-model="start.first.title" placeholder="显示名称">
+                  <button class="btn primary" type="submit" :disabled="start.first.busy || !start.first.name.trim() || !stepGame"
+                          x-text="start.first.busy ? '进行中…' : (linkOnline ? '创建并热加载' : '创建')"></button>
+                </form>
+                <p class="small bad-text" x-show="start.first.error" x-text="start.first.error"></p>
+                <template x-if="start.first.result">
+                  <div class="result" :class="start.first.loaded ? 'ok' : ''">
+                    <div>插件在 <span class="mono selectable" x-text="start.first.result.path"></span></div>
+                    <div x-show="start.first.loaded">✓ 已热加载。<span x-show="firstOutput">游戏聊天框里出现了：<span class="mono" x-text="firstOutput"></span></span><span class="muted" x-show="!firstOutput">等它在游戏里说话…</span></div>
+                    <div class="muted" x-show="!start.first.loaded && !linkOnline">游戏连上后再点一次「创建并热加载」；或者完整重启游戏，让它自己加载。</div>
+                    <ol class="steps">
+                      <li>在游戏里输入 <code x-text="start.first.result.slash"></code> 试试。</li>
+                      <li>交给 Agent：<button class="btn tiny" @click="copy(promptFor(start.first.result), '给 Agent 的第一句话')">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
+                      <li>用编辑器打开它：<button class="btn tiny" @click="reveal(start.first.result.name)">打开文件夹</button></li>
+                    </ol>
+                  </div>
+                </template>
+              </div>
+            </li>
+          </ol>
+          <div class="row end">
+            <button class="btn primary" @click="finishStart()" x-text="startDone === 5 ? '全部完成，去概览' : '先到这里，去概览'"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 概览：连接、游戏、开发组件、本机服务，下面是最近的日志 -->
+    <section class="page" x-show="page === 'status'">
+      <div class="pagebar">
+        <h1>概览</h1>
+        <span class="muted" x-text="status ? '更新于 ' + fmtTime(statusAt) : '正在读取…'"></span>
+        <div class="spacer"></div>
+        <button class="btn" x-show="settingsLoaded && !settings.onboarded" @click="go('start')">第一次用？跟着五步走一遍</button>
+      </div>
+      <div class="pagebody overview">
+        <div class="panel ov-link" :class="'st-' + linkClass">
+          <div class="panel-head">连接</div>
+          <div class="panel-body ov-link-body">
+            <div class="ov-state">
+              <span class="dot big-dot"></span>
+              <span class="ov-state-text" x-text="linkText"></span>
+              <span class="muted" x-show="status && status.link.session" x-text="'会话 ' + val(status, 'link.session')"></span>
+            </div>
+            <div class="ov-why" x-text="linkWhy || linkHint"></div>
+            <div class="row">
+              <button class="btn primary" @click="go('dev')"><svg class="ico"><use href="#i-console"/></svg>打开开发台</button>
+              <button class="btn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found)"><svg class="ico"><use href="#i-camera"/></svg>截一张图</button>
+              <button class="btn" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button>
+            </div>
+            <dl class="kv ov-facts">
+              <dt>延迟</dt><dd x-text="status && status.link.ping_p50 != null ? Math.round(status.link.ping_p50 * 1000) + ' ms' : '—'"></dd>
+              <dt>心跳</dt><dd x-text="status && status.link.hb ? status.link.hb + ' 秒' : '—'"></dd>
+              <dt>信箱槽位</dt><dd x-text="val(status, 'link.slots_left')"></dd>
+              <dt>最近帧</dt><dd x-text="status && status.link.last_frame ? ago(status.link.last_frame) : '—'"></dd>
+              <dt>抓图</dt><dd x-text="status && status.link.capture ? status.link.capture.toUpperCase() : '—'"></dd>
+            </dl>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">游戏<span class="head-state" :class="status && status.game.found ? 'ok-text' : 'muted'" x-text="status ? (status.game.found ? '运行中' : '未运行') : '—'"></span></div>
+          <dl class="kv panel-body">
+            <dt>客户端</dt><dd x-text="clientVersion"></dd>
+            <dt>窗口</dt><dd x-text="status && status.game.client ? status.game.client.w + ' × ' + status.game.client.h : '—'"></dd>
+            <dt>进程</dt><dd x-text="val(status, 'game.pid')"></dd>
+            <dt>启动于</dt><dd x-text="status && status.game.start ? fmtTime(status.game.start) : '—'"></dd>
+          </dl>
+        </div>
+        <div class="panel">
+          <div class="panel-head">开发组件<span class="head-state" x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : '未连接'"></span></div>
+          <dl class="kv panel-body">
+            <dt>重载</dt><dd x-text="status ? (status.reload_pending ? '等待游戏里点击「立即重载」' : '无待处理') : '—'"></dd>
+            <dt>监视</dt><dd x-text="status && status.watch && status.watch.length ? status.watch.length + ' 个文件' : '无'"></dd>
+            <dt>插件版本</dt><dd :class="addonsUpdateText ? 'warn-text' : ''" :title="addonsUpdateText" x-text="addonsUpdateShort || '与程序一致'"></dd>
+            <dt>插件目录</dt><dd class="mono selectable ellipsis" :title="val(status, 'addons_dir')" x-text="shortPath(status && status.addons_dir)"></dd>
+          </dl>
+        </div>
+        <div class="panel ov-logs">
+          <div class="panel-head">最近的日志<div class="spacer"></div><a href="#" class="head-link" @click.prevent="go('dev')">在开发台看全部</a></div>
+          <div class="loglist compact panel-scroll">
+            <template x-for="e in recentLogs" :key="e.id">
+              <div class="logline">
+                <span class="t" x-text="fmtTime(e.t)"></span>
+                <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
+                <span class="text" x-text="firstLine(e.text)"></span>
+              </div>
+            </template>
+            <div class="empty" x-show="!logs.length">还没有日志</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 开发台：左边日志，右边工具 -->
+    <section class="page" x-show="page === 'dev'">
+      <div class="pagebar">
+        <h1>开发台</h1>
+        <span class="muted" x-text="visibleLogs.length + ' / ' + logs.length + ' 条日志'"></span>
+      </div>
+      <div class="pagebody fill dev-split">
+        <div class="dev-logs">
+          <div class="toolbar">
+            <template x-for="k in KINDS" :key="k">
+              <button class="chip" :class="[kinds[k] ? 'on' : '', 'k-' + k]" @click="kinds[k] = !kinds[k]" x-text="k"></button>
+            </template>
+            <div class="spacer"></div>
+            <input class="input small" type="search" placeholder="筛选文字" x-model.debounce.200ms="filterText">
+            <label class="check-inline"><input type="checkbox" x-model="follow"> 跟随</label>
+            <button class="btn small" @click="clearLogs()">清屏</button>
+          </div>
+          <div class="loglist selectable" x-ref="logbox" @scroll="onLogScroll($event)">
+            <template x-for="e in visibleLogs" :key="e.id">
+              <div class="logline" :class="'k-' + e.kind">
+                <span class="t" x-text="fmtTime(e.t)"></span>
+                <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
+                <pre class="text" x-text="e.text"></pre>
+                <span class="meta" x-show="e.addon || e.job" x-text="[e.addon, e.job ? 'job ' + e.job : ''].filter(Boolean).join(' · ')"></span>
+              </div>
+            </template>
+            <div class="empty" x-show="!visibleLogs.length">没有符合筛选的日志。</div>
+          </div>
+        </div>
+        <div class="dev-tools">
+          <div class="tabs">
+            <button class="tab" :class="{on: devTool === 'run'}" @click="devTool = 'run'">运行 Lua</button>
+            <button class="tab" :class="{on: devTool === 'snap'}" @click="devTool = 'snap'">截图</button>
+            <button class="tab" :class="{on: devTool === 'watch'}" @click="devTool = 'watch'">监视<span class="tab-count" x-show="status && status.watch && status.watch.length" x-text="status && status.watch ? status.watch.length : ''"></span></button>
+            <button class="tab" :class="{on: devTool === 'reload'}" @click="devTool = 'reload'">重载</button>
+          </div>
+          <div class="tool-body" x-show="devTool === 'run'">
+            <form hx-post="/api/run" hx-ext="json" hx-swap="none" hx-disabled-elt="find button"
+                  @api-start="run.busy = true; run.result = null" @api-done="onRun($event.detail)">
+              <textarea class="input mono code-input" name="code" rows="7" placeholder="return GetBuildInfo()" x-model="run.code"
+                        @keydown.ctrl.enter.prevent="$el.form.requestSubmit()"></textarea>
+              <div class="row">
+                <label class="muted small">超时 <input class="input tiny" type="number" name="timeout_ms" min="1000" step="1000" x-model.number="run.timeout"> ms</label>
+                <div class="spacer"></div>
+                <button class="btn primary" type="submit" x-text="run.busy ? '运行中…' : '运行（Ctrl+Enter）'"></button>
+              </div>
+            </form>
+            <template x-if="run.result">
+              <div class="result selectable" :class="run.result.ok ? 'ok' : 'bad'">
+                <template x-if="run.result.ok">
+                  <div>
+                    <div class="muted small" x-text="'job ' + run.result.job + ' · ' + run.result.ms + ' ms' + (run.result.chunk ? ' · ' + run.result.chunk : '')"></div>
+                    <template x-if="run.result.values && run.result.values.length">
+                      <ol class="values"><template x-for="(v, i) in run.result.values" :key="i"><li class="mono" x-text="show(v)"></li></template></ol>
+                    </template>
+                    <div class="muted" x-show="!run.result.values || !run.result.values.length">没有返回值。</div>
+                  </div>
+                </template>
+                <template x-if="!run.result.ok">
+                  <div>
+                    <div class="muted small" x-show="run.result.job" x-text="'job ' + run.result.job"></div>
+                    <pre class="mono err" x-text="run.result.error"></pre>
+                    <pre class="mono stack" x-show="run.result.stack" x-text="run.result.stack"></pre>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <p class="muted small tool-note">在游戏里运行一段 Lua，返回值显示在这里；print 输出和报错在左边的日志里。</p>
+          </div>
+          <div class="tool-body" x-show="devTool === 'snap'">
+            <div class="row">
+              <button class="btn primary" @click="takeSnap()" :disabled="snap.busy"><svg class="ico"><use href="#i-camera"/></svg><span x-text="snap.busy ? '截图中…' : '截一张'"></span></button>
+            </div>
+            <template x-if="snap.url">
+              <figure class="snap">
+                <img :src="snap.url" alt="游戏截图">
+                <figcaption class="muted small mono selectable" x-text="snap.info.width + ' × ' + snap.info.height + ' · ' + snap.info.path"></figcaption>
+              </figure>
+            </template>
+            <p class="muted small tool-note" x-show="!snap.url && !snap.error">游戏窗口客户区的截图，缩到 1280 宽；文件存在 snaps 文件夹里。</p>
+            <pre class="mono err" x-show="snap.error" x-text="snap.error"></pre>
+          </div>
+          <div class="tool-body" x-show="devTool === 'watch'">
+            <form class="row" @submit.prevent="watch('start', watchTarget); watchTarget = ''">
+              <input class="input mono grow" placeholder="插件名或 .lua 文件路径" x-model="watchTarget">
+              <button class="btn primary" type="submit" :disabled="!watchTarget">开始监视</button>
+            </form>
+            <ul class="watch">
+              <template x-for="w in (status ? status.watch : [])" :key="w">
+                <li><span class="mono selectable" x-text="w"></span><button class="btn tiny" @click="watch('stop', w)">停止</button></li>
+              </template>
+            </ul>
+            <p class="muted small tool-note" x-show="!status || !status.watch || !status.watch.length">没有在监视的文件：保存被监视的文件时自动热加载（有语法错误的不会送进游戏）。</p>
+          </div>
+          <div class="tool-body" x-show="devTool === 'reload'">
+            <div class="row"><button class="btn primary" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button></div>
+            <p class="muted small tool-note">这个客户端只允许点击或按键触发重载：请求后游戏里会弹出按钮，点「立即重载」才会 /reload，完成时日志里出现 RELOAD done。</p>
+            <p class="small" x-show="status && status.reload_pending">⏳ 等待游戏里点击「立即重载」<span class="muted mono" x-show="reload.nonce" x-text="'（nonce ' + reload.nonce + '）'"></span></p>
+            <pre class="mono err" x-show="reload.error" x-text="reload.error"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 插件：左边列表，右边详情（概况、报错、检查、历史） -->
+    <section class="page" x-show="page === 'addons'">
+      <div class="pagebar">
+        <h1>插件</h1>
+        <span class="muted" x-show="addons.client" x-text="'客户端 ' + val(addons, 'client.version') + ' · Interface ' + val(addons, 'client.interface')"></span>
+        <div class="spacer"></div>
+        <button class="btn primary" @click="na.open = true; na.result = null; na.error = ''"><svg class="ico"><use href="#i-plus"/></svg>新建插件</button>
+        <button class="btn" @click="loadAddons()" :disabled="addons.busy"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+      </div>
+      <div class="pagebody fill master-detail">
+        <div class="master">
+          <div class="loader" x-show="addons.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在读取…</div>
+          <p class="muted pad" x-show="addons.list !== null && !addons.list.length" x-text="addons.note"></p>
+          <ul class="mlist">
+            <template x-for="a in addonRows" :key="a.name">
+              <li class="mitem" :class="{active: addons.sel === a.name, child: a._child}" @click="selectAddon(a.name)">
+                <div class="mitem-top">
+                  <span class="mitem-title" x-text="a.title"></span>
+                  <span class="mitem-badge bad" x-show="a.errors.signatures" x-text="a.errors.signatures"></span>
+                </div>
+                <div class="mitem-sub">
+                  <span class="mono" x-text="a.version || '—'"></span>
+                  <span class="pill tiny ok" x-show="a.ours" x-text="roleText(a.ours)"></span>
+                  <span class="pill tiny warn" x-show="a.current === false">过期</span>
+                  <span class="pill tiny off" x-show="a.enabled === false">已禁用</span>
+                  <span class="pill tiny off" x-show="a.load_on_demand">按需</span>
+                </div>
+              </li>
+            </template>
+          </ul>
+          <div class="master-foot" x-show="addons.errors">
+            <a href="#" class="mfoot-item" :class="{active: addons.sel === '*'}" @click.prevent="selectAddon('*')">
+              <span>错误收集</span>
+              <span class="muted" x-text="addons.errors && addons.errors.available ? reportText(addons.errors.report) + ' · ' + addons.errors.signatures + ' 种' : '不可用'"></span>
+            </a>
+          </div>
+        </div>
+
+        <div class="detail">
+          <!-- 错误收集（全部插件的报错） -->
+          <template x-if="addons.sel === '*'">
+            <div class="detail-inner">
+              <div class="detail-head">
+                <div><div class="detail-title">错误收集</div><div class="muted small">平台插件 !WuxianWorkshop 收集的全部 Lua 报错</div></div>
+              </div>
+              <div class="detail-scroll">
+                <template x-if="addons.errors && addons.errors.available">
+                  <dl class="kv">
+                    <dt>开关</dt><dd><span class="pill" :class="addons.errors.report === true ? 'ok' : 'off'" x-text="reportText(addons.errors.report)"></span></dd>
+                    <dt>记录</dt><dd x-text="addons.errors.signatures + ' 种报错' + (addons.errors.dropped ? '，限速丢弃 ' + addons.errors.dropped + ' 次' : '')"></dd>
+                    <dt>截至</dt><dd x-text="fmtStamp(addons.errors.written) + '（客户端在登出、/reload、退出时写入）'"></dd>
+                  </dl>
+                </template>
+                <p class="muted" x-show="addons.errors && !addons.errors.available" x-text="addons.errors && addons.errors.reason"></p>
+                <p class="muted small">平台插件把所有插件的 Lua 错误按签名去重后存进 SavedVariables（最多 200 种），游戏里用 <code>/wxw report on|off|status</code> 开关；关掉时错误只留在内存、不写盘。游戏运行时 App 不改 SavedVariables（会被游戏退出时的存盘覆盖）。</p>
+                <p class="muted" x-show="addons.entriesBusy">正在读取…</p>
+                <ul class="errlist selectable">
+                  <template x-for="(e, i) in addons.entries" :key="i">
+                    <li>
+                      <div class="errhead">
+                        <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
+                        <b x-text="'×' + e.count"></b>
+                        <span class="mono" x-text="e.addon || '（未归属）'"></span>
+                        <span class="muted" x-text="'最近 ' + fmtStamp(e.last)"></span>
+                      </div>
+                      <div class="mono errmsg" x-text="e.message"></div>
+                      <details x-show="e.stack"><summary>调用栈</summary><pre class="mono" x-text="e.stack"></pre></details>
+                    </li>
+                  </template>
+                </ul>
+              </div>
+            </div>
+          </template>
+
+          <!-- 一个插件 -->
+          <template x-if="selAddon">
+            <div class="detail-inner">
+              <div class="detail-head">
+                <div class="grow">
+                  <div class="detail-title"><span x-text="selAddon.title"></span><span class="pill ok" x-show="selAddon.ours" x-text="roleText(selAddon.ours)"></span></div>
+                  <div class="muted small mono" x-text="selAddon.name + (selAddon.version ? ' · ' + selAddon.version : '')"></div>
+                </div>
+                <button class="btn" x-show="!selAddon.ours" @click="histLoad(selAddon.name)" :disabled="!linkOnline" title="按 toc 顺序把它的 Lua 送进游戏（先检查语法）"><svg class="ico"><use href="#i-bolt"/></svg>热加载</button>
+                <button class="btn" @click="reveal(selAddon.name)"><svg class="ico"><use href="#i-folder"/></svg>打开文件夹</button>
+              </div>
+              <div class="tabs">
+                <button class="tab" :class="{on: addons.tab === 'info'}" @click="setAddonTab('info')">概况</button>
+                <button class="tab" :class="{on: addons.tab === 'errors'}" @click="setAddonTab('errors')">报错<span class="tab-count bad" x-show="selAddon.errors.signatures" x-text="selAddon.errors.signatures"></span></button>
+                <button class="tab" x-show="!selAddon.ours" :class="{on: addons.tab === 'check'}" @click="setAddonTab('check')">检查</button>
+                <button class="tab" x-show="!selAddon.ours" :class="{on: addons.tab === 'history'}" @click="setAddonTab('history')">历史<span class="tab-count" x-show="selAddon.history" x-text="selAddon.history ? selAddon.history.versions : ''"></span></button>
+              </div>
+              <div class="detail-scroll">
+
+                <div x-show="addons.tab === 'info'">
+                  <p class="notes-line" x-show="selAddon.notes" x-text="selAddon.notes"></p>
+                  <dl class="kv">
+                    <dt>版本</dt><dd x-text="selAddon.version || '—'"></dd>
+                    <dt>Interface</dt>
+                    <dd><span x-text="selAddon.interface.length ? selAddon.interface.join(', ') : '—'"></span>
+                      <span class="pill ok" x-show="selAddon.current === true">当前</span>
+                      <span class="pill warn" x-show="selAddon.current === false" title="和客户端的 Interface 号不一致：游戏可能把它当作过期插件">过期</span></dd>
+                    <dt>状态</dt><dd><span class="pill" :class="selAddon.enabled === true ? 'ok' : (selAddon.enabled === false ? 'off' : 'warn')" x-text="enabledText(selAddon)"></span>
+                      <span class="pill off" x-show="selAddon.load_on_demand">按需加载</span></dd>
+                    <dt>作者</dt><dd x-text="selAddon.author || '—'"></dd>
+                    <dt>依赖</dt><dd class="mono" x-text="(selAddon.deps || []).concat(selAddon.optional_deps || []).join('、') || '—'"></dd>
+                    <dt>存档变量</dt><dd class="mono" x-text="(selAddon.saved_variables || []).join('、') || '—'"></dd>
+                    <dt>报错</dt><dd x-text="selAddon.errors.signatures ? selAddon.errors.signatures + ' 种 · ' + selAddon.errors.count + ' 次' : '没有记录'"></dd>
+                    <dt>历史</dt><dd x-text="selAddon.ours ? '—（开发组件由程序维护）' : (selAddon.history ? selAddon.history.versions + ' 份，最近 #' + selAddon.history.latest_id + '（' + fmtStamp(selAddon.history.latest) + '）' : '还没有存过：热加载、开始监视或手动存时会存')"></dd>
+                    <dt>toc</dt><dd class="mono selectable" x-text="selAddon.toc || '—'"></dd>
+                  </dl>
+                </div>
+
+                <div x-show="addons.tab === 'errors'">
+                  <p class="muted" x-show="addons.entriesBusy">正在读取…</p>
+                  <p class="muted" x-show="!addons.entriesBusy && addons.entriesNote" x-text="addons.entriesNote"></p>
+                  <ul class="errlist selectable">
+                    <template x-for="(e, i) in addons.entries" :key="i">
+                      <li>
+                        <div class="errhead">
+                          <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
+                          <b x-text="'×' + e.count"></b>
+                          <span class="muted" x-text="'最近 ' + fmtStamp(e.last) + '，首次 ' + fmtStamp(e.first)"></span>
+                          <span class="muted" x-show="e.build" x-text="'构建 ' + e.build"></span>
+                        </div>
+                        <div class="mono errmsg" x-text="e.message"></div>
+                        <details x-show="e.stack"><summary>调用栈</summary><pre class="mono" x-text="e.stack"></pre></details>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+
+                <div x-show="addons.tab === 'check'">
+                  <div class="hist-head">
+                    <span x-show="chk.busy" class="muted">正在检查…</span>
+                    <span x-show="!chk.busy && chk.error" class="bad-text" x-text="chk.error"></span>
+                    <span x-show="!chk.busy && chk.data" x-text="checkSummary"></span>
+                    <span class="hist-acts"><button class="btn tiny" @click="runCheck(selAddon.name)" :disabled="chk.busy">再查一次</button></span>
+                  </div>
+                  <p class="muted small" x-show="chk.data && !checkRows.length">没有发现问题。</p>
+                  <ul class="hist-list check-list selectable" x-show="checkRows.length">
+                    <template x-for="(f, i) in checkRows" :key="i">
+                      <li>
+                        <div class="hist-line">
+                          <span class="pill" :class="f.level" x-text="checkText(f.code)"></span>
+                          <span class="mono small" x-show="f.file" x-text="f.file + (f.line ? ':' + f.line : '')"></span>
+                          <span class="small" x-text="f.message"></span>
+                        </div>
+                        <div class="muted small check-hint" x-show="f.hint" x-text="f.hint"></div>
+                      </li>
+                    </template>
+                  </ul>
+                  <p class="muted small tool-note">送进游戏前的检查：Lua 5.1 语法、客户端没有的库和 API、拼错的名字、误写的全局变量、受限事件、toc 与 XML；查不定的名字会问正在运行的游戏。</p>
+                </div>
+
+                <div x-show="addons.tab === 'history'">
+                  <div class="hist-head">
+                    <span x-show="hist.busy" class="muted">正在读取…</span>
+                    <span x-show="!hist.busy" x-text="histNow || hist.note"></span>
+                    <span class="hist-acts">
+                      <button class="btn tiny" @click="histSave(selAddon.name)" :disabled="hist.working === 'save'">存一份</button>
+                      <button class="btn tiny" :class="hist.confirm === 'forget' ? 'confirm' : ''" x-show="hist.data && hist.data.versions.length"
+                              @click="histForget(selAddon.name)" x-text="hist.confirm === 'forget' ? '再点一次清空' : '清空历史'"></button>
+                    </span>
+                  </div>
+                  <template x-if="hist.result">
+                    <div class="result ok hist-result">
+                      <div x-text="'已回退到 #' + hist.result.restored + '：写回 ' + hist.result.written.length + ' 个文件，删除 '
+                        + hist.result.removed.length + ' 个' + (hist.result.saved ? '；回退前的文件存为 #' + hist.result.saved + '，想撤销就回退到它。' : '。')"></div>
+                      <div class="muted small" x-show="hist.result.skipped && hist.result.skipped.length"
+                           x-text="'这些文件太大没有存，没有动：' + (hist.result.skipped || []).join('、')"></div>
+                      <div class="muted small" x-show="hist.result.watched">正在监视这个插件：写回的文件已经自动热加载进游戏。</div>
+                      <div class="row tight" x-show="!hist.result.watched">
+                        <span class="muted small">游戏里还在跑旧代码：</span>
+                        <button class="btn tiny" @click="histLoad(selAddon.name)" :disabled="!linkOnline">热加载</button>
+                        <button class="btn tiny" @click="requestReload()" :disabled="!linkOnline || reload.busy">重载界面</button>
+                      </div>
+                    </div>
+                  </template>
+                  <ul class="hist-list" x-show="hist.data && hist.data.versions.length">
+                    <template x-for="(v, i) in (hist.data ? hist.data.versions : [])" :key="v.id">
+                      <li>
+                        <div class="hist-line">
+                          <span class="vid" x-text="'#' + v.id"></span>
+                          <span class="muted" x-text="fmtStamp(v.time)"></span>
+                          <span class="pill" :class="v.reason === 'manual' ? 'warn' : (v.reason === 'restore' ? 'bad' : '')" x-text="reasonText(v.reason)"></span>
+                          <span class="mono small" x-show="v.note" x-text="v.note"></span>
+                          <span class="muted small" x-text="i === hist.data.versions.length - 1 && !(v.counts.changed || v.counts.removed) ? '最早一份：' + v.count + ' 个文件' : changeText(v)"></span>
+                          <span class="hist-acts">
+                            <button class="btn tiny" @click="histDiff(selAddon.name, v.id, 'prev')" :disabled="hist.diffBusy"
+                                    x-text="hist.diffKey === v.id + ':prev' ? '收起' : '这一版改了什么'"></button>
+                            <button class="btn tiny" @click="histDiff(selAddon.name, v.id, 'now')" :disabled="hist.diffBusy"
+                                    x-text="hist.diffKey === v.id + ':now' ? '收起' : '和现在比'"></button>
+                            <button class="btn tiny" :class="hist.confirm === 'r' + v.id ? 'confirm' : ''" @click="histRestore(selAddon.name, v.id)"
+                                    :disabled="hist.working === 'r' + v.id" x-text="hist.confirm === 'r' + v.id ? '再点一次回退' : '回退到这一版'"></button>
+                          </span>
+                        </div>
+                        <template x-if="hist.diff && (hist.diffKey === v.id + ':prev' || hist.diffKey === v.id + ':now')">
+                          <div class="hist-diff">
+                            <p class="muted small" x-show="!hist.diff.files.length">没有差异。</p>
+                            <template x-for="f in hist.diff.files" :key="f.path">
+                              <div class="diff-file">
+                                <div class="diff-head">
+                                  <span class="pill" :class="f.status === 'added' ? 'ok' : (f.status === 'removed' ? 'bad' : 'warn')" x-text="statusText(f.status)"></span>
+                                  <span class="mono" x-text="f.path"></span>
+                                  <span class="muted small" x-text="f.binary ? '二进制 ' + f.old_size + ' → ' + f.new_size + ' 字节' : '+' + f.plus + ' −' + f.minus"></span>
+                                </div>
+                                <pre class="diff selectable" x-show="f.diff"><template x-for="(l, j) in diffLines(f.diff)" :key="j"><span :class="l.c" x-text="l.t"></span></template></pre>
+                              </div>
+                            </template>
+                            <p class="muted small" x-show="hist.diff.truncated">差异太长，后面的省略了（每个文件的增删行数仍然准确）。</p>
+                          </div>
+                        </template>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+
+              </div>
+            </div>
+          </template>
+
+          <div class="empty detail-empty" x-show="!selAddon && addons.sel !== '*' && addons.list && addons.list.length">在左边选一个插件</div>
+        </div>
+      </div>
+
+      <!-- 新建插件（对话框） -->
+      <div class="modal-back" x-show="na.open" x-transition.opacity @keydown.escape.window="na.open = false" @click.self="na.open = false">
+        <div class="modal">
+          <div class="modal-head"><span>新建插件</span><button class="x" @click="na.open = false" title="关闭（Esc）">✕</button></div>
+          <div class="modal-body">
+            <form class="form" @submit.prevent="newAddon()" x-show="!na.result">
+              <label class="field"><span>文件夹名</span><input class="input mono" x-model="na.name" placeholder="MyFirstAddon（英文字母、数字、下划线，字母开头）"></label>
+              <label class="field"><span>显示名称</span><input class="input" x-model="na.title" placeholder="我的第一个插件（游戏里插件列表显示的名字）"></label>
+              <label class="field"><span>一句话说明</span><input class="input" x-model="na.notes" placeholder="可以不填"></label>
+              <div class="field"><span>模板</span>
+                <div class="row tight">
+                  <label class="check-inline"><input type="radio" value="basic" x-model="na.template"> 斜杠命令 + 存档变量</label>
+                  <label class="check-inline"><input type="radio" value="window" x-model="na.template"> 再加一个可拖动的窗口</label>
+                </div>
+              </div>
+              <div class="row end">
+                <span class="small bad-text" x-text="na.error"></span>
+                <div class="spacer"></div>
+                <button class="btn" type="button" @click="na.open = false">取消</button>
+                <button class="btn primary" type="submit" :disabled="na.busy || !na.name.trim()" x-text="na.busy ? '创建中…' : '创建'"></button>
+              </div>
+            </form>
+            <template x-if="na.result">
+              <div class="result ok">
+                <div>已创建 <span class="mono selectable" x-text="na.result.path"></span>：<span class="mono" x-text="na.result.files.join('、')"></span></div>
+                <ol class="steps">
+                  <li>热加载进游戏（不用重启）：<button class="btn tiny" @click="naLoad()" :disabled="!linkOnline">热加载</button>，然后在游戏里输入 <code x-text="na.result.slash"></code>。</li>
+                  <li>用编辑器打开它：<button class="btn tiny" @click="naReveal()">打开文件夹</button></li>
+                  <li>交给 Agent：<button class="btn tiny" @click="copy(naPrompt, '给 Agent 的第一句话')">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
+                </ol>
+                <p class="muted small">游戏只在启动时发现新文件夹：完整重启游戏后它才会出现在插件列表里、自己加载；在那之前热加载照样能用。</p>
+                <div class="row end"><button class="btn primary" @click="na.open = false; selectAddon(na.result.name)">完成</button></div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- API 手册：左边搜索与结果，右边条目 -->
+    <section class="page" x-show="page === 'api'">
+      <div class="pagebar">
+        <h1>API 手册</h1>
+        <span class="muted" x-text="docsAbout"></span>
+      </div>
+      <div class="pagebody fill master-detail api">
+        <div class="master">
+          <div class="master-tools">
+            <input class="input" type="search" placeholder="搜函数、事件或表：UnitHealth、C_Spell、COOLDOWN" x-model="docs.q"
+                   @input.debounce.250ms="docsSearch()" @keydown.enter.prevent="docsSearch()">
+            <div class="toolbar kinds">
+              <template x-for="k in API_KINDS" :key="k.id">
+                <button class="chip topic" :class="{on: docs.kind === k.id}" @click="docs.kind = docs.kind === k.id ? '' : k.id; docsSearch()" x-text="k.label"></button>
+              </template>
+              <span class="muted small" x-show="docs.q" x-text="docs.busy ? '查找中…' : docs.results.length + ' 条'"></span>
+            </div>
+          </div>
+          <div class="master-scroll">
+            <ul class="api-results" x-show="docs.results.length">
+              <template x-for="r in docs.results" :key="r.kind + ':' + r.name">
+                <li :class="{active: docs.sel && docs.sel.name === r.name}" @click="docsOpen(r)">
+                  <div class="mono sig"><span class="kindtag" x-text="KIND_TEXT[r.kind] || r.kind"></span><span x-text="r.sig"></span></div>
+                  <div class="flags" x-show="r.flags.length"><template x-for="f in r.flags"><span class="pill warn" x-text="f"></span></template></div>
+                </li>
+              </template>
+            </ul>
+            <div class="empty" x-show="docs.q && !docs.busy && !docs.results.length">没有找到</div>
+            <div class="topics-head">手册章节</div>
+            <ul class="mlist topics">
+              <template x-for="t in docs.topics" :key="t.id">
+                <li class="mitem" :class="{active: docs.topic && docs.topic.id === t.id && !docs.sel}" @click="docsTopic(t)"><span class="mitem-title" x-text="t.title"></span></li>
+              </template>
+            </ul>
+          </div>
+        </div>
+        <div class="detail">
+          <div class="detail-scroll api-detail selectable">
+            <template x-if="docs.sel">
+              <div>
+                <div class="detail-head flat">
+                  <span class="kindtag" x-text="KIND_TEXT[docs.sel.kind] || docs.sel.kind"></span>
+                  <span class="detail-title grow" x-text="docs.sel.name"></span>
+                  <button class="btn tiny" @click="copy(docs.sel.name, docs.sel.name)">复制名字</button>
+                  <button class="btn tiny" x-show="docs.sel.kind === 'function'" @click="docsCheck()" :disabled="!linkOnline || docs.checking"
+                          :title="linkOnline ? '在正在运行的游戏里 return type(...)' : '游戏连上后才能核对'">在游戏里核对</button>
+                </div>
+                <pre class="code sigline" x-text="docs.sel.sig"></pre>
+                <p class="small" x-show="docs.check" :class="docs.check && docs.check.ok ? 'ok-text' : 'warn-text'" x-text="docs.check && docs.check.text"></p>
+                <div class="flags" x-show="docs.sel.flags && docs.sel.flags.length"><template x-for="f in docs.sel.flags"><span class="pill warn" x-text="f"></span></template></div>
+                <p x-show="docs.sel.doc" x-text="docs.sel.doc"></p>
+                <template x-for="sec in docsSections" :key="sec.title">
+                  <div>
+                    <h2 x-text="sec.title"></h2>
+                    <table class="table params">
+                      <thead><tr><th>名称</th><th>类型</th><th x-text="sec.third"></th></tr></thead>
+                      <tbody>
+                        <template x-for="(p, i) in sec.rows" :key="i">
+                          <tr><td class="mono" x-text="p.n"></td><td class="mono" x-text="p.t"></td><td class="mono muted" x-text="sec.cell(p)"></td></tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+                <details x-show="docs.sel.raw && Object.keys(docs.sel.raw).length"><summary class="muted small">文档原始字段</summary>
+                  <pre class="code" x-text="JSON.stringify(docs.sel.raw, null, 2)"></pre></details>
+              </div>
+            </template>
+            <template x-if="!docs.sel && docs.topic">
+              <div>
+                <div class="detail-head flat"><span class="kindtag">手册</span><span class="detail-title" x-text="docs.topic.title"></span></div>
+                <div class="md" x-html="md(docs.topic.md)"></div>
+              </div>
+            </template>
+            <template x-if="!docs.sel && !docs.topic">
+              <div class="empty intro">
+                <div>这个客户端自己的 API 文档：函数、事件、枚举与结构，带受保护、机密值等标记。</div>
+                <div class="small">左边搜索，或看手册章节。Agent 用 MCP 工具 api_search / api_get / api_manual 查的是同一份。</div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 接入 Agent -->
+    <section class="page" x-show="page === 'connect'">
+      <div class="pagebar">
+        <h1>接入 Agent</h1>
+        <span class="muted">登记到 Agent 的用户级设置，所有项目都能用</span>
+        <div class="spacer"></div>
+        <button class="btn" @click="loadAgents()" :disabled="!!agents.busy"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+      </div>
+      <div class="pagebody">
+        <div class="panel">
+          <div class="panel-head">一键接入<div class="spacer"></div><span class="muted small mono selectable" x-text="agentsProgram"></span></div>
+          <div class="loader" x-show="agents.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在查找 Agent…</div>
+          <div class="agent-list" x-show="agents.list !== null">
+            <template x-for="h in agentsShown" :key="h.id">
+              <div class="agent-row" :class="'st-' + h.state">
+                <div class="agent-main">
+                  <div class="agent-head"><b x-text="h.title"></b><span class="pill" :class="agentPill(h)[0]" x-text="agentPill(h)[1]"></span></div>
+                  <div class="small muted" x-text="h.detail"></div>
+                  <p class="small" x-show="agents.note[h.id]" :class="agents.note[h.id] && agents.note[h.id].ok ? 'ok-text' : 'warn-text'" x-text="agents.note[h.id] && agents.note[h.id].text"></p>
+                  <p class="small muted" x-show="h.state === 'ok'" x-text="h.apply"></p>
+                  <details x-show="!h.can_connect || h.state === 'error'">
+                    <summary class="small">手动接入</summary>
+                    <pre class="code selectable" x-text="agents.manual[h.id]"></pre>
+                    <button class="btn tiny" @click="copy(agents.manual[h.id], h.title + ' 配置')">复制</button>
+                  </details>
+                  <div class="mono tiny-path" :title="h.where" x-text="shortPath(h.where)"></div>
+                </div>
+                <div class="agent-acts">
+                  <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="!!agents.busy"
+                          x-text="agents.busy === h.id + ':connect' ? '接入中…' : (h.state === 'other' ? '改成现在这个' : '一键接入')"></button>
+                  <button class="btn" x-show="h.state === 'ok' && h.id !== 'cursor'" @click="agentAction(h, 'verify')" :disabled="!!agents.busy"
+                          x-text="agents.busy === h.id + ':verify' ? '检查中…' : '检查'"></button>
+                  <button class="btn" x-show="h.state === 'ok' || h.state === 'other'" @click="agentAction(h, 'disconnect')" :disabled="!!agents.busy"
+                          x-text="agents.busy === h.id + ':disconnect' ? '断开中…' : '断开'"></button>
+                </div>
+              </div>
+            </template>
+          </div>
+          <p class="muted small pad" x-show="agentsMissing.length" x-text="'没有找到：' + agentsMissing.join('、') + '。装好后点「刷新」。'"></p>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">其他支持 MCP 的 Agent<div class="spacer"></div><button class="btn tiny" @click="copy(agents.manual.other, 'MCP 配置')">复制</button></div>
+          <div class="panel-body">
+            <p class="muted small">在它的 MCP 设置里加一个 stdio 服务器；大多数 Agent 都认这个格式：</p>
+            <pre class="code selectable" x-text="agents.manual.other"></pre>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">手动配置</div>
+          <div class="panel-body">
+            <dl class="kv">
+              <dt>端口</dt><dd class="mono selectable" x-text="conn.port"></dd>
+              <dt>MCP 地址</dt><dd class="mono selectable" x-text="conn.mcpUrl"></dd>
+              <dt>Token</dt>
+              <dd class="mono">
+                <span class="selectable" x-text="showToken ? conn.token : mask(conn.token)"></span>
+                <button class="btn tiny" @click="showToken = !showToken" x-text="showToken ? '隐藏' : '显示'"></button>
+                <button class="btn tiny" @click="copy(conn.token, 'token')">复制</button>
+              </dd>
+              <dt>命令行</dt><dd class="mono selectable" x-text="conn.exe"></dd>
+            </dl>
+            <p class="muted small">token 每次启动守护进程都会换。stdio 方式（<code>wuxian mcp</code>）自己读 daemon.json 去连，不用填 token，推荐；HTTP 方式直接连这个进程的 <code>/mcp</code>，省一个进程，但要把当前 token 写进配置。</p>
+            <template x-for="s in snippets" :key="s.id">
+              <details class="snippet">
+                <summary><span x-text="s.title"></span> <span class="muted small" x-text="s.file"></span></summary>
+                <div class="row end"><button class="btn tiny" @click="copy(s.text, s.title)">复制</button></div>
+                <pre class="code selectable" x-text="s.text"></pre>
+              </details>
+            </template>
+            <details class="snippet">
+              <summary>命令行速查</summary>
+              <div class="row end"><button class="btn tiny" @click="copy(cliHelp, '命令行速查')">复制</button></div>
+              <pre class="code selectable" x-text="cliHelp"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 自检与修复 -->
+    <section class="page" x-show="page === 'doctor'">
+      <div class="pagebar">
+        <h1>自检与修复</h1>
+        <span class="muted" x-show="doctor.checks.length" x-text="doctorSummary"></span>
+        <div class="spacer"></div>
+        <button class="btn" @click="runDoctor()" :disabled="doctor.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="doctor.busy ? '检查中…' : '重新检查'"></span></button>
+      </div>
+      <div class="pagebody">
+        <div class="panel">
+          <ul class="checks">
+            <template x-for="c in doctor.checks" :key="c.id">
+              <li class="check" :class="c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'skip'">
+                <span class="mark" x-text="c.ok === true ? '✓' : c.ok === false ? '✕' : '?'"></span>
+                <div class="check-body">
+                  <div class="check-title" x-text="c.title || c.id"></div>
+                  <div class="muted" x-text="c.detail"></div>
+                </div>
+                <button class="btn" x-show="c.ok === false && c.fix" :disabled="doctor.fixing" :title="'修复动作：' + c.fix" @click="fix(c)"
+                        x-text="doctor.fixing === c.id ? '修复中…' : '修复'"></button>
+              </li>
+            </template>
+          </ul>
+          <div class="loader" x-show="doctor.busy && !doctor.checks.length"><svg class="inf"><use href="#inf-line"/></svg>检查中…</div>
+          <p class="muted pad" x-show="!doctor.checks.length && !doctor.busy" x-text="doctor.error || '还没有检查结果。'"></p>
+          <pre class="result selectable" x-show="doctor.result" x-text="doctor.result"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="page" x-show="page === 'settings'">
+      <div class="pagebar"><h1>设置</h1></div>
+      <div class="pagebody">
+        <div class="settings-grid">
+          <form class="panel" hx-post="/api/settings" hx-ext="json" hx-swap="none" hx-disabled-elt="find button[type=submit]"
+                @api-start="settingsNote = '保存中…'" @api-done="onSettingsSaved($event.detail)">
+            <div class="panel-head">常规</div>
+            <div class="panel-body form">
+              <label class="field">
+                <span>抓图模式</span>
+                <select class="input" name="capture" x-model="form.capture">
+                  <option value="wgc">WGC：读窗口本身，被盖住也能读（Windows 10 会画黄框）</option>
+                  <option value="gdi">GDI：读屏幕，帧码所在的地方不能被盖住</option>
+                </select>
+              </label>
+              <p class="muted small" x-show="settings.capture_in_use && settings.capture_in_use !== settings.capture"
+                 x-text="'当前实际在用 ' + String(settings.capture_in_use).toUpperCase() + '，新的抓图模式在下一次找到游戏窗口时生效。'"></p>
+              <label class="field">
+                <span>游戏目录</span>
+                <input class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _cn_beta_">
+              </label>
+              <label class="switch">
+                <input type="checkbox" name="autostart" x-model="form.autostart">
+                <span><b>开机自启</b><small>只写当前用户的 Run 键，不需要管理员</small></span>
+              </label>
+              <label class="field">
+                <span>语言</span>
+                <select class="input" name="language" x-model="form.language"><option value="zh-CN">简体中文</option></select>
+              </label>
+              <div class="row end">
+                <span class="muted small" x-text="settingsNote"></span>
+                <button class="btn primary" type="submit">保存</button>
+              </div>
+            </div>
+          </form>
+          <div class="panel">
+            <div class="panel-head">关于与更新</div>
+            <div class="panel-body">
+              <div class="about">
+                <img src="logo.svg" alt="">
+                <div>
+                  <div class="about-name">无限工坊</div>
+                  <div class="about-tag">用 AI 写魔兽插件</div>
+                  <div class="muted small" x-text="status ? '版本 ' + status.daemon.version + ' · 插件 ' + status.daemon.version : '—'"></div>
+                  <a href="#" class="site-link" @click.prevent="openSite()"><svg class="ico"><use href="#i-globe"/></svg>官网 wuxianwow.com/workshop</a>
+                </div>
+              </div>
+              <dl class="kv">
+                <dt>本机服务</dt><dd x-text="status ? '进程 ' + status.daemon.pid + ' · 运行 ' + fmtDuration(status.daemon.uptime) : '—'"></dd>
+                <dt>更新</dt><dd x-text="updateText"></dd>
+                <dt>运行时文件</dt><dd class="mono selectable">%LOCALAPPDATA%\WuxianWorkshop\（logs、snaps、state、history）</dd>
+              </dl>
+              <div class="row" x-show="upd?.supported">
+                <button class="btn" @click="checkUpdate()" :disabled="updBusy || ['checking', 'downloading'].includes(upd?.state)">检查更新</button>
+                <button class="btn primary" x-show="upd?.state === 'available'" @click="downloadUpdate()" :disabled="updBusy"
+                        x-text="'下载 ' + (upd?.latest || '') + '（' + fmtSize(upd?.size) + '）'"></button>
+                <progress max="100" :value="upd?.progress || 0" x-show="upd?.state === 'downloading'"></progress>
+                <button class="btn primary" x-show="upd?.state === 'ready'" @click="applyUpdate()" :disabled="updBusy">重启并更新</button>
+              </div>
+              <div class="md notes selectable" x-show="upd?.notes && ['available', 'downloading', 'ready'].includes(upd?.state)" x-html="md(upd?.notes)"></div>
+              <p class="muted small" x-show="upd && !upd.supported" x-text="upd?.reason"></p>
+              <p class="muted small">程序更新会带着插件的更新：游戏关着时自动装进游戏，开着时等你退出游戏再装。关闭窗口只是隐藏到托盘；从托盘菜单「退出」才会停止本机服务（Agent 和命令行也就连不上了）。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 状态栏 -->
+  <footer class="statusbar">
+    <div class="sb-item" :class="'st-' + linkClass" :title="linkWhy || linkHint"><span class="dot"></span><span x-text="'链路 ' + linkText"></span></div>
+    <div class="sb-item" x-text="status && status.game.found ? '游戏 ' + clientVersion : '游戏未运行'"></div>
+    <div class="sb-item" x-show="status && status.link.slots_left != null" :title="'这个游戏进程剩下的信箱槽位；完整重启游戏后恢复到 4096'"
+         x-text="'信箱 ' + val(status, 'link.slots_left')"></div>
+    <div class="sb-item" x-show="status && status.link.ping_p50 != null" x-text="'延迟 ' + (status && status.link.ping_p50 != null ? Math.round(status.link.ping_p50 * 1000) + ' ms' : '')"></div>
+    <a href="#" class="sb-item" x-show="status && status.watch && status.watch.length" @click.prevent="go('dev'); devTool = 'watch'"
+       x-text="'监视 ' + (status && status.watch ? status.watch.length : 0)"></a>
+    <a href="#" class="sb-item warn" x-show="addonsUpdateText" @click.prevent="go('doctor')" :title="addonsUpdateText" x-text="addonsUpdateShort"></a>
+    <div class="sb-fill"></div>
+    <div class="sb-item" :title="connTitle"><span class="dot" :class="'sse-' + sseState"></span><span x-text="connText"></span></div>
+    <a href="#" class="sb-item" @click.prevent="openSite()" title="https://wuxianwow.com/workshop"><svg class="ico"><use href="#i-globe"/></svg>官网</a>
+    <a href="#" class="sb-item" @click.prevent="go('settings')" x-text="status ? 'v' + status.daemon.version : '—'"></a>
+  </footer>
+
+  <div class="toast" x-show="toast" x-text="toast" x-transition.opacity></div>
+</div>
+</body>
+</html>

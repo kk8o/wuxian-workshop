@@ -1,0 +1,3 @@
+local name, ns = ...
+ns.extra = "Extra.lua after Core.lua run " .. tostring(ns.loads)
+return ns.extra

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wuxianworkshop"
+version = "0.9.3"
+description = "无限工坊：用 AI 写魔兽插件——把 AI Agent（MCP）接到正在运行的《魔兽世界：无限》客户端：写完先检查、热加载、在游戏里试、报错与截图、API 手册（屏幕帧码 + 字体信箱通道）"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5,<3",
+    "pillow>=12,<13",
+    "lupa>=2.8,<3",          # Lua 5.1, the client's own version: agent/lint.py compiles the addons' Lua with it
+]
+
+[project.optional-dependencies]
+ui = ["pywebview>=6.2.1,<7", "pythonnet>=3.2,<4", "pystray>=0.19.5,<0.20"]
+mcp = ["mcp>=2.3,<3", "starlette>=1.7,<2", "uvicorn>=0.54,<1", "websockets>=17.2,<18"]
+build = ["pyinstaller>=6.22.3,<7", "pyinstaller-hooks-contrib>=2026.8", "velopack>=1.2.161,<2"]
+test = ["fonttools>=4.66,<5", "httpx>=0.28,<1"]   # fontTools only reads fonts back in tests (tests/support/fontref.py);
+                                                  # httpx for Starlette's TestClient; the addons' tests run on lupa's Lua 5.1
+
+[project.urls]
+Homepage = "https://wuxianwow.com/workshop"
+
+[project.scripts]
+wuxian = "wuxianworkshop.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["wuxianworkshop*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+wuxianworkshop = ["ui/static/*", "ui/static/**/*", "data/*.json.gz"]

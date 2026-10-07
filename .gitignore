@@ -1,0 +1,10 @@
+__pycache__/
+reports/
+*.pyc
+.venv/
+dist/
+build/
+*.spec
+!scripts/wuxian.spec
+scripts/version_info.txt
+*.egg-info/

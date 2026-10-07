@@ -1,0 +1,5 @@
+## Interface: 16001
+## Title: SampleAddon
+
+Core.lua
+Extra.xml
