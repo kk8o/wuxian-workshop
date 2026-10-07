@@ -8,4 +8,4 @@ daemon      the companion process that keeps the link running
 cli         the `wuxian` command line; installer puts the addon into the game; mcp and ui are placeholders for now
 paths       where the run-time files go (%LOCALAPPDATA%\\WuxianWorkshop, or WUXIAN_HOME)
 """
-__version__ = "0.9.4"
+__version__ = "0.9.5"

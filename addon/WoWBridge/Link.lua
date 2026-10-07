@@ -16,7 +16,7 @@ local band, floor = bit.band, math.floor
 
 local L = {}
 ns.Link = L
-L.VERSION = "0.9.4"
+L.VERSION = "0.9.5"
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST = 0, 1, 2, 3, 4
