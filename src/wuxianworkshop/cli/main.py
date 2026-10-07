@@ -205,6 +205,10 @@ def cmd_run(client, args):
             print(value)
         if not res.get("values"):
             print(f"ok ({res.get('ms')} ms, no values)", file=sys.stderr)
+        cut = res.get("cut")
+        if cut:
+            print(f"(value {cut['value']} cut at {cut['kept']} of {cut['bytes']} bytes"
+                  + (f", {cut['not_sent']} more not sent)" if cut["not_sent"] else ")"), file=sys.stderr)
         return 0
     print(f"error: {res.get('error')}", file=sys.stderr)
     if res.get("stack"):

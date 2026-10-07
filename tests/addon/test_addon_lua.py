@@ -289,7 +289,7 @@ class HotLoad(unittest.TestCase):
             comp.command('run print("hi", 1 + 1) return "done", nil, 3')
             s.run(6)
             self.assertIn(("OUT", "hi 2"), got)
-            self.assertRegex(runs()[-1], r"^\d+ ok =run \(\d+ B, [\d.]+ ms\): done, nil, 3$")
+            self.assertRegex(runs()[-1], r'^\d+ ok =run \(\d+ B, [\d.]+ ms, 3 values\): "done", "nil", "3"$')
             self.assertRegex(console_lines(s)[-1], r"agent  ran a Lua snippet · [\d.]+ ms  → done, nil, 3  \[details\]$")
             self.assertNotIn("agent code =run (", s.chat())             # the notice says it, not the chat
 
@@ -302,7 +302,8 @@ class HotLoad(unittest.TestCase):
             sent = [r for r in comp.outbox if r[0] == mailbox.CODE]
             self.assertEqual(len(sent), 3)
             s.run(15)
-            self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms\): Foo, 42$")
+            self.assertRegex(runs()[-1], r'^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms, 2 values\): '
+                                         r'"Foo", "42"$')
             self.assertEqual(g[b"FooLoads"], 1)
             self.assertRegex(s.ns[b"Console"][b"lastToast"].decode(), r"^Hot-loaded Foo/Core\.lua · \d+\.\d ms$")
             comp.outbox.extend(sent)                                    # the same parts again (a lost slot, say)
@@ -322,12 +323,68 @@ class HotLoad(unittest.TestCase):
             self.assertTrue(any(re.match(r"^\d+ error @Interface/AddOns/Foo/Bad\.lua: Interface/AddOns/Foo/Bad\.lua:2: "
                                          r"attempt to index local 't' \(a nil value\)\n.*in function `Broken'$", t)
                                 for t in r), r)                         # the loader's own frames cut off
-            self.assertTrue(any(t.endswith(": Baz, 1 (no namespace registered for Baz: it got a new one, kept for its later "
-                                           "loads)") for t in r), r)
+            self.assertTrue(any(t.endswith(': "Baz", "1" (no namespace registered for Baz: it got a new one, kept for its '
+                                           "later loads)") for t in r), r)
             self.assertTrue(any(t.startswith("load Bar/Missing.lua: ") for t in r), r)
             stats = s.ns[b"Agent"][b"stats"]                            # for the panel: 5 jobs ran, 2 failed
             self.assertEqual((stats[b"runs"], stats[b"failed"]), (5, 2))
             self.assertEqual((stats[b"last"][b"name"], stats[b"last"][b"ok"]), (b"@Interface/AddOns/Baz/B.lua", True))
+        finally:
+            s.close()
+
+    def test_returned_values_come_back_whole(self):
+        """seen in the game (0.9.4): `return "a, b (OnUnload ok)", 2` came back as the values "a" and "b" and the note
+        "(OnUnload ok), 2". Through the real Agent.lua and link each value comes back as it was, whatever it holds: the
+        "|" of a colour code or a link too, which the link strips from the rest of the text. Past 4000 bytes the result
+        says which value was cut, where, and how many after it were not sent"""
+        got = []
+        s = Session(self)
+        comp = link.Companion(s.addons, clock=s.now, log=lambda text: None, on_debug=lambda kind, text: got.append((kind, text)))
+        s.comp = comp
+
+        def run(code):
+            """(the RUN text, the result of /api/run) of a snippet"""
+            job = comp.code(code.encode("utf-8"), "=run", "-")
+            for _ in range(200):
+                s.run(0.25)
+                text = next((t for k, t in got if k == "RUN" and t.startswith(f"{job} ")), None)
+                if text is not None:
+                    return text, Service.run_result(parse_run(text))
+            self.fail(f"no RUN result for job {job}")
+        try:
+            comp.new_process("P1-100")
+            s.login()
+            s.run(8)
+            text, res = run('return "a, b (OnUnload ok)", 2')
+            self.assertRegex(text, r'^\d+ ok =run \(\d+ B, [\d.]+ ms, 2 values\): "a, b \(OnUnload ok\)", "2"$')
+            self.assertEqual((res["values"], res["note"], res["cut"]), (["a, b (OnUnload ok)", "2"], None, None))
+            self.assertTrue(console_lines(s)[-1].endswith("  → a, b (OnUnload ok), 2  [details]"))   # the window: as it was
+
+            text, res = run(r'''return "|cffff0000red|r |Hitem:19019|h[Thunderfury, Blessed Blade]|h", 'say "hi" \\ \0\r',
+                "", nil, "nil", true, "中文, 逗号 (OnReload ok)", { a = "x, y" }, "ends with\n\tspaces  ", 1.5''')
+            self.assertEqual(res["values"], ["|cffff0000red|r |Hitem:19019|h[Thunderfury, Blessed Blade]|h",
+                                             'say "hi" \\ \x00\r', "", "nil", "nil", "true", "中文, 逗号 (OnReload ok)",
+                                             '{\n  a = "x, y",\n}', "ends with\n\tspaces  ", "1.5"])
+            self.assertNotIn("|", text)                                 # \124: nothing for the link to strip
+            self.assertEqual((res["note"], res["cut"]), (None, None))
+
+            text, res = run('return ("x"):rep(3000), ("中"):rep(1000), "after", 4')
+            self.assertEqual(res["values"], ["x" * 3000, "中" * 333])  # 1000 bytes left: 333 characters, never half of one
+            self.assertEqual(res["cut"], dict(value=2, kept=999, bytes=3000, not_sent=2))
+            self.assertTrue(text.endswith('中" (value 2 cut at 999 of 3000 bytes, 2 more not sent)'))
+            text, res = run('return ("y"):rep(4000), "z"')
+            self.assertEqual((res["values"], res["cut"]), (["y" * 4000, ""], dict(value=2, kept=0, bytes=1, not_sent=0)))
+
+            foo = s.addons / "Foo"                                      # a load with its lifecycle notes after the values
+            foo.mkdir()
+            (foo / "Core.lua").write_text('return "x, y (OnReload ok)", "(OnUnload error: z)"\n', encoding="utf-8")
+            s.lua.execute(b"WoWBridgeNS.Foo = { OnUnload = function() return 1 end, OnReload = function() end }")
+            comp.command("load Foo/Core.lua")
+            s.run(8)
+            res = parse_run([t for k, t in got if k == "RUN"][-1])
+            self.assertEqual((res["chunk"], res["values"]), ("@Interface/AddOns/Foo/Core.lua",
+                                                             ["x, y (OnReload ok)", "(OnUnload error: z)"]))
+            self.assertEqual((res["note"], res["cut"]), ("(OnUnload ok) (OnReload ok)", None))
         finally:
             s.close()
 
@@ -456,7 +513,7 @@ class ProbeAnswers(unittest.TestCase):
                 self.assertEqual((window["name"], window["type"], window["shown"]), ("WoWBridgeConsole", "Frame", True))
                 pieces = [t for k, t in got[before:] if k == "RUN" and " ok =probe " in t]
                 self.assertGreater(len(pieces), 1)
-                self.assertTrue(all(len(t.partition("ms): ")[2].encode()) < 4000 for t in pieces))   # never cut
+                self.assertTrue(all(parse_run(t)["cut"] is None for t in pieces))                # never cut
             self.assertEqual([b["text"] for b in boxes(window)], [shown])                 # at depth 3: the box's text
         finally:
             s.close()
@@ -577,7 +634,7 @@ class ProtocolV08(unittest.TestCase):
             self.assertEqual([k for k, _ in got if k == "ERR"], [])
             runs = [t for k, t in got if k == "RUN"]
             self.assertEqual(len(runs), 1, got)
-            self.assertRegex(runs[0], r"^\d+ ok =run \(\d+ B, [\d.]+ ms\): 1$")
+            self.assertRegex(runs[0], r'^\d+ ok =run \(\d+ B, [\d.]+ ms, 1 value\): "1"$')
             self.assertIn("#" + str([m[1] for m in sess.messages if m[4] == "RUN 1 ok"][0]) + " (8 B): RUN 1 ok", logs)
             self.assertGreaterEqual(sess.version, (0, 8))              # the typed uplink came with 0.8
             self.assertTrue(sess.typed)
@@ -650,17 +707,18 @@ class ProtocolV08(unittest.TestCase):
                 OnReload = function(v) FooReloads = (FooReloads or 0) + 1 FooOrder = FooOrder .. "r" .. tostring(FooCore) FooKept = v and v.kept end }""")
             comp.command("load Foo/Core.lua")
             s.run(6)
-            self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms\) \(OnUnload ok\) \(OnReload ok\)$")
+            self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms, 0 values\) \(OnUnload ok\) "
+                                          r"\(OnReload ok\)$")
             self.assertEqual((g[b"FooUnloads"], g[b"FooReloads"], g[b"FooKept"], g[b"FooOrder"].decode()), (1, 1, 7, "unilr1"))
             comp.load("Foo/Core.lua", reset=False)
             s.run(6)
-            self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms\)$")
+            self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms, 0 values\)$")
             self.assertEqual((g[b"FooUnloads"], g[b"FooReloads"], g[b"FooCore"]), (1, 1, 2))
             comp.command("load Foo")                                    # two files: unload before the first, reload after the last
             s.run(8)
             r = runs()[-2:]
-            self.assertRegex(r[0], r"Core\.lua \(\d+ B, [\d.]+ ms\) \(OnUnload ok\)$")
-            self.assertRegex(r[1], r"More\.lua \(\d+ B, [\d.]+ ms\): 1 \(OnReload ok\)$")
+            self.assertRegex(r[0], r"Core\.lua \(\d+ B, [\d.]+ ms, 0 values\) \(OnUnload ok\)$")
+            self.assertRegex(r[1], r'More\.lua \(\d+ B, [\d.]+ ms, 1 value\): "1" \(OnReload ok\)$')
             self.assertEqual((g[b"FooUnloads"], g[b"FooReloads"], g[b"FooOrder"].decode()), (2, 2, "unilr1u2r3"))
             s.lua.execute(b"WoWBridgeNS.Foo.OnUnload = function() error('no way') end")
             comp.command("load Foo/Core.lua")

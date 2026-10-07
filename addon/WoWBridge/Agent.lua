@@ -2,8 +2,11 @@
 -- agent sends through the companion ("run <lua>", "load <file>"; src/wuxianworkshop/agent/commands.py). With every part
 -- of a job in, it runs under that chunk name (error messages name the file), with (addon, the namespace that addon
 -- registered in WoWBridgeNS) as "..."; the result goes back typed as a RUN message: "<job> ok <chunk> (<bytes> B, <ms>
--- ms)[: <returned values>]" or "<job> error <chunk>: <error>\n<stack>". Jobs that ran are kept in the saved variables, so
--- parts sent again never run one twice. The setting hotLoad (/wb set hotLoad off) refuses them.
+-- ms, <n> values)[: "<value>", ...][ (value <i> cut at <kept> of <size> bytes[, <m> more not sent])][ (<note>)...]" or
+-- "<job> error <chunk>: <error>\n<stack>". Each returned value is framed by Quote, so that no ", " or note in it, nor a
+-- colour code the link strips, blurs where it ends; at most LIMIT bytes of them go (src/wuxianworkshop/daemon/api.py,
+-- parse_run, reads it). Jobs that ran are kept in the saved variables, so parts sent again never run one twice. The
+-- setting hotLoad (/wb set hotLoad off) refuses them.
 -- Lifecycle: a first part flagged "reset" calls WoWBridgeNS[addon].OnUnload() before the code runs (pcall) and
 -- OnReload(<what OnUnload returned>) after it; "unload" and "reload" do one half each, so that a whole-addon load calls
 -- OnUnload before its first file and OnReload after its last.
@@ -75,6 +78,28 @@ A.Dump = Dump
 
 local function Pack(...) return { n = select("#", ...), ... } end
 
+local LIMIT = 4000                    -- bytes of returned values a RUN result carries
+
+-- a returned value for the RUN result: in double quotes, with \\, \" and \ddd for "|" and the control bytes but newline
+-- and tab (a dump stays readable in the log)
+local ESCAPE = { ['"'] = '\\"', ["\\"] = "\\\\", ["|"] = "\\124", ["\127"] = "\\127" }
+for b = 0, 31 do
+	if b ~= 9 and b ~= 10 then ESCAPE[string.char(b)] = ("\\%03d"):format(b) end
+end
+local function Quote(s)
+	return '"' .. (s:gsub('[%z\1-\31\127"\\|]', ESCAPE)) .. '"'
+end
+
+-- the first `size` bytes of s, or up to 3 fewer: between two UTF-8 characters
+local function Fit(s, size)
+	for _ = 1, 3 do
+		local b = s:byte(size + 1)
+		if size == 0 or not b or b < 128 or b >= 192 then break end
+		size = size - 1
+	end
+	return s:sub(1, size)
+end
+
 local function Traceback(e)
 	local stack = debugstack and debugstack(2) or ""
 	stack = stack:match("^(.-)%[C%]: in function 'xpcall'") or stack   -- the job's own frames, not the loader's
@@ -142,10 +167,22 @@ local function RunJob(id, job)
 		failure = tostring(err)
 		Result(("%s error %s: %s"):format(id, job.name, failure))
 	elseif res[1] then
-		local out = {}
-		for k = 2, res.n do out[#out + 1] = type(res[k]) == "table" and Dump(res[k]) or tostring(res[k]) end
-		values = table.concat(out, ", "):sub(1, 4000)
-		Result(("%s ok %s (%d B, %.1f ms)%s%s"):format(id, job.name, #code, ms, #out > 0 and (": " .. values) or "", note))
+		local out, framed, room, cut = {}, {}, LIMIT, ""
+		for k = 2, res.n do
+			local v = type(res[k]) == "table" and Dump(res[k]) or tostring(res[k])
+			if #v > room then                         -- this one cut, the ones after it left out
+				local size = #v
+				v = Fit(v, room)
+				cut = (" (value %d cut at %d of %d bytes%s)"):format(k - 1, #v, size,
+					k < res.n and (", %d more not sent"):format(res.n - k) or "")
+			end
+			room = room - #v
+			out[#out + 1], framed[#framed + 1] = v, Quote(v)
+			if cut ~= "" then break end
+		end
+		values = table.concat(out, ", ")
+		Result(("%s ok %s (%d B, %.1f ms, %d value%s)%s%s%s"):format(id, job.name, #code, ms, res.n - 1,
+			res.n == 2 and "" or "s", #framed > 0 and (": " .. table.concat(framed, ", ")) or "", cut, note))
 	else
 		failure = tostring(res[2])
 		Result(("%s error %s: %s%s"):format(id, job.name, failure, note))

@@ -38,7 +38,7 @@
 
 ## 约定
 - 注释密度与现有代码一致：模块顶部一段说明用途与协议，函数一行 docstring，只在"为什么"不显然处加行内注释；注释一律英文。界面文案中英两份：页面的中文直接写在 index.html / app.js 里（它也是词条的键：静态文字由 `x-t` 翻译，表达式里用 `t('…{名}…', {名})` 整句模板，不拼接碎片），英文写进 `ui/static/i18n.js` 的 `EN`（`tests/ui/test_i18n.py` 查每条都有英文）；Python 给人看的文字（自检、Agent、新建插件、托盘与对话框）用 `i18n.tr(中文, 英文)`，跟设置里的语言走（自动 = 跟随 Windows 显示语言）。插件里给玩家看的文字一律放 `Locale.lua`（`!WuxianWorkshop` 放 `Core.lua` 的 `WORDS`），中英两份都写；发给守护进程的内容（调试、RUN/RELOAD 结果、测试消息）保持英文。
-- 不改协议格式：帧格式 v1（`core/frame.py` 与 `Codec.lua`/`Frame.lua` 互为镜像）、信箱包格式（`mailbox.py` 与 `Mailbox.lua`）、控制帧与上行消息的格式（`link.py` 与 `Link.lua`）、CODE 头部（`commands.py` 与 `Agent.lua`）；改一边必须同时改另一边并补测试。
+- 不改协议格式：帧格式 v1（`core/frame.py` 与 `Codec.lua`/`Frame.lua` 互为镜像）、信箱包格式（`mailbox.py` 与 `Mailbox.lua`）、控制帧与上行消息的格式（`link.py` 与 `Link.lua`）、CODE 头部（`commands.py` 与 `Agent.lua`）、RUN 结果（`Agent.lua` 与 `daemon/api.py` 的 `parse_run`；0.9.0–0.9.4 的插件还在用旧格式，`parse_run` 要一直读得懂）；改一边必须同时改另一边并补测试。
 - 不模拟输入、不读游戏内存、不注入代码；只允许抓屏和读写插件目录里的文件。
 - 游戏客户端只在启动时发现新文件，运行中新增/删除文件无效；替换运行中的文件用 `core.game.atomic_write`。
 - 本地接口只绑 127.0.0.1，每个请求带 Bearer token 并校验 Host/Origin；不开远程端口。

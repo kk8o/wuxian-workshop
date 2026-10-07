@@ -731,7 +731,7 @@ class Service:
     def run_result(res):
         if res["ok"]:
             return dict(ok=True, job=res["job"], values=res["values"], ms=res["ms"], chunk=res["chunk"], bytes=res["bytes"],
-                        note=res["note"])
+                        note=res["note"], cut=res["cut"])
         return dict(ok=False, job=res["job"], error=res["error"], stack=res["stack"], chunk=res["chunk"])
 
     async def run(self, code, timeout_ms=10000, addon=None, chunk="=run"):

@@ -9,6 +9,8 @@ from wuxianworkshop.daemon.journal import Journal
 
 
 class ParseRun(unittest.TestCase):
+    """the RUN results of addons up to 0.9.4 (still in the wild): the values as they are, split at ", " """
+
     def test_ok_with_values(self):
         res = parse_run('17 ok =run (12 B, 0.3 ms): 42, "x", nil')
         self.assertEqual((res["ok"], res["job"], res["chunk"], res["bytes"], res["ms"]), (True, 17, "=run", 12, 0.3))
@@ -64,6 +66,55 @@ class ParseRun(unittest.TestCase):
         self.assertIsNone(parse_run("load Foo: no such file or addon folder"))
 
 
+class ParseFramedRun(unittest.TestCase):
+    """the RUN results of addons after 0.9.4: "<n> values" in the head, each value framed (Agent.lua's Quote)"""
+
+    def test_values_come_back_whole(self):
+        """seen in the game (0.9.4): return "a, b (OnUnload ok)", 2 came back as "a" and "b", the note "(OnUnload ok), 2" """
+        res = parse_run('5 ok =run (31 B, 0.2 ms, 2 values): "a, b (OnUnload ok)", "2"')
+        self.assertEqual((res["ok"], res["job"], res["chunk"], res["bytes"], res["ms"]), (True, 5, "=run", 31, 0.2))
+        self.assertEqual((res["values"], res["note"], res["cut"]), (["a, b (OnUnload ok)", "2"], None, None))
+        res = parse_run('6 ok =run (12 B, 0.1 ms, 3 values): "x", "", "nil"')
+        self.assertEqual(res["values"], ["x", "", "nil"])
+
+    def test_escapes(self):
+        """\\\\, \\" and \\ddd: the "|" of a colour code or a link (the link strips them from the rest of the text) and
+        the control bytes; newline and tab come as they are"""
+        res = parse_run(r'7 ok =run (9 B, 0.1 ms, 2 values): "\124cffff0000red\124r \"q\" \\ \000\013\127", "a'
+                        + '\n\tb  "')
+        self.assertEqual(res["values"], ['|cffff0000red|r "q" \\ \x00\r\x7f', "a\n\tb  "])
+
+    def test_notes_after_the_values(self):
+        chunk = "@C:/Program Files (x86)/My Addons/Foo/Core.lua"
+        res = parse_run(f'8 ok {chunk} (154 B, 0.2 ms, 1 value): "x, 1 (OnReload ok)" (no namespace registered for Foo: '
+                        "it got a new one, kept for its later loads) (OnUnload ok) (OnReload error: a, b)")
+        self.assertEqual((res["chunk"], res["bytes"], res["values"]), (chunk, 154, ["x, 1 (OnReload ok)"]))
+        self.assertEqual(res["note"], "(no namespace registered for Foo: it got a new one, kept for its later loads) "
+                                      "(OnUnload ok) (OnReload error: a, b)")
+        res = parse_run("9 ok @Interface/AddOns/Foo/Core.lua (300 B, 1.0 ms, 0 values) (OnUnload ok) (OnReload ok)")
+        self.assertEqual((res["values"], res["note"], res["cut"]), ([], "(OnUnload ok) (OnReload ok)", None))
+
+    def test_where_the_values_were_cut(self):
+        res = parse_run('10 ok =run (40 B, 3.5 ms, 4 values): "1", "中中" (value 2 cut at 6 of 3000 bytes, 2 more not sent) '
+                        "(OnReload ok)")
+        self.assertEqual((res["values"], res["note"]), (["1", "中中"], "(OnReload ok)"))
+        self.assertEqual(res["cut"], dict(value=2, kept=6, bytes=3000, not_sent=2))
+        res = parse_run(f'11 ok =run (40 B, 3.5 ms, 2 values): "{"y" * 4000}", "" (value 2 cut at 0 of 10 bytes)')
+        self.assertEqual((res["values"], res["note"]), (["y" * 4000, ""], None))
+        self.assertEqual(res["cut"], dict(value=2, kept=0, bytes=10, not_sent=0))
+
+    def test_a_probe_answer(self):
+        res = parse_run(r'12 ok =probe (4532 B, 1.4 ms, 1 value): "1/2' + '\n' + r'{\"text\":\"→ a, b (OnUnload ok)\"}"')
+        self.assertEqual(res["values"], ['1/2\n{"text":"→ a, b (OnUnload ok)"}'])
+
+    def test_only_the_head_tells_the_form(self):
+        """an older addon's values may hold the words of the new head: the first "(<bytes> B, <ms> ms" decides"""
+        res = parse_run('13 ok =run (20 B, 0.1 ms): "x" (1 B, 0.1 ms, 1 value): "y"')
+        self.assertEqual((res["chunk"], res["values"], res["cut"]), ("=run", ['"x" (1 B', "0.1 ms", '1 value): "y"'], None))
+        res = parse_run('14 ok =run (5 B, 0.1 ms, 2 values): "a", "b')       # not what Agent.lua writes: what can be told
+        self.assertEqual((res["values"], res["note"]), (["a"], ', "b'))
+
+
 class JournalRing(unittest.TestCase):
     def test_ids_cursor_kinds_and_truncation(self):
         t = [100.0]
@@ -91,6 +142,8 @@ class JournalRing(unittest.TestCase):
         self.assertEqual((e["id"], e["t"], e["kind"], e["addon"], e["job"]), (1, 5.0, "ERR", "Foo", None))
         e = j.add("RUN", "77 ok =run (1 B, 0.1 ms): 1")
         self.assertEqual((e["job"], e["addon"]), (77, None))
+        e = j.add("RUN", '78 ok =run (1 B, 0.1 ms, 1 value): "1"')
+        self.assertEqual(e["job"], 78)
         e = j.add("RUN", "load Foo: no such file or addon folder")
         self.assertIsNone(e["job"])
 

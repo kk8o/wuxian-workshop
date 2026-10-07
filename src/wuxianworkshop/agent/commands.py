@@ -8,8 +8,9 @@ the addon, agent/history.py).
 
 Commands: "reload" (the addon shows a button: only a click may reload the UI on this client, and the addon reports
 RELOAD "asked: ..." / "later: ..."); "run <lua>" and "load <file>" send Lua for the addon to run (CODE records, see code()),
-which answers RUN "<job> ok <chunk name> (<bytes> B, <ms> ms)[: <returned values>]" or "<job> error <chunk name>:
-<error>"; "watch <file | addon>" and "unwatch" are handled here. Anything else goes to the addon as a COMMAND record.
+which answers RUN "<job> ok <chunk name> (<bytes> B, <ms> ms, <n> values)[: <returned values, framed>]" or "<job> error
+<chunk name>: <error>" (daemon/api.py parse_run reads them); "watch <file | addon>" and "unwatch" are handled here.
+Anything else goes to the addon as a COMMAND record.
 A load may flag its first CODE part "reset" (one file) or "unload" / "reload" (the first / last file of an addon): the
 addon then calls the addon's OnUnload() before the code runs and OnReload(<what OnUnload returned>) after it.
 """

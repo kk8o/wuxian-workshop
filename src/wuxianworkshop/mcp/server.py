@@ -162,8 +162,10 @@ def build_server(backend, name="wuxian"):
     @mcp.tool(annotations=WRITES)
     async def run(code: str, timeout_ms: int = 10000, addon: str | None = None) -> dict[str, Any]:
         """Run Lua inside the game (hot: no /reload) and wait for the result. `return` values come back as strings
-        (tables are dumped, 3 levels deep); a Lua error raises with its message and stack. `addon` gives the code that
-        addon's name and namespace as `...` (what its files get when loaded). Times out when the link is offline."""
+        (tables are dumped, 3 levels deep), 4000 bytes of them at most: past that `cut` says which value was cut (1 =
+        the first; the last in `values`), how many of its bytes came, and how many values after it did not; a Lua error
+        raises with its message and stack. `addon` gives the code that addon's name and namespace as `...` (what its
+        files get when loaded). Times out when the link is offline."""
         res = await call(backend.run(code, timeout_ms, addon))
         if not res.get("ok"):
             raise ToolError(f"Lua error in job {res.get('job')}: {res.get('error')}\n{res.get('stack') or ''}".rstrip())
