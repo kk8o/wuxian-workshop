@@ -18,10 +18,11 @@ class Worker:
 class Probes(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.svc = Service(lambda on_debug, log: Worker(), journal=Journal())
-        self.sent, self.snaps, self.answer = [], [], {}
+        self.sent, self.chunks, self.snaps, self.answer = [], [], [], {}
 
-        async def run(code, timeout_ms=10000, addon=None):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
             self.sent.append(code)
+            self.chunks.append(chunk)
             if "RegisterEvent" in code:
                 return dict(ok=True, values=['{"tracing":2,"unknown":["NOT_AN_EVENT"]}'])
             if "UnregisterAllEvents" in code:
@@ -39,6 +40,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
     async def test_trace(self):
         res = await self.svc.trace(1, "BAG_UPDATE, NOT_AN_EVENT", 50)
         self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.chunks, ["=probe", "=probe"])     # the app's own look: WoWBridge leaves it out of its window
         self.assertIn("BAG_UPDATE", self.sent[0])
         self.assertEqual((res["registered"], res["unknown"], res["kept"]), (2, ["NOT_AN_EVENT"], 1))
         self.assertEqual(res["counts"][0], dict(event="BAG_UPDATE", count=3))

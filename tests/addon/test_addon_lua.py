@@ -300,7 +300,7 @@ class HotLoad(unittest.TestCase):
             s.run(15)
             self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms\): Foo, 42$")
             self.assertEqual(g[b"FooLoads"], 1)
-            self.assertRegex(s.ns[b"Console"][b"lastToast"].decode(), r"^Hot-loaded Foo/Core\.lua · \d+ ms$")
+            self.assertRegex(s.ns[b"Console"][b"lastToast"].decode(), r"^Hot-loaded Foo/Core\.lua · \d+\.\d ms$")
             comp.outbox.extend(sent)                                    # the same parts again (a lost slot, say)
             s.run(10)
             self.assertEqual(g[b"FooLoads"], 1)                         # not run twice
@@ -358,6 +358,15 @@ class DebugWindow(unittest.TestCase):
             self.assertEqual(len(console_lines(s)), 1)
             s.slash("log")                                              # and closed again
             self.assertFalse(g[b"WoWBridgeConsole"][b"shown"])
+            s.slash("")                                                 # the panel, and its 调试输出 button: the window
+            panel, console = g[b"WoWBridgePanel"], g[b"WoWBridgeConsole"]   # comes up in front of the panel
+            panel[b"console"].Click(panel[b"console"])
+            self.assertTrue(console[b"shown"])
+            self.assertEqual((console[b"strata"], console[b"toplevel"], panel[b"toplevel"]), (panel[b"strata"], True, True))
+            self.assertGreater(console[b"raised"], panel[b"raised"])
+            s.slash("log")
+            s.slash("")
+            self.assertFalse(console[b"shown"] or panel[b"shown"])
 
             foo = s.addons / "Foo"
             foo.mkdir()
@@ -369,7 +378,7 @@ class DebugWindow(unittest.TestCase):
                 s.run(0.25)
                 if con[b"lastToast"] is not None:
                     break
-            self.assertRegex(con[b"lastToast"].decode(), r"^Hot-loaded Foo · 2 files · \d+ ms$")
+            self.assertRegex(con[b"lastToast"].decode(), r"^Hot-loaded Foo · 2 files · \d+\.\d ms$")
             self.assertTrue(g[b"WoWBridgeToast"][b"shown"])
             s.run(4)
             self.assertFalse(g[b"WoWBridgeToast"][b"shown"])            # gone after a few seconds
@@ -380,6 +389,13 @@ class DebugWindow(unittest.TestCase):
             comp.command("run return 1")
             s.run(6)
             self.assertIn("agent code =run (", s.chat())                # no notice: the chat says it
+
+            stats, before = s.ns[b"Agent"][b"stats"], len(console_lines(s))
+            runs = stats[b"runs"]
+            comp.code(b"return true", "=probe")                         # the app's own look (a try's end marker)
+            s.run(6)
+            self.assertEqual((len(console_lines(s)), stats[b"runs"]), (before, runs))
+            self.assertNotIn("agent code =probe", s.chat())
         finally:
             s.close()
 

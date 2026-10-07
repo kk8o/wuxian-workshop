@@ -82,13 +82,13 @@ local function BuildOverview()
 	panel.state:SetPoint("LEFT", panel.dot, "RIGHT", 10, 0)
 	panel.why = Line(page, PAD, -28, C.muted)
 	panel.link = Check(page, -64, "OPT_LINK", function(on) WB().SetLink(on) P.Refresh() end, "OPT_LINK_TIP")
-	Heading(page, -102, "SECTION_SESSION")
-	panel.runs = Line(page, PAD, -126)
-	panel.last = Line(page, PAD, -144, C.muted)
-	panel.errors = Line(page, PAD, -162, nil, INNER - 104)
-	panel.console = Button(page, WIDTH - PAD - 96, -158, 96, "BTN_CONSOLE", function()
+	headings[#headings + 1] = { S.Heading(page, PAD, -102, INNER - 108), "SECTION_SESSION" }   -- its line up to the button
+	panel.console = Button(page, WIDTH - PAD - 96, -98, 96, "BTN_CONSOLE", function()
 		ns.Console.Show(ns.Debug.stats.errors > 0 and "errors" or nil)
 	end)
+	panel.runs = Line(page, PAD, -126)
+	panel.last = Line(page, PAD, -144, C.muted)
+	panel.errors = Line(page, PAD, -162)
 	-- something to do: the words and the button that does it (Refresh decides which, if any)
 	panel.notice = Line(page, PAD, -196, C.goldL, INNER - 108)
 	panel.act = Button(page, WIDTH - PAD - 96, -190, 96, nil, function()
@@ -251,8 +251,6 @@ function P.Refresh()
 	panel.last:SetShown(runs.runs > 0)
 	panel.errors:ClearAllPoints()                          -- right under the runs while there is no last one
 	panel.errors:SetPoint("TOPLEFT", panel.pages.overview, "TOPLEFT", PAD, runs.runs > 0 and -162 or -144)
-	panel.console:ClearAllPoints()
-	panel.console:SetPoint("TOPRIGHT", panel.pages.overview, "TOPRIGHT", -PAD, runs.runs > 0 and -158 or -140)
 	if runs.runs == 0 then
 		panel.runs:SetText(L.RUNS_NONE)
 	else
@@ -303,6 +301,7 @@ function P.Show(tab)
 	if not panel then Build() end
 	if not (panel.IsUserPlaced and panel:IsUserPlaced()) then Place() end   -- dragged by the player: theirs
 	P.Select(tab or shown)
+	panel:Raise()                                  -- in front of the debug window, if that is open there
 	panel:Show()
 end
 

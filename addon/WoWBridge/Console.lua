@@ -118,7 +118,7 @@ local function Toast(text, failed)
 	if ns.Setting("toasts") == false then return end
 	if not toast then
 		toast = CreateFrame("Button", "WoWBridgeToast", UIParent)
-		toast:SetFrameStrata("HIGH")
+		toast:SetFrameStrata("FULLSCREEN_DIALOG")        -- above the panel, which may be open where it shows
 		toast:SetHeight(30)
 		toast:SetPoint("TOP", UIParent, "TOP", 0, -64)
 		toast.bg = toast:CreateTexture(nil, "BACKGROUND")
@@ -297,7 +297,7 @@ local function Relabel()
 end
 
 local function Build()
-	window = S.Window("WoWBridgeConsole", ns.Setting("consoleW") or W0, ns.Setting("consoleH") or H0, "HIGH")
+	window = S.Window("WoWBridgeConsole", ns.Setting("consoleW") or W0, ns.Setting("consoleH") or H0)   -- the panel's strata
 	window:Hide()
 	window:SetDontSavePosition(true)               -- kept by Save, for this character
 	window:ClearAllPoints()
@@ -401,6 +401,7 @@ function K.Show(which)
 		tab = which
 		full = true
 	end
+	window:Raise()                                 -- in front of the panel, whose button may have opened it
 	if window:IsShown() then Draw() else window:Show() end
 end
 

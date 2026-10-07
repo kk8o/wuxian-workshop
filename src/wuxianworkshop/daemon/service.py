@@ -418,7 +418,7 @@ class Service:
 
     async def probe(self, code, timeout_ms):
         """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none"""
-        res = await self.run(code, timeout_ms=timeout_ms)
+        res = await self.run(code, timeout_ms=timeout_ms, chunk="=probe")
         if not res.get("ok"):
             raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
         try:
@@ -516,7 +516,7 @@ class Service:
             action = await self.run(lua, timeout_ms, addon)
             await asyncio.sleep(seconds)
             try:
-                await self.run("return true", 15000)                       # the end marker
+                await self.run("return true", 15000, chunk="=probe")       # the end marker
             except ApiError:
                 complete = False
         entries, _, _ = self.journal.since(first, 1000, list(self.TRY_KINDS))
@@ -715,8 +715,10 @@ class Service:
                         note=res["note"])
         return dict(ok=False, job=res["job"], error=res["error"], stack=res["stack"], chunk=res["chunk"])
 
-    async def run(self, code, timeout_ms=10000, addon=None):
-        """Lua for the addon to run; waits for the RUN result of that job"""
+    async def run(self, code, timeout_ms=10000, addon=None, chunk="=run"):
+        """Lua for the addon to run; waits for the RUN result of that job. chunk: its chunk name, "=run" for the agent's
+        and the user's code, "=probe" for this daemon's own (probes, the try's end marker: WoWBridge leaves those out of
+        its debug window)"""
         if not isinstance(code, str) or not code.strip():
             raise ApiError(400, "bad_request", "code: a non-empty string of Lua")
         if addon is not None and not isinstance(addon, str):
@@ -727,7 +729,7 @@ class Service:
 
         def start():
             comp = self.worker.companion()
-            job = comp.code(code.encode("utf-8"), "=run", addon or "-")
+            job = comp.code(code.encode("utf-8"), chunk, addon or "-")
             self.pending[job] = (loop, fut)       # on the worker thread, before any RUN result can come
             return job
 

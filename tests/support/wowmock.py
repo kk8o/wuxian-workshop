@@ -85,7 +85,7 @@ local function new(kind, parent)
 end
 function Region:SetIgnoreParentScale(v) self.ignoreScale = v end
 function Region:SetIgnoreParentAlpha() end
-function Region:SetFrameStrata() end
+function Region:SetFrameStrata(s) self.strata = s end
 function Region:SetFixedFrameStrata() end
 function Region:SetFrameLevel() end
 function Region:SetSize(w, h) self.w, self.h = w, h end
@@ -183,6 +183,9 @@ end
 function Region:HighlightText() self.highlighted = true end
 -- the debug window (Console.lua): a resizable window, a scrolling message frame, a box of many lines in a scroll frame
 function Region:SetResizable(v) self.resizable = v end
+local raises = 0                               -- the order the windows came to the front
+function Region:SetToplevel(v) self.toplevel = v end
+function Region:Raise() raises = raises + 1; self.raised = raises end
 function Region:SetResizeBounds() end
 function Region:StartSizing() end
 function Region:GetBottom() return self.bottom or 0 end

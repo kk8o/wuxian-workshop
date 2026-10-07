@@ -151,6 +151,7 @@ local function RunJob(id, job)
 		Result(("%s error %s: %s%s"):format(id, job.name, failure, note))
 	end
 	local ok = failure == nil
+	if job.name == "=probe" then return end              -- the app's own look into the game, not the agent's code
 	Count(job.name, ok)
 	pcall(ns.Console.Job, job.name, job.addon, job.flag, ok, ms, values, failure and (failure .. note) or nil)
 	if ns.Setting("toasts") == false then                 -- no notice on the screen: the chat says it, as before
