@@ -47,10 +47,14 @@ if (-not $Version) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Write-Host "packing WuxianWorkshop.App $Version from $PackDir into $OutDir (channel $Channel)"
+# The title, U+65E0 U+9650 U+5DE5 U+574A, by its code points so that this file stays ASCII: Windows PowerShell 5.1 reads a script without a BOM in the
+# system code page, and the title written out here reached vpk garbled (0.9.0-0.9.3: the Setup exe's description, the portable
+# zip's launcher name, the Start menu and desktop shortcuts).
+$Title = -join [char[]](0x65E0, 0x9650, 0x5DE5, 0x574A)
 # --skipVeloAppCheck: vpk looks for the Velopack SDK inside the main exe; ours is in the velopack module under _internal,
 # and scripts\wuxian_entry.py runs velopack.App().run() before anything else.
 $vpkArgs = @("pack", "--packId", "WuxianWorkshop.App", "--packVersion", $Version, "--packDir", $PackDir, "--mainExe", "wuxian.exe",
-          "--outputDir", $OutDir, "--channel", $Channel, "--packTitle", "无限工坊", "--packAuthors", "Wuxian Workshop",
+          "--outputDir", $OutDir, "--channel", $Channel, "--packTitle", $Title, "--packAuthors", "Wuxian Workshop",
           "--icon", $Icon, "--skipVeloAppCheck")
 if ($Notes) { $vpkArgs += @("--releaseNotes", (Resolve-Path $Notes).Path) }
 & vpk @vpkArgs
