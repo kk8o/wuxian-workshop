@@ -762,6 +762,11 @@ def create_app(fake=None, ticker=True):
         """the real API manual (the pack the program carries): the same answers as the daemon"""
         from wuxianworkshop import apidocs
         p, ix = request.query_params, apidocs.index()
+        if "systems" in p:
+            return JSONResponse(dict(systems=ix.systems()))
+        if p.get("system"):
+            found = ix.system(p["system"])
+            return JSONResponse(found) if found else error("not_found", f"{p['system']}: no such namespace", 404)
         if p.get("name"):
             entry = ix.get(p["name"])
             return JSONResponse(entry) if entry else error("not_found", f"{p['name']}: not in the API manual", 404)
@@ -770,8 +775,9 @@ def create_app(fake=None, ticker=True):
             if topic is None:
                 return error("not_found", "no such topic", 404)
             return JSONResponse(topic if isinstance(topic, dict) else {"topics": topic})
-        if p.get("q"):
-            return JSONResponse(dict(query=p["q"], **ix.find(p["q"], p.get("kind") or None, p.get("call") or None, int(p.get("limit") or 20))))
+        if p.get("q") or p.get("kind") or p.get("call"):
+            return JSONResponse(dict(query=p.get("q") or "", **ix.find(p.get("q"), p.get("kind") or None, p.get("call") or None,
+                                                                    int(p.get("limit") or 20), int(p.get("offset") or 0))))
         return JSONResponse(ix.about())
 
     async def trace(request):

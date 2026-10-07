@@ -65,6 +65,18 @@ class DevTools(unittest.TestCase):
         self.assertIn(self.get("/api/apidocs?name=C_Spell.GetSpellInfo")["call"], ("ok", "limited"))
         self.assertIn("md", self.get("/api/apidocs?manual=taint&lang=en"))
         self.assertEqual(self.get("/api/status")["content"]["packs"]["api"]["source"], "bundled")
+        # the browser: the rows, one namespace, a call class listed without a query, paging
+        rows = self.get("/api/apidocs?systems=1")["systems"]
+        self.assertEqual({r["group"] for r in rows}, {"namespace", "global", "object"})
+        spell = self.get("/api/apidocs?system=C_Spell")
+        self.assertTrue(spell["functions"] and all(f["name"].startswith("C_Spell.") for f in spell["functions"]))
+        self.assertEqual(self.refused("GET", "/api/apidocs?system=C_Nothing"), 404)
+        self.assertEqual(self.get("/api/apidocs?name=Frame:Hide")["call"], "limited")       # an object's method
+        listed = self.get("/api/apidocs?call=protected&limit=5")
+        self.assertTrue(listed["results"] and all(r["call"] == "protected" for r in listed["results"]))
+        more = self.get("/api/apidocs?kind=function&limit=5&offset=5")
+        self.assertEqual(len(more["results"]), 5)
+        self.assertGreater(more["more"], 5000)
 
     def test_new_addon_and_reveal(self):
         res = request(self.handle, "POST", "/api/new_addon", {"name": "ViaApi", "title": "接口建的", "template": "window"})

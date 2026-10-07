@@ -428,6 +428,32 @@ a.ty { color: var(--sky); text-decoration: underline dotted; }
 .tvrow.v-other .tv, .tvrow.v-more .tv { color: var(--muted); }
 .enumcmp tr.diff td { background: var(--gold-soft); color: var(--gold-l); }
 .siblings { margin-top: 16px; }
+a.h2link { color: inherit; text-decoration: none; } a.h2link:hover { text-decoration: underline; }
+/* the browser: 命名空间 / 全局函数 / 对象方法 / 手册章节 on top, a row per namespace with how its entries split between 可调用,
+   有限制 and 受保护 (a bar in the filters' colours) and how many functions and events it has */
+.browse { min-height: 0; }
+.btabs { position: sticky; top: 0; z-index: 1; display: flex; gap: 2px; padding: 8px 10px 6px; background: var(--panel); border-bottom: 1px solid var(--line2); }
+.btab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: 12px; color: var(--muted);
+        background: transparent; border: 0; border-radius: 5px; padding: 4px 6px; cursor: pointer; white-space: nowrap; }
+.btab:hover { color: var(--fg); background: var(--panel2); }
+.btab.on { color: var(--gold-l); background: var(--gold-soft); }
+.btab .cnt { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.brows { list-style: none; margin: 0; padding: 4px 0; }
+.brows li { display: grid; grid-template-columns: minmax(0, 1fr) 56px 34px; align-items: center; gap: 10px; padding: 5px 14px; cursor: pointer; }
+.brows li:hover { background: var(--panel2); }
+.brows li.active { background: var(--gold-soft); }
+.brows li.active .bname { color: var(--gold-l); }
+.bname { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.callbar { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--line2); }
+.callbar i { display: block; flex: 0 1 0; min-width: 0; }
+.callbar .ok { background: var(--ok); opacity: .7; } .callbar .lim { background: var(--gold-l); } .callbar .prot { background: var(--bad); }
+.bcount { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+.bnote { padding: 8px 14px; line-height: 1.6; }
+.api-results li.sysrow .sig > span:first-child { color: var(--gold-l); }
+.row.center { justify-content: center; } .row.more { margin: 8px 0 12px; }
+.syscalls { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
+.syscalls .chip { cursor: default; }
+.syssec + .syssec { margin-top: 6px; }
 .sibs { display: flex; flex-wrap: wrap; gap: 4px; }
 .sibs .chip { opacity: 1; text-decoration: none; }
 .table { width: 100%; border-collapse: collapse; font-size: 12.5px; }

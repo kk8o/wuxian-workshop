@@ -355,11 +355,21 @@ class Service:
                     content=self.content.status() if self.content is not None else None,
                     addons_update=self.addons_pending)
 
-    async def apidocs(self, q=None, kind=None, limit=20, name=None, manual=None, call=None, lang=None):
+    async def apidocs(self, q=None, kind=None, limit=20, name=None, manual=None, call=None, lang=None, systems=False,
+                      system=None, offset=0):
         """the API manual (apidocs.py): name = one entry; manual = a topic ("" = the list), in English with lang "en"; q = a
-        search ({query, results, counts, total}; call = ok / limited / protected / usable keeps those); none = about"""
+        search ({query, results, counts, total, more}; call = ok / limited / protected / usable keeps those; without q, a
+        kind or a call lists what they keep; offset pages); systems = the browser's rows, system = one row's entries;
+        none = about"""
         def do():
             ix = apidocs.index()
+            if systems:
+                return dict(systems=ix.systems())
+            if system:
+                found = ix.system(system)
+                if found is None:
+                    raise ApiError(404, "not_found", f"{system}: no such namespace, function group or object")
+                return found
             if name:
                 entry = ix.get(name)
                 if entry is None:
@@ -370,8 +380,8 @@ class Service:
                 if topic is None:
                     raise ApiError(404, "not_found", f"no manual topic {manual!r}")
                 return topic if isinstance(topic, dict) else dict(topics=topic)
-            if q:
-                return dict(query=q, **ix.find(q, kind or None, call or None, limit))
+            if q or kind or call:
+                return dict(query=q or "", **ix.find(q, kind or None, call or None, limit, offset))
             return ix.about()
         if kind not in (None, "", *apidocs.KINDS):
             raise ApiError(400, "bad_request", "kind: function, event or table")

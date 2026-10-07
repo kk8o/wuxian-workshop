@@ -10,6 +10,12 @@ protected functions, GameRules, the 无限-only API; in Chinese and English); sc
     index().get("C_Spell.GetSpellInfo") -> the entry in full, with the tables its types name, its namespace's functions and
                                            the exe's Usage strings for it (or {"candidates": [...]} for an ambiguous short name)
     index().manual() -> [{id, title}];  index().manual("taint", lang="en") -> {id, title, md}
+    index().systems() -> [{key, title, group, counts, calls}]      the API 手册 page's browser: namespaces (C_…), the global
+                                                                   function groups (Unit, Build …), the objects (Frame …)
+    index().system("C_Spell") -> {key, title, group, counts, calls, functions, events, tables}
+
+An object's methods (the documentation's ScriptObject systems, SimpleFrameAPI, FrameAPICooldown …) are named Object:Method
+(Frame:Hide) and carry obj: they are called on an object, not as globals.
 
 What an addon may do with an entry (`call`, with `why`: the documentation fields that say so):
     ok         it may call / register / use it
@@ -19,6 +25,8 @@ What an addon may do with an entry (`call`, with `why`: the documentation fields
     protected  reserved to Blizzard's secure code: a protected function (IsProtectedFunction, or one of the protected globals
                the manual lists: an addon's call is blocked, ADDON_ACTION_BLOCKED) or a restricted event (HasRestrictions:
                registering it is forbidden, ADDON_ACTION_FORBIDDEN)
+An object's method marked IsProtectedFunction (Frame:Hide, Button:Enable …) is limited (why ProtectedMethod): an addon calls it
+on its own frames at any time; on a protected (secure) frame it is blocked in combat.
 """
 import re
 
@@ -40,9 +48,12 @@ def param(p):
     return text + " = " + (str(d).lower() if isinstance(d, bool) else str(d))
 
 
-def function_flags(raw):
+def function_flags(raw, method=False):
     flags = []
-    if raw.get("IsProtectedFunction"):
+    if raw.get("IsProtectedFunction") and method:
+        flags.append(tr("受保护的方法（插件自己的框体随时可用；受保护的安全框体在战斗中不可用）",
+                        "protected method (fine on the addon's own frames; not on secure frames in combat)"))
+    elif raw.get("IsProtectedFunction"):
         flags.append(tr("受保护（只有安全代码能调用，战斗中对安全框体不可用）",
                         "protected (secure code only; not on secure frames in combat)"))
     if raw.get("SecretArguments") in SECRET_TAGS:
@@ -76,10 +87,22 @@ def _secret_or_needs(k):
     return k.startswith(("SecretReturns", "SecretWhen", "SecretIn", "Requires"))
 
 
-def callability(kind, raw, protected_global=False):
+def object_of(system):
+    """the object a ScriptObject system's functions are methods of: SimpleFrameAPI -> Frame, FrameAPICooldown -> Cooldown,
+    DurationTextBindingObjectAPI -> DurationTextBindingObject; None for a global system (Unit, Build …)"""
+    if not system or not (system.endswith("API") or system.startswith("FrameAPI")):
+        return None
+    name = system[len("FrameAPI"):] if system.startswith("FrameAPI") else system
+    name = name[len("Simple"):] if name.startswith("Simple") else name
+    return (name[:-3] if name.endswith("API") else name) or system
+
+
+def callability(kind, raw, protected_global=False, method=False):
     """(call, why): how far an addon may use the entry (CALLS) and the documentation fields that say so"""
     raw = raw or {}
     if kind == "function":
+        if method and raw.get("IsProtectedFunction"):  # fine on the addon's own frames; on secure ones blocked in combat
+            return "limited", ["ProtectedMethod"] + sorted(k for k, v in raw.items() if v and (k == "HasRestrictions" or _secret_or_needs(k)))
         if raw.get("IsProtectedFunction") or protected_global:
             return "protected", ["IsProtectedFunction" if raw.get("IsProtectedFunction") else "ProtectedGlobal"]
         why = sorted(k for k, v in raw.items() if v and (k == "HasRestrictions" or _secret_or_needs(k)))
@@ -98,16 +121,33 @@ class ApiIndex:
         self.entries = []                       # dicts: kind, name, short, ns, item
         self.by_name, self.by_short, self.tables = {}, {}, {}
         self.protected_globals = set(self.pack.get("protected_globals") or [])
+        self.groups = {}                        # the browser's rows: key -> {key, title, group, entries}
         for n in self.pack.get("namespaces", []):
             ns = n.get("ns") or ""
+            system = n.get("name") or ""
+            obj = None if ns else object_of(system)
+            if ns:                              # a namespace: its systems together (C_PartyInfo has two)
+                gkey, group = ns, "namespace"
+            elif obj:
+                gkey, group = obj, "object"
+            elif system and (n.get("functions") or n.get("events")):
+                gkey, group = system, "global"
+            else:                               # a file of types only: its tables are found by search and the kind filter
+                gkey, group = None, None
+            if gkey:
+                row = self.groups.setdefault(gkey, dict(key=gkey, title=gkey, group=group, entries=[]))
             for kind, key in (("function", "functions"), ("event", "events"), ("table", "tables")):
                 for item in n.get(key, []):
                     short = item["name"]
-                    full = f"{ns}.{short}" if kind == "function" and ns else short
-                    call, why = callability(kind, item.get("raw"), kind == "function" and not ns and short in self.protected_globals)
+                    method = kind == "function" and obj is not None
+                    full = f"{ns}.{short}" if kind == "function" and ns else f"{obj}:{short}" if method else short
+                    call, why = callability(kind, item.get("raw"), kind == "function" and not ns and not method
+                                            and short in self.protected_globals, method)
                     e = dict(kind=kind, name=full, short=short, ns=ns, item=item, low=full.lower(),
-                             text=(item.get("doc") or "").lower(), call=call, why=why)
+                             text=(item.get("doc") or "").lower(), call=call, why=why, obj=obj if method else None, group=gkey)
                     self.entries.append(e)
+                    if gkey:
+                        row["entries"].append(e)
                     self.by_name.setdefault(full.lower(), []).append(e)
                     if kind == "function":
                         self.by_short.setdefault(short.lower(), []).append(e)
@@ -146,7 +186,7 @@ class ApiIndex:
             rets = item.get("rets") or []
             if rets:
                 sig += " → " + ", ".join(param(r) for r in rets)
-            flags = function_flags(item.get("raw") or {})
+            flags = function_flags(item.get("raw") or {}, bool(e.get("obj")))
         elif kind == "event":
             sig = f"{e['name']}: " + (", ".join(param(a) for a in item.get("payload", [])) or tr("（无载荷）", "(no payload)"))
             flags = event_flags(item.get("raw") or {})
@@ -155,6 +195,8 @@ class ApiIndex:
             sig = tr(f"{e['name']}（{item.get('type')}，{n} 项）", f"{e['name']} ({item.get('type')}, {n} entries)")
             flags = []
         out = dict(kind=kind, name=e["name"], ns=e["ns"], sig=sig, flags=flags, call=e["call"], why=e["why"], doc=item.get("doc") or "")
+        if e.get("obj"):
+            out["obj"] = e["obj"]
         if kind == "table":
             out.update(type=item.get("type"), size=len(item.get("fields", [])))
         if e["name"] in self.since:
@@ -180,11 +222,11 @@ class ApiIndex:
             t = self.tables.get(str(p.get("t") or "").lower())
             if t and t["name"] != e["short"]:
                 out["types"][t["name"]] = dict(type=t.get("type"), fields=t.get("fields", []))
-        if e["ns"]:                              # the rest of its namespace: functions, or events of an event's
-            key = "functions" if e["kind"] == "function" else "events" if e["kind"] == "event" else None
-            if key:
-                ns = next((n for n in self.pack.get("namespaces", []) if (n.get("ns") or "") == e["ns"]), None)
-                out["siblings"] = [x["name"] for x in (ns or {}).get(key, []) if x["name"] != e["short"]]
+        row = self.groups.get(e.get("group")) if e.get("group") else None
+        if row and e["kind"] in ("function", "event"):   # the rest of its namespace, function group or object, of its kind
+            out["siblings"] = [x["short"] for x in row["entries"] if x["kind"] == e["kind"] and x is not e]
+            prefix = (e["ns"] + "." if e["ns"] else e["obj"] + ":" if e.get("obj") else "") if e["kind"] == "function" else ""
+            out["scope"] = dict(key=row["key"], title=row["title"], group=row["group"], prefix=prefix)
         if e["kind"] == "function":                # its own: TargetUnit( and not SpellTargetUnit(
             needle = re.compile(r"(?<![\w.])" + re.escape(e["name"]) + r"\(")
             out["usage"] = [u for u in self.pack.get("usage", []) if needle.search(u)][:3]
@@ -232,16 +274,52 @@ class ApiIndex:
             return []
         results = [self.brief(e) for e in found[:max(1, min(int(limit), 200))]]
         if not kind and not call and len(results) < limit:   # the exe's Usage strings fill up an unfiltered search
-            usage = [u for u in self.pack.get("usage", []) if all(w in u.lower() for w in words)]
-            results += [dict(kind="usage", name=u, ns="", sig=u, flags=[], call="ok", why=[], doc=tr("exe 里的用法字符串（%s 是函数名）", "a Usage string of the exe (%s is the function's name)"))
-                        for u in usage[:limit - len(results)]]
+            results += self._usage(words, limit - len(results))
         return results
 
-    def find(self, query, kind=None, call=None, limit=80):
-        """the page's search: the results (search) and how many of all the matches each call class has"""
-        found, _ = self._ranked(query, kind)
+    def find(self, query, kind=None, call=None, limit=80, offset=0):
+        """the page's search: a page of the results, how many of all the matches each call class has, and how many more
+        there are; without a query, a kind or a call filter lists what it keeps (by kind, then name)"""
+        found, words = self._ranked(query, kind)
+        if not words:
+            if not (kind or call):
+                return dict(results=[], counts=None, total=0, more=0)
+            found = sorted((e for e in self.entries if not kind or e["kind"] == kind), key=lambda e: (KINDS.index(e["kind"]), e["low"]))
         counts = {c: sum(1 for e in found if e["call"] == c) for c in CALLS}
-        return dict(results=self.search(query, kind, limit, call), counts=counts, total=len(found))
+        kept = [e for e in found if not call or (e["call"] in ("ok", "limited") if call == "usable" else e["call"] == call)]
+        offset, limit = max(0, int(offset or 0)), max(1, min(int(limit), 200))
+        results = [self.brief(e) for e in kept[offset:offset + limit]]
+        if words and not kind and not call and not offset and len(results) < limit:   # the exe's Usage strings fill it up
+            results += self._usage(words, limit - len(results))
+        return dict(results=results, counts=counts, total=len(found), more=max(0, len(kept) - offset - limit))
+
+    def _usage(self, words, n):
+        usage = [u for u in self.pack.get("usage", []) if all(w in u.lower() for w in words)]
+        return [dict(kind="usage", name=u, ns="", sig=u, flags=[], call="ok", why=[],
+                     doc=tr("exe 里的用法字符串（%s 是函数名）", "a Usage string of the exe (%s is the function's name)")) for u in usage[:n]]
+
+    # --- the browser -----------------------------------------------------------------------------------------------
+
+    def _row(self, g):
+        es = g["entries"]
+        return dict(key=g["key"], title=g["title"], group=g["group"],
+                    counts={k: sum(1 for e in es if e["kind"] == k) for k in KINDS},
+                    calls={c: sum(1 for e in es if e["kind"] != "table" and e["call"] == c) for c in CALLS})
+
+    def systems(self):
+        """the rows to browse: the namespaces, then the global function groups, then the objects, each by name"""
+        order = {"namespace": 0, "global": 1, "object": 2}
+        return sorted((self._row(g) for g in self.groups.values() if g["entries"]), key=lambda r: (order[r["group"]], r["title"].lower()))
+
+    def system(self, key):
+        """one row with its entries (brief): functions, events, tables by name; None for an unknown key"""
+        g = self.groups.get(str(key or "")) or next((x for x in self.groups.values() if x["key"].lower() == str(key or "").lower()), None)
+        if g is None:
+            return None
+        out = self._row(g)
+        for kind, name in (("function", "functions"), ("event", "events"), ("table", "tables")):
+            out[name] = [self.brief(e) for e in sorted((e for e in g["entries"] if e["kind"] == kind), key=lambda e: e["low"])]
+        return out
 
     def get(self, name):
         key = str(name or "").strip().lower()

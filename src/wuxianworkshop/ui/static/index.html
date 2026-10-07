@@ -711,28 +711,64 @@
             </div>
           </div>
           <div class="master-scroll" x-ref="apilist">
-            <template x-for="g in docsGroups" :key="g.kind">
-              <div class="api-group">
-                <div class="api-ghead" x-text="t(KIND_TEXT[g.kind] || g.kind) + ' · ' + g.rows.length"></div>
-                <ul class="api-results">
-                  <template x-for="r in g.rows" :key="r.kind + ':' + r.name">
-                    <li :class="['call-' + (r.call || 'ok'), {active: docs.sel && docs.sel.name === r.name, cur: docsFlat[docs.cursor] === r}]" @click="docsOpen(r)" :title="callText(r)">
-                      <div class="mono sig"><span class="cmark" x-show="r.kind !== 'table' && r.kind !== 'usage'"></span><span x-text="r.sig"></span></div>
-                      <span class="since" x-show="r.since" x-text="sinceText(r.since)"></span>
+            <template x-if="docsListing">
+              <div x-t>
+                <div class="api-group" x-show="docsSysMatches.length">
+                  <div class="api-ghead" x-text="t('命名空间与对象 · {n}', { n: docsSysMatches.length })"></div>
+                  <ul class="api-results">
+                    <template x-for="r in docsSysMatches" :key="'sys:' + r.key">
+                      <li class="sysrow" :class="{active: docs.sys && docs.sys.key === r.key && !docs.sel && !docs.topic}" @click="docsSystem(r.key)" :title="rowTitle(r)">
+                        <div class="mono sig"><span x-text="r.title"></span> <span class="muted small" x-text="groupTag(r.group)"></span></div>
+                        <span class="bcount" x-text="r.counts.function + r.counts.event"></span>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+                <template x-for="g in docsGroups" :key="g.kind">
+                  <div class="api-group">
+                    <div class="api-ghead" x-text="t(KIND_TEXT[g.kind] || g.kind) + ' · ' + g.rows.length"></div>
+                    <ul class="api-results">
+                      <template x-for="r in g.rows" :key="r.kind + ':' + r.name">
+                        <li :class="['call-' + (r.call || 'ok'), {active: docs.sel && docs.sel.name === r.name, cur: docsFlat[docs.cursor] === r}]" @click="docsOpen(r)" :title="callText(r)">
+                          <div class="mono sig"><span class="cmark" x-show="r.kind !== 'table' && r.kind !== 'usage'"></span><span x-text="r.sig"></span></div>
+                          <span class="since" x-show="r.since" x-text="sinceText(r.since)"></span>
+                        </li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+                <div class="row center more" x-show="docs.more > 0">
+                  <button class="btn small" @click="docsMore()" :disabled="docs.busy" x-text="t('再列 {n} 条（还有 {m} 条）', { n: Math.min(docs.more, 120), m: docs.more })"></button>
+                </div>
+                <div class="empty" x-show="!docs.busy && !docs.results.length && !docsSysMatches.length">没有找到</div>
+              </div>
+            </template>
+            <template x-if="!docsListing">
+              <div class="browse" x-t>
+                <div class="btabs" role="tablist">
+                  <template x-for="b in BROWSE_TABS" :key="b.id">
+                    <button class="btab" role="tab" :class="{on: docs.tab === b.id}" :aria-selected="docs.tab === b.id" @click="docs.tab = b.id">
+                      <span x-text="t(b.label)"></span><span class="cnt" x-text="browseCount(b.id)"></span></button>
+                  </template>
+                </div>
+                <ul class="brows" x-show="docs.tab !== 'topics'">
+                  <template x-for="r in docsBrowse" :key="r.key">
+                    <li :class="{active: docs.sys && docs.sys.key === r.key && !docs.sel && !docs.topic}" @click="docsSystem(r.key)" :title="rowTitle(r)">
+                      <span class="mono bname" x-text="r.title"></span>
+                      <span class="callbar" aria-hidden="true"><i class="ok" :style="'flex-grow:' + r.calls.ok"></i><i class="lim" :style="'flex-grow:' + r.calls.limited"></i><i class="prot" :style="'flex-grow:' + r.calls.protected"></i></span>
+                      <span class="bcount" x-text="r.counts.function + r.counts.event"></span>
                     </li>
                   </template>
                 </ul>
+                <div class="loader" x-show="docs.tab !== 'topics' && !docs.systems"><svg class="inf"><use href="#inf-line"/></svg><span>正在读取…</span></div>
+                <ul class="mlist topics" x-show="docs.tab === 'topics'">
+                  <template x-for="m in docs.topics" :key="m.id">
+                    <li class="mitem" :class="{active: docs.topic && docs.topic.id === m.id && !docs.sel}" @click="docsTopic(m)"><span class="mitem-title" x-text="topicTitle(m)"></span></li>
+                  </template>
+                </ul>
+                <p class="muted small bnote" x-show="docs.tab === 'topics'">手册章节讲这个客户端的规矩（运行时、taint、机密值、.toc……），主要给 Agent 查（MCP 的 api_manual）；条目里的限制原因会链到对应章节。</p>
               </div>
             </template>
-            <div class="empty" x-show="docs.q && !docs.busy && !docs.results.length" x-t>没有找到</div>
-            <details class="topics" :open="!docs.q">
-              <summary class="topics-head" x-t>手册章节</summary>
-              <ul class="mlist topics">
-                <template x-for="m in docs.topics" :key="m.id">
-                  <li class="mitem" :class="{active: docs.topic && docs.topic.id === m.id && !docs.sel}" @click="docsTopic(m)"><span class="mitem-title" x-text="topicTitle(m)"></span></li>
-                </template>
-              </ul>
-            </details>
           </div>
         </div>
         <div class="detail">
@@ -751,7 +787,8 @@
                 <div class="callbox" :class="'call-' + docs.sel.call" x-show="callText(docs.sel)">
                   <div class="callbox-t"><span class="cmark"></span><b x-text="callText(docs.sel)"></b></div>
                   <ul x-show="docs.sel.why && docs.sel.why.length">
-                    <template x-for="w in (docs.sel.why || [])" :key="w"><li><span x-text="whyText(w, docs.sel.kind)"></span> <code x-text="w"></code></li></template>
+                    <template x-for="w in (docs.sel.why || [])" :key="w"><li><span x-text="whyText(w, docs.sel.kind)"></span> <code x-text="w"></code>
+                      <a href="#" class="small" x-show="whyTopic(w)" @click.prevent="docsTopic({ id: whyTopic(w) })" x-t>看说明</a></li></template>
                   </ul>
                 </div>
                 <pre class="code sigline" x-html="sigHtml(docs.sel)" @click="onTypeClick($event)"></pre>
@@ -813,7 +850,7 @@
                   <p class="small warn-text" x-show="docs.sel.call === 'protected'"
                      x-text="t(tryKind === 'event' ? '受限事件不能从插件注册，这里不提供监听。' : '受保护的函数不能从插件调用，这里不提供运行。')"></p>
                   <div x-show="docs.sel.call !== 'protected'">
-                    <textarea class="input mono code-input" rows="2" x-show="tryKind !== 'event'" x-model="tryit.code" spellcheck="false"
+                    <textarea class="input mono code-input" :rows="Math.min(6, (tryit.code.match(/\n/g) || []).length + 1)" x-show="tryKind !== 'event'" x-model="tryit.code" spellcheck="false"
                               @keydown.ctrl.enter.prevent="tryRun()"></textarea>
                     <p class="small muted" x-show="tryKind === 'event'" x-text="t('注册 {e}，记下 {s} 秒内它触发的次数和参数。', { e: docs.sel.name, s: tryit.seconds })"></p>
                     <div class="row">
@@ -869,9 +906,9 @@
                 </div>
                 <template x-if="docs.sel.siblings && docs.sel.siblings.length">
                   <div class="siblings">
-                    <h2 x-text="t('同命名空间 {ns}（{n}）', { ns: docs.sel.ns, n: docs.sel.siblings.length })"></h2>
+                    <h2><a href="#" class="h2link" @click.prevent="docsSystem(docs.sel.scope.key)" x-text="siblingsTitle"></a></h2>
                     <div class="sibs"><template x-for="n in docs.sel.siblings" :key="n">
-                      <a class="chip mono" href="#" @click.prevent="docsOpen(docs.sel.kind === 'function' ? docs.sel.ns + '.' + n : n)" x-text="n"></a>
+                      <a class="chip mono" href="#" @click.prevent="docsOpen(docs.sel.scope.prefix + n)" x-text="n"></a>
                     </template></div>
                   </div>
                 </template>
@@ -879,16 +916,45 @@
                   <pre class="code" x-text="JSON.stringify(docs.sel.raw, null, 2)"></pre></details>
               </div>
             </template>
+            <template x-if="!docs.sel && !docs.topic && docs.sys">
+              <div x-t>
+                <div class="detail-head flat">
+                  <button class="btn tiny" x-show="docs.back.length" @click="docsBack()" title="回到上一个条目" x-t>← 返回</button>
+                  <span class="kindtag" x-text="groupTag(docs.sys.group)"></span>
+                  <span class="detail-title grow mono" x-text="docs.sys.title"></span>
+                  <button class="btn tiny" @click="copy(docs.sys.title, docs.sys.title)">复制名字</button>
+                </div>
+                <div class="syscalls">
+                  <span class="chip call c-ok on"><span class="cmark"></span><span x-text="t('可调用')"></span><span class="cnt" x-text="docs.sys.calls.ok"></span></span>
+                  <span class="chip call c-limited on"><span class="cmark"></span><span x-text="t('有限制')"></span><span class="cnt" x-text="docs.sys.calls.limited"></span></span>
+                  <span class="chip call c-protected" :class="{on: docs.sys.calls.protected}"><span class="cmark"></span><span x-text="t('受保护')"></span><span class="cnt" x-text="docs.sys.calls.protected"></span></span>
+                </div>
+                <p class="small muted" x-show="sysObjectNote" x-text="sysObjectNote"></p>
+                <template x-for="sec in sysSections" :key="sec.kind">
+                  <div class="syssec">
+                    <h2 x-text="sec.title"></h2>
+                    <ul class="api-results">
+                      <template x-for="r in sec.rows" :key="r.name">
+                        <li :class="'call-' + (r.call || 'ok')" @click="docsOpen(r)" :title="callText(r)">
+                          <div class="mono sig"><span class="cmark" x-show="r.kind !== 'table'"></span><span x-text="sysSig(r)"></span></div>
+                          <span class="since" x-show="r.since" x-text="sinceText(r.since)"></span>
+                        </li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+              </div>
+            </template>
             <template x-if="!docs.sel && docs.topic">
               <div>
-                <div class="detail-head flat"><span class="kindtag" x-t>手册</span><span class="detail-title" x-text="docs.topic.title"></span></div>
+                <div class="detail-head flat"><button class="btn tiny" x-show="docs.back.length" @click="docsBack()" title="回到上一个条目" x-t>← 返回</button><span class="kindtag" x-t>手册</span><span class="detail-title" x-text="docs.topic.title"></span></div>
                 <div class="md" x-html="md(docs.topic.md)"></div>
               </div>
             </template>
-            <template x-if="!docs.sel && !docs.topic">
+            <template x-if="!docs.sel && !docs.topic && !docs.sys">
               <div class="empty intro" x-t>
                 <div>这个客户端自己的 API 文档：函数、事件、枚举与结构。每一条都标出插件能不能用：可调用、有限制（受限状态下返回机密值、有使用限制或前提条件）、受保护（只有暴雪的安全代码能用）。</div>
-                <div class="small">左边搜索，或看手册章节；函数可以在游戏里「试一下」。Agent 用 MCP 工具 api_search / api_get / api_manual 查的是同一份。</div>
+                <div class="small">左边按命名空间、全局函数、对象方法浏览，或者搜索、按能否调用筛选；函数可以在游戏里「试一下」。Agent 用 MCP 工具 api_search / api_get / api_manual 查的是同一份。</div>
               </div>
             </template>
           </div>

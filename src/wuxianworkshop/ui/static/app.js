@@ -59,7 +59,24 @@ const SITE = 'https://wuxianwow.com/workshop';  // 无限工坊's site: opened i
 const API_KINDS = [{ id: 'function', label: '函数' }, { id: 'event', label: '事件' }, { id: 'table', label: '枚举与结构' }];
 const KIND_TEXT = { function: '函数', event: '事件', table: '表', usage: '用法' };
 const KIND_ONE = {                             // one entry's tag: [Chinese, English] (the English singular, KIND_TEXT's plural)
-  function: ['函数', 'Function'], event: ['事件', 'Event'], usage: ['用法', 'Usage'], Enumeration: ['枚举', 'Enum'], Structure: ['结构', 'Structure'],
+  function: ['函数', 'Function'], method: ['方法', 'Method'], event: ['事件', 'Event'], usage: ['用法', 'Usage'],
+  Enumeration: ['枚举', 'Enum'], Structure: ['结构', 'Structure'],
+};
+const GROUP_ONE = { namespace: ['命名空间', 'Namespace'], global: ['全局函数', 'Global functions'], object: ['对象', 'Object'] };   // a row's tag
+const BROWSE_TABS = [{ id: 'namespace', label: '命名空间' }, { id: 'global', label: '全局函数' }, { id: 'object', label: '对象方法' },
+                     { id: 'topics', label: '手册章节' }];
+const WHY_TOPIC = {                            // a limit's reason -> the manual chapter that explains it (SecretWhen… / SecretIn…: secret)
+  IsProtectedFunction: 'taint', ProtectedGlobal: 'protected', ProtectedMethod: 'taint', HasRestrictions: 'taint',
+  SecretReturns: 'secret', SecretPayloads: 'secret', SecretReturnsForAspect: 'secret',
+};
+const FRAME_TYPES = new Set(['Frame', 'Button', 'CheckButton', 'EditBox', 'ScrollFrame', 'Slider', 'StatusBar', 'Cooldown', 'ColorSelect',
+                             'Model', 'PlayerModel', 'DressUpModel', 'CinematicModel', 'TabardModel', 'ModelScene', 'MessageFrame',
+                             'SimpleHTML', 'GameTooltip']);   // 试一下 makes one with CreateFrame to call a method on
+const OBJ_MAKERS = {                           // … and these with their maker
+  Texture: 'UIParent:CreateTexture()', MaskTexture: 'UIParent:CreateMaskTexture()', FontString: 'UIParent:CreateFontString()',
+  Line: 'UIParent:CreateLine()', AnimGroup: 'UIParent:CreateAnimationGroup()', Region: 'CreateFrame("Frame")',
+  ScriptRegion: 'CreateFrame("Frame")', ScriptRegionResizing: 'CreateFrame("Frame")', ScriptObject: 'CreateFrame("Frame")',
+  Object: 'CreateFrame("Frame")',
 };
 const CALL_FILTERS = [                         // the API manual's filter by what an addon may do (apidocs.py callability); none on: all
   { id: 'usable', label: '插件可用', tip: '插件能调用或注册的：可调用的和有限制的，不含受保护的' },
@@ -70,6 +87,7 @@ const CALL_FILTERS = [                         // the API manual's filter by wha
 const WHY = {                                  // the documentation fields that limit an entry (apidocs.py), for people
   IsProtectedFunction: '只有暴雪的安全代码能调用：插件调用会被拦截（ADDON_ACTION_BLOCKED），战斗中对安全框体也不可用。',
   ProtectedGlobal: '手册列出的受保护全局函数：只有安全代码或硬件事件触发的安全按钮能调用，插件直接调用会被禁止（ADDON_ACTION_FORBIDDEN）。',
+  ProtectedMethod: '受保护的方法：插件在自己的框体上随时可以调用；对受保护的安全框体（动作条、单位框体等），战斗中会被拦截。',
   HasRestrictions: '有使用限制：某些情况下调用会失败或被拦截。',
   HasRestrictionsEvent: '受限事件：插件注册它会被客户端禁止（ADDON_ACTION_FORBIDDEN），游戏里会弹出「插件导致界面行为失效」。',
   SecretReturns: '返回值可能是机密值：在战斗、首领战等受限状态下读不到明文，不能比较、运算、拼接或存表。',
@@ -161,9 +179,9 @@ function appState() {
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
     showToken: false,
-    CALL_FILTERS,
-    docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, cursor: -1, busy: false, sel: null, topic: null, topics: [],
-            about: null, check: null, checking: false, open: {}, back: [] },
+    CALL_FILTERS, BROWSE_TABS,
+    docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, busy: false, sel: null, topic: null,
+            topics: [], about: null, check: null, checking: false, open: {}, back: [], systems: null, sys: null, tab: 'namespace' },
     tryit: { code: '', busy: false, result: null, trace: null, seconds: 10 },
     lang: 'zh-CN',                             // the language in force (settings.language; 'auto' follows the system)
     na: { open: false, name: '', title: '', notes: '', template: 'basic', busy: false, error: '', result: null },
@@ -805,11 +823,15 @@ function appState() {
     // 开发台's 运行 Lua: a function called once (its values by the documented return names, tables opened), an enum read in the
     // game against the manual, an event listened for (the trace)
     async docsInit() {
-      if (this.docs.about) return;
-      try {
-        this.docs.about = await this.api('/api/apidocs');
-        this.docs.topics = this.docs.about.manual || [];
-      } catch (e) { this.say(t('API 手册：') + e.message); }
+      if (!this.docs.about) {
+        try {
+          this.docs.about = await this.api('/api/apidocs');
+          this.docs.topics = this.docs.about.manual || [];
+        } catch (e) { this.say(t('API 手册：') + e.message); }
+      }
+      if (!this.docs.systems) {                // the browser's rows: namespaces, function groups, objects
+        try { this.docs.systems = (await this.api('/api/apidocs?systems=1')).systems || []; } catch (e) { /* the search still works */ }
+      }
     },
     get docsAbout() {
       const a = this.docs.about;
@@ -824,18 +846,36 @@ function appState() {
       return c ? t('{to} 相对 {frm}：新增 {a}、改动 {c}、删除 {r}', { to: c.to, frm: c.frm, a: c.added, c: c.changed, r: c.removed }) : '';
     },
     topicTitle(m) { return this.lang === 'en' ? (m.title_en || m.title) : m.title; },
-    async docsSearch() {
+    get docsListing() { return !!(this.docs.q.trim() || this.docs.kind || this.docs.call); },   // else the left pane browses
+    async docsSearch(more) {                   // the query and the filters; without a query a filter alone lists; more: the next page
       const q = this.docs.q.trim();
-      if (!q) { this.docs.results = []; this.docs.counts = null; this.docs.total = 0; return; }
+      if (!this.docsListing) { this.docs.results = []; this.docs.counts = null; this.docs.total = 0; this.docs.more = 0; return; }
+      const asked = [q, this.docs.kind, this.docs.call].join('|');
+      const offset = more ? this.docs.results.filter(r => r.kind !== 'usage').length : 0;
       this.docs.busy = true;
       try {
         const d = await this.api('/api/apidocs?limit=120&q=' + encodeURIComponent(q) + (this.docs.kind ? '&kind=' + this.docs.kind : '')
-                                 + (this.docs.call ? '&call=' + this.docs.call : ''));
-        if (this.docs.q.trim() === q) {
-          this.docs.results = d.results || []; this.docs.counts = d.counts || null; this.docs.total = d.total || 0; this.docs.cursor = -1;
+                                 + (this.docs.call ? '&call=' + this.docs.call : '') + (offset ? '&offset=' + offset : ''));
+        if ([this.docs.q.trim(), this.docs.kind, this.docs.call].join('|') === asked) {
+          this.docs.results = more ? this.docs.results.concat(d.results || []) : (d.results || []);
+          this.docs.counts = d.counts || null; this.docs.total = d.total || 0; this.docs.more = d.more || 0;
+          if (!more) this.docs.cursor = -1;
         }
       } catch (e) { this.say(t('搜索失败：') + e.message); }
       finally { this.docs.busy = false; }
+    },
+    docsMore() { return this.docsSearch(true); },
+    get docsSysMatches() {                     // the namespaces, function groups and objects whose name has the query
+      const q = this.docs.q.trim().toLowerCase();
+      if (!q || this.docs.kind || this.docs.call || !this.docs.systems) return [];
+      return this.docs.systems.filter(r => r.key.toLowerCase().includes(q)).slice(0, 8);
+    },
+    get docsBrowse() { return (this.docs.systems || []).filter(r => r.group === this.docs.tab); },
+    groupTag(g) { const p = GROUP_ONE[g]; return p ? p[this.lang === 'en' ? 1 : 0] : g; },
+    browseCount(id) { return id === 'topics' ? this.docs.topics.length : (this.docs.systems || []).filter(r => r.group === id).length || ''; },
+    rowTitle(r) {
+      return t('{f} 个函数 · {e} 个事件 · {n} 个表；可调用 {ok} · 有限制 {lim} · 受保护 {prot}',
+               { f: r.counts.function, e: r.counts.event, n: r.counts.table, ok: r.calls.ok, lim: r.calls.limited, prot: r.calls.protected });
     },
     get docsGroups() {                         // the results by kind, in the manual's order
       return ['function', 'event', 'table', 'usage'].map(k => ({ kind: k, rows: this.docs.results.filter(r => r.kind === k) })).filter(g => g.rows.length);
@@ -872,19 +912,73 @@ function appState() {
                                                    { candidates: d.candidates }) : d, back);
       } catch (e) { this.say(e.message); }
     },
+    docsHere() {                               // what the detail shows now (an entry, a chapter, a namespace), for 返回
+      if (this.docs.sel) return { k: 'entry', v: this.docs.sel.name };
+      if (this.docs.topic) return { k: 'topic', v: this.docs.topic.id };
+      if (this.docs.sys) return { k: 'sys', v: this.docs.sys.key };
+      return null;
+    },
+    docsRemember(next) {                       // the view being left, unless it is the one going to
+      const here = this.docsHere();
+      if (here && !(here.k === next.k && here.v === next.v)) this.docs.back.push(here);
+    },
     docsShow(entry, back) {
-      if (!back && this.docs.sel && this.docs.sel.name !== entry.name) this.docs.back.push(this.docs.sel.name);
+      if (!back) this.docsRemember({ k: 'entry', v: entry.name });
       this.docs.sel = entry; this.docs.topic = null; this.docs.check = null;
       this.docs.open = Object.fromEntries(Object.entries(entry.types || {}).map(([k, v]) => [k, (v.fields || []).length <= 12]));
       this.tryReset();
       this.$nextTick(() => { const el = this.$refs.apidetail; if (el) el.scrollTop = 0; });
     },
-    docsBack() { const name = this.docs.back.pop(); if (name) this.docsOpen(name, true); },
-    async docsTopic(m) {
+    docsBack() {
+      const p = this.docs.back.pop();
+      if (!p) return;
+      if (p.k === 'sys') this.docsSystem(p.v, true);
+      else if (p.k === 'topic') this.docsTopic({ id: p.v }, true);
+      else this.docsOpen(p.v, true);
+    },
+    async docsTopic(m, back) {
       try {
-        this.docs.topic = await this.api('/api/apidocs?manual=' + encodeURIComponent(m.id) + '&lang=' + this.lang);
-        this.docs.sel = null;
+        const topic = await this.api('/api/apidocs?manual=' + encodeURIComponent(m.id) + '&lang=' + this.lang);
+        if (!back) this.docsRemember({ k: 'topic', v: topic.id });
+        this.docs.topic = topic; this.docs.sel = null;
+        this.$nextTick(() => { const el = this.$refs.apidetail; if (el) el.scrollTop = 0; });
       } catch (e) { this.say(e.message); }
+    },
+    async docsSystem(key, back) {              // a namespace, a function group or an object: a page of its entries
+      try {
+        const sys = await this.api('/api/apidocs?system=' + encodeURIComponent(key));
+        if (!back) this.docsRemember({ k: 'sys', v: sys.key });
+        this.docs.sys = sys; this.docs.sel = null; this.docs.topic = null;
+        this.$nextTick(() => { const el = this.$refs.apidetail; if (el) el.scrollTop = 0; });
+      } catch (e) { this.say(e.message); }
+    },
+    get sysSections() {                        // a namespace's functions, events and tables
+      const s = this.docs.sys;
+      if (!s) return [];
+      return API_KINDS.map(k => ({ kind: k.id, title: t(k.label) + ' · ' + (s[k.id + 's'] || []).length, rows: s[k.id + 's'] || [] }))
+        .filter(x => x.rows.length);
+    },
+    sysSig(r) {                                // a row on its namespace's page: without the prefix the heading has
+      const s = this.docs.sys;
+      const p = s && s.group === 'namespace' ? s.key + '.' : s && s.group === 'object' ? s.key + ':' : '';
+      return p && r.sig.startsWith(p) ? r.sig.slice(p.length) : r.sig;
+    },
+    get sysObjectNote() {                      // how an object's methods are called
+      const s = this.docs.sys;
+      if (!s || s.group !== 'object') return '';
+      const f = (s.functions || [])[0];
+      return t('对象方法：在你自己的 {o} 对象上调用，例如 {ex}。', { o: s.title, ex: 'obj:' + (f ? f.name.slice(f.name.indexOf(':') + 1) : 'Method') + '()' });
+    },
+    get siblingsTitle() {                      // the heading over the rest of an entry's namespace, function group or object
+      const s = this.docs.sel, sc = s && s.scope;
+      if (!sc) return '';
+      const n = (s.siblings || []).length;
+      return sc.group === 'object' ? t('{o} 的其他方法（{n}）', { o: sc.title, n })
+           : sc.group === 'global' ? t('同一组 {g}（{n}）', { g: sc.title, n }) : t('同命名空间 {ns}（{n}）', { ns: sc.title, n });
+    },
+    whyTopic(code) {                           // the chapter that explains a limit's reason, when the pack has it
+      const id = WHY_TOPIC[code] || (/^Secret(When|In)/.test(code) ? 'secret' : '');
+      return id && this.docs.topics.some(m => m.id === id) ? id : '';
     },
     docsToggle(name) {                         // a type of the entry: its fields shown or hidden, scrolled to
       this.docs.open = Object.assign({}, this.docs.open, { [name]: !this.docs.open[name] });
@@ -904,7 +998,7 @@ function appState() {
       const p = x => '<span class="pn">' + esc(x.n) + '</span>' + (x.nil ? '<span class="nil">?</span>' : '') + ': ' + ty(x.t)
                      + (x.def != null && x.def !== '' ? ' = ' + esc(x.def) : '');
       if (e.kind === 'function' && !e.candidates) {
-        const dot = e.name.lastIndexOf('.');
+        const dot = Math.max(e.name.lastIndexOf('.'), e.name.lastIndexOf(':'));   // C_Spell.GetSpellInfo, Frame:Hide
         return (dot > 0 ? '<span class="ns">' + esc(e.name.slice(0, dot + 1)) + '</span>' : '') + '<b>' + esc(e.name.slice(dot + 1)) + '</b>('
                + (e.args || []).map(p).join(', ') + ')' + ((e.returns || []).length ? ' → ' + e.returns.map(p).join(', ') : '');
       }
@@ -925,8 +1019,8 @@ function appState() {
       if (/^Require/.test(code)) return t('有前提条件，条件不满足时调用不起作用。');
       return '';
     },
-    kindTag(e) {                               // an entry's tag: Function, Event, Enum, Structure
-      const p = KIND_ONE[e.kind === 'table' ? e.type : e.kind];
+    kindTag(e) {                               // an entry's tag: Function, Method, Event, Enum, Structure
+      const p = KIND_ONE[e.kind === 'table' ? e.type : e.obj ? 'method' : e.kind];
       return p ? p[this.lang === 'en' ? 1 : 0] : t(KIND_TEXT[e.kind] || e.kind);
     },
     sinceText(s) { return s ? t(s.what === 'added' ? '{b} 新增' : '{b} 改动', { b: String(s.build || '').split('.').pop() }) : ''; },
@@ -945,7 +1039,7 @@ function appState() {
     },
     async docsCheck() {                        // is it there in the running game? return type(...)
       const name = this.docs.sel && this.docs.sel.name;
-      if (!name) return;
+      if (!name || name.includes(':')) return;     // an object's method is no global to look up
       const dot = name.indexOf('.');
       const expr = dot > 0 ? name.slice(0, dot) + ' and ' + name : name;
       this.docs.checking = true;
@@ -971,6 +1065,11 @@ function appState() {
     },
     tryTemplate(s) {
       if (!s) return '';
+      if (s.kind === 'function' && s.obj) {    // an object's method: called on an object made for it, or on yours
+        const make = FRAME_TYPES.has(s.obj) ? 'CreateFrame("' + s.obj + '")' : OBJ_MAKERS[s.obj];
+        const call = 'obj:' + s.name.slice(s.name.indexOf(':') + 1) + '(' + this.tryArgs(s) + ')';
+        return make ? 'local obj = ' + make + '\nreturn ' + call : '-- ' + t('换成你的 {o} 对象', { o: s.obj }) + '\nlocal obj = nil\nreturn ' + call;
+      }
       if (s.kind === 'function') return 'return ' + s.name + '(' + this.tryArgs(s) + ')';
       if (s.kind === 'table' && s.type === 'Enumeration') return 'return Enum.' + s.name;
       return '';

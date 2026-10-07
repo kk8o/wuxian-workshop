@@ -118,7 +118,65 @@ class Index(unittest.TestCase):
                          "note": "(spellIdentifier: SpellIdentifier) → info: SpellCooldownInfo"})
         self.assertEqual(self.ix.search("UnitHealth")[0]["since"]["what"], "changed")
         self.assertEqual(self.ix.get("SPELL_UPDATE_COOLDOWN")["siblings"], ["COMBAT_LOG_EVENT"])
-        self.assertNotIn("siblings", self.ix.get("UnitHealth"))                   # a global: no namespace
+        unit = self.ix.get("UnitHealth")                                          # a global function: the rest of its group
+        self.assertEqual((unit["siblings"], unit["scope"]), (["CastSpellByName", "TargetUnit"],
+                         {"key": "Unit", "title": "Unit", "group": "global", "prefix": ""}))
+        self.assertEqual(e["scope"]["prefix"], "C_Spell.")
+
+
+# an object's methods (a ScriptObject system: SimpleFrameAPI) and a file of types only, beside the made-up pack
+OBJECTS = dict(PACK, namespaces=PACK["namespaces"] + [
+    {"ns": "", "name": "SimpleFrameAPI", "functions": [
+        {"name": "Hide", "args": [], "rets": [], "doc": "", "raw": {"IsProtectedFunction": True}},
+        {"name": "GetWidth", "args": [], "rets": [arg("width", "number")], "doc": "", "raw": {}}], "events": [], "tables": []},
+    {"ns": "", "name": "SimpleEditBoxAPI", "functions": [
+        {"name": "ClearFocus", "args": [], "rets": [], "doc": "", "raw": {}}], "events": [], "tables": []},
+    {"ns": "", "name": "", "functions": [], "events": [],
+     "tables": [{"name": "SomeConstants", "type": "Constants", "fields": []}]}],
+    protected_globals=PACK["protected_globals"] + ["ClearFocus"])
+
+
+class Browse(unittest.TestCase):
+    """the API 手册 page's browser: namespaces, function groups and objects; an object's methods; a listing without a query"""
+
+    def setUp(self):
+        self.ix = apidocs.ApiIndex(OBJECTS)
+
+    def test_an_objects_methods(self):
+        hide = self.ix.get("Frame:Hide")
+        self.assertEqual((hide["name"], hide["obj"], hide["sig"]), ("Frame:Hide", "Frame", "Frame:Hide()"))
+        self.assertEqual((hide["call"], hide["why"]), ("limited", ["ProtectedMethod"]))   # fine on the addon's own frames
+        self.assertIn("受保护的方法", hide["flags"][0])
+        self.assertEqual(self.ix.get("EditBox:ClearFocus")["call"], "ok")       # the protected global ClearFocus is another
+        self.assertEqual(self.ix.get("Hide")["name"], "Frame:Hide")              # by its short name
+        self.assertEqual(self.ix.get("Frame:GetWidth")["scope"], {"key": "Frame", "title": "Frame", "group": "object", "prefix": "Frame:"})
+        self.assertEqual(apidocs.object_of("FrameAPICooldown"), "Cooldown")
+        self.assertEqual(apidocs.object_of("DurationTextBindingObjectAPI"), "DurationTextBindingObject")
+        self.assertIsNone(apidocs.object_of("Unit"))
+
+    def test_the_rows(self):
+        rows = self.ix.systems()
+        self.assertEqual([(r["group"], r["key"]) for r in rows], [("namespace", "C_Other"), ("namespace", "C_Spell"),
+                         ("global", "Unit"), ("object", "EditBox"), ("object", "Frame")])   # no row for a file of types only
+        spell = next(r for r in rows if r["key"] == "C_Spell")
+        self.assertEqual((spell["counts"], spell["calls"]), ({"function": 2, "event": 2, "table": 1},
+                                                             {"ok": 2, "limited": 1, "protected": 1}))
+        one = self.ix.system("c_spell")
+        self.assertEqual([f["name"] for f in one["functions"]], ["C_Spell.GetSpellCooldown", "C_Spell.GetSpellInfo"])
+        self.assertEqual([x["name"] for x in one["events"]], ["COMBAT_LOG_EVENT", "SPELL_UPDATE_COOLDOWN"])
+        self.assertEqual([x["name"] for x in one["tables"]], ["SpellInfo"])
+        self.assertIsNone(self.ix.system("C_Nothing"))
+
+    def test_a_listing_without_a_query(self):
+        protected = self.ix.find("", call="protected")
+        self.assertEqual([r["name"] for r in protected["results"]], ["CastSpellByName", "TargetUnit", "COMBAT_LOG_EVENT"])
+        self.assertEqual(protected["more"], 0)
+        page = self.ix.find("", kind="function", limit=3)
+        self.assertEqual((len(page["results"]), page["more"], page["total"]), (3, 6, 9))
+        rest = self.ix.find("", kind="function", limit=3, offset=6)
+        self.assertEqual((len(rest["results"]), rest["more"]), (3, 0))
+        self.assertEqual(self.ix.find(""), {"results": [], "counts": None, "total": 0, "more": 0})
+        self.assertEqual([r["name"] for r in self.ix.find("", kind="table")["results"]], ["SomeConstants", "SpellInfo"])
 
 
 class Carried(unittest.TestCase):
