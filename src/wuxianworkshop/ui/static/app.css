@@ -210,9 +210,10 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
    online), what that means, the actions, and the link's readings in a row. Below, the game and the developer component as
    spec sheets of the same height, then the recent activity filling the rest of the page. */
 .pagebody.overview { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr));
-                     grid-template-rows: auto auto minmax(200px, 1fr); padding: 16px 18px; }
+                     grid-template-rows: auto auto minmax(150px, 1fr); padding: 16px 18px; }
 .ov-hero { grid-column: 1 / -1; --hero-c: var(--muted); --hero-tint: rgba(156, 158, 166, .07);
-           border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+           border: 1px solid var(--line); border-radius: 10px;   /* no overflow: hidden, or the grid may squeeze it (a scroll container's
+           minimum height is 0) and cut its readings off */
            background: radial-gradient(560px 200px at 0 0, var(--hero-tint), transparent 72%), var(--panel); }
 .ov-hero.st-ok { --hero-c: var(--ok); --hero-tint: rgba(111, 207, 151, .11); }
 .ov-hero.st-warn { --hero-c: var(--gold-l); --hero-tint: rgba(241, 201, 122, .1); }
@@ -235,7 +236,7 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .ov-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ov-acts .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; }
 .ov-vitals { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--line2);
-             background: rgba(0, 0, 0, .14); }
+             background: rgba(0, 0, 0, .14); border-radius: 0 0 9px 9px; }
 .vital { padding: 11px 20px 13px; min-width: 0; }
 .vital + .vital { border-left: 1px solid var(--line2); }
 .vital dt { font-size: 11.5px; color: var(--muted); letter-spacing: .06em; }
@@ -244,7 +245,7 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .vital dd small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
 .ov-hero:not(.st-ok) .vital dd { color: var(--muted); }   /* the readings of a link that is down are old */
 .vital-sub { margin-top: 2px; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ov-card { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); border: 1px solid var(--line);
+.ov-card { display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--line);
            border-radius: 10px; padding: 14px 18px 6px; }
 .ov-card > header { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
 .ov-card > header h2 { margin: 0; }
@@ -255,7 +256,7 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .spec dt { flex: none; color: var(--muted); font-size: 12.5px; }
 .spec dd { margin: 0; min-width: 0; font-size: 12.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spec dd.mono { font-size: 12px; }
-.ov-feed { grid-column: 1 / -1; padding-bottom: 0; }
+.ov-feed { grid-column: 1 / -1; padding-bottom: 0; min-height: 0; }   /* only the activity gives way: its list scrolls */
 .ov-feed > header { padding-bottom: 6px; }
 .feed { flex: 1; min-height: 0; overflow: auto; list-style: none; margin: 0 -18px; padding: 0; font-family: var(--mono); font-size: 12px; }
 .feed li { display: grid; grid-template-columns: 62px 76px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 18px;
