@@ -1,5 +1,6 @@
 -- WoWBridge's minimap button and its entry in the addon compartment (the minimap's addon list): left-click opens the
--- settings panel, right-click puts the link's state in the chat, dragging moves the button round the minimap. Its place
+-- settings panel, right-click the debug window (Console.lua), dragging moves the button round the minimap. Lua errors
+-- that came while the debug window was closed show as a red count on the button (M.Badge). Its place
 -- (minimapAngle, degrees) and whether it shows (minimapHide) are kept for this character. The icon is 无限工坊's mark
 -- (Skin.lua), grey while the link is off; the tooltip says the link's state in its colour.
 local _, ns = ...
@@ -34,6 +35,7 @@ local function Tooltip(owner)
 	GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
 	GameTooltip:AddLine(L.PANEL_TITLE, C.goldL[1], C.goldL[2], C.goldL[3])
 	GameTooltip:AddLine(L.ST_LINK:format(ns.StateName(state)), c[1], c[2], c[3])
+	if ns.Console.unseen > 0 then GameTooltip:AddLine(L.MM_ERRORS:format(ns.Console.unseen), C.bad[1], C.bad[2], C.bad[3]) end
 	GameTooltip:AddLine(" ")
 	for _, key in ipairs({ "MM_LEFT", "MM_RIGHT", "MM_DRAG" }) do
 		GameTooltip:AddLine(L[key], C.muted[1], C.muted[2], C.muted[3])
@@ -62,8 +64,16 @@ local function Build()
 	border:SetSize(53, 53)
 	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
 	border:SetPoint("TOPLEFT", button, "TOPLEFT")
+	button.badge = button:CreateTexture(nil, "OVERLAY", nil, 6)
+	button.badge:SetSize(15, 12)
+	button.badge:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -3)
+	S.Fill(button.badge, S.C.bad)
+	button.count = S.Text(button, "GameFontHighlightSmall", S.C.ink, "OVERLAY")
+	button.count:SetPoint("CENTER", button.badge, "CENTER", 0, 0)
+	button.count:SetJustifyH("CENTER")
+	M.Badge(ns.Console.unseen)
 	button:SetScript("OnClick", function(_, which)
-		if which == "RightButton" then _G.WoWBridge.LinkStatus() else ns.Panel.Toggle() end
+		if which == "RightButton" then ns.Console.Toggle() else ns.Panel.Toggle() end
 	end)
 	button:SetScript("OnDragStart", function(self)
 		GameTooltip:Hide()
@@ -73,6 +83,15 @@ local function Build()
 	button:SetScript("OnEnter", Tooltip)
 	button:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	C_Timer.NewTicker(1, function() icon:SetDesaturated(ns.Link.State() == "off") end)
+end
+
+-- the count of Lua errors the debug window has not shown yet (0: none, no badge)
+function M.Badge(n)
+	if not button then return end
+	button.badge:SetShown(n > 0)
+	button.count:SetShown(n > 0)
+	button.count:SetText(n > 99 and "99+" or tostring(n))
+	button.badge:SetWidth(n > 9 and 20 or 15)
 end
 
 -- shown or hidden as the setting says, in its place

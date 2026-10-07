@@ -57,12 +57,14 @@ function U.AskReload()
 			{ L.RELOAD_LATER, 90, function(d)
 				d:Hide()
 				ns.Link.Send("later: the user put the reload off", "reload")
+			ns.Console.Add("RELOAD", ns.L.CON_RELOAD_LATER)
 			end },
 		})
 		ask.reload, ask.later = ask.buttons[1], ask.buttons[2]
 	end
 	Alert(ask)
 	ns.Print(L.RELOAD_CHAT)
+	ns.Console.Add("RELOAD", L.CON_RELOAD_ASKED)
 	ns.Link.Send("asked: a button is up; the UI reloads when the user clicks it", "reload")
 end
 

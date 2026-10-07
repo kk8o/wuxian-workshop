@@ -6,6 +6,7 @@
 -- counts, and the count goes out with it at most every REPEAT_EVERY seconds; print() lines are gathered for OUT_FLUSH
 -- seconds; at most DEBUG_MAX debug messages wait at a time, more are dropped and counted ("DROPPED n ..."). The setting
 -- forwardDebug (Config.lua, /wb set forwardDebug off) turns the forwarding off; the client's own handlers run as before.
+-- Each of them is also a line of the debug window (Console.lua), forwarded or not.
 local _, ns = ...
 
 local D = {}
@@ -67,20 +68,22 @@ end
 
 local function OnError(msg)
 	D.stats.errors = D.stats.errors + 1
-	if not Enabled() then return end
-	local text = "ERR " .. tostring(msg)
-	if seen[text] then return Seen(text) end
 	-- the stack from the error on: without this handler's own line and the C call into it
 	local stack = debugstack and debugstack(3) or ""
 	stack = stack:gsub("^%[[^%]]*WoWBridge[/\\]Debug%.lua%][^\n]*\n", ""):gsub("^%[C%]: %?\n", "")
+	ns.Console.Add("ERR", tostring(msg), stack:sub(1, 1500))
+	if not Enabled() then return end
+	local text = "ERR " .. tostring(msg)
+	if seen[text] then return Seen(text) end
 	Seen(text, stack:sub(1, 1500))
 end
 
 local function OnPrint(...)
-	if not Enabled() then return end
 	local parts = {}
 	for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
 	local line = table.concat(parts, " "):sub(1, OUT_MAX)
+	ns.Console.Add("OUT", line)
+	if not Enabled() then return end
 	if outBytes + #line + 1 > OUT_MAX then FlushOut() end
 	outLines[#outLines + 1] = line
 	outBytes = outBytes + #line + 1
@@ -90,9 +93,14 @@ end
 local function OnDebugEvent(_, event, ...)
 	local stats = D.stats
 	if event == "LUA_WARNING" then stats.warnings = stats.warnings + 1 else stats.blocked = stats.blocked + 1 end
-	if not Enabled() then return end
 	local args = {}
 	for i = 1, select("#", ...) do args[i] = tostring((select(i, ...))) end
+	if event == "LUA_WARNING" then
+		ns.Console.Add("WARN", table.concat(args, " "))
+	else
+		ns.Console.Add("BLOCKED", ("%s %s"):format(event, table.concat(args, " ")))
+	end
+	if not Enabled() then return end
 	if event == "LUA_WARNING" then
 		Seen("WARN " .. table.concat(args, " "))
 	else
@@ -147,12 +155,16 @@ if early and not early.taken then
 	early.taken = true
 	D.stats.errors = D.stats.errors + #early.errors
 	D.stats.warnings = D.stats.warnings + #early.warnings
+	for _, e in ipairs(early.errors) do
+		ns.Console.Add("ERR", e.msg, (e.stack:gsub("^%[[^%]]*!WuxianWorkshop[/\\]Core%.lua%][^\n]*\n", ""):sub(1, 1500)))
+	end
+	for _, w in ipairs(early.warnings) do ns.Console.Add("WARN", w) end
+	for _, line in ipairs(early.prints) do pcall(OnPrint, line) end     -- the window, and the app when forwarding
 	if Enabled() then
 		for _, e in ipairs(early.errors) do
 			local stack = e.stack:gsub("^%[[^%]]*!WuxianWorkshop[/\\]Core%.lua%][^\n]*\n", ""):gsub("^%[C%]: %?\n", "")
 			Seen("ERR " .. e.msg, (stack:sub(1, 1500) .. "(before WoWBridge loaded)"))
 		end
 		for _, w in ipairs(early.warnings) do Seen("WARN " .. w) end
-		for _, line in ipairs(early.prints) do pcall(OnPrint, line) end
 	end
 end

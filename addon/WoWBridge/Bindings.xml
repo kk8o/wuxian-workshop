@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="WOWBRIDGE_CONSOLE" header="WOWBRIDGE" category="ADDONS">
+		WoWBridge.ToggleConsole()
+	</Binding>
+</Bindings>

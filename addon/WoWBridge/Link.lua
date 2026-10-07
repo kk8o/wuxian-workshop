@@ -253,6 +253,7 @@ local function OnPacket(pkt)
 	if state ~= "online" then
 		state = "online"
 		Print(ns.L.CONNECTED:format(pkt.slot))
+		ns.Console.Add("LINK", ns.L.CON_LINK_UP)
 	end
 	if pkt.session == ns.session and pkt.ack > 0 then
 		lastAck = pkt.ack
@@ -281,6 +282,7 @@ function L.Tick()
 	if state == "online" and lastPacket and now - lastPacket > P.offline then
 		state = "hello"
 		Print(ns.L.OFFLINE:format(P.offline, #queue))
+		ns.Console.Add("LINK", ns.L.CON_LINK_DOWN)
 	end
 	ns.Debug.Tick(now)
 	ns.UI.CheckSlots()

@@ -4,6 +4,7 @@
 -- experiments (probe frame, self-test, sweep, polling and font tests) are the separate addon WoWBridge_Lab (addon/lab).
 --   /wb                          the settings panel (status and commands in the chat when it is not there)
 --   /wb help                     the commands
+--   /wb log [errors|runs|output] the debug window (Console.lua): errors, prints and the agent's code as they happen
 --   /wb link                     the link to the companion: state, mailbox slot, message counters
 --   /wb on | off                 show the frame and connect, or stop the link and hide the frame (kept: autoLink)
 --   /wb unlock | lock | reset    drag the frame elsewhere, fix it there, or put it back in the top-left corner
@@ -12,7 +13,8 @@
 --   /wb burst [n]                send n test messages; a "BURST DONE ..." message reports delivery and latency
 --   /wb long [bytes]             send one long test message (parts of 128x32 frames); "LONG DONE ..." follows
 --   /wb stream [seconds]         experiments E2 / E3: a message every 0.3 s, each with a CRC the companion checks
---   /wb set <key> on|off         forwardDebug, hotLoad or autoLink; kept in WoWBridgeDB.settings (Config.lua has the defaults)
+--   /wb set <key> on|off         forwardDebug, hotLoad, autoLink or toasts; kept in WoWBridgeDB.settings (Config.lua has the
+--                                defaults)
 --   /wb parent ui|world          which frame the bus hangs from (WorldFrame may stay visible with Alt+Z)
 --   /wb snap default|on|off      texture pixel snapping
 --   /wb mode 0|1|2               colour mode of data frames
@@ -21,12 +23,13 @@ local addonName, ns = ...
 local Frame, L = ns.Frame, ns.L
 
 local VERSION = "0.9.3"
-local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true }   -- /wb set <key> on|off
+local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true, toasts = true }   -- /wb set <key> on|off
 
 local WB = {}
 _G.WoWBridge = WB
 WB.VERSION = VERSION
 WB.Dump = ns.Agent.Dump   -- (value, depth, bytes): a readable dump of a table, for code an agent runs
+function WB.ToggleConsole(which) ns.Console.Toggle(which) end   -- the debug window (/wb log, the key binding)
 
 local cfg = {}            -- Config.lua defaults under WoWBridgeDB.settings (see Init)
 ns.cfg = cfg
@@ -326,6 +329,13 @@ SlashCmdList.WOWBRIDGE = function(msg)
 	elseif cmd == "mode" and (rest == "0" or rest == "1" or rest == "2") then
 		Set("mode", tonumber(rest))
 		Print(L.MODE:format(rest))
+	elseif cmd == "log" or cmd == "console" then
+		local which = rest:lower()
+		if which == "" or which == "all" or which == "errors" or which == "runs" or which == "output" then
+			WB.ToggleConsole(which ~= "" and which or nil)
+		else
+			Print(L.USAGE_LOG)
+		end
 	elseif cmd == "diag" then
 		local d = WB.Diag()
 		for i = 1, #d, 200 do Print(d:sub(i, i + 199)) end

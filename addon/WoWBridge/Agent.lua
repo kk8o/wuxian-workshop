@@ -137,19 +137,25 @@ local function RunJob(id, job)
 		if job.flag == "reset" or job.flag == "reload" then note = note .. Reload(job.addon, space) end
 	end
 	local ms = debugprofilestop() - t0
+	local values, failure = "", nil
 	if not f then
-		Result(("%s error %s: %s"):format(id, job.name, tostring(err)))
+		failure = tostring(err)
+		Result(("%s error %s: %s"):format(id, job.name, failure))
 	elseif res[1] then
 		local out = {}
 		for k = 2, res.n do out[#out + 1] = type(res[k]) == "table" and Dump(res[k]) or tostring(res[k]) end
-		local values = #out > 0 and (": " .. table.concat(out, ", "):sub(1, 4000)) or ""
-		Result(("%s ok %s (%d B, %.1f ms)%s%s"):format(id, job.name, #code, ms, values, note))
+		values = table.concat(out, ", "):sub(1, 4000)
+		Result(("%s ok %s (%d B, %.1f ms)%s%s"):format(id, job.name, #code, ms, #out > 0 and (": " .. values) or "", note))
 	else
-		Result(("%s error %s: %s%s"):format(id, job.name, tostring(res[2]), note))
+		failure = tostring(res[2])
+		Result(("%s error %s: %s%s"):format(id, job.name, failure, note))
 	end
-	local ok = f and res[1] and true or false
+	local ok = failure == nil
 	Count(job.name, ok)
-	ns.Print(ns.L.AGENT_CODE:format(short, #code, ok and ns.L.AGENT_OK or ns.L.AGENT_ERROR))
+	pcall(ns.Console.Job, job.name, job.addon, job.flag, ok, ms, values, failure and (failure .. note) or nil)
+	if ns.Setting("toasts") == false then                 -- no notice on the screen: the chat says it, as before
+		ns.Print(ns.L.AGENT_CODE:format(short, #code, ok and ns.L.AGENT_OK or ns.L.AGENT_ERROR))
+	end
 end
 
 local FLAGS = { reset = true, unload = true, reload = true }

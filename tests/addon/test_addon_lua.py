@@ -15,6 +15,12 @@ def count(table):
     return sum(1 for _ in table.keys())
 
 
+def console_lines(s):
+    """the debug window's lines in view (Console.lua), as plain text"""
+    t = s.ns[b"Console"][b"Lines"]()
+    return [t[i].decode("utf-8") for i in range(1, len(t) + 1)]
+
+
 
 
 
@@ -280,7 +286,8 @@ class HotLoad(unittest.TestCase):
             s.run(6)
             self.assertIn(("OUT", "hi 2"), got)
             self.assertRegex(runs()[-1], r"^\d+ ok =run \(\d+ B, [\d.]+ ms\): done, nil, 3$")
-            self.assertIn("agent code =run (", s.chat())
+            self.assertRegex(console_lines(s)[-1], r"agent  ran a Lua snippet · [\d.]+ ms  → done, nil, 3  \[details\]$")
+            self.assertNotIn("agent code =run (", s.chat())             # the notice says it, not the chat
 
             foo = s.addons / "Foo"
             foo.mkdir()
@@ -293,7 +300,7 @@ class HotLoad(unittest.TestCase):
             s.run(15)
             self.assertRegex(runs()[-1], r"^\d+ ok @Interface/AddOns/Foo/Core\.lua \(\d+ B, [\d.]+ ms\): Foo, 42$")
             self.assertEqual(g[b"FooLoads"], 1)
-            self.assertIn("agent code Foo/Core.lua (", s.chat())
+            self.assertRegex(s.ns[b"Console"][b"lastToast"].decode(), r"^Hot-loaded Foo/Core\.lua · \d+ ms$")
             comp.outbox.extend(sent)                                    # the same parts again (a lost slot, say)
             s.run(10)
             self.assertEqual(g[b"FooLoads"], 1)                         # not run twice
@@ -317,6 +324,62 @@ class HotLoad(unittest.TestCase):
             stats = s.ns[b"Agent"][b"stats"]                            # for the panel: 5 jobs ran, 2 failed
             self.assertEqual((stats[b"runs"], stats[b"failed"]), (5, 2))
             self.assertEqual((stats[b"last"][b"name"], stats[b"last"][b"ok"]), (b"@Interface/AddOns/Baz/B.lua", True))
+        finally:
+            s.close()
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class DebugWindow(unittest.TestCase):
+    def test_debug_window_and_notice(self):
+        """the debug window (Console.lua) keeps what happens: an error seen again stays one line with its count, which
+        shows on the minimap button until the window opens; prints; the agent's code. A hot-load of a whole addon is one
+        notice; a failing snippet is a red one; with the notice off the chat says it, as before"""
+        logs = []
+        s = Session(self)
+        comp = link.Companion(s.addons, clock=s.now, log=logs.append)
+        s.comp = comp
+        try:
+            comp.new_process("P1-100")
+            s.login()
+            s.run(8)
+            g, con = s.lua.globals(), s.ns[b"Console"]
+            g[b"__error"](b"Interface/AddOns/Foo/Core.lua:3: boom")
+            g[b"__error"](b"Interface/AddOns/Foo/Core.lua:3: boom")
+            g[b"print"](b"hello", 2)
+            boom = [line for line in console_lines(s) if "boom" in line]
+            self.assertEqual(len(boom), 1)
+            self.assertRegex(boom[0], r"^\d\d:\d\d:\d\d  error  Interface/AddOns/Foo/Core\.lua:3: boom  ×2  \[details\]$")
+            self.assertTrue(any(line.endswith("  print  hello 2") for line in console_lines(s)))
+            button = g[b"WoWBridgeMinimapButton"]
+            self.assertEqual((con[b"unseen"], button[b"count"][b"text"], button[b"count"][b"shown"]), (2, b"2", True))
+            s.slash("log errors")                                       # opens on the errors: the count is seen
+            self.assertTrue(g[b"WoWBridgeConsole"][b"shown"])
+            self.assertEqual((con[b"unseen"], button[b"count"][b"shown"]), (0, False))
+            self.assertEqual(len(console_lines(s)), 1)
+            s.slash("log")                                              # and closed again
+            self.assertFalse(g[b"WoWBridgeConsole"][b"shown"])
+
+            foo = s.addons / "Foo"
+            foo.mkdir()
+            (foo / "Foo.toc").write_text("## Interface: 16001\nA.lua\nB.lua\n", encoding="utf-8")
+            (foo / "A.lua").write_text("return 1\n", encoding="utf-8")
+            (foo / "B.lua").write_text("return 2\n", encoding="utf-8")
+            comp.command("load Foo")
+            for _ in range(60):                                         # until the notice comes up
+                s.run(0.25)
+                if con[b"lastToast"] is not None:
+                    break
+            self.assertRegex(con[b"lastToast"].decode(), r"^Hot-loaded Foo · 2 files · \d+ ms$")
+            self.assertTrue(g[b"WoWBridgeToast"][b"shown"])
+            s.run(4)
+            self.assertFalse(g[b"WoWBridgeToast"][b"shown"])            # gone after a few seconds
+            comp.command("run error('no')")
+            s.run(6)
+            self.assertRegex(con[b"lastToast"].decode(), r"^The agent's code failed: .*no$")
+            s.slash("set toasts off")
+            comp.command("run return 1")
+            s.run(6)
+            self.assertIn("agent code =run (", s.chat())                # no notice: the chat says it
         finally:
             s.close()
 
@@ -548,7 +611,7 @@ class ProtocolV08(unittest.TestCase):
             s.run(6)
             self.assertRegex([t for k, t in got if k == "RUN"][-1], r"^\d+ error =run: hot loading is off \(/wb set hotLoad on\)$")
             s.slash("set nothing on")
-            self.assertIn("usage: /wb set forwardDebug|hotLoad|autoLink on|off", s.chat())
+            self.assertIn("usage: /wb set forwardDebug|hotLoad|autoLink|toasts on|off", s.chat())
             s2 = s.reload()
             s2.login()
             s2.run(8)

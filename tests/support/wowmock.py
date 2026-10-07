@@ -40,6 +40,7 @@ local timers, frames = {}, {}
 function GetTime() return clock end
 function debugprofilestop() return os.clock() * 1000 end
 time = os.time
+date = os.date
 C_Timer = {}
 function C_Timer.After(d, fn) timers[#timers + 1] = { t = clock + d, fn = fn } end
 function C_Timer.NewTicker(d, fn)
@@ -180,6 +181,26 @@ function Region:ClearFocus()
 	if was and self.scripts.OnEditFocusLost then self.scripts.OnEditFocusLost(self) end
 end
 function Region:HighlightText() self.highlighted = true end
+-- the debug window (Console.lua): a resizable window, a scrolling message frame, a box of many lines in a scroll frame
+function Region:SetResizable(v) self.resizable = v end
+function Region:SetResizeBounds() end
+function Region:StartSizing() end
+function Region:GetBottom() return self.bottom or 0 end
+function Region:EnableMouseWheel() end
+function Region:AddMessage(t) self.messages = self.messages or {}; self.messages[#self.messages + 1] = t end
+function Region:Clear() self.messages = {} end
+function Region:SetMaxLines() end
+function Region:SetFading() end
+function Region:GetScrollOffset() return 0 end
+function Region:SetScrollOffset() end
+function Region:ScrollUp() end
+function Region:ScrollDown() end
+function Region:SetHyperlinksEnabled() end
+function Region:SetMultiLine() end
+function Region:SetScrollChild(c) self.child = c end
+function Region:GetVerticalScroll() return 0 end
+function Region:SetVerticalScroll() end
+function Region:GetVerticalScrollRange() return 0 end
 -- a font not loaded yet: SetFont says false and the font arrives later; a loaded one applies at once
 local function settle(self)
 	local p = self.pending

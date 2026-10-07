@@ -13,6 +13,7 @@
 Config.lua
 Locale.lua
 Skin.lua
+Console.lua
 Debug.lua
 Codec.lua
 Frame.lua

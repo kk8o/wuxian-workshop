@@ -1,7 +1,7 @@
 -- WoWBridge's panel (/wb, the minimap button, Options > AddOns) in 无限工坊's look (Skin.lua), in three tabs:
 --   概览 (overview): is the app connected (and what to do when not), the switch that connects, what the agent ran and the
---        Lua errors since the last reload, and a notice with its button when something needs doing (the frame is
---        unlocked, hot loading is off);
+--        Lua errors since the last reload (调试输出 opens the debug window, Console.lua), and a notice with its button when
+--        something needs doing (the frame is unlocked, hot loading is off);
 --   设置 (settings): the frame's place (unlock to drag it, lock, back to the corner), the switches, the language;
 --   诊断 (diagnostics): the link's numbers and tests, for finding out why it does not connect.
 -- It opens on 概览, or on the tab it showed last since the last reload. Everything it changes is kept for this character
@@ -85,7 +85,10 @@ local function BuildOverview()
 	Heading(page, -102, "SECTION_SESSION")
 	panel.runs = Line(page, PAD, -126)
 	panel.last = Line(page, PAD, -144, C.muted)
-	panel.errors = Line(page, PAD, -162)
+	panel.errors = Line(page, PAD, -162, nil, INNER - 104)
+	panel.console = Button(page, WIDTH - PAD - 96, -158, 96, "BTN_CONSOLE", function()
+		ns.Console.Show(ns.Debug.stats.errors > 0 and "errors" or nil)
+	end)
 	-- something to do: the words and the button that does it (Refresh decides which, if any)
 	panel.notice = Line(page, PAD, -196, C.goldL, INNER - 108)
 	panel.act = Button(page, WIDTH - PAD - 96, -190, 96, nil, function()
@@ -112,11 +115,12 @@ local function BuildSettings()
 		ns.Set("minimapHide", not on)
 		if ns.MinimapButton then ns.MinimapButton.Update() end
 	end)
-	panel.langLabel = Line(page, PAD, -198, nil, 84)
+	panel.toasts = Check(page, -178, "OPT_TOASTS", function(on) ns.Set("toasts", on) P.Refresh() end)
+	panel.langLabel = Line(page, PAD, -220, nil, 84)
 	panel.langs = {}
 	for i, setting in ipairs(ns.LANGUAGES) do
 		local b = S.Button(page, 80, 24)
-		b:SetPoint("TOPLEFT", page, "TOPLEFT", PAD + 88 + (i - 1) * 86, -192)
+		b:SetPoint("TOPLEFT", page, "TOPLEFT", PAD + 88 + (i - 1) * 86, -214)
 		b:SetScript("OnClick", function() WB().SetLanguage(setting) end)
 		b.setting = setting
 		panel.langs[i] = b
@@ -247,6 +251,8 @@ function P.Refresh()
 	panel.last:SetShown(runs.runs > 0)
 	panel.errors:ClearAllPoints()                          -- right under the runs while there is no last one
 	panel.errors:SetPoint("TOPLEFT", panel.pages.overview, "TOPLEFT", PAD, runs.runs > 0 and -162 or -144)
+	panel.console:ClearAllPoints()
+	panel.console:SetPoint("TOPRIGHT", panel.pages.overview, "TOPRIGHT", -PAD, runs.runs > 0 and -158 or -140)
 	if runs.runs == 0 then
 		panel.runs:SetText(L.RUNS_NONE)
 	else
@@ -274,6 +280,7 @@ function P.Refresh()
 	panel.debug:SetChecked(ns.Setting("forwardDebug") ~= false)
 	panel.hot:SetChecked(ns.Setting("hotLoad") ~= false)
 	panel.minimap:SetChecked(not ns.Setting("minimapHide"))
+	panel.toasts:SetChecked(ns.Setting("toasts") ~= false)
 	panel.langLabel:SetText(L.LANGUAGE)
 	local current = ns.Setting("lang") or "auto"
 	for _, b in ipairs(panel.langs) do
