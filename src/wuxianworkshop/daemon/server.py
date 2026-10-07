@@ -344,7 +344,7 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
     async def apidocs_(request):
         p = request.query_params
         return await service.apidocs(p.get("q"), p.get("kind"), int_param(request, "limit", 20), p.get("name"),
-                                     p.get("manual") if "manual" in p else None)
+                                     p.get("manual") if "manual" in p else None, p.get("call"), p.get("lang"))
 
     @api
     async def reveal(request):

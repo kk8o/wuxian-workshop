@@ -37,7 +37,7 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("<title>无限工坊</title>", r.text)
         self.assertIn('x-data="app"', r.text)
-        for name in ("app.js", "app.css", "htmx.min.js", "alpine.min.js", "icon.png", "logo.svg", "wuxian.ico"):
+        for name in ("i18n.js", "app.js", "app.css", "htmx.min.js", "alpine.min.js", "icon.png", "logo.svg", "wuxian.ico"):
             self.assertEqual(self.client.get("/" + name).status_code, 200, name)
         r = self.client.get("/api/session")
         self.assertEqual(r.status_code, 200)

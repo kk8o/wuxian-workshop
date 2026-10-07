@@ -6,14 +6,15 @@
 <meta name="color-scheme" content="dark">
 <title>无限工坊</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=9">
+<link rel="stylesheet" href="app.css?v=10">
 <!-- Vendored libraries, no CDN (public CDNs are unreliable in mainland China): htmx 2.0.11 (0BSD) and Alpine.js 3.17.4 (MIT),
      both taken from the npm tarballs on registry.npmmirror.com with the sha512 checked against the registry metadata
      (see wuxianworkshop/ui/__init__.py). app.js registers the Alpine component and the htmx json extension, so it loads
      first; the two libraries are deferred.
      The layout is a desktop program's: a tool bar, the navigation on the left, the page filling
      the rest (its lists scroll inside it, the window never does), a status bar. -->
-<script src="app.js?v=9"></script>
+<script src="i18n.js?v=10"></script>
+<script src="app.js?v=10"></script>
 <script src="htmx.min.js" defer></script>
 <script src="alpine.min.js" defer></script>
 </head>
@@ -37,6 +38,7 @@
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-4.9L19 9M19 4.5V9h-4.5M19 12a7 7 0 0 1-12 4.9L5 15M5 19.5V15h4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3.5 6 13.5h5l-1 7 7-10h-5l1-7Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5v10.5h17V9H12l-2-2.5H3.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-game" viewBox="0 0 24 24"><path d="M7.6 7.5h8.8a4 4 0 0 1 3.97 3.5l.55 4.4a2.6 2.6 0 0 1-4.57 2.05L14.6 15.5H9.4l-1.75 1.95a2.6 2.6 0 0 1-4.57-2.05l.55-4.4A4 4 0 0 1 7.6 7.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 10.3v3.4M6.3 12h3.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="15.3" cy="11" r="1" fill="currentColor"/><circle cx="17.2" cy="13" r="1" fill="currentColor"/></symbol>
     <symbol id="i-update" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 19.5h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
@@ -224,69 +226,90 @@
       </div>
     </section>
 
-    <!-- 概览：连接、游戏、开发组件、本机服务，下面是最近的日志 -->
+    <!-- 概览：一条状态带（链路的状态、它意味着什么、常用操作、链路的读数），游戏和开发组件两张卡并排，下面是最近的动态 -->
     <section class="page" x-show="page === 'status'">
       <div class="pagebar">
-        <h1>概览</h1>
-        <span class="muted" x-text="status ? '更新于 ' + fmtTime(statusAt) : '正在读取…'"></span>
+        <h1 x-t>概览</h1>
+        <span class="muted" x-text="status ? t('更新于 {t}', { t: fmtTime(statusAt) }) : t('正在读取…')"></span>
         <div class="spacer"></div>
-        <button class="btn" x-show="settingsLoaded && !settings.onboarded" @click="go('start')">第一次用？跟着五步走一遍</button>
+        <button class="btn" x-show="settingsLoaded && !settings.onboarded" @click="go('start')" x-t>第一次用？跟着五步走一遍</button>
       </div>
       <div class="pagebody overview">
-        <div class="panel ov-link" :class="'st-' + linkClass">
-          <div class="panel-head">连接</div>
-          <div class="panel-body ov-link-body">
-            <div class="ov-state">
-              <span class="dot big-dot"></span>
-              <span class="ov-state-text" x-text="linkText"></span>
-              <span class="muted" x-show="status && status.link.session" x-text="'会话 ' + val(status, 'link.session')"></span>
+        <div class="ov-hero" :class="'st-' + linkClass">
+          <div class="ov-top">
+            <div class="ov-badge" aria-hidden="true"><svg class="ov-mark" viewBox="0 0 64 40"><use href="#inf-line" class="track"/><use href="#inf-line" class="flow"/></svg></div>
+            <div class="ov-head">
+              <div class="ov-title">
+                <span class="ov-state" x-text="linkText"></span>
+                <span class="ov-sess" x-show="status && status.link.session" x-text="t('会话 {n}', { n: val(status, 'link.session') })"></span>
+              </div>
+              <p class="ov-why" x-text="linkWhy || linkHint || t('正在读取…')"></p>
             </div>
-            <div class="ov-why" x-text="linkWhy || linkHint"></div>
-            <div class="row">
-              <button class="btn primary" @click="go('dev')"><svg class="ico"><use href="#i-console"/></svg>打开开发台</button>
+            <div class="ov-acts" x-t>
+              <button class="btn primary" x-show="status && !linkOnline" @click="go('doctor')"><svg class="ico"><use href="#i-shield"/></svg>自检与修复</button>
+              <button class="btn" :class="{primary: linkOnline}" @click="go('dev')"><svg class="ico"><use href="#i-console"/></svg>打开开发台</button>
               <button class="btn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found)"><svg class="ico"><use href="#i-camera"/></svg>截一张图</button>
               <button class="btn" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button>
             </div>
-            <dl class="kv ov-facts">
-              <dt>延迟</dt><dd x-text="status && status.link.ping_p50 != null ? Math.round(status.link.ping_p50 * 1000) + ' ms' : '—'"></dd>
-              <dt>心跳</dt><dd x-text="status && status.link.hb ? status.link.hb + ' 秒' : '—'"></dd>
-              <dt>信箱槽位</dt><dd x-text="val(status, 'link.slots_left')"></dd>
-              <dt>最近帧</dt><dd x-text="status && status.link.last_frame ? ago(status.link.last_frame) : '—'"></dd>
-              <dt>抓图</dt><dd x-text="status && status.link.capture ? status.link.capture.toUpperCase() : '—'"></dd>
-            </dl>
           </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head">游戏<span class="head-state" :class="status && status.game.found ? 'ok-text' : 'muted'" x-text="status ? (status.game.found ? '运行中' : '未运行') : '—'"></span></div>
-          <dl class="kv panel-body">
-            <dt>客户端</dt><dd x-text="clientVersion"></dd>
-            <dt>窗口</dt><dd x-text="status && status.game.client ? status.game.client.w + ' × ' + status.game.client.h : '—'"></dd>
-            <dt>进程</dt><dd x-text="val(status, 'game.pid')"></dd>
-            <dt>启动于</dt><dd x-text="status && status.game.start ? fmtTime(status.game.start) : '—'"></dd>
-          </dl>
-        </div>
-        <div class="panel">
-          <div class="panel-head">开发组件<span class="head-state" x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : '未连接'"></span></div>
-          <dl class="kv panel-body">
-            <dt>重载</dt><dd x-text="status ? (status.reload_pending ? '等待游戏里点击「立即重载」' : '无待处理') : '—'"></dd>
-            <dt>监视</dt><dd x-text="status && status.watch && status.watch.length ? status.watch.length + ' 个文件' : '无'"></dd>
-            <dt>插件版本</dt><dd :class="addonsUpdateText ? 'warn-text' : ''" :title="addonsUpdateText" x-text="addonsUpdateShort || '与程序一致'"></dd>
-            <dt>插件目录</dt><dd class="mono selectable ellipsis" :title="val(status, 'addons_dir')" x-text="shortPath(status && status.addons_dir)"></dd>
-          </dl>
-        </div>
-        <div class="panel ov-logs">
-          <div class="panel-head">最近的日志<div class="spacer"></div><a href="#" class="head-link" @click.prevent="go('dev')">在开发台看全部</a></div>
-          <div class="loglist compact panel-scroll">
-            <template x-for="e in recentLogs" :key="e.id">
-              <div class="logline">
-                <span class="t" x-text="fmtTime(e.t)"></span>
-                <span class="kind" :class="'k-' + e.kind" x-text="e.kind"></span>
-                <span class="text" x-text="firstLine(e.text)"></span>
+          <dl class="ov-vitals">
+            <template x-for="v in ovVitals" :key="v.label">
+              <div class="vital" :title="t(v.tip)">
+                <dt x-text="t(v.label)"></dt>
+                <dd><span x-text="v.value"></span><small x-show="v.unit" x-text="v.unit"></small></dd>
+                <div class="vital-sub" x-show="v.sub" x-text="v.sub"></div>
               </div>
             </template>
-            <div class="empty" x-show="!logs.length">还没有日志</div>
-          </div>
+          </dl>
         </div>
+
+        <section class="ov-card">
+          <header>
+            <svg class="ico"><use href="#i-game"/></svg><h2 x-t>游戏</h2>
+            <span class="pill" :class="status && status.game.found ? (status.game.minimized ? 'warn' : 'ok') : 'off'"
+                  x-text="!status ? '—' : !status.game.found ? t('未运行') : status.game.minimized ? t('已最小化') : t('运行中')"></span>
+          </header>
+          <dl class="spec">
+            <div><dt x-t>客户端</dt><dd class="mono" x-text="clientVersion"></dd></div>
+            <div><dt x-t>窗口</dt><dd class="mono" x-text="status && status.game.client ? status.game.client.w + ' × ' + status.game.client.h : '—'"></dd></div>
+            <div><dt x-t>进程</dt><dd class="mono" x-text="val(status, 'game.pid')"></dd></div>
+            <div><dt x-t>已运行</dt><dd :title="status && status.game.start ? t('{t} 启动', { t: fmtTime(status.game.start) }) : ''"
+                                       x-text="status && status.game.start ? upFor(status.game.start) : '—'"></dd></div>
+          </dl>
+        </section>
+
+        <section class="ov-card">
+          <header>
+            <svg class="ico"><use href="#i-addons"/></svg><h2 x-t>开发组件</h2>
+            <span class="pill mono" :class="status && status.link.addon_version ? 'ok' : 'off'"
+                  x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : t('未连接')"></span>
+          </header>
+          <dl class="spec">
+            <div><dt x-t>插件版本</dt><dd :class="addonsUpdateText ? 'warn-text' : ''" :title="addonsUpdateText" x-text="addonsUpdateShort || t('与程序一致')"></dd></div>
+            <div><dt x-t>重载</dt><dd :class="status && status.reload_pending ? 'warn-text' : ''"
+                                     x-text="status ? (status.reload_pending ? t('等待游戏里点击「立即重载」') : t('无待处理')) : '—'"></dd></div>
+            <div><dt x-t>监视</dt><dd x-text="status && status.watch && status.watch.length ? t('{n} 个文件', { n: status.watch.length }) : t('无')"></dd></div>
+            <div><dt x-t>插件目录</dt><dd class="mono selectable" :title="val(status, 'addons_dir')" x-text="shortPath(status && status.addons_dir)"></dd></div>
+          </dl>
+        </section>
+
+        <section class="ov-card ov-feed">
+          <header>
+            <h2 x-t>最近动态</h2>
+            <div class="spacer"></div>
+            <a href="#" class="head-link" @click.prevent="go('dev')" x-t>在开发台看全部</a>
+          </header>
+          <ol class="feed selectable">
+            <template x-for="e in recentLogs" :key="e.id">
+              <li :class="'k-' + e.kind">
+                <time x-text="fmtTime(e.t)"></time>
+                <span class="fk" x-text="e.kind"></span>
+                <span class="ft" :title="e.text" x-text="firstLine(e.text)"></span>
+              </li>
+            </template>
+          </ol>
+          <div class="empty" x-show="!recentLogs.length" x-t>还没有动态</div>
+        </section>
       </div>
     </section>
 
@@ -658,84 +681,214 @@
       </div>
     </section>
 
-    <!-- API 手册：左边搜索与结果，右边条目 -->
+    <!-- API 手册：左边搜索——按插件能否调用筛选（可调用 / 有限制 / 受保护，带数目），结果按函数、事件、表分组，手册章节在下面；右边
+         条目：能否调用与原因、签名（类型可点）、参数与返回值、相关类型（结构的字段、枚举的取值）就地展开、试一下（调用一次、在游戏里
+         对照枚举、监听事件，和开发台的运行 Lua 同一条通道）、同命名空间、exe 里的用法；或手册章节（中英两份） -->
     <section class="page" x-show="page === 'api'">
       <div class="pagebar">
-        <h1>API 手册</h1>
+        <h1 x-t>API 手册</h1>
         <span class="muted" x-text="docsAbout"></span>
+        <div class="spacer"></div>
+        <span class="pill tiny" x-show="docsChanges" x-text="docsChanges"></span>
       </div>
       <div class="pagebody fill master-detail api">
         <div class="master">
           <div class="master-tools">
-            <input class="input" type="search" placeholder="搜函数、事件或表：UnitHealth、C_Spell、COOLDOWN" x-model="docs.q"
-                   @input.debounce.250ms="docsSearch()" @keydown.enter.prevent="docsSearch()">
+            <input class="input" type="search" placeholder="搜函数、事件或表：UnitHealth、C_Spell、COOLDOWN" x-t x-model="docs.q"
+                   @input.debounce.250ms="docsSearch()" @keydown.enter.prevent="docsEnter()"
+                   @keydown.down.prevent="docsMove(1)" @keydown.up.prevent="docsMove(-1)">
             <div class="toolbar kinds">
               <template x-for="k in API_KINDS" :key="k.id">
-                <button class="chip topic" :class="{on: docs.kind === k.id}" @click="docs.kind = docs.kind === k.id ? '' : k.id; docsSearch()" x-text="k.label"></button>
+                <button class="chip topic" :class="{on: docs.kind === k.id}" @click="docs.kind = docs.kind === k.id ? '' : k.id; docsSearch()" x-text="t(k.label)"></button>
               </template>
-              <span class="muted small" x-show="docs.q" x-text="docs.busy ? '查找中…' : docs.results.length + ' 条'"></span>
+              <span class="muted small" x-show="docs.q" x-text="docsCountText"></span>
+            </div>
+            <div class="toolbar calls" role="group" aria-label="能否从插件调用" x-t>
+              <template x-for="c in CALL_FILTERS" :key="c.id">
+                <button class="chip call" :class="['c-' + c.id, {on: docs.call === c.id}]" :title="t(c.tip)"
+                        @click="docs.call = docs.call === c.id ? '' : c.id; docsSearch()"><span class="cmark" x-show="c.id !== 'usable'"></span><span x-text="t(c.label)"></span><span class="cnt" x-show="docs.counts" x-text="callCount(c.id)"></span></button>
+              </template>
             </div>
           </div>
-          <div class="master-scroll">
-            <ul class="api-results" x-show="docs.results.length">
-              <template x-for="r in docs.results" :key="r.kind + ':' + r.name">
-                <li :class="{active: docs.sel && docs.sel.name === r.name}" @click="docsOpen(r)">
-                  <div class="mono sig"><span class="kindtag" x-text="KIND_TEXT[r.kind] || r.kind"></span><span x-text="r.sig"></span></div>
-                  <div class="flags" x-show="r.flags.length"><template x-for="f in r.flags"><span class="pill warn" x-text="f"></span></template></div>
-                </li>
-              </template>
-            </ul>
-            <div class="empty" x-show="docs.q && !docs.busy && !docs.results.length">没有找到</div>
-            <div class="topics-head">手册章节</div>
-            <ul class="mlist topics">
-              <template x-for="t in docs.topics" :key="t.id">
-                <li class="mitem" :class="{active: docs.topic && docs.topic.id === t.id && !docs.sel}" @click="docsTopic(t)"><span class="mitem-title" x-text="t.title"></span></li>
-              </template>
-            </ul>
+          <div class="master-scroll" x-ref="apilist">
+            <template x-for="g in docsGroups" :key="g.kind">
+              <div class="api-group">
+                <div class="api-ghead" x-text="t(KIND_TEXT[g.kind] || g.kind) + ' · ' + g.rows.length"></div>
+                <ul class="api-results">
+                  <template x-for="r in g.rows" :key="r.kind + ':' + r.name">
+                    <li :class="['call-' + (r.call || 'ok'), {active: docs.sel && docs.sel.name === r.name, cur: docsFlat[docs.cursor] === r}]" @click="docsOpen(r)" :title="callText(r)">
+                      <div class="mono sig"><span class="cmark" x-show="r.kind !== 'table' && r.kind !== 'usage'"></span><span x-text="r.sig"></span></div>
+                      <span class="since" x-show="r.since" x-text="sinceText(r.since)"></span>
+                    </li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+            <div class="empty" x-show="docs.q && !docs.busy && !docs.results.length" x-t>没有找到</div>
+            <details class="topics" :open="!docs.q">
+              <summary class="topics-head" x-t>手册章节</summary>
+              <ul class="mlist topics">
+                <template x-for="m in docs.topics" :key="m.id">
+                  <li class="mitem" :class="{active: docs.topic && docs.topic.id === m.id && !docs.sel}" @click="docsTopic(m)"><span class="mitem-title" x-text="topicTitle(m)"></span></li>
+                </template>
+              </ul>
+            </details>
           </div>
         </div>
         <div class="detail">
-          <div class="detail-scroll api-detail selectable">
+          <div class="detail-scroll api-detail selectable" x-ref="apidetail">
             <template x-if="docs.sel">
               <div>
                 <div class="detail-head flat">
-                  <span class="kindtag" x-text="KIND_TEXT[docs.sel.kind] || docs.sel.kind"></span>
-                  <span class="detail-title grow" x-text="docs.sel.name"></span>
-                  <button class="btn tiny" @click="copy(docs.sel.name, docs.sel.name)">复制名字</button>
-                  <button class="btn tiny" x-show="docs.sel.kind === 'function'" @click="docsCheck()" :disabled="!linkOnline || docs.checking"
-                          :title="linkOnline ? '在正在运行的游戏里 return type(...)' : '游戏连上后才能核对'">在游戏里核对</button>
+                  <button class="btn tiny" x-show="docs.back.length" @click="docsBack()" title="回到上一个条目" x-t>← 返回</button>
+                  <span class="kindtag" x-text="t(KIND_TEXT[docs.sel.kind] || docs.sel.kind)"></span>
+                  <span class="detail-title grow mono" x-text="docs.sel.name"></span>
+                  <span class="since big" x-show="docs.sel.since" x-text="sinceText(docs.sel.since)" :title="docs.sel.since && docs.sel.since.note"></span>
+                  <button class="btn tiny" @click="copy(docs.sel.name, docs.sel.name)" x-t>复制名字</button>
+                  <button class="btn tiny" x-show="docs.sel.kind === 'function' && docs.sel.call === 'protected'" @click="docsCheck()" :disabled="!linkOnline || docs.checking"
+                          :title="t(linkOnline ? '在正在运行的游戏里 return type(...)' : '游戏连上后才能核对')" x-t>在游戏里核对</button>
                 </div>
-                <pre class="code sigline" x-text="docs.sel.sig"></pre>
+                <div class="callbox" :class="'call-' + docs.sel.call" x-show="callText(docs.sel)">
+                  <div class="callbox-t"><span class="cmark"></span><b x-text="callText(docs.sel)"></b></div>
+                  <ul x-show="docs.sel.why && docs.sel.why.length">
+                    <template x-for="w in (docs.sel.why || [])" :key="w"><li><span x-text="whyText(w, docs.sel.kind)"></span> <code x-text="w"></code></li></template>
+                  </ul>
+                </div>
+                <pre class="code sigline" x-html="sigHtml(docs.sel)" @click="onTypeClick($event)"></pre>
                 <p class="small" x-show="docs.check" :class="docs.check && docs.check.ok ? 'ok-text' : 'warn-text'" x-text="docs.check && docs.check.text"></p>
-                <div class="flags" x-show="docs.sel.flags && docs.sel.flags.length"><template x-for="f in docs.sel.flags"><span class="pill warn" x-text="f"></span></template></div>
                 <p x-show="docs.sel.doc" x-text="docs.sel.doc"></p>
+                <div class="usage" x-show="docs.sel.usage && docs.sel.usage.length">
+                  <span class="muted small" x-t>exe 里的用法</span>
+                  <template x-for="u in (docs.sel.usage || [])" :key="u"><code x-text="u"></code></template>
+                </div>
+                <template x-if="docs.sel.candidates">
+                  <div>
+                    <h2 x-t>同名的条目</h2>
+                    <ul class="api-results"><template x-for="c in docs.sel.candidates" :key="c.name">
+                      <li :class="'call-' + (c.call || 'ok')" @click="docsOpen(c)"><div class="mono sig"><span class="cmark"></span><span x-text="c.sig"></span></div></li>
+                    </template></ul>
+                  </div>
+                </template>
                 <template x-for="sec in docsSections" :key="sec.title">
                   <div>
-                    <h2 x-text="sec.title"></h2>
+                    <h2 x-text="t(sec.title)"></h2>
                     <table class="table params">
-                      <thead><tr><th>名称</th><th>类型</th><th x-text="sec.third"></th></tr></thead>
+                      <thead><tr><th x-t>名称</th><th x-t>类型</th><th x-text="t(sec.third)"></th></tr></thead>
                       <tbody>
                         <template x-for="(p, i) in sec.rows" :key="i">
-                          <tr><td class="mono" x-text="p.n"></td><td class="mono" x-text="p.t"></td><td class="mono muted" x-text="sec.cell(p)"></td></tr>
+                          <tr><td class="mono" x-text="p.n"></td>
+                            <td class="mono"><a class="ty" href="#" x-show="docs.sel.types && docs.sel.types[p.t]" @click.prevent="docsToggle(p.t)" x-text="p.t"></a><span x-show="!(docs.sel.types && docs.sel.types[p.t])" x-text="p.t"></span></td>
+                            <td class="mono muted" x-text="sec.cell(p)"></td></tr>
                         </template>
                       </tbody>
                     </table>
                   </div>
                 </template>
-                <details x-show="docs.sel.raw && Object.keys(docs.sel.raw).length"><summary class="muted small">文档原始字段</summary>
+                <template x-if="docs.sel.types && Object.keys(docs.sel.types).length">
+                  <div class="types">
+                    <h2 x-t>相关类型</h2>
+                    <template x-for="(T, name) in docs.sel.types" :key="name">
+                      <div class="typecard" :id="'ty-' + name">
+                        <div class="typehead" @click="docsToggle(name)"><span class="caret" x-text="docs.open[name] ? '▾' : '▸'"></span><b class="mono" x-text="name"></b>
+                          <span class="muted small" x-text="t(T.type === 'Enumeration' ? '枚举 · {n} 个取值' : '结构 · {n} 个字段', { n: (T.fields || []).length })"></span>
+                          <div class="spacer"></div><button class="btn tiny" @click.stop="docsOpen(name)" x-t>打开条目</button></div>
+                        <table class="table params" x-show="docs.open[name]">
+                          <tbody>
+                            <template x-for="(f, i) in (T.fields || [])" :key="i">
+                              <tr><td class="mono" x-text="f.n"></td><td class="mono" x-text="T.type === 'Enumeration' ? f.v : f.t"></td><td class="mono muted" x-text="f.nil ? t('可以为空') : ''"></td></tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <div class="tryit" x-show="tryKind" :class="'call-' + docs.sel.call">
+                  <div class="tryhead">
+                    <b x-text="t(tryKind === 'event' ? '在游戏里监听' : tryKind === 'enum' ? '在游戏里对照' : '试一下')"></b>
+                    <span class="tlink" :class="linkOnline ? 'on' : 'off'" x-text="t(linkOnline ? '游戏已连接' : '游戏没连上')"></span>
+                    <div class="spacer"></div>
+                    <span class="muted small" x-show="tryKind === 'call' && docs.sel.call !== 'protected'" x-t>参数是按名字猜的示例，可以改</span>
+                  </div>
+                  <p class="small warn-text" x-show="docs.sel.call === 'protected'"
+                     x-text="t(tryKind === 'event' ? '受限事件不能从插件注册，这里不提供监听。' : '受保护的函数不能从插件调用，这里不提供运行。')"></p>
+                  <div x-show="docs.sel.call !== 'protected'">
+                    <textarea class="input mono code-input" rows="2" x-show="tryKind !== 'event'" x-model="tryit.code" spellcheck="false"
+                              @keydown.ctrl.enter.prevent="tryRun()"></textarea>
+                    <p class="small muted" x-show="tryKind === 'event'" x-text="t('注册 {e}，记下 {s} 秒内它触发的次数和参数。', { e: docs.sel.name, s: tryit.seconds })"></p>
+                    <div class="row">
+                      <button class="btn primary" @click="tryKind === 'event' ? tryTrace() : tryRun()" :disabled="!linkOnline || tryit.busy" x-text="tryButton"></button>
+                      <button class="btn" x-show="tryKind !== 'event'" @click="tryToConsole()" x-t>在开发台打开</button>
+                      <button class="btn" x-show="tryKind !== 'event' && tryit.code !== tryTemplate(docs.sel)" @click="tryit.code = tryTemplate(docs.sel)" x-t>恢复示例</button>
+                      <span class="muted small" x-text="tryStatus"></span>
+                    </div>
+                    <template x-if="tryit.result && !tryit.result.ok">
+                      <div class="result bad selectable"><pre class="mono err" x-text="tryit.result.error"></pre><pre class="mono stack" x-show="tryit.result.stack" x-text="tryit.result.stack"></pre></div>
+                    </template>
+                    <template x-if="tryit.result && tryit.result.ok && tryKind === 'call'">
+                      <div class="result ok selectable tryout">
+                        <template x-for="(v, i) in tryValues" :key="i">
+                          <div class="tryval">
+                            <div class="tvh"><span class="mono" x-text="v.name"></span> <span class="muted mono small" x-text="v.type"></span></div>
+                            <template x-for="(row, j) in v.rows" :key="j">
+                              <div class="tvrow mono" :class="'v-' + row.cls" :style="'padding-left:' + (row.depth * 16) + 'px'"><span class="tk" x-show="row.key !== ''" x-text="row.key + ' = '"></span><span class="tv" x-text="row.text"></span><span class="tt" x-show="row.type" x-text="row.type"></span></div>
+                            </template>
+                          </div>
+                        </template>
+                        <div class="muted" x-show="!tryValues.length" x-t>没有返回值。</div>
+                      </div>
+                    </template>
+                    <template x-if="tryit.result && tryit.result.ok && tryKind === 'enum'">
+                      <div class="result ok selectable">
+                        <p class="small enumsum" x-show="tryEnum" :class="tryEnum && tryEnum.every(x => x.same) ? 'ok-text' : 'warn-text'" x-text="tryEnumText"></p>
+                        <template x-if="tryEnum">
+                          <table class="table params enumcmp">
+                            <thead><tr><th x-t>名称</th><th x-t>手册</th><th x-t>游戏里</th></tr></thead>
+                            <tbody><template x-for="row in tryEnum" :key="row.name"><tr :class="{diff: !row.same}"><td class="mono" x-text="row.name"></td><td class="mono" x-text="row.doc"></td><td class="mono" x-text="row.game"></td></tr></template></tbody>
+                          </table>
+                        </template>
+                        <pre class="mono" x-show="!tryEnum" x-text="(tryit.result.values || []).join('\n') || 'nil'"></pre>
+                      </div>
+                    </template>
+                    <template x-if="tryit.trace">
+                      <div class="result selectable" :class="tryit.trace.error ? 'bad' : 'ok'">
+                        <pre class="mono err" x-show="tryit.trace.error" x-text="tryit.trace.error"></pre>
+                        <template x-if="!tryit.trace.error">
+                          <div>
+                            <div class="small" x-text="t('{s} 秒内触发 {n} 次', { s: tryit.trace.seconds, n: (tryit.trace.counts || []).reduce((a, c) => a + c.count, 0) })"></div>
+                            <p class="small warn-text" x-show="(tryit.trace.unknown || []).length" x-t>游戏里没有这个事件（注册失败）。</p>
+                            <template x-for="(e, i) in (tryit.trace.events || [])" :key="i">
+                              <div class="tvrow mono"><span class="muted" x-text="(+e.t).toFixed(2) + 's'"></span> <span x-text="e.event"></span><span class="muted" x-text="(e.args || []).length ? '  ' + e.args.join(', ') : ''"></span></div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                    <p class="muted small tool-note" x-t>在正在运行的游戏里执行：print 输出和报错也会出现在开发台的日志里。</p>
+                  </div>
+                </div>
+                <template x-if="docs.sel.siblings && docs.sel.siblings.length">
+                  <div class="siblings">
+                    <h2 x-text="t('同命名空间 {ns}（{n}）', { ns: docs.sel.ns, n: docs.sel.siblings.length })"></h2>
+                    <div class="sibs"><template x-for="n in docs.sel.siblings" :key="n">
+                      <a class="chip mono" href="#" @click.prevent="docsOpen(docs.sel.kind === 'function' ? docs.sel.ns + '.' + n : n)" x-text="n"></a>
+                    </template></div>
+                  </div>
+                </template>
+                <details x-show="docs.sel.raw && Object.keys(docs.sel.raw).length"><summary class="muted small" x-t>文档原始字段</summary>
                   <pre class="code" x-text="JSON.stringify(docs.sel.raw, null, 2)"></pre></details>
               </div>
             </template>
             <template x-if="!docs.sel && docs.topic">
               <div>
-                <div class="detail-head flat"><span class="kindtag">手册</span><span class="detail-title" x-text="docs.topic.title"></span></div>
+                <div class="detail-head flat"><span class="kindtag" x-t>手册</span><span class="detail-title" x-text="docs.topic.title"></span></div>
                 <div class="md" x-html="md(docs.topic.md)"></div>
               </div>
             </template>
             <template x-if="!docs.sel && !docs.topic">
-              <div class="empty intro">
-                <div>这个客户端自己的 API 文档：函数、事件、枚举与结构，带受保护、机密值等标记。</div>
-                <div class="small">左边搜索，或看手册章节。Agent 用 MCP 工具 api_search / api_get / api_manual 查的是同一份。</div>
+              <div class="empty intro" x-t>
+                <div>这个客户端自己的 API 文档：函数、事件、枚举与结构。每一条都标出插件能不能用：可调用、有限制（受限状态下返回机密值、有使用限制或前提条件）、受保护（只有暴雪的安全代码能用）。</div>
+                <div class="small">左边搜索，或看手册章节；函数可以在游戏里「试一下」。Agent 用 MCP 工具 api_search / api_get / api_manual 查的是同一份。</div>
               </div>
             </template>
           </div>
@@ -882,7 +1035,7 @@
               </label>
               <label class="field">
                 <span>语言</span>
-                <select class="input" name="language" x-model="form.language"><option value="zh-CN">简体中文</option></select>
+                <select class="input" name="language" x-model="form.language"><option value="auto" x-t>自动（跟随系统）</option><option value="zh-CN">简体中文</option><option value="en">English</option></select>
               </label>
               <div class="row end">
                 <span class="muted small" x-text="settingsNote"></span>

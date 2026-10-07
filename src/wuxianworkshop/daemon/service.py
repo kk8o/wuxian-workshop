@@ -355,8 +355,9 @@ class Service:
                     content=self.content.status() if self.content is not None else None,
                     addons_update=self.addons_pending)
 
-    async def apidocs(self, q=None, kind=None, limit=20, name=None, manual=None):
-        """the API manual (apidocs.py): name = one entry; manual = a topic ("" = the list); q = a search; none = about"""
+    async def apidocs(self, q=None, kind=None, limit=20, name=None, manual=None, call=None, lang=None):
+        """the API manual (apidocs.py): name = one entry; manual = a topic ("" = the list), in English with lang "en"; q = a
+        search ({query, results, counts, total}; call = ok / limited / protected / usable keeps those); none = about"""
         def do():
             ix = apidocs.index()
             if name:
@@ -365,15 +366,17 @@ class Service:
                     raise ApiError(404, "not_found", f"{name}: not in the API manual (api_search finds near names)")
                 return entry
             if manual is not None:
-                topic = ix.manual(manual or None)
+                topic = ix.manual(manual or None, lang)
                 if topic is None:
                     raise ApiError(404, "not_found", f"no manual topic {manual!r}")
                 return topic if isinstance(topic, dict) else dict(topics=topic)
             if q:
-                return dict(query=q, results=ix.search(q, kind or None, limit))
+                return dict(query=q, **ix.find(q, kind or None, call or None, limit))
             return ix.about()
         if kind not in (None, "", *apidocs.KINDS):
             raise ApiError(400, "bad_request", "kind: function, event or table")
+        if call not in (None, "", "usable", *apidocs.CALLS):
+            raise ApiError(400, "bad_request", "call: ok, limited, protected or usable")
         return await asyncio.to_thread(do)
 
     async def reveal(self, name):

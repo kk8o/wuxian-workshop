@@ -1,8 +1,9 @@
 r"""Builds the "api" content pack (content.py, apidocs.py) from 无限图鉴's API manual (the api/ folder of the wuxianwow.com
 data repository, which is not part of this one; the built pack is src/wuxianworkshop/data/api.json.gz): the API
-documentation it extracted from the client (apidocs.json), the exe's `Usage:` strings (api_usage.txt) and the manual
-text of its page (source/build_page.py: the 运行时 and 插件加载与限制 tabs, with the name lists filled in; read with
-ast, never run). Writes the program's own copy (src\wuxianworkshop\data\api.json.gz) and the copy for the website
+documentation it extracted from the client (apidocs.json, with the client it came from), the exe's `Usage:` strings
+(api_usage.txt), what the last client builds changed in it (changes.json, newest first), the protected global functions
+the page lists, and the manual text of its page (source/build_page.py: the 运行时 and 插件加载与限制 tabs, with the name
+lists filled in, and MANUAL_EN, the same in English; read with ast, never run). Writes the program's own copy (src\wuxianworkshop\data\api.json.gz) and the copy for the website
 (dist\content\api-<version>.json.gz with manifest.json beside it, for wuxianwow.com/workshop/data/).
 
     .venv\Scripts\python.exe scripts\build_api_pack.py --codex <that repository> [--version 2026.10.06.1]
@@ -81,6 +82,7 @@ def topics(md):
 
 
 def manual(codex, docs):
+    """(the topics with their English text, the client the documentation came from, the protected globals)"""
     src = (codex / "api" / "source" / "build_page.py").read_text(encoding="utf-8")
     c = constants(ast.parse(src))
     page = c["page"]
@@ -92,22 +94,36 @@ def manual(codex, docs):
     lists = {"__LIBS__": c["LIBS"], "__WOWGLOBALS__": c["WOWGLOBALS"], "__SECUREFN__": c["SECUREFN"],
              "__CVARS__": c["CVARS"], "__TOCDIRS__": ["## " + x for x in c["TOCDIRS"]],
              "__PROTGLOBALS__": c["PROTECTED_GLOBALS"], "__SECTPL__": c["SECURE_TEMPLATES"], "__GAMERULES__": c["GAMERULES_UI"]}
-    body = "".join(re.findall(r'<section id="tab-(?:env|rules)"[^>]*>(.*?)</section>', page, re.S))
-    md = to_markdown(body)
-    for token, items in lists.items():
-        md = md.replace(token, "、".join(f"`{x}`" for x in items))
-    for token, n in counts.items():
-        md = md.replace(token, str(n))
-    client = re.search(r'<div class="k">客户端版本</div><div class="v">([^<]+)</div>', page)
-    return topics(md), (client.group(1) if client else None)
+    def text(html_, sep):
+        md = to_markdown("".join(re.findall(r'<section id="tab-(?:env|rules)"[^>]*>(.*?)</section>', html_, re.S)))
+        for token, items in lists.items():
+            md = md.replace(token, sep.join(f"`{x}`" for x in items))
+        for token, n in counts.items():
+            md = md.replace(token, str(n))
+        return md
+    zh = topics(text(page, "、"))
+    if c.get("MANUAL_EN"):                       # the English text: the same headings in the same order
+        en = topics(text(c["MANUAL_EN"], ", "))
+        if len(en) != len(zh):
+            raise SystemExit(f"MANUAL_EN has {len(en)} topics, the Chinese manual {len(zh)}: keep the two in step")
+        for t, e in zip(zh, en):
+            t["title_en"], t["md_en"] = e["title"], e["md"]
+    client = (docs.get("client") or {}).get("build")
+    if not client:                               # a documentation file from before update.py stamped it
+        m = re.search(r'<div class="k">客户端版本</div><div class="v">([^<_]+)</div>', page)
+        client = m.group(1) if m else None
+    return zh, client, c.get("PROTECTED_GLOBALS", [])
 
 
 def build(codex, version):
     docs = json.loads((codex / "api" / "apidocs.json").read_text(encoding="utf-8"))
     usage = [line.strip() for line in (codex / "api" / "api_usage.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
-    man, client = manual(codex, docs)
+    man, client, protected = manual(codex, docs)
+    cpath = codex / "api" / "changes.json"
+    changes = json.loads(cpath.read_text(encoding="utf-8")) if cpath.is_file() else []
     return dict(pack="api", version=version, client=client, interface=16001, built=time.strftime("%Y-%m-%d"),
-                source=SOURCE, namespaces=docs["namespaces"], usage=usage, manual=man)
+                source=SOURCE, namespaces=docs["namespaces"], usage=usage, manual=man, changes=changes,
+                protected_globals=protected)
 
 
 def main():
@@ -130,7 +146,8 @@ def main():
     mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     fns = sum(len(n["functions"]) for n in pack["namespaces"])
     print(f"api {args.version}: {len(pack['namespaces'])} namespaces, {fns} functions, {len(pack['usage'])} usage strings, "
-          f"{len(pack['manual'])} manual topics, client {pack['client']}; {len(raw) / 1024:.0f} KB -> {BUNDLED} and {OUT / name}")
+          f"{len(pack['manual'])} manual topics ({sum(1 for m in pack['manual'] if m.get('md_en'))} in English), "
+          f"{len(pack['changes'])} change records, client {pack['client']}; {len(raw) / 1024:.0f} KB -> {BUNDLED} and {OUT / name}")
 
 
 if __name__ == "__main__":

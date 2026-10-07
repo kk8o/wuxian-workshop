@@ -254,6 +254,20 @@ class Fake:
         return 200, {"ok": True, "job": job, "values": values, "ms": ms, "chunk": "=run"}
 
     def canned(self, code):
+        """values as the addon writes them: tostring for a plain value, Agent.lua's Dump for a table"""
+        if "C_Spell.GetSpellInfo" in code:
+            return ['{\n  castTime = 1500,\n  iconID = 135812,\n  maxRange = 35,\n  minRange = 0,\n  name = "火球术",\n'
+                    '  originalIconID = 135812,\n  spellID = 133,\n}']
+        m = re.match(r"^return\s+Enum\.(\w+)\s*$", code.strip())
+        if m:                                       # an enum read in the game: the manual's values, the last one off by one
+            from wuxianworkshop import apidocs
+            entry = apidocs.index().get(m.group(1)) or {}
+            fields = [f for f in entry.get("fields") or [] if f.get("v") is not None]
+            if not fields:
+                return ["nil"]
+            vals = {f["n"]: f["v"] for f in fields}
+            vals[fields[-1]["n"]] = vals[fields[-1]["n"]] + 1
+            return ["{\n" + "".join(f"  {k} = {v},\n" for k, v in sorted(vals.items(), key=lambda kv: kv[1])) + "}"]
         if "GetBuildInfo" in code:
             return ["12.0.0", "70235", "Sep 30 2026", 120000, "12.0.0", "", "12.0.0", 120000]
         if "UnitName" in code:
@@ -749,13 +763,23 @@ def create_app(fake=None, ticker=True):
             entry = ix.get(p["name"])
             return JSONResponse(entry) if entry else error("not_found", f"{p['name']}: not in the API manual", 404)
         if "manual" in p:
-            topic = ix.manual(p["manual"] or None)
+            topic = ix.manual(p["manual"] or None, p.get("lang"))
             if topic is None:
                 return error("not_found", "no such topic", 404)
             return JSONResponse(topic if isinstance(topic, dict) else {"topics": topic})
         if p.get("q"):
-            return JSONResponse({"query": p["q"], "results": ix.search(p["q"], p.get("kind") or None, int(p.get("limit") or 20))})
+            return JSONResponse(dict(query=p["q"], **ix.find(p["q"], p.get("kind") or None, p.get("call") or None, int(p.get("limit") or 20))))
         return JSONResponse(ix.about())
+
+    async def trace(request):
+        """POST /api/trace: the events asked for, fired twice within the time (fake: answered after a second)"""
+        body = await json_body(request)
+        events = body.get("events") or ["PLAYER_TARGET_CHANGED"]
+        seconds = body.get("seconds", 10)
+        await asyncio.sleep(1)
+        fired = [dict(t=round(1.2 + 3.4 * i, 2), event=events[0], args=["player"] if i else [], n=i + 1) for i in range(2)]
+        return JSONResponse(dict(seconds=seconds, kept=len(fired), dropped=0, pattern=events, events=fired,
+                                 counts=[dict(event=events[0], count=len(fired))], registered=True, unknown=[]))
 
     async def new_addon(request):
         from wuxianworkshop import scaffold
@@ -852,6 +876,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/quit", quit_, methods=["POST"]),
         Route("/api/update", update, methods=["GET", "POST"]),
         Route("/api/apidocs", apidocs_),
+        Route("/api/trace", trace, methods=["POST"]),
         Route("/api/new_addon", new_addon, methods=["POST"]),
         Route("/api/reveal", reveal, methods=["POST"]),
         Route("/api/agents", agents_, methods=["GET", "POST"]),

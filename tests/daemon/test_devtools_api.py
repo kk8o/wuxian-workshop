@@ -57,6 +57,13 @@ class DevTools(unittest.TestCase):
         self.assertTrue(self.get("/api/apidocs?manual=")["topics"])
         self.assertEqual(self.refused("GET", "/api/apidocs?name=NoSuchApi"), 404)
         self.assertEqual(self.refused("GET", "/api/apidocs?q=x&kind=bogus"), 400)
+        self.assertEqual(self.refused("GET", "/api/apidocs?q=x&call=bogus"), 400)
+        found = self.get("/api/apidocs?q=Target&kind=function&call=protected")    # the page's search: a call class, the counts
+        self.assertTrue(found["results"] and all(r["call"] == "protected" for r in found["results"]))
+        self.assertEqual(set(found["counts"]), {"ok", "limited", "protected"})
+        self.assertGreater(found["total"], len(found["results"]) - 1)
+        self.assertIn(self.get("/api/apidocs?name=C_Spell.GetSpellInfo")["call"], ("ok", "limited"))
+        self.assertIn("md", self.get("/api/apidocs?manual=taint&lang=en"))
         self.assertEqual(self.get("/api/status")["content"]["packs"]["api"]["source"], "bundled")
 
     def test_new_addon_and_reveal(self):

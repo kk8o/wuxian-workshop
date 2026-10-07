@@ -58,6 +58,43 @@ const NAV = PAGES;
 const SITE = 'https://wuxianwow.com/workshop';  // 无限工坊's site: opened in the user's browser (ui/shell.py PageApi.open_url)
 const API_KINDS = [{ id: 'function', label: '函数' }, { id: 'event', label: '事件' }, { id: 'table', label: '枚举与结构' }];
 const KIND_TEXT = { function: '函数', event: '事件', table: '表', usage: '用法' };
+const CALL_FILTERS = [                         // the API manual's filter by what an addon may do (apidocs.py callability); none on: all
+  { id: 'usable', label: '插件可用', tip: '插件能调用或注册的：可调用的和有限制的，不含受保护的' },
+  { id: 'ok', label: '可调用', tip: '插件可以直接调用或注册' },
+  { id: 'limited', label: '有限制', tip: '插件可以调用，但受限状态下返回机密值、有使用限制或前提条件' },
+  { id: 'protected', label: '受保护', tip: '只有暴雪的安全代码能用：插件调用会被拦截，受限事件不能注册' },
+];
+const WHY = {                                  // the documentation fields that limit an entry (apidocs.py), for people
+  IsProtectedFunction: '只有暴雪的安全代码能调用：插件调用会被拦截（ADDON_ACTION_BLOCKED），战斗中对安全框体也不可用。',
+  ProtectedGlobal: '手册列出的受保护全局函数：只有安全代码或硬件事件触发的安全按钮能调用，插件直接调用会被禁止（ADDON_ACTION_FORBIDDEN）。',
+  HasRestrictions: '有使用限制：某些情况下调用会失败或被拦截。',
+  HasRestrictionsEvent: '受限事件：插件注册它会被客户端禁止（ADDON_ACTION_FORBIDDEN），游戏里会弹出「插件导致界面行为失效」。',
+  SecretReturns: '返回值可能是机密值：在战斗、首领战等受限状态下读不到明文，不能比较、运算、拼接或存表。',
+  SecretReturnsForAspect: '相关的方面受限时返回机密值。',
+  CallbackEvent: '回调事件：由客户端的回调分发，插件不一定能用 RegisterEvent 收到。',
+  SecretPayloads: '载荷可能是机密值。',
+  RequireNPERestricted: '只在新手引导受限时触发。',
+  RequiresClubsInitialized: '要先初始化社区（Clubs）才能用。',
+  RequiresFriendList: '要先加载好友列表才能用。',
+  RequiresActiveCommentator: '只有观战解说员能用。',
+};
+const SECRET_WHEN = {                          // SecretWhen… / SecretIn…: the state that turns the values secret
+  SecretWhenInCombat: '战斗中', SecretWhenEncounterEvent: '首领战中', SecretInChatMessagingLockdown: '聊天锁定时',
+  SecretInActivePvPMatch: 'PvP 对局中', SecretWhenCooldownsRestricted: '冷却受限时', SecretWhenUnitStatsRestricted: '单位属性受限时',
+  SecretWhenUnitAuraRestricted: '光环受限时', SecretWhenUnitIdentityRestricted: '单位身份受限时', SecretWhenUnitNameIdentityRestricted: '单位名字受限时',
+  SecretWhenUnitPowerRestricted: '能量受限时', SecretWhenUnitPowerMaxRestricted: '能量上限受限时', SecretWhenUnitHealthMaxRestricted: '生命上限受限时',
+  SecretWhenUnitSpellCastRestricted: '施法信息受限时', SecretWhenUnitThreatValuesRestricted: '仇恨值受限时', SecretWhenUnitThreatStateRestricted: '仇恨状态受限时',
+  SecretWhenUnitPossessionRestricted: '控制状态受限时', SecretWhenUnitComparisonRestricted: '单位比较受限时', SecretWhenLossOfControlInfoRestricted: '失控信息受限时',
+  SecretWhenTotemSlotSecret: '图腾栏是机密时', SecretWhenAnchoringSecret: '锚点是机密时', SecretWhenCurveSecret: '曲线是机密时',
+  SecretWhenNumericFormatterSecret: '数字格式是机密时', SecretWhenLuaTableHasSecretKeys: '表里有机密键时',
+};
+const EXAMPLES = [                             // 试一下: an argument's name (or type) → an example value, the first match wins
+  [/^unit(token)?$|UnitToken|unitID/i, '"player"'], [/guid/i, 'UnitGUID("player")'], [/spell(ID|Identifier)?$|spellID/i, '133'],
+  [/itemID|itemInfo|itemLink|^item$/i, '6948'], [/questID/i, '7'], [/uiMapID|^mapID$/i, '1429'], [/achievementID/i, '6'],
+  [/factionID/i, '72'], [/currency(ID|Type)/i, '1'], [/classID/i, '8'], [/raceID/i, '1'], [/specID/i, '62'], [/mountID/i, '6'],
+  [/bag(ID|Index)?$|containerIndex/i, '0'], [/slot|index$/i, '1'], [/cvar/i, '"scriptErrors"'], [/addon(Name|Index)?$/i, '"WoWBridge"'],
+  [/^name$|playerName|characterName/i, 'UnitName("player")'],
+];
 const KINDS = ['ERR', 'OUT', 'WARN', 'BLOCKED', 'RUN', 'RELOAD', 'SNAP', 'WATCH', 'SLOTS', 'INFO'];
 const REASON_TEXT = { load: '热加载', watch: '开始监视', save: '保存后热加载', new: '新建', manual: '手动存', restore: '回退前' };
 const STATUS_TEXT = { added: '新增', changed: '改动', removed: '删除' };
@@ -102,8 +139,8 @@ function appState() {
     token: null,
     status: null, statusAt: 0, daemonStarted: null,
     session_: null,
-    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'zh-CN' },
-    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'zh-CN' },
+    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto' },
+    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto' },
     settingsNote: '', settingsLoaded: false,
     logs: [], lastId: 0,
     kinds: Object.fromEntries(KINDS.map(k => [k, true])),
@@ -121,7 +158,11 @@ function appState() {
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
     showToken: false,
-    docs: { q: '', kind: '', results: [], busy: false, sel: null, topic: null, topics: [], about: null, check: null, checking: false },
+    CALL_FILTERS,
+    docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, cursor: -1, busy: false, sel: null, topic: null, topics: [],
+            about: null, check: null, checking: false, open: {}, back: [] },
+    tryit: { code: '', busy: false, result: null, trace: null, seconds: 10 },
+    lang: 'zh-CN',                             // the language in force (settings.language; 'auto' follows the system)
     na: { open: false, name: '', title: '', notes: '', template: 'basic', busy: false, error: '', result: null },
     agents: { list: null, program: null, manual: {}, busy: '', note: {} },
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
@@ -313,7 +354,8 @@ function appState() {
     get clientVersion() {
       if (!this.status || !this.status.game.found) return '—';
       const g = this.status.game;
-      return g.version && g.build ? g.version + '（' + g.build + '）' : (g.version || g.build || '—');
+      if (g.version && g.build && !String(g.version).endsWith('.' + g.build)) return g.version + '（' + g.build + '）';
+      return g.version || g.build || '—';
     },
     get linkOnline() { return !!(this.status && this.status.link.state === 'online'); },
     get linkText() {
@@ -364,7 +406,29 @@ function appState() {
       const q = this.filterText.trim().toLowerCase();
       return this.logs.filter(e => this.kinds[e.kind] !== false && (!q || (e.text || '').toLowerCase().includes(q)));
     },
-    get recentLogs() { return this.logs.slice(-10).reverse(); },
+    get recentLogs() {                         // 概览's activity: the newest first, without the link's pings
+      const out = [];
+      for (let i = this.logs.length - 1; i >= 0 && out.length < 60; i--) {
+        const e = this.logs[i];
+        if (!(e.kind === 'INFO' && /^ping \d+:/.test(e.text || ''))) out.push(e);
+      }
+      return out;
+    },
+    get ovVitals() {                           // 概览's readings of the link: [{label, value, unit, sub, tip}]
+      const l = (this.status && this.status.link) || {};
+      const left = l.slots_left, hb = l.hb;
+      return [
+        { label: '延迟', value: l.ping_p50 != null ? Math.round(l.ping_p50 * 1000) : '—', unit: l.ping_p50 != null ? 'ms' : '',
+          tip: '一来一回的时间：最近 20 次的中位数' },
+        { label: '心跳', value: hb || '—', unit: hb ? t('秒') : '', tip: '开发组件多久报一次平安' },
+        { label: '最近帧', value: l.last_frame ? this.ago(l.last_frame) : '—', unit: '', tip: '最近一次从游戏画面读到帧码' },
+        { label: '信箱槽位', value: left != null ? left : '—', unit: '',
+          sub: left != null && hb ? t('约够 {h} 小时', { h: Math.max(0, left * hb / 3600).toFixed(1) }) : '',
+          tip: '这个游戏进程还能收的信件数（心跳也占）；用完要完整重启游戏，/reload 不够' },
+        { label: '抓图', value: l.capture ? l.capture.toUpperCase() : '—', unit: '',
+          tip: 'WGC：直接读游戏窗口，被挡住也行；GDI：读屏幕，帧码所在的角不能被遮住' },
+      ];
+    },
     get errCount() { return this.logs.reduce((n, e) => n + (e.kind === 'ERR' ? 1 : 0), 0); },
     scrollLogs(force) {
       if (!(this.follow || force) || this.page !== 'dev') return;
@@ -707,8 +771,8 @@ function appState() {
       return now.same ? '现在的文件和最新一份 #' + now.since + ' 相同。' : '#' + now.since + ' 之后：' + this.changeText(now) + '。';
     },
     diffLines(text) {                          // the lines of a unified diff, the --- / +++ head left out
-      return (text || '').split('\n').slice(2).map(t => ({
-        t: t || ' ', c: t.startsWith('@@') ? 'hunk' : t.startsWith('+') ? 'add' : t.startsWith('-') ? 'del' : '' }));
+      return (text || '').split('\n').slice(2).map(line => ({
+        t: line || ' ', c: line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : '' }));
     },
 
     get addonRows() {                          // an addon whose ## Group is listed right after it, indented
@@ -730,46 +794,143 @@ function appState() {
     reportText(r) { return r === true ? '开' : r === false ? '关' : '未设置'; },
     enabledText(a) { return a.enabled === true ? '已启用' : a.enabled === false ? '已禁用' : a.disabled_in + ' 个角色禁用'; },
 
-    // ---- the API manual (apidocs.py through /api/apidocs)
+    // ---- the API manual (apidocs.py through /api/apidocs): the search, with what an addon may do with each result (call: ok /
+    // limited / protected) and a filter by it; an entry with that said in full, its types in place, its namespace; 试一下 next to
+    // 开发台's 运行 Lua: a function called once (its values by the documented return names, tables opened), an enum read in the
+    // game against the manual, an event listened for (the trace)
     async docsInit() {
       if (this.docs.about) return;
       try {
         this.docs.about = await this.api('/api/apidocs');
         this.docs.topics = this.docs.about.manual || [];
-      } catch (e) { this.say('API 手册：' + e.message); }
+      } catch (e) { this.say(t('API 手册：') + e.message); }
     },
     get docsAbout() {
       const a = this.docs.about;
       if (!a) return '';
       const pack = this.status && this.status.content && this.status.content.packs && this.status.content.packs.api;
-      const src = pack ? (pack.source === 'downloaded' ? '已从网站更新' : '程序自带') : '';
-      return [a.version && '版本 ' + a.version, a.client && '资料来自客户端 ' + a.client, src,
-              a.counts && a.counts.function + ' 个函数 · ' + a.counts.event + ' 个事件 · ' + a.counts.table + ' 个表'].filter(Boolean).join(' · ');
+      const src = pack ? t(pack.source === 'downloaded' ? '已从网站更新' : '程序自带') : '';
+      return [a.version && t('版本 {v}', { v: a.version }), a.client && t('资料来自客户端 {c}', { c: a.client }), src,
+              a.counts && t('{f} 个函数 · {e} 个事件 · {n} 个表', { f: a.counts.function, e: a.counts.event, n: a.counts.table })].filter(Boolean).join(' · ');
     },
+    get docsChanges() {                        // what the newest client build changed in the manual
+      const c = this.docs.about && this.docs.about.changes;
+      return c ? t('{to} 相对 {frm}：新增 {a}、改动 {c}、删除 {r}', { to: c.to, frm: c.frm, a: c.added, c: c.changed, r: c.removed }) : '';
+    },
+    topicTitle(m) { return this.lang === 'en' ? (m.title_en || m.title) : m.title; },
     async docsSearch() {
       const q = this.docs.q.trim();
-      if (!q) { this.docs.results = []; return; }
+      if (!q) { this.docs.results = []; this.docs.counts = null; this.docs.total = 0; return; }
       this.docs.busy = true;
       try {
-        const d = await this.api('/api/apidocs?limit=80&q=' + encodeURIComponent(q) + (this.docs.kind ? '&kind=' + this.docs.kind : ''));
-        if (this.docs.q.trim() === q) this.docs.results = d.results || [];
-      } catch (e) { this.say('搜索失败：' + e.message); }
+        const d = await this.api('/api/apidocs?limit=120&q=' + encodeURIComponent(q) + (this.docs.kind ? '&kind=' + this.docs.kind : '')
+                                 + (this.docs.call ? '&call=' + this.docs.call : ''));
+        if (this.docs.q.trim() === q) {
+          this.docs.results = d.results || []; this.docs.counts = d.counts || null; this.docs.total = d.total || 0; this.docs.cursor = -1;
+        }
+      } catch (e) { this.say(t('搜索失败：') + e.message); }
       finally { this.docs.busy = false; }
     },
-    async docsOpen(r) {
-      this.docs.check = null;
-      if (r.kind === 'usage') { this.docs.sel = Object.assign({ raw: {} }, r); this.docs.topic = null; return; }
+    get docsGroups() {                         // the results by kind, in the manual's order
+      return ['function', 'event', 'table', 'usage'].map(k => ({ kind: k, rows: this.docs.results.filter(r => r.kind === k) })).filter(g => g.rows.length);
+    },
+    get docsFlat() { return this.docsGroups.flatMap(g => g.rows); },
+    callCount(id) {                            // a call filter's count over every match of the query
+      const c = this.docs.counts;
+      if (!c) return '';
+      return id === 'usable' ? c.ok + c.limited : c[id];
+    },
+    get docsCountText() {                      // how many match under the filters, and how many of them are listed
+      if (this.docs.busy) return t('查找中…');
+      const n = this.docs.call ? this.callCount(this.docs.call) : this.docs.total;
+      const shown = this.docs.results.filter(r => r.kind !== 'usage').length;
+      return shown < n ? t('{n} 条，列出前 {k} 条', { n, k: shown }) : t('{n} 条', { n });
+    },
+    docsMove(step) {                           // ↑ ↓ in the search box walk the results; Enter opens the one marked
+      const rows = this.docsFlat;
+      if (!rows.length) return;
+      this.docs.cursor = Math.max(0, Math.min(rows.length - 1, this.docs.cursor + step));
+      this.$nextTick(() => { const el = this.$refs.apilist && this.$refs.apilist.querySelector('li.cur'); if (el) el.scrollIntoView({ block: 'nearest' }); });
+    },
+    docsEnter() {
+      const rows = this.docsFlat;
+      if (this.docs.cursor >= 0 && rows[this.docs.cursor]) this.docsOpen(rows[this.docs.cursor]);
+      else this.docsSearch().then(() => { if (this.docsFlat.length) this.docsOpen(this.docsFlat[0]); });
+    },
+    async docsOpen(r, back) {                  // a result, or an entry by name (a type, a function of the namespace)
+      const name = typeof r === 'string' ? r : r.name;
+      if (typeof r === 'object' && r.kind === 'usage') { this.docsShow(Object.assign({ raw: {} }, r), back); return; }
       try {
-        const d = await this.api('/api/apidocs?name=' + encodeURIComponent(r.name));
-        this.docs.sel = d.candidates ? Object.assign({ raw: {} }, r) : d;
-        this.docs.topic = null;
+        const d = await this.api('/api/apidocs?name=' + encodeURIComponent(name));
+        this.docsShow(d.candidates ? Object.assign({ raw: {}, name, sig: name, kind: 'function' }, typeof r === 'object' ? r : {},
+                                                   { candidates: d.candidates }) : d, back);
       } catch (e) { this.say(e.message); }
     },
-    async docsTopic(t) {
+    docsShow(entry, back) {
+      if (!back && this.docs.sel && this.docs.sel.name !== entry.name) this.docs.back.push(this.docs.sel.name);
+      this.docs.sel = entry; this.docs.topic = null; this.docs.check = null;
+      this.docs.open = Object.fromEntries(Object.entries(entry.types || {}).map(([k, v]) => [k, (v.fields || []).length <= 12]));
+      this.tryReset();
+      this.$nextTick(() => { const el = this.$refs.apidetail; if (el) el.scrollTop = 0; });
+    },
+    docsBack() { const name = this.docs.back.pop(); if (name) this.docsOpen(name, true); },
+    async docsTopic(m) {
       try {
-        this.docs.topic = await this.api('/api/apidocs?manual=' + encodeURIComponent(t.id));
+        this.docs.topic = await this.api('/api/apidocs?manual=' + encodeURIComponent(m.id) + '&lang=' + this.lang);
         this.docs.sel = null;
       } catch (e) { this.say(e.message); }
+    },
+    docsToggle(name) {                         // a type of the entry: its fields shown or hidden, scrolled to
+      this.docs.open = Object.assign({}, this.docs.open, { [name]: !this.docs.open[name] });
+      if (this.docs.open[name]) this.$nextTick(() => { const el = document.getElementById('ty-' + name); if (el) el.scrollIntoView({ block: 'nearest' }); });
+    },
+    onTypeClick(ev) {                          // a type name in the signature
+      const a = ev.target.closest('[data-type]');
+      if (!a) return;
+      ev.preventDefault();
+      if (!this.docs.open[a.dataset.type]) this.docsToggle(a.dataset.type);
+      else this.$nextTick(() => { const el = document.getElementById('ty-' + a.dataset.type); if (el) el.scrollIntoView({ block: 'nearest' }); });
+    },
+    sigHtml(e) {                               // the signature, its type names that the entry carries as links to them
+      if (!e) return '';
+      const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const ty = name => (e.types && e.types[name] ? '<a class="ty" href="#" data-type="' + esc(name) + '">' + esc(name) + '</a>' : '<span class="ty0">' + esc(name) + '</span>');
+      const p = x => '<span class="pn">' + esc(x.n) + '</span>' + (x.nil ? '<span class="nil">?</span>' : '') + ': ' + ty(x.t)
+                     + (x.def != null && x.def !== '' ? ' = ' + esc(x.def) : '');
+      if (e.kind === 'function' && !e.candidates) {
+        const dot = e.name.lastIndexOf('.');
+        return (dot > 0 ? '<span class="ns">' + esc(e.name.slice(0, dot + 1)) + '</span>' : '') + '<b>' + esc(e.name.slice(dot + 1)) + '</b>('
+               + (e.args || []).map(p).join(', ') + ')' + ((e.returns || []).length ? ' → ' + e.returns.map(p).join(', ') : '');
+      }
+      if (e.kind === 'event') return '<b>' + esc(e.name) + '</b>' + ((e.payload || []).length ? ': ' + e.payload.map(p).join(', ') : '');
+      return esc(e.sig || e.name);
+    },
+    callText(e) {                              // what an addon may do with an entry, as a heading
+      if (!e || !e.call || e.kind === 'table' || e.kind === 'usage') return '';
+      const ev = e.kind === 'event';
+      return t({ ok: ev ? '插件可以注册' : '插件可以调用', limited: ev ? '插件可以注册，但有限制' : '插件可以调用，但有限制',
+                 protected: ev ? '受限事件：插件不能注册' : '受保护：插件不能调用' }[e.call] || '');
+    },
+    whyText(code, kind) {                      // one documentation field that limits it, for people
+      if (code === 'HasRestrictions') return t(kind === 'event' ? WHY.HasRestrictionsEvent : WHY.HasRestrictions);
+      if (WHY[code]) return t(WHY[code]);
+      if (SECRET_WHEN[code]) return t('{when}返回机密值：读不到明文，不能比较、运算或存表。', { when: t(SECRET_WHEN[code]) });
+      if (/^Secret/.test(code)) return t('在某些受限状态下返回机密值。');
+      if (/^Require/.test(code)) return t('有前提条件，条件不满足时调用不起作用。');
+      return '';
+    },
+    sinceText(s) { return s ? t(s.what === 'added' ? '{b} 新增' : '{b} 改动', { b: String(s.build || '').split('.').pop() }) : ''; },
+    get docsSections() {                       // the tables under an entry: arguments, returns, payload, fields
+      const s = this.docs.sel;
+      if (!s) return [];
+      const param = p => [p.nil ? t('可以为空') : '', p.def != null && p.def !== '' ? t('默认 {v}', { v: p.def }) : ''].filter(Boolean).join(t('，'));
+      const out = [];
+      if (s.args && s.args.length) out.push({ title: '参数', rows: s.args, third: '说明', cell: param });
+      if (s.returns && s.returns.length) out.push({ title: '返回值', rows: s.returns, third: '说明', cell: param });
+      if (s.payload && s.payload.length) out.push({ title: '载荷', rows: s.payload, third: '说明', cell: param });
+      if (s.fields && s.fields.length) out.push({ title: s.type === 'Enumeration' ? '取值' : '字段', rows: s.fields, third: '值',
+                                                 cell: p => p.v != null ? String(p.v) : (p.nil ? t('可以为空') : '') });
+      return out;
     },
     async docsCheck() {                        // is it there in the running game? return type(...)
       const name = this.docs.sel && this.docs.sel.name;
@@ -779,24 +940,125 @@ function appState() {
       this.docs.checking = true;
       try {
         const r = await this.api('/api/run', { body: { code: 'return type(' + expr + ')', timeout_ms: 8000 } });
-        const t = r.values && r.values[0];
-        this.docs.check = t === 'function' ? { ok: true, text: '游戏里有它（function）' }
-                        : { ok: false, text: '游戏里是 ' + (t || 'nil') + '：这个版本的客户端可能没有它' };
+        const kind = r.values && r.values[0];
+        this.docs.check = kind === '"function"' || kind === 'function' ? { ok: true, text: t('游戏里有它（function）') }
+                        : { ok: false, text: t('游戏里是 {v}：这个版本的客户端可能没有它', { v: kind || 'nil' }) };
       } catch (e) {
-        this.docs.check = { ok: false, text: '核对失败：' + e.message };
+        this.docs.check = { ok: false, text: t('核对失败：') + e.message };
       } finally { this.docs.checking = false; }
     },
-    get docsSections() {                       // the tables under an entry: arguments, returns, payload, fields
+
+    // ---- 试一下: in the running game, through /api/run (a function, an enum) or /api/trace (an event)
+    get tryKind() {
       const s = this.docs.sel;
-      if (!s) return [];
-      const param = p => (p.nil ? '可以为空' : '') + (p.def != null && p.def !== '' ? (p.nil ? '，' : '') + '默认 ' + p.def : '');
+      if (!s || s.candidates) return '';
+      return s.kind === 'function' ? 'call' : s.kind === 'event' ? 'event' : s.kind === 'table' && s.type === 'Enumeration' ? 'enum' : '';
+    },
+    tryReset() {
+      const s = this.docs.sel;
+      this.tryit = { code: s ? this.tryTemplate(s) : '', busy: false, result: null, trace: null, seconds: 10 };
+    },
+    tryTemplate(s) {
+      if (!s) return '';
+      if (s.kind === 'function') return 'return ' + s.name + '(' + this.tryArgs(s) + ')';
+      if (s.kind === 'table' && s.type === 'Enumeration') return 'return Enum.' + s.name;
+      return '';
+    },
+    tryArgs(s) {                               // an example for each argument up to the first optional one: by its name, then its type
       const out = [];
-      if (s.args && s.args.length) out.push({ title: '参数', rows: s.args, third: '说明', cell: param });
-      if (s.returns && s.returns.length) out.push({ title: '返回值', rows: s.returns, third: '说明', cell: param });
-      if (s.payload && s.payload.length) out.push({ title: '载荷', rows: s.payload, third: '说明', cell: param });
-      if (s.fields && s.fields.length) out.push({ title: s.type === 'Enumeration' ? '取值' : '字段', rows: s.fields, third: '值',
-                                                 cell: p => p.v != null ? String(p.v) : (p.nil ? '可以为空' : '') });
+      for (const a of s.args || []) {
+        if (a.nil || (a.def != null && a.def !== '')) break;
+        const T = s.types && s.types[a.t];
+        const ex = EXAMPLES.find(([re]) => re.test(a.n) || re.test(a.t));
+        out.push(T && T.type === 'Enumeration' && T.fields.length ? 'Enum.' + a.t + '.' + T.fields[0].n
+                 : ex ? ex[1] : /^bool/i.test(a.t) ? 'false' : /^(number|int|uint|fileID|time|luaIndex|double|float)/i.test(a.t) ? '1'
+                 : /string$/i.test(a.t) ? '""' : /^table/i.test(a.t) ? '{}' : /function/i.test(a.t) ? 'function() end' : 'nil');
+      }
+      return out.join(', ');
+    },
+    get tryButton() {
+      if (this.tryit.busy) return t(this.tryKind === 'event' ? '监听中…' : '运行中…');
+      return this.tryKind === 'event' ? t('监听 {s} 秒', { s: this.tryit.seconds }) : this.tryKind === 'enum' ? t('读取并对照') : t('运行（Ctrl+Enter）');
+    },
+    async tryRun() {
+      const code = (this.tryit.code || '').trim();
+      if (!code || this.tryit.busy || !this.linkOnline) return;
+      this.tryit.busy = true; this.tryit.result = null;
+      try {
+        this.tryit.result = await this.api('/api/run', { body: { code, timeout_ms: 10000 } });
+      } catch (e) {
+        this.tryit.result = { ok: false, error: e.status === 504 ? t('超时：游戏没有在 10 秒内回话') : e.message };
+      } finally { this.tryit.busy = false; }
+    },
+    async tryTrace() {
+      const s = this.docs.sel;
+      if (!s || this.tryit.busy || !this.linkOnline) return;
+      this.tryit.busy = true; this.tryit.trace = null;
+      try {
+        this.tryit.trace = await this.api('/api/trace', { body: { seconds: this.tryit.seconds, events: [s.name], max_events: 50, args: 8 } });
+      } catch (e) { this.tryit.trace = { error: e.message }; }
+      finally { this.tryit.busy = false; }
+    },
+    tryToConsole() {                           // the snippet into 开发台's 运行 Lua
+      this.run.code = this.tryit.code;
+      this.devTool = 'run';
+      this.go('dev');
+    },
+    get tryStatus() {
+      const r = this.tryit.result;
+      if (r && r.ok) return t('{ms} ms · job {job}', { ms: r.ms, job: r.job });
+      if (!this.linkOnline) return t('游戏连上后才能运行');
+      return '';
+    },
+    get tryValues() {                          // a run's values by the documented return names, tables opened into their fields
+      const r = this.tryit.result, s = this.docs.sel;
+      if (!r || !r.ok || !s) return [];
+      const vals = r.values || [], rets = s.kind === 'function' ? (s.returns || []) : [];
+      const together = vals.length === 1 && rets.length > 1 && /\n/.test(vals[0]);   // several values dumped as one text
+      return vals.map((v, i) => {
+        const ret = together ? null : rets[i];
+        return { name: ret ? ret.n : together ? t('返回值') : '#' + (i + 1), type: ret ? ret.t : '', rows: this.luaRows(v, ret ? ret.t : '') };
+      });
+    },
+    luaRows(text, typeName) {                  // a dumped value as rows {depth, key, text, type, cls}; the fields typed from the manual
+      const src = String(text == null ? '' : text);
+      if (!/^\s*\{/.test(src))                  // a value other than a table comes as tostring wrote it
+        return [{ depth: 0, key: '', text: src, type: typeName || '', cls: /^-?\d/.test(src) ? 'num' : /^(true|false)$/.test(src) ? 'bool' : src === 'nil' ? 'nil' : 'str' }];
+      const node = luaParse(src);
+      if (!node) return [{ depth: 0, key: '', text: src, type: typeName || '', cls: 'raw' }];
+      const types = (this.docs.sel && this.docs.sel.types) || {};
+      const fieldType = (tn, key) => { const T = types[tn]; const f = T && (T.fields || []).find(x => x.n === key); return f ? f.t : ''; };
+      const out = [];
+      const walk = (n, depth, key, tn) => {
+        if (n.t !== 'table') { out.push({ depth, key, text: n.text, type: tn || '', cls: n.t }); return; }
+        out.push({ depth, key, text: n.entries.length ? '' : '{}', type: tn || '', cls: 'tbl' });
+        fields(n, depth + 1, tn);
+      };
+      const fields = (n, depth, tn) => {
+        for (const [k, v] of n.entries) walk(v, depth, k, tn ? fieldType(tn, k) : '');
+        if (n.more) out.push({ depth, key: '', text: n.more, type: '', cls: 'more' });
+      };
+      if (node.t === 'table' && (node.entries.length || node.more)) fields(node, 0, typeName);   // the value's type is in its heading
+      else walk(node, 0, '', typeName);
       return out;
+    },
+    get tryEnum() {                            // an enum read in the game against the manual: [{name, doc, game, same}]
+      const r = this.tryit.result, s = this.docs.sel;
+      if (!r || !r.ok || !s || this.tryKind !== 'enum') return null;
+      const node = luaParse((r.values || [])[0] || '');
+      if (!node || node.t !== 'table') return null;
+      const game = Object.fromEntries(node.entries.map(([k, v]) => [k, v.text]));
+      const rows = (s.fields || []).map(f => ({ name: f.n, doc: f.v == null ? '' : String(f.v), game: f.n in game ? game[f.n] : '—' }));
+      for (const k of Object.keys(game)) if (!(s.fields || []).some(f => f.n === k)) rows.push({ name: k, doc: '—', game: game[k] });
+      return rows.map(x => Object.assign(x, { same: x.doc === x.game }));
+    },
+    get tryEnumText() {                        // the comparison's verdict above its table: the values that differ named
+      const rows = this.tryEnum;
+      if (!rows) return '';
+      const diff = rows.filter(x => !x.same);
+      if (!diff.length) return t('{n} 项都和手册一致。', { n: rows.length });
+      const names = diff.slice(0, 3).map(x => x.name + ' ' + x.doc + ' → ' + x.game).join(t('、')) + (diff.length > 3 ? '…' : '');
+      return t('{n} 项和手册不一样（标黄的行）：{names}', { n: diff.length, names });
     },
     md(text) {                                 // the manual's little Markdown: escaped first, then headings, lists, code
       const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1046,7 +1308,16 @@ function appState() {
       if (!s) return;
       this.settings = Object.assign({}, this.settings, s, { game_dir: s.game_dir || '' });
       this.form = { capture: this.settings.capture, game_dir: this.settings.game_dir,
-                    autostart: !!this.settings.autostart, language: this.settings.language || 'zh-CN' };
+                    autostart: !!this.settings.autostart, language: this.settings.language || 'auto' };
+      this.applyLang(this.settings.language);
+    },
+    applyLang(setting) {                       // the page's words follow the setting at once
+      const v = langOf(setting);
+      if (Alpine.store('lang').v !== v) Alpine.store('lang').v = v;
+      this.lang = v;
+      document.documentElement.lang = v;
+      document.title = t('无限工坊');
+      if (this.docs.topic) this.docsTopic(this.docs.topic);   // the open chapter in the new language
     },
     async loadSettings() {
       try {
@@ -1132,7 +1403,7 @@ function appState() {
       ];
     },
     cliHelp: CLI_HELP,
-    mask(t) { return t && t.length > 8 ? t.slice(0, 4) + '…' + t.slice(-4) : '••••'; },
+    mask(tok) { return tok && tok.length > 8 ? tok.slice(0, 4) + '…' + tok.slice(-4) : '••••'; },
     async copy(text, what) {
       try {
         await navigator.clipboard.writeText(text);
@@ -1160,33 +1431,38 @@ function appState() {
       return v == null || v === '' ? '—' : v;
     },
     show(v) { return typeof v === 'string' ? v : JSON.stringify(v); },
-    firstLine(t) { return (t || '').split('\n')[0]; },
+    firstLine(text) { return (text || '').split('\n')[0]; },
     shortPath(p) {                             // the last three parts of a Windows path: _cn_beta_\Interface\AddOns
       if (!p) return '—';
       const parts = String(p).split(/[\\/]/).filter(Boolean);
       return parts.length > 3 ? '…\\' + parts.slice(-3).join('\\') : p;
     },
-    fmtTime(t) {
-      if (!t) return '—';
-      const d = new Date(t * 1000);
+    fmtTime(ts) {
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
       return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, '0')).join(':');
     },
-    fmtStamp(t) {                              // Unix seconds from the game (time()): date and time
-      if (!t) return '—';
-      const d = new Date(t * 1000);
+    fmtStamp(ts) {                             // Unix seconds from the game (time()): date and time
+      if (!ts) return '—';
+      const d = new Date(ts * 1000);
       const p = n => String(n).padStart(2, '0');
       return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     },
     fmtDuration(s) {
       if (s == null) return '—';
       s = Math.floor(s);
-      if (s < 60) return s + ' 秒';
-      if (s < 3600) return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
-      return Math.floor(s / 3600) + ' 小时 ' + Math.floor((s % 3600) / 60) + ' 分';
+      if (s < 60) return t('{s} 秒', { s });
+      if (s < 3600) return t('{m} 分 {s} 秒', { m: Math.floor(s / 60), s: s % 60 });
+      return t('{h} 小时 {m} 分', { h: Math.floor(s / 3600), m: Math.floor((s % 3600) / 60) });
     },
-    ago(t) {
-      const s = Math.max(0, Math.floor(this.now / 1000 - t));
-      return s < 60 ? s + ' 秒前' : this.fmtDuration(s) + '前';
+    upFor(ts) {                                // how long since: minutes, or hours and minutes
+      const m = Math.floor(Math.max(0, this.now / 1000 - ts) / 60);
+      if (m < 1) return t('不到 1 分钟');
+      return m < 60 ? t('{m} 分钟', { m }) : t('{h} 小时 {m} 分', { h: Math.floor(m / 60), m: m % 60 });
+    },
+    ago(ts) {
+      const s = Math.max(0, Math.floor(this.now / 1000 - ts));
+      return s < 60 ? t('{s} 秒前', { s }) : t('{d}前', { d: this.fmtDuration(s) });
     },
   };
 }
@@ -1250,3 +1526,72 @@ document.addEventListener('htmx:afterRequest', evt => {       // fires for 2xx, 
   const detail = { ok: xhr.status >= 200 && xhr.status < 400, status: xhr.status, json, error: xhr.status ? '' : '无法连接守护进程' };
   evt.detail.elt.dispatchEvent(new CustomEvent('api-done', { detail, bubbles: false }));
 });
+
+/* a value as Agent.lua's Dump writes it: "text" (%q), numbers, true / false / nil, <Type name>, <cycle>, {}, {... N entries}, and tables
+   {\n  key = value,\n ...} (keys as names, ["text"] or [number]; "... N more" after 50) → {t: 'table', entries: [[key, node]], more} |
+   {t: 'str' | 'num' | 'bool' | 'nil' | 'other', text}; null for anything else (a dump cut at the size limit) */
+function luaParse(src) {
+  const s = String(src == null ? '' : src);
+  let i = 0;
+  const ws = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+  const str = () => {                          // a %q string: \" \\ a backslash before a newline, \r, \0 and \ddd
+    let out = '';
+    i++;
+    while (i < s.length && s[i] !== '"') {
+      if (s[i] === '\\') {
+        const c = s[i + 1];
+        const d = /^\d{1,3}/.exec(s.slice(i + 1));
+        if (d) { out += String.fromCharCode(+d[0]); i += 1 + d[0].length; }
+        else { out += c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c; i += 2; }
+      } else out += s[i++];
+    }
+    if (s[i] !== '"') throw new Error('string');
+    i++;
+    return out;
+  };
+  const value = () => {
+    ws();
+    if (s[i] === '"') return { t: 'str', text: JSON.stringify(str()) };
+    if (s[i] === '{') {
+      if (s.startsWith('{}', i)) { i += 2; return { t: 'table', entries: [] }; }
+      const many = /^\{\.\.\. \d+ entries\}/.exec(s.slice(i));
+      if (many) { i += many[0].length; return { t: 'other', text: many[0] }; }
+      i++;
+      const entries = [];
+      let more = '';
+      for (;;) {
+        ws();
+        if (s[i] === '}') { i++; break; }
+        const m = /^\.\.\. \d+ more/.exec(s.slice(i));
+        if (m) { more = m[0]; i += m[0].length; continue; }
+        let key;
+        if (s[i] === '[') {
+          i++; ws();
+          if (s[i] === '"') key = str();
+          else { const n = /^[^\]]+/.exec(s.slice(i)); if (!n) throw new Error('key'); key = n[0].trim(); i += n[0].length; }
+          ws();
+          if (s[i] !== ']') throw new Error('key');
+          i++;
+        } else {
+          const n = /^[A-Za-z_]\w*/.exec(s.slice(i));
+          if (!n) throw new Error('key');
+          key = n[0]; i += n[0].length;
+        }
+        ws();
+        if (s[i] !== '=') throw new Error('=');
+        i++;
+        entries.push([key, value()]);
+        ws();
+        if (s[i] === ',') i++;
+      }
+      return { t: 'table', entries, more };
+    }
+    if (s[i] === '<') { const n = /^<[^>]*>/.exec(s.slice(i)); if (!n) throw new Error('<'); i += n[0].length; return { t: 'other', text: n[0] }; }
+    const n = /^[^,\s}]+/.exec(s.slice(i));
+    if (!n) throw new Error('value');
+    i += n[0].length;
+    const w = n[0];
+    return { t: w === 'true' || w === 'false' ? 'bool' : w === 'nil' ? 'nil' : /^-?[\d.]/.test(w) ? 'num' : 'other', text: w };
+  };
+  try { const v = value(); ws(); return i === s.length ? v : null; } catch (e) { return null; }
+}

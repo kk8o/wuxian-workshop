@@ -5,7 +5,7 @@ from pathlib import Path
 
 from wuxianworkshop.ui import STATIC_DIR
 
-FILES = ("index.html", "app.css", "app.js", "htmx.min.js", "alpine.min.js", "icon.png", "logo.svg", "wuxian.ico")
+FILES = ("index.html", "app.css", "i18n.js", "app.js", "htmx.min.js", "alpine.min.js", "icon.png", "logo.svg", "wuxian.ico")
 TEXT = tuple(f for f in FILES if not f.endswith((".png", ".ico")))
 URL = re.compile(r"https?://")
 # URLs that may appear outside comments because nothing is fetched from them: the loopback examples of the connect page,
@@ -39,7 +39,7 @@ class StaticFiles(unittest.TestCase):
         for ref in refs:
             self.assertFalse(ref.startswith(("http:", "https:", "//")), ref)
             self.assertTrue((STATIC_DIR / ref).is_file(), f"{ref} is referenced but not in static/")
-        for lib in ("htmx.min.js", "alpine.min.js", "app.js", "app.css"):
+        for lib in ("htmx.min.js", "alpine.min.js", "i18n.js", "app.js", "app.css"):
             self.assertIn(lib, refs)
 
     def test_no_external_urls(self):

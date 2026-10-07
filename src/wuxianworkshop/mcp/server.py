@@ -341,15 +341,18 @@ def build_server(backend, name="wuxian"):
 
     @mcp.tool(annotations=READ_ONLY)
     async def api_search(query: str, kind: Literal["function", "event", "table"] | None = None,
-                         limit: int = 20) -> dict[str, Any]:
+                         limit: int = 20, call: Literal["usable", "ok", "limited", "protected"] | None = None) -> dict[str, Any]:
         """Search this client's API manual (1.60.1 无限, Lua 5.1, the Mainline 12.x UI code; built into 无限工坊,
         no game needed): functions (C_ namespaces and globals), events and tables (enums, structures) by name or by
         words of their description, exact names first. Each result has its signature and flags (protected: secure
         code only; may return secret values: in combat, encounters, PvP ...). `api_get` gives one entry in full,
         `api_manual` the rules (taint, secret values, the .toc, protected functions, GameRules, the 无限-only API). The
-        manual is the client's own documentation; to be sure in the running game, `run` `return type(C_X.Y)`."""
+        manual is the client's own documentation; to be sure in the running game, `run` `return type(C_X.Y)`.
+        Every result says how far an addon may use it (`call`, `why`: the documentation fields): ok; limited (usage
+        restrictions, secret values in restricted states, a precondition, a callback-only event); protected (secure code
+        only: an addon's call is blocked, a restricted event cannot be registered). call="usable" leaves the protected out."""
         ix = await asyncio.to_thread(apidocs.index)
-        return dict(results=ix.search(query, kind, limit), manual=ix.about()["version"])
+        return dict(results=ix.search(query, kind, limit, call), manual=ix.about()["version"])
 
     @mcp.tool(annotations=READ_ONLY)
     async def api_get(name: str) -> dict[str, Any]:

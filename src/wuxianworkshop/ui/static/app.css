@@ -82,8 +82,8 @@ button.tb-chip { cursor: pointer; }
 .st-ok .dot { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 .st-warn .dot { background: var(--gold); }
 .st-bad .dot { background: var(--bad); }
-.st-ok .tb-link-text, .st-ok .ov-state-text { color: var(--ok); }
-.st-warn .tb-link-text, .st-warn .ov-state-text { color: var(--gold-l); }
+.st-ok .tb-link-text { color: var(--ok); }
+.st-warn .tb-link-text { color: var(--gold-l); }
 .dot.sse-open { background: var(--ok); }
 .dot.sse-connecting, .dot.sse-reconnecting { background: var(--gold); }
 .dot.sse-closed { background: var(--bad); }
@@ -204,23 +204,78 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .modal-head .x:hover { background: var(--panel2); color: var(--fg); }
 .modal-body { padding: 4px 16px 16px; overflow: auto; }
 
-/* 概览 ------------------------------------------------------------------------------------------------------------ */
-.pagebody.overview { display: grid; gap: 12px; grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(0, 1fr));
-                     grid-template-rows: auto minmax(160px, 1fr); overflow: auto; }
-.ov-link { grid-column: 1; grid-row: 1; }
-.ov-link-body { display: flex; flex-direction: column; gap: 8px; }
-.ov-state { display: flex; align-items: center; gap: 10px; }
-.big-dot { width: 11px; height: 11px; }
-.ov-state-text { font-size: 20px; font-weight: 600; }
-.ov-why { color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-.ov-link .row { margin-top: 2px; }
-.ov-facts { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line2); grid-template-columns: repeat(2, auto minmax(0, 1fr)); }
-.ov-facts dd { font-family: var(--mono); font-size: 12px; }
-.ov-logs { grid-column: 1 / -1; grid-row: 2; }
-@media (max-width: 960px) {
-  .pagebody.overview { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto auto minmax(160px, 1fr); }
-  .ov-link { grid-column: 1 / -1; }
-  .ov-logs { grid-row: 3; }
+/* 概览 ------------------------------------------------------------------------------------------------------------
+   One band on top says where things stand: the link's state in its colour (the ∞ mark, a light running along it while
+   online), what that means, the actions, and the link's readings in a row. Below, the game and the developer component as
+   spec sheets of the same height, then the recent activity filling the rest of the page. */
+.pagebody.overview { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr));
+                     grid-template-rows: auto auto minmax(200px, 1fr); padding: 16px 18px; }
+.ov-hero { grid-column: 1 / -1; --hero-c: var(--muted); --hero-tint: rgba(156, 158, 166, .07);
+           border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+           background: radial-gradient(560px 200px at 0 0, var(--hero-tint), transparent 72%), var(--panel); }
+.ov-hero.st-ok { --hero-c: var(--ok); --hero-tint: rgba(111, 207, 151, .11); }
+.ov-hero.st-warn { --hero-c: var(--gold-l); --hero-tint: rgba(241, 201, 122, .1); }
+.ov-top { display: flex; align-items: center; gap: 18px; padding: 18px 20px; flex-wrap: wrap; }
+.ov-badge { width: 62px; height: 62px; flex: none; display: grid; place-items: center; border-radius: 50%;
+            border: 1px solid color-mix(in srgb, var(--hero-c) 30%, transparent);
+            background: radial-gradient(circle, color-mix(in srgb, var(--hero-c) 14%, transparent), transparent 72%); }
+.ov-mark { width: 40px; height: 25px; overflow: visible; color: var(--hero-c); }
+.ov-mark .track { opacity: .35; }
+.ov-mark .flow { stroke-dasharray: 18 105.6; animation: ov-flow 2.6s linear infinite; display: none; }
+.st-ok .ov-mark .track { opacity: .3; }
+.st-ok .ov-mark .flow { display: inline; }
+@keyframes ov-flow { to { stroke-dashoffset: -123.6; } }
+@media (prefers-reduced-motion: reduce) { .ov-mark .flow { animation: none; stroke-dasharray: none; } }
+.ov-head { flex: 1; min-width: 280px; }
+.ov-title { display: flex; align-items: baseline; gap: 12px; }
+.ov-state { font-size: 22px; font-weight: 600; letter-spacing: .03em; color: var(--hero-c); }
+.ov-sess { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.ov-why { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.ov-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ov-acts .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px; }
+.ov-vitals { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--line2);
+             background: rgba(0, 0, 0, .14); }
+.vital { padding: 11px 20px 13px; min-width: 0; }
+.vital + .vital { border-left: 1px solid var(--line2); }
+.vital dt { font-size: 11.5px; color: var(--muted); letter-spacing: .06em; }
+.vital dd { margin: 3px 0 0; font-size: 19px; line-height: 1.2; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--fg);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vital dd small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.ov-hero:not(.st-ok) .vital dd { color: var(--muted); }   /* the readings of a link that is down are old */
+.vital-sub { margin-top: 2px; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-card { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 14px 18px 6px; }
+.ov-card > header { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
+.ov-card > header h2 { margin: 0; }
+.ov-card > header .ico { color: var(--gold-d); }
+.ov-card > header .pill { margin-left: auto; }
+.spec { margin: 0; }
+.spec > div { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding: 8px 0; border-top: 1px solid var(--line2); }
+.spec dt { flex: none; color: var(--muted); font-size: 12.5px; }
+.spec dd { margin: 0; min-width: 0; font-size: 12.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spec dd.mono { font-size: 12px; }
+.ov-feed { grid-column: 1 / -1; padding-bottom: 0; }
+.ov-feed > header { padding-bottom: 6px; }
+.feed { flex: 1; min-height: 0; overflow: auto; list-style: none; margin: 0 -18px; padding: 0; font-family: var(--mono); font-size: 12px; }
+.feed li { display: grid; grid-template-columns: 62px 76px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 18px;
+           border-top: 1px solid var(--line2); }
+.feed li:hover { background: rgba(255, 255, 255, .025); }
+.feed time { color: var(--faint); }
+.feed .fk { display: flex; align-items: center; gap: 7px; font-size: 10.5px; letter-spacing: .06em; color: var(--muted); }
+.feed .fk::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.feed .k-ERR .fk { color: var(--bad); } .feed li.k-ERR { background: rgba(242, 139, 130, .05); }
+.feed .k-WARN .fk, .feed .k-BLOCKED .fk, .feed .k-SLOTS .fk { color: var(--gold-l); }
+.feed .k-OUT .fk { color: var(--ok); }
+.feed .k-RUN .fk, .feed .k-RELOAD .fk, .feed .k-SNAP .fk, .feed .k-WATCH .fk { color: var(--sky); }
+.feed .ft { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-feed .empty { padding: 18px 0; }
+@media (max-width: 1080px) {
+  .ov-vitals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .vital:nth-child(4) { border-left: 0; }
+  .vital:nth-child(n+4) { border-top: 1px solid var(--line2); }
+}
+@media (max-width: 860px) {
+  .pagebody.overview { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
 }
 
 /* the logs */
@@ -271,7 +326,7 @@ pre.stack { color: var(--muted); margin: 6px 0 0; white-space: pre-wrap; overflo
 
 /* master and detail (插件, API 手册) ------------------------------------------------------------------------------- */
 .master-detail { display: grid !important; grid-template-columns: 300px minmax(0, 1fr); }
-.master-detail.api { grid-template-columns: 400px minmax(0, 1fr); }
+.master-detail.api { grid-template-columns: 420px minmax(0, 1fr); }
 .master { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--chrome); overflow: auto; }
 .master-tools { flex: none; padding: 10px; border-bottom: 1px solid var(--line); }
 .master-tools .toolbar { margin-top: 8px; }
@@ -315,6 +370,64 @@ pre.stack { color: var(--muted); margin: 6px 0 0; white-space: pre-wrap; overflo
 .api-detail .detail-title { font-family: var(--mono); font-size: 15px; color: var(--gold-l); }
 pre.sigline { margin: 4px 0 8px; }
 .api-detail h2 { margin-top: 16px; }
+/* API 手册: what an addon may do with an entry — green 可调用, gold 有限制, red 受保护 — on every result (a mark and a left edge),
+   the filter chips with their counts, the entry's banner; types in place; 试一下's panel and its values */
+.api .calls { margin-top: 6px; gap: 4px; }
+.chip.call { opacity: 1; font-family: var(--body); font-size: 12px; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; white-space: nowrap; }
+.chip.call .cnt { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.chip.call.on { color: var(--gold-l); border-color: var(--gold-d); background: var(--gold-soft); }
+.chip.call.c-ok.on { color: var(--ok); border-color: rgba(111, 207, 151, .5); background: var(--ok-soft); }
+.chip.call.c-protected.on { color: var(--bad); border-color: rgba(242, 139, 130, .5); background: var(--bad-soft); }
+.cmark { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; margin-right: 6px; vertical-align: 1px; }
+.c-limited .cmark, .call-limited .cmark { background: var(--gold-l); }
+.c-protected .cmark, .call-protected .cmark { background: none; border: 1.5px solid var(--bad); width: 9px; height: 9px; border-radius: 2px; }
+.api-group + .api-group { margin-top: 4px; }
+.api-ghead { padding: 8px 14px 2px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .06em; }
+.api-results li { display: flex; align-items: flex-start; gap: 6px; border-left: 2px solid transparent; }
+.api-results li .sig { flex: 1; min-width: 0; }
+.api-results li.call-limited { border-left-color: rgba(241, 201, 122, .55); }
+.api-results li.call-protected { border-left-color: rgba(242, 139, 130, .6); }
+.api-results li.call-protected .sig { color: var(--muted); }
+.api-results li.cur { outline: 1px dashed var(--gold-d); }
+.since { flex: none; font-size: 10.5px; color: var(--sky); border: 1px solid rgba(127, 179, 224, .5); border-radius: 3px; padding: 0 4px; line-height: 15px; }
+.since.big { font-size: 11px; }
+details.topics { border-top: 1px solid var(--line); margin-top: 6px; }
+details.topics > summary { cursor: pointer; list-style: none; }
+details.topics > summary::before { content: "▸ "; } details.topics[open] > summary::before { content: "▾ "; }
+.callbox { margin: 0 0 10px; padding: 8px 12px; border-radius: 6px; border: 1px solid rgba(111, 207, 151, .45); background: var(--ok-soft); }
+.callbox.call-limited { border-color: var(--gold-d); background: var(--gold-soft); }
+.callbox.call-protected { border-color: rgba(242, 139, 130, .55); background: var(--bad-soft); }
+.callbox-t { display: flex; align-items: center; font-size: 13px; }
+.callbox.call-ok .callbox-t b { color: var(--ok); } .callbox.call-limited .callbox-t b { color: var(--gold-l); } .callbox.call-protected .callbox-t b { color: var(--bad); }
+.callbox ul { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6; }
+.callbox code { font-size: 11px; color: var(--muted); }
+pre.sigline { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+pre.sigline .ns { color: var(--muted); } pre.sigline b { color: var(--gold-l); font-weight: 500; }
+pre.sigline .pn { color: var(--fg); } pre.sigline .nil { color: var(--muted); } pre.sigline .ty0 { color: var(--sky); }
+a.ty { color: var(--sky); text-decoration: underline dotted; }
+.usage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 8px; }
+.typecard { border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; }
+.typehead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; }
+.typehead:hover { background: var(--panel2); }
+.typehead .caret { width: 10px; color: var(--muted); }
+.typecard .table { margin: 0 0 4px; }
+.tryit { margin-top: 18px; border: 1px solid var(--gold-d); border-radius: 8px; padding: 10px 12px; background: var(--chrome); }
+.tryit.call-protected { border-color: var(--line); }
+.tryhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.tryhead b { color: var(--gold-l); font-size: 13px; }
+.tlink { font-size: 11.5px; } .tlink::before { content: "● "; } .tlink.on { color: var(--ok); } .tlink.off { color: var(--muted); }
+.tryit .code-input { min-height: 0; }
+.tryit .row { margin-top: 6px; gap: 8px; }
+.tryout .tryval + .tryval { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line2); }
+.tvh { margin-bottom: 2px; color: var(--gold-l); }
+.tvrow { font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tvrow .tk { color: var(--fg); } .tvrow .tt { color: var(--faint); margin-left: 10px; font-size: 11px; }
+.tvrow.v-str .tv { color: var(--ok); } .tvrow.v-num .tv { color: var(--sky); } .tvrow.v-bool .tv, .tvrow.v-nil .tv { color: var(--gold-l); }
+.tvrow.v-other .tv, .tvrow.v-more .tv { color: var(--muted); }
+.enumcmp tr.diff td { background: var(--gold-soft); color: var(--gold-l); }
+.siblings { margin-top: 16px; }
+.sibs { display: flex; flex-wrap: wrap; gap: 4px; }
+.sibs .chip { opacity: 1; text-decoration: none; }
 .table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .table th, .table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line2); }
 .table th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
