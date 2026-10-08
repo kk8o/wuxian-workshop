@@ -102,6 +102,22 @@ class Listing(unittest.TestCase):
         names = [a["name"] for a in res["addons"]]
         self.assertEqual(names, sorted(names, key=str.lower))
 
+    def test_lines_for_other_game_types(self):
+        """a .toc for several game types: its ## lines for this client (camelot) without their load conditions; a line
+        for other game types is not read (the last Title is another game's)"""
+        self.toc("Multi", "## Interface: 11508, 16001, 120001\n"
+                          "## Title: |cff00ccffMulti|r Classic [AllowLoadGameType vanilla]\n"
+                          "## Title: |cff00ccffMulti|r Forever [AllowLoadGameType camelot][ExcludeLoadGameType standard, classic]\n"
+                          "## Title: |cff00ccffMulti|r Retail [AllowLoadGameType standard]\n"
+                          "## Notes: Bars for every game [Beta]\n"
+                          "## OptionalDeps: LibClassicOnly [AllowLoadGameType classic]\n"
+                          "## SavedVariables: MultiDB\n"
+                          "## SavedVariables: MultiRetailDB [ExcludeLoadGameType camelot]\n\n"
+                          "Game\\load_forever.xml [AllowLoadGameType camelot]\n")
+        multi = self.by_name(A.list_addons(self.game))["Multi"]
+        self.assertEqual((multi["title"], multi["notes"], multi["optional_deps"], multi["saved_variables"], multi["current"]),
+                         ("Multi Forever", "Bars for every game [Beta]", [], ["MultiDB"], True))
+
     def test_addons_txt(self):
         got = {n: (a["enabled"], a["disabled_in"]) for n, a in self.by_name(A.list_addons(self.game)).items()}
         self.assertEqual(got["Bar"], (True, 0))
@@ -171,6 +187,14 @@ class Listing(unittest.TestCase):
 class Helpers(unittest.TestCase):
     def test_plain(self):
         self.assertEqual(A.plain("|cffff0000Red|r and |A:atlas:16:16|a icon|nnext"), "Red and  icon next")
+
+    def test_read_toc_takes_this_clients_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "X.toc"
+            p.write_text("## Title: |cff00ccffX|r\n"
+                         "## Title-zhCN: 某插件 [AllowLoadGameType camelot]\n"
+                         "## Title-zhCN: 某插件（正式服） [AllowLoadGameType standard]\n", encoding="utf-8")
+            self.assertEqual(A.read_toc(p), {"Title": "|cff00ccffX|r", "Title-zhCN": "某插件"})
 
 
 if __name__ == "__main__":

@@ -18,40 +18,29 @@ import re
 from pathlib import Path
 
 from ..core import mailbox as MB
+from . import lint
 
 CODE_CHUNK = 3700               # Lua bytes per CODE record: one record and the small ones still fit a 4,090-byte packet
 RESET_FLAGS = {True: " reset", "reset": " reset", "unload": " unload", "reload": " reload"}   # code()'s reset -> header
+FRAMES = re.compile(r"<(Frame|Button|CheckButton|EditBox|ScrollFrame|Slider|StatusBar|Texture|FontString)\b")
+
+
+def _makes_frames(xml):
+    """whether an XML file makes frames or templates (its comments are not read)"""
+    try:
+        text = xml.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return False
+    return FRAMES.search(re.sub(r"<!--.*?-->", "", text, flags=re.S)) is not None
 
 
 def toc_files(toc):
-    """(the Lua files an addon loads, in order; its XML files that also make frames or templates): the .toc's file
-    lines, and in XML files their <Script file> and <Include file> lines, followed"""
-    files, frames = [], []
-
-    def xml(path):
-        try:
-            text = path.read_text(encoding="utf-8-sig", errors="replace")
-        except OSError:
-            return
-        for kind, name in re.findall(r'<(Script|Include)\b[^>]*?\bfile\s*=\s*"([^"]+)"', text):
-            p = path.parent / name.replace("\\", "/")
-            if kind == "Script":
-                files.append(p)
-            else:
-                xml(p)
-        if re.search(r"<(Frame|Button|CheckButton|EditBox|ScrollFrame|Slider|StatusBar|Texture|FontString)\b", text):
-            frames.append(path)
-
-    for line in toc.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        p = toc.parent / line.replace("\\", "/")
-        if p.suffix.lower() == ".lua":
-            files.append(p)
-        elif p.suffix.lower() == ".xml":
-            xml(p)
-    return files, frames
+    """(the Lua files an addon loads, in order; its XML files that also make frames or templates): what the client
+    loads of the .toc's folder, as agent/lint.py reads it (read_toc, loaded_files): the .toc's lines for this client's
+    game type, the XML files' <Script file> and <Include file> followed (comments skipped), a missing file left out;
+    nothing when the .toc's ## AllowLoadGameType leaves this client out"""
+    loaded = lint.loaded_files(toc.parent, lint.read_toc(toc))
+    return loaded["lua"], [p for p in loaded["xml"] if _makes_frames(p)]
 
 
 class AgentCommands:
@@ -101,8 +90,8 @@ class AgentCommands:
         return any(p == d or d in p.parents for d in (self.addons.resolve() / "WoWBridge", self.addons.resolve() / "!WuxianWorkshop"))
 
     def _targets(self, verb, spec):
-        """(files, addon) for load / watch: a file, or the Lua files of an addon folder in .toc order; None after
-        telling the agent why not"""
+        """(files, addon) for load / watch: a file, or the Lua files the client loads of an addon folder, in order
+        (toc_files); None after telling the agent why not"""
         path = self._resolve(spec)
         if path is None:
             self._tell("RUN", f"{verb} {spec}: no such file or addon folder")
@@ -117,6 +106,10 @@ class AgentCommands:
         if toc is None:
             self._tell("RUN", f"{verb} {spec}: no .toc in that folder")
             return None
+        if not lint.read_toc(toc)["loads"]:
+            self._tell("RUN", f"{verb} {path.name}: the client does not load this addon: its ## AllowLoadGameType "
+                              f"leaves out {lint.GAME_TYPE}")
+            return None
         files, frames = toc_files(toc)
         if frames:
             self._tell("RUN", f"{verb} {path.name}: frames and templates in {', '.join(f.name for f in frames)} are XML "
@@ -126,7 +119,8 @@ class AgentCommands:
     def load(self, spec, reset=True):
         """load <file | addon folder | addon name>: Lua for the addon to run as that file (errors name it). A file of an
         addon gets the addon's name and namespace as "..." (WoWBridgeNS[name], which the addon registers or the first
-        load makes); a folder loads every Lua file its .toc lists, XML <Script> / <Include> lines followed, in order.
+        load makes); a folder loads the Lua files the client loads of it, in order (toc_files: the .toc's lines for this
+        client's game type, XML <Script> / <Include> lines followed).
         reset: the addon's OnUnload / OnReload hooks run around the load (one file: both around its job; a folder:
         OnUnload before the first file, OnReload after the last). Returns the job ids"""
         found = self._targets("load", spec)

@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from . import DEVELOPER_ADDON, LAB_ADDON, PLATFORM_ADDON, VERIFIED_CLIENTS
+from ..agent.lint import toc_line
 from ..core import savedvars
 from ..core.game import game_dir as find_game_dir, read_build_info
 from ..paths import state_dir
@@ -23,7 +24,9 @@ _ESCAPES = [(re.compile(r"\|c[0-9a-fA-F]{8}"), ""), (re.compile(r"\|r"), ""), (r
 
 
 def read_toc(path):
-    """the `## Key: value` headers of a .toc as a dict, or None when the file is missing"""
+    """the `## Key: value` headers of a .toc as a dict, or None when the file is missing: the lines for this client's
+    game type, without their load conditions (agent/lint.py toc_line: "## Title: Foo [AllowLoadGameType camelot]" ->
+    "Foo"; a line for other game types is left out), the last one of a key"""
     path = Path(path)
     if not path.is_file():
         return None
@@ -31,7 +34,9 @@ def read_toc(path):
     for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         m = re.match(r"##\s*([^:]+?)\s*:\s*(.*?)\s*$", line)
         if m:
-            out[m.group(1)] = m.group(2)
+            value, here = toc_line(m.group(2))
+            if here:
+                out[m.group(1)] = value
     return out
 
 
