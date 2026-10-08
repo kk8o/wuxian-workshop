@@ -189,13 +189,18 @@ def build_server(backend, name="wuxian"):
         """Check an addon (or one file) before it goes to the game, in milliseconds, without running it: `errors` (would
         fail in the game: syntax with Lua 5.1, the client's own version, with a hint for what newer Lua allows and 5.1
         does not; libraries and functions this client lacks: os, io, utf8, require, table.unpack...; unknown event names
-        in RegisterEvent; a .toc line naming a missing file; XML that is not well-formed; with `live`, globals that are
-        nil in the running game), `warnings` (probable bugs: a name one slip from a real one, C_ / Enum names the API
-        manual does not have, globals written by accident, protected functions, restricted events, not UTF-8, an
-        Interface number not this client's) and `notes`. Each finding has file, line, code, message and hint. With
-        `live` (and the game online) the names neither the manual nor the addon settle are asked of the running game:
-        nil there is an error, present means fine (the Blizzard UI or another addon has it). Run it after every
-        change, before load or reload."""
+        in RegisterEvent; restricted events registered; protected functions called; a .toc line naming a missing file;
+        XML that is not well-formed; with `live`, globals that are nil in the running game), `warnings` (probable bugs:
+        a name one slip from a real one, C_ / Enum names the API manual does not have, globals written by accident, not
+        UTF-8, an Interface number not this client's) and `notes`. Each finding has file, line, code, message and hint.
+        Only the files this client loads are checked: the .toc's lines for its game type (camelot; [AllowLoadGameType
+        ...] conditions are read) and the XML they load; the others are listed in a note. The addons it depends on
+        (## Dependencies, RequiredDeps, OptionalDeps), when installed, define globals too. A missing name is an error
+        where it surely fails (called or indexed when the file loads, or unconditionally in a function) and a warning
+        where it is only kept in a local (local X = X), tested or behind a condition, as addons for several game
+        versions do. With `live` (and the game online) the names neither the manual nor the addon settle are asked of
+        the running game: nil there is an error (or such a warning), present means fine (the Blizzard UI or another
+        addon has it). Run it after every change, before load or reload."""
         return await call(backend.check(target, live))
 
     @mcp.tool(annotations=WRITES)
