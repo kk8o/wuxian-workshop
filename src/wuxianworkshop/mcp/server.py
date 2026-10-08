@@ -32,7 +32,7 @@ INSTRUCTIONS = """WuxianWorkshop (无限工坊): a live link to a running World 
 `run` executes Lua inside the game and returns the values; `check` finds what would fail in the game before it gets
 there (Lua 5.1 syntax, globals and APIs this client does not have, typos, accidental globals, restricted events, the
 .toc and XML), and `load` / `watch` check the syntax themselves and send nothing broken; `load` hot-loads a file or an
-addon (its .toc order) without a /reload; `watch` reloads files whenever they are saved; `logs` has the addon's Lua errors (with stacks), print output
+addon (the files this client loads of it, in order) without a /reload; `watch` reloads files whenever they are saved; `logs` has the addon's Lua errors (with stacks), print output
 and the RUN results; `snap` is a screenshot of the game window; `reload` asks the player to click a reload button (only
 a click may reload on this client). Check `status` first: the game must be running with the link online.
 `try` does something in the game (Lua or a slash command) and brings back what came of it in one call: its result,
@@ -176,12 +176,14 @@ def build_server(backend, name="wuxian"):
 
     @mcp.tool(annotations=WRITES)
     async def load(target: str, reset: bool = True, timeout_ms: int = 30000, check: bool = True) -> dict[str, Any]:
-        """Hot-load a Lua file or a whole addon (every Lua file its .toc lists, in order; XML <Script> files
-        followed) into the running game. `target`: a path, or a name relative to Interface/AddOns or the client folder.
-        Returns one result per file (ok, error, stack, ms); a file that fails does not stop the next ones. WoWBridge's
-        own files are refused. The files are checked first (`check`: errors and warnings, see the check tool): a Lua
-        5.1 syntax error in any of them sends none (check_failed, with the file and line). A version of the addon is
-        kept first (`kept`: its id; `history`, `restore`)."""
+        """Hot-load a Lua file or a whole addon (the Lua files this client loads of it, in order: the .toc's lines for
+        its game type, camelot, and the <Script> / <Include> files of the XML they load) into the running game.
+        `target`: a path, or a name relative to Interface/AddOns or the client folder. Returns one result per file (ok,
+        error, stack, ms); a file that fails does not stop the next ones. WoWBridge's own files are refused, and so is
+        an addon this client does not load (its ## AllowLoadGameType leaves camelot out). The files are checked first
+        (`check`: errors and warnings, see the check tool): a Lua 5.1 syntax error in any of them sends none
+        (check_failed, with the file and line). A version of the addon is kept first (`kept`: its id; `history`,
+        `restore`)."""
         return await call(backend.load(target, None, reset, timeout_ms, check))
 
     @mcp.tool(annotations=READ_ONLY)
