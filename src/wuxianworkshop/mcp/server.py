@@ -39,8 +39,11 @@ a click may reload on this client). Check `status` first: the game must be runni
 the errors with stacks, prints and blocked actions of the next seconds, the events that fired, a picture: use it to test
 a feature and to see whether a fix worked. `trace` records the events the game fires for a while (which event to
 handle, what its payload is); `inspect` describes a frame, or the frames under the mouse (layout bugs). Test without mouse and keyboard: call the slash handler
-(`SlashCmdList.NAME("args")`), your button's `:Click()`, your handler with made-up arguments. Never register restricted
-events (COMBAT_LOG_EVENT_UNFILTERED and the like): the client blocks the addon with a dialog. When something seems
+(`SlashCmdList.NAME("args")`), your button's `:Click()`, your handler with made-up arguments. Code of `run` / `try`
+runs tainted ('*** ForceTaint_Strong ***'): a Blizzard panel it opens (ToggleCharacter …) runs tainted too and can
+error on secret values (here even the player's own health and power) until a reload, so ask the player to open
+Blizzard's panels. Never register restricted events (COMBAT_LOG_EVENT_UNFILTERED and the like): the client blocks the
+addon with a dialog. When something seems
 blocked or does nothing, read `logs` (ERR, BLOCKED) and `snap` the screen: the game shows many warnings as dialogs.
 Each `load`, the start of a `watch` and every save a watch loads first keep a version of the addon (`history` lists them,
 `restore` goes back); `checkpoint` an addon you did not make before you change it, so the player's original is kept.
@@ -247,7 +250,8 @@ def build_server(backend, name="wuxian"):
     async def inspect(target: str | None = None, mouse: bool = False, depth: int = 1, snap: bool = False) -> list[Image | str]:
         """Describe frames of the running UI. `target`: a Lua expression that gives a frame or a region (PlayerFrame,
         MyAddonFrame, MyAddon.window, _G["Name"]): its type and name, shown / visible, alpha, size, `rect` ([x, y, w, h]
-        in client pixels from the top-left, as `snap` takes it), anchors (point, relative frame, relative point, x, y),
+        in client pixels from the top-left, as `snap` takes it; "<secret>" when the client keeps it secret, as for a
+        bar set from a secret value), anchors (point, relative frame, relative point, x, y),
         strata, level, draw layer, text or texture, protected, mouse-enabled, which scripts are set, and with `depth`
         (0-3) its children and regions. `mouse=true` instead: the frames under the mouse cursor, each with its parent
         chain (ask the player to hover the thing in question). `snap=true` adds a picture of the first frame. For

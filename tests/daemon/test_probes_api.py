@@ -76,6 +76,9 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("snap", await self.svc.inspect("MyFrame"))
         with self.assertRaises(ApiError):
             await self.svc.inspect(None)
+        self.answer["inspect"] = whole('{"screen":[1311,983],"frames":[{"name":"Bar","rect":"<secret>"}]}')
+        res = await self.svc.inspect("Bar", snap=True)                 # a secret place: no picture, no error
+        self.assertEqual((res["frames"][0]["rect"], "snap" in res, len(self.snaps)), ("<secret>", False, 1))
 
     async def test_errors_from_the_game(self):
         self.answer["inspect"] = whole('{"error":"target: the expression gave nil (no such frame)"}')

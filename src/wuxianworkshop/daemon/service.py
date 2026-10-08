@@ -484,7 +484,7 @@ class Service:
         frames = data.get("frames") or []
         result = dict(screen=data.get("screen"), frames=frames)
         rect = frames[0].get("rect") if frames and isinstance(frames[0], dict) else None
-        if snap and rect and rect[2] > 0 and rect[3] > 0:
+        if snap and isinstance(rect, list) and rect[2] > 0 and rect[3] > 0:      # not "<secret>": no place to picture
             sw, sh = (data.get("screen") or [rect[0] + rect[2], rect[1] + rect[3]])[:2]
             x, y = max(0, rect[0] - 12), max(0, rect[1] - 12)
             w, h = min(sw - x, rect[2] + 24), min(sh - y, rect[3] + 24)

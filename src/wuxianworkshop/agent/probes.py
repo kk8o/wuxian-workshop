@@ -124,7 +124,10 @@ local function nm(f)
 end
 local function px(f)
 	local ok, l, b, w, h = pcall(f.GetRect, f)
-	if not ok or not l then return nil end
+	if not ok then return nil end
+	-- a bar set from a secret value (on this client the player's own health too) has a secret place: no arithmetic on it
+	if issecret and (issecret(l) or issecret(b) or issecret(w) or issecret(h)) then return "<secret>" end
+	if not l then return nil end
 	local s = f:GetEffectiveScale() * physH / 768
 	return { math.floor(l * s + 0.5), math.floor(physH - (b + h) * s + 0.5), math.floor(w * s + 0.5), math.floor(h * s + 0.5) }
 end

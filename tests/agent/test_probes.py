@@ -234,6 +234,21 @@ class Probes(unittest.TestCase):
         self.assertIsNone(close.get("rect"))                          # never anchored: no rectangle
         self.assertEqual((title["type"], title["text"], title["layer"]), ("FontString", "我的插件", "ARTWORK"))
 
+    def test_a_secret_place_is_said_not_computed(self):
+        """seen in the game (ElvUI's player frame, depth 1): its health bar is set from UnitHealth, a secret value on
+        this client, so the bar's fill has a secret rectangle; arithmetic on it raised and the whole inspect failed"""
+        self.lua.execute(r"""
+			SECRET = {}
+			function issecretvalue(v) return v == SECRET end
+			UIParent = NewFrame({ name = "UIParent", l = 0, b = 0, w = 1920, h = 1080, scale = 768 / 1080 })
+			Bar = NewFrame({ name = "Bar", otype = "StatusBar", parent = UIParent, l = 100, b = 600, w = 200, h = 20, scale = 768 / 1080 })
+			Bar.regions = { NewFrame({ otype = "Texture", parent = Bar, l = SECRET, b = SECRET, w = SECRET, h = SECRET }) }
+		""")
+        bar = self.run_chunk(P.inspect("Bar", depth=1))["frames"][0]
+        self.assertEqual(bar["rect"], [100, 460, 200, 20])
+        fill = bar["regions"][0]
+        self.assertEqual((fill["rect"], fill["size"]), ("<secret>", ["<secret>", "<secret>"]))
+
     def test_inspect_the_mouse_and_errors(self):
         self.lua.execute(r"""
 			UIParent = NewFrame({ name = "UIParent" })
