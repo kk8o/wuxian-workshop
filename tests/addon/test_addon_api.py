@@ -445,7 +445,11 @@ class KitTools(unittest.TestCase):
                         raise ApiError(400, "call_failed", "WuxianKit.kit.capabilities is not exposed")
                     return {"ok": True, "result": legacy}
                 if name == "kit.proposal":
+                    if args["id"] != self.proposal["id"]:
+                        raise ApiError(400, "call_failed", f"no proposal {args['id']}")
                     return {"ok": True, "result": dict(self.proposal)}
+                if name == "kit.history":
+                    return {"ok": True, "result": [{"id": 3, "title": "old", "undone": True}]}
                 if name == "kit.propose":
                     return {"ok": True, "result": {"id": 8, "state": "pending", "steps": args["steps"]}}
                 return {"addon": addon, "name": name, "ok": True, "result": {"id": 7, "state": "pending"}}
@@ -535,7 +539,8 @@ class KitTools(unittest.TestCase):
         self.assertIn("(1 tool, from the addon WxDemo)", overview)                    # a later kind is not counted
         self.assertIn("- `guild-qa` (chat): Answer guild questions", overview)
         chat = asyncio.run(mcp.call_tool("wk_docs", {"extension": "chat"})).content[0].text
-        self.assertIn("Hears and sends.", chat)
+        self.assertTrue(chat.startswith("# Chat\n\nExtension `chat` 0.3.0 of the addon WuxianKit; in the game it is "
+                                        "called Chat.\n\nHears and sends."))
         self.assertIn("| `wk_chat_send` | Send | Send message: say something | channel: guild\\|party, target: string?, "
                       "text: string |", chat)
         self.assertIn("| `chat.message` | a message | channel: string, text: string |", chat)
@@ -565,6 +570,10 @@ class KitTools(unittest.TestCase):
         self.assertEqual((done["id"], done["state"], done.get("timeout")), (7, "declined", None))
         late = asyncio.run(tools.call("wk_wait", {"proposal": 7, "seconds": 1})).structured_content
         self.assertEqual((late["state"], late["timeout"]), ("pending", True))
+        old = asyncio.run(tools.call("wk_wait", {"proposal": 3})).structured_content    # older: from the history
+        self.assertEqual((old["id"], old["state"]), (3, "undone"))
+        with self.assertRaises(ToolError):
+            asyncio.run(tools.call("wk_wait", {"proposal": 4}))
         r = asyncio.run(tools.call("wk_propose", {"title": "Raid setup", "steps": [
             {"cap": "wk_tune_cvar_set", "args": {"name": "a", "value": 1}},
             {"cap": "chat.send", "args": {"channel": "party", "text": "hi"}}]}))
