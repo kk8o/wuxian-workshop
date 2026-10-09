@@ -8,9 +8,9 @@
 ## 目录
 - `src/wuxianworkshop/`：产品 Python 包（src 布局，包名 `wuxianworkshop`，命令行 `wuxian`）。
 - `core/`：帧格式 v1（`frame.py`，格式的参考实现）、定位（`locate.py`）、解码（`decode.py`）、字体包（`fontpack.py` → 零依赖 TTF 写入器 `ttf.py`）、信箱（`mailbox.py`）、游戏目录、`.build.info` 与原子写（`game.py`）、SavedVariables 读取器（`savedvars.py`：只解析字面量表，绝不执行）。
-- `transport/`：抓屏（`capture.py`，GDI 与纯 ctypes 的 WGC；找游戏窗口按 exe 名，或按窗口类加客户端目录）、链路协议（`link.py`：握手、心跳、累计确认、分片、ping、首字节分型的上行消息、跳槽重发）。
+- `transport/`：抓屏（`capture.py`，GDI 与纯 ctypes 的 WGC；找游戏窗口按 exe 名，或按窗口类加客户端目录）、链路协议（`link.py`：握手、心跳、累计确认、分片、ping、首字节分型的上行消息、跳槽重发；0.9.6 起 HELLO / PONG 带 `f=1` 的插件改为懒确认（约 10 秒一包，省信箱槽位）、缺了哪条立刻用 PARTS 要、小消息合批成 TYPE_BATCH，run 结果优先上屏；守护进程知道的会话、日志、写过的槽位都有上限）。
 - `agent/`：命令与热加载（`commands.py` 的 `AgentCommands` mixin，`link.Companion` 继承它）、截图（`snap.py`）、debug.log（`debuglog.py`）、帧监视器（`monitor.py`）、探测帧解析（`diag.py`）、送进游戏前的检查（`lint.py`：lupa 的 Lua 5.1 编译查语法；解析 string.dump 的字节码拿到全局读写和行号，与 API 手册、标准库、常用暴雪界面全局名比对；toc 与 XML；查不定的名字在线时问游戏）、插件的历史版本（`history.py`）、事件追踪与界面检查（`probes.py`，经 `run` 送进游戏的 Lua，答 JSON；也生成调用插件公开函数、描述插件接口的片段）。
-- `daemon/`：`server.py`（Starlette + uvicorn，127.0.0.1 随机端口 + Bearer token，`state\daemon.json`，单实例互斥量，`/mcp` 挂载）、`service.py`（操作层，HTTP 与 MCP 共用；`try` 在这里：动作、等待、标记 run 收齐）、`journal.py`（环形日志 + SSE 扇出；插件用 WoWBridge 的 Emit 发的事件也进这里，类型 EVENT）、`api.py`（`ApiError`、RUN 文本解析、读 daemon.json）、`companion.py`（`CompanionLoop`：找窗口、抓帧、写信箱，跟着正在运行的游戏的目录走）。
+- `daemon/`：`server.py`（Starlette + uvicorn，127.0.0.1 随机端口 + Bearer token，`state\daemon.json`，单实例互斥量，`/mcp` 挂载）、`service.py`（操作层，HTTP 与 MCP 共用；`try` 在这里：动作、等待、标记 run 收齐）、`journal.py`（环形日志 + SSE 扇出；插件用 WoWBridge 的 Emit 发的事件也进这里，类型 EVENT，单独一个环，JSON 严格读）、`api.py`（`ApiError`、RUN 文本解析、读 daemon.json）、`companion.py`（`CompanionLoop`：找窗口、抓帧、写信箱，跟着正在运行的游戏的目录走）。
 - `cli/`：`main.py`（`wuxian` 入口，全部子命令）、`client.py`（urllib 客户端，守护进程没起就拉起它）、`mcpconfig.py`（`wuxian mcp-config` 片段）。
 - `mcp/server.py`：MCP 工具（status / check / try / run / load / watch / snap / reload / logs / history / checkpoint / restore / trace / inspect / events / call / respond / addon_api / addons / errors / install / new_addon / API 手册的 api_search / api_get / api_manual）；挂在守护进程 `/mcp`，也可 `wuxian mcp` 走 stdio（stdout 只放协议）。
 - `installer/`：`install.py`（先清后装；开发者模式装两个插件与信箱；.toc 写入客户端的 Interface 号；删旧版本与早期实验的残留；绝不碰 `WoWBridge\mail\`；`restart_for_link` 区分"新增文件、链路要等游戏重启"和只改 toc）、`doctor.py`（自检与修复）、`addons.py`（已装插件清单；客户端的 Interface 号：游戏报告的 > 已验证的 > 按版本号推算）、`runtimes.py`（WebView2、.NET Framework、WGC 所需的系统版本）、`__init__.py`（`addon_source_dir()`：开发时仓库 `addon/`，冻结时 `_internal\addon\`）。
@@ -38,7 +38,7 @@
 
 ## 约定
 - 注释密度与现有代码一致：模块顶部一段说明用途与协议，函数一行 docstring，只在"为什么"不显然处加行内注释；注释一律英文。界面文案中英两份：页面的中文直接写在 index.html / app.js 里（它也是词条的键：静态文字由 `x-t` 翻译，表达式里用 `t('…{名}…', {名})` 整句模板，不拼接碎片），英文写进 `ui/static/i18n.js` 的 `EN`（`tests/ui/test_i18n.py` 查每条都有英文）；Python 给人看的文字（自检、Agent、新建插件、托盘与对话框）用 `i18n.tr(中文, 英文)`，跟设置里的语言走（自动 = 跟随 Windows 显示语言）。插件里给玩家看的文字一律放 `Locale.lua`（`!WuxianWorkshop` 放 `Core.lua` 的 `WORDS`），中英两份都写；发给守护进程的内容（调试、RUN/RELOAD 结果、测试消息）保持英文。
-- 不改协议格式：帧格式 v1（`core/frame.py` 与 `Codec.lua`/`Frame.lua` 互为镜像）、信箱包格式（`mailbox.py` 与 `Mailbox.lua`）、控制帧与上行消息的格式（`link.py` 与 `Link.lua`；EVENT 消息的 JSON 是 `API.lua` 与 `journal.py`）、CODE 头部（`commands.py` 与 `Agent.lua`）、RUN 结果（`Agent.lua` 与 `daemon/api.py` 的 `parse_run`；0.9.0–0.9.4 的插件还在用旧格式，`parse_run` 要一直读得懂）；改一边必须同时改另一边并补测试。
+- 不改协议格式：帧格式 v1（`core/frame.py` 与 `Codec.lua`/`Frame.lua` 互为镜像）、信箱包格式（`mailbox.py` 与 `Mailbox.lua`）、控制帧与上行消息的格式（`link.py` 与 `Link.lua`；EVENT 消息的 JSON 是 `API.lua` 与 `journal.py`）、CODE 头部（`commands.py` 与 `Agent.lua`）、RUN 结果（`Agent.lua` 与 `daemon/api.py` 的 `parse_run`；0.9.0–0.9.4 的插件还在用旧格式，`parse_run` 要一直读得懂）；改一边必须同时改另一边并补测试。新能力靠协商（控制帧的 `f=`、WELCOME 的字段），旧的一边不认识的字段要能忽略：新程序配旧插件、旧程序配新插件都得能用。
 - 不模拟输入、不读游戏内存、不注入代码；只允许抓屏和读写插件目录里的文件。
 - 游戏客户端只在启动时发现新文件，运行中新增/删除文件无效；替换运行中的文件用 `core.game.atomic_write`。
 - 本地接口只绑 127.0.0.1，每个请求带 Bearer token 并校验 Host/Origin；不开远程端口。

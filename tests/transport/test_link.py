@@ -227,8 +227,9 @@ class Companion(unittest.TestCase):
         self.c.tick()                                                     # into 3696: 400 left after it
         slots = [t for k, t in got if k == "SLOTS"]
         self.assertEqual(len(slots), 1)
-        self.assertTrue(slots[0].startswith("mailbox: 400 slots left in this game process (about 1.7 h at a heartbeat "
-                                            "every 15 s); when they are gone, only a full restart"), slots)
+        self.assertTrue(slots[0].startswith("mailbox: 400 slots left in this game process (about 1.7 h at 4.0 packets a "
+                                            "minute, the rate of the last minutes); when they are gone, only a full restart"),
+                        slots)
         self.c.slot = 3996
         for text in ("a", "b", "c"):                                      # 3996, 3997 (100 left after it), 3998
             self.c.say(text)
@@ -271,6 +272,7 @@ class Companion(unittest.TestCase):
         self.assertIsNone(self.c.command("load WoWBridge"))
         self.assertTrue(got[-1][1].startswith("load WoWBridge: refused"), got)
         self.c.outbox.clear()
+        self.c.link_up, self.c.last_frame, self.c.down_after = True, self.t, 1e9   # the game's frames come: saves are loaded
         self.c.command("watch Foo")
         self.assertIn(("WATCH", "watching 4 files of Foo: each is loaded again when it is saved"), got)
         core = foo / "Core.lua"
@@ -581,6 +583,7 @@ class Companion(unittest.TestCase):
                                  "@Interface/AddOns/Foo/A.lua unload", "@Interface/AddOns/Foo/B.lua", "@Interface/AddOns/Foo/C.lua reload"])
         self.assertIn("code %d: @Interface/AddOns/Foo/A.lua (5 B, 1 parts, reset)" % (self.c.last_job - 4), self.log)
         self.c.outbox.clear()
+        self.c.link_up, self.c.last_frame, self.c.down_after = True, self.t, 1e9
         self.c.command("watch Foo/C.lua")
         c = foo / "C.lua"
         c.write_text("-- C, edited\n", encoding="utf-8")

@@ -49,7 +49,15 @@ class EndToEnd(unittest.TestCase):
                 if text is not None:
                     return Service.run_result(parse_run(text))
             self.fail(f"no RUN result for job {job}")
-        self.svc.run = run
+
+        async def caught_up(wait=6.0):                   # the daemon's, over this session: every message up to the marker
+            at = comp.mark()
+            for _ in range(int(wait / 0.25)):
+                if at is None or comp.covered(*at):
+                    return True
+                s.run(0.25)
+            return comp.covered(*at)
+        self.svc.run, self.svc.caught_up = run, caught_up
         self.addCleanup(s.close)
         comp.new_process("P1-100")
         s.lua.execute(ADDON_FOO)                         # loaded with the UI, before the link is up: its event waits
@@ -72,20 +80,29 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.events(topic="nothing.*"), [])
 
     def test_a_flood_is_cut_and_the_next_event_says_so(self):
-        """events are best effort: at most QUEUE (8) wait in the link's queue, so that a flood never holds up a run's
-        result; what is dropped is counted, and the next event that goes says how many"""
+        """events are best effort: an addon sends BURST (20) at once and RATE (10) a second, and at most QUEUE_BYTES
+        (6000) of them wait in the link's queue; what is dropped is counted, and the next event that goes says how
+        many. Small ones go up several to a frame"""
         s = self.s
+        frames = len(s.frames)
         s.lua.execute(b'for i = 1, 60 do FooWB:Emit("flood", { i = i }) end')
         s.run(15)
         s.lua.execute(b'FooWB:Emit("after", {})')
         s.run(6)
         flood = self.events(topic="flood", limit=1000)
-        self.assertEqual(len(flood), 8)
-        self.assertEqual(self.events(topic="after")[0]["dropped"], 52)
+        self.assertEqual([e["data"]["i"] for e in flood], list(range(1, 21)))
+        self.assertEqual(self.events(topic="after")[0]["dropped"], 40)
+        self.assertLess(len([f for f in s.frames[frames:] if f[1] == 0]), 10)        # 21 events in a few frames
         page = asyncio.run(self.svc.addon_events(topic="flood", limit=3))
         self.assertEqual(len(page["events"]), 3)
         rest = asyncio.run(self.svc.addon_events(topic="flood", since=page["next"], limit=1000))["events"]
-        self.assertEqual([e["data"]["i"] for e in rest], [4, 5, 6, 7, 8])          # the next page picks up there
+        self.assertEqual([e["data"]["i"] for e in rest], list(range(4, 21)))         # the next page picks up there
+        s.lua.execute(b'for i = 1, 10 do FooWB:Emit("heavy", { i = i, s = string.rep("x", 2500) }) end')
+        s.run(10)
+        s.lua.execute(b'FooWB:Emit("after heavy", {})')
+        s.run(6)
+        self.assertEqual([e["data"]["i"] for e in self.events(topic="heavy")], [1, 2, 3])   # 7,500 bytes wait: no more
+        self.assertEqual(self.events(topic="after heavy")[0]["dropped"], 7)
         s.lua.execute(b'FooWB:Emit("big", { s = string.rep("x", 9000) })')         # over MAX: said, not sent
         s.run(6)
         self.assertEqual(self.events(topic="big")[0]["data"]["cut"], True)
@@ -199,9 +216,11 @@ class Events(unittest.TestCase):
         woke = asyncio.run(later())
         self.assertEqual([e["topic"] for e in woke["events"]], ["late"])
         self.assertEqual(asyncio.run(svc.addon_events(since=woke["next"], wait=0.2))["events"], [])   # gave up
-        for bad in (dict(since=-1), dict(limit=0), dict(wait=301), dict(addon=" ")):
+        for bad in (dict(since=-2), dict(limit=0), dict(wait=301), dict(addon=" ")):
             with self.assertRaises(ApiError):
                 asyncio.run(svc.addon_events(**bad))
+        now = asyncio.run(svc.addon_events(since=-1))                    # -1: none of the old ones, the next id
+        self.assertEqual((now["events"], now["next"]), ([], j.next_id))
 
 
 class McpTools(unittest.TestCase):
@@ -231,7 +250,7 @@ class McpTools(unittest.TestCase):
         self.assertFalse(tools["respond"].annotations.read_only_hint)
         self.assertEqual(backend.calls, [("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                                          ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
-                                         ("respond", ("12.3", {"text": "x"}))])
+                                         ("respond", ("12.3", {"text": "x"}, 10000))])
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
@@ -270,6 +289,10 @@ class Templates(unittest.TestCase):
             ns = self.run_in(bare, folder)
             self.assertIsNone(bare.lua.globals()[b"WoWBridge"])
             ns[b"WB"][b"Emit"](ns[b"WB"], b"x", None)                # the stub takes the calls and does nothing
+            ns[b"WB"][b"Expose"](ns[b"WB"], b"x", bare.lua.eval("function() end"))
+            ns[b"WB"][b"Request"](ns[b"WB"], b"q", None, bare.lua.eval("function(r, why) StubAnswer = why end"))
+            bare.run(0.1)                                             # ... but a question is called back at once
+            self.assertEqual(bare.lua.globals()[b"StubAnswer"], b"unavailable")
 
 
 class LoadOrder(unittest.TestCase):

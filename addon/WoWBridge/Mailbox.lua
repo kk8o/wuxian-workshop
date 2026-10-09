@@ -2,7 +2,8 @@
 -- writes one packet into a slot, as a font whose glyph widths carry the bytes (src/wuxianworkshop/core/mailbox.py is the
 -- reference). Slots are read in order. On 1.60.1.70235 a font is cached by path until the client exits (/reload
 -- included) and a failed load is not, so: an empty slot can be polled, and a slot is read once per game process.
--- mail\proc.ttf holds a stamp of the game process; when it differs from the saved one, reading starts at slot 1 again.
+-- mail\proc.ttf holds a stamp of the game process; when it differs from the saved one, reading starts at slot 1 again
+-- (not when the saved one is "?", a stamp that could not be read: see M.Tick).
 -- A slot whose packet keeps failing its checks is skipped after BAD_LIMIT tries and remembered (db.mail.skipped, the
 -- last SKIPPED_KEPT); the link names it in its control frames so that the companion sends the slot's records again.
 local _, ns = ...
@@ -96,8 +97,14 @@ function M.Tick()
 		local stamp = Font.Packet(st.meters[1])
 		if stamp or now - st.t0 > 5 then
 			st.proc = stamp or "?"
-			if stamp and stamp ~= st.db.mail.proc then   -- the game was restarted: every slot is unread again
-				st.db.mail.proc, st.db.mail.next, st.db.mail.skipped = stamp, 1, nil
+			-- a stamp unlike the saved one: the game was restarted, every slot is unread again. One read after a stamp that
+			-- could not be read ("?": no companion had written proc.ttf before the login) is taken as it is: most likely the
+			-- same process, whose slots read so far sit in the client's font cache, and from slot 1 they would all come back
+			if stamp and stamp ~= st.db.mail.proc then
+				if st.db.mail.proc ~= "?" then st.db.mail.next, st.db.mail.skipped = 1, nil end
+				st.db.mail.proc = stamp
+			elseif not stamp then
+				st.db.mail.proc = "?"
 			end
 			st.phase = "poll"
 			Want(st.db.mail.next)

@@ -114,6 +114,7 @@ class CompanionLoop:
         self.wait_restart, self.installed, self.files, self.link = wait_restart, installed, files, link
         self.find_window = find_window
         self.before_load = None                      # the daemon's hook for its Companion (see AgentCommands)
+        self.on_session = None                       # the daemon's: (session, its newest job) for a new session's HELLO
         self.comp = None
         if addons is not None:
             self._make_companion(Path(addons))
@@ -125,7 +126,7 @@ class CompanionLoop:
                                                      # does not know), "player" (player mode), None
         self.win_start = None                        # when its process started (Unix seconds)
         self.build = self.version = None             # the game's build number and file version, from the exe
-        self.pid = None                              # the game process the Companion knows
+        self.pid = None                              # the game process the Companion knows: (pid, start)
         self.said = set()
         self.wgc, self.wgc_seq, self.wgc_failed = None, 0, None   # wgc_failed: the window WGC refused (GDI for it)
         self.roi, self.misses = ROI_SMALL, 0
@@ -149,6 +150,11 @@ class CompanionLoop:
                               echo_debug=self.echo_debug)
         self.comp.before_load = self._before_load
         self.comp.on_client = self._on_client
+        self.comp.on_session = self._on_session
+
+    def _on_session(self, sid, last_job):
+        if self.on_session is not None:
+            self.on_session(sid, last_job)
 
     def _on_client(self, version, interface):
         """the game's own version and ## Interface (WoWBridge's HELLO): kept, the installer writes it into the tocs"""
@@ -220,6 +226,7 @@ class CompanionLoop:
                 self.log("the game window is gone")
                 self.said.discard("waiting for the game window")
             self.win = None                             # self.pid stays: the same process back is not a new one
+            self._gone()
             self._once("waiting for the game window")
             self._tick()
             self._wait(WINDOW_POLL)
@@ -256,9 +263,9 @@ class CompanionLoop:
             return
         self.blocked = None
         comp = self.comp
-        if win.pid != self.pid:
-            self.pid = win.pid
+        if (win.pid, int(start)) != self.pid:          # the start time too: Windows may give a new process the same pid
             comp.new_process(f"P{win.pid}-{int(start)}")
+            self.pid = (win.pid, int(start))           # only once that worked: a failure is tried again next round
             self.geom = None
         now = time.time()
         if win.minimized:                                   # nothing is drawn: no geometry to follow
@@ -332,6 +339,21 @@ class CompanionLoop:
         self._frame(win, img, region, t0)
         comp.tick()
         self._wait(max(0.0, self.rate - (time.perf_counter() - t0)))
+
+    def _gone(self):
+        """no game window: when the process the Companion knew has exited too (not just its window, which may come
+        back), its unread slots are emptied and what waited for it is dropped (Companion.game_gone)"""
+        if self.pid is None or self.comp is None or not self.link or not self.pid[1]:   # start unknown: cannot tell
+            return
+        pid, start = self.pid
+        now = process_start(pid)
+        if now is not None and int(now) == start:     # still running
+            return
+        self.pid = None
+        try:
+            self.comp.game_gone()
+        except OSError as e:
+            self.log(f"the game has exited; its mailbox slots could not be emptied: {e}")
 
     def _file_commands(self, win):
         """lines appended to state/say.txt and state/command.txt"""

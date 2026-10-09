@@ -26,6 +26,7 @@ WELCOME, HEARTBEAT, TEXT, COMMAND, PARTS, CODE = 1, 2, 3, 4, 5, 6
 NAMES = {WELCOME: "WELCOME", HEARTBEAT: "HEARTBEAT", TEXT: "TEXT", COMMAND: "COMMAND", PARTS: "PARTS", CODE: "CODE"}
 HEAD = struct.Struct(">2sBBIHHHH")
 MAX_PACKET = 4096 - 6        # the addon reads at most 4096 bytes of "WF" payload (FontProbe.lua Font.MAX_PACKET)
+RECORD_MAX = MAX_PACKET - HEAD.size - 4 - 3   # the most data one record carries: a packet of it alone
 
 
 def encode(slot, session, ack, records):
@@ -82,12 +83,16 @@ def install(addons, pool=POOL):
 
 
 def reset(addons):
-    """empty every slot an earlier game process used; returns how many"""
+    """empty every slot an earlier game process used; returns how many. A slot that cannot be emptied (held open) is
+    left as it is rather than stopping the others"""
     n = 0
     for p in mail_dir(addons).glob("[0-9]*.ttf"):
-        if p.stat().st_size:
-            atomic_write(p, b"")
-            n += 1
+        try:
+            if p.stat().st_size:
+                atomic_write(p, b"")
+                n += 1
+        except OSError:
+            pass
     return n
 
 

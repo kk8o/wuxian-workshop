@@ -437,14 +437,15 @@ function appState() {
     },
     get ovVitals() {                           // 概览's readings of the link: [{label, value, unit, sub, tip}]
       const l = (this.status && this.status.link) || {};
-      const left = l.slots_left, hb = l.hb;
+      // slots a minute lately (slot_rate: the last ten minutes, at least the heartbeat's); an older daemon: the heartbeat's
+      const left = l.slots_left, hb = l.hb, rate = l.slot_rate || (hb ? 60 / hb : 0);
       return [
         { label: t('延迟'), value: l.ping_p50 != null ? Math.round(l.ping_p50 * 1000) : '—', unit: l.ping_p50 != null ? 'ms' : '',
           tip: t('一来一回的时间：最近 20 次的中位数') },
         { label: t('心跳'), value: hb || '—', unit: hb ? t('秒') : '', tip: t('开发组件多久报一次平安') },
         { label: t('最近帧'), value: l.last_frame ? this.ago(l.last_frame) : '—', unit: '', tip: t('最近一次从游戏画面读到帧码') },
         { label: t('信箱槽位'), value: left != null ? left : '—', unit: '',
-          sub: left != null && hb ? t('约够 {h} 小时', { h: Math.max(0, left * hb / 3600).toFixed(1) }) : '',
+          sub: left != null && rate ? t('约够 {h} 小时', { h: Math.max(0, left / rate / 60).toFixed(1) }) : '',
           tip: t('这个游戏进程还能收的信件数（心跳也占）；用完要完整重启游戏，/reload 不够') },
         { label: t('抓图'), value: l.capture ? l.capture.toUpperCase() : '—', unit: '',
           tip: t('WGC：直接读游戏窗口，被挡住也行；GDI：读屏幕，帧码所在的角不能被遮住') },

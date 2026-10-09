@@ -33,7 +33,7 @@ class Link(unittest.TestCase):
     def test_link(self):
         logs = []
         s = Session(self)
-        comp = link.Companion(s.addons, clock=s.now, log=logs.append, ping_every=4, hb_every=5)
+        comp = link.Companion(s.addons, clock=s.now, log=logs.append, ping_every=4, hb_every=5, hb_lazy=5)
         s.comp = comp
         try:
             comp.new_process("P1-100")
@@ -42,7 +42,7 @@ class Link(unittest.TestCase):
             s.run(8)
             chat = s.chat()
             self.assertIn("connected to the companion (mailbox slot 1)", chat)
-            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 1, 16 in flight, 0.25 s a frame, "
+            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 1, 64 in flight, 0.20 s a frame, "
                           "a heartbeat every 5 s", chat)
             self.assertIn("> 你好 WoWBridge", chat)
             sess = comp.sessions[comp.current]
@@ -93,7 +93,7 @@ class Link(unittest.TestCase):
             self.assertEqual(sess2.messages[-1][4], "after reload")
 
             # the companion restarts in the same game process: it learns the slot from the next heartbeat
-            comp2 = link.Companion(s2.addons, clock=s2.now, log=logs.append, ping_every=4, hb_every=5)
+            comp2 = link.Companion(s2.addons, clock=s2.now, log=logs.append, ping_every=4, hb_every=5, hb_lazy=5)
             comp2.new_process("P1-100")
             s2.comp = comp2
             s2.run(12)
@@ -567,7 +567,7 @@ class EarlyAndSlots(unittest.TestCase):
             s.comp.new_process("P1-100")
             s.login()
             s.run(10)
-            self.assertRegex(s.chat(), r"信箱槽位还剩 39\d 个（空闲时约 1\.\d 小时）。用完后 App 的消息就进不来了，要完整退出游戏再启动才能恢复")
+            self.assertRegex(s.chat(), r"信箱槽位还剩 39\d 个（空闲时约 3\.\d 小时）。用完后 App 的消息就进不来了，要完整退出游戏再启动才能恢复")
             self.assertEqual(s.chat().count("信箱槽位还剩"), 1)
             self.assertIsNone(s.lua.globals()[b"WoWBridgeSlotsDialog"])
         finally:
@@ -586,7 +586,7 @@ class EarlyAndSlots(unittest.TestCase):
             s.close()
 
     def test_offline_after_three_heartbeats(self):
-        """a heartbeat every 15 s: 30 s without a packet is not offline yet, 45 s is"""
+        """a heartbeat every 30 s (15 s for an addon before 0.9.6): 60 s without a packet is not offline yet, 90 s is"""
         logs = []
         s = Session(self)
         s.comp = link.Companion(s.addons, clock=s.now, log=logs.append)
@@ -594,12 +594,12 @@ class EarlyAndSlots(unittest.TestCase):
             s.comp.new_process("P1-100")
             s.login()
             s.run(8)
-            self.assertIn("a heartbeat every 15 s", s.chat())
+            self.assertIn("a heartbeat every 30 s", s.chat())
             s.comp_running = False
-            s.run(35)
+            s.run(65)
             self.assertNotIn("offline", s.chat())
-            s.run(15)
-            self.assertIn("no packet from the companion for 45 s: offline", s.chat())
+            s.run(30)
+            self.assertIn("no packet from the companion for 90 s: offline", s.chat())
         finally:
             s.close()
 
@@ -678,7 +678,8 @@ class ProtocolV08(unittest.TestCase):
         try:
             for i in range(10):
                 s.slash(f"send wrap {i}")
-            s.run(12)
+                s.run(0.4)                                           # up before the next: no batch
+            s.run(15)
             sess = comp.sessions[comp.current]
             self.assertEqual([m[1] for m in sess.messages][-10:], [65530, 65531, 65532, 65533, 65534, 65535, 1, 2, 3, 4])
             self.assertEqual(sess.ack, 4)
@@ -908,7 +909,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual([pages[t[b"id"]][b"shown"] for t in tabs], [False, False, True])
             self.assertRegex(panel[b"st1"][b"text"].decode(), r"^Link: \|cff6fcf97online\|r")   # the state in its colour
             self.assertRegex(panel[b"st2"][b"text"].decode(), r"^Mailbox slots left: \d+ \(about [\d.]+ h when idle\)$")
-            self.assertRegex(panel[b"st3"][b"text"].decode(), r"^Waiting \d+ \xb7 acknowledged \d+ \xb7 heartbeat 15 s$")
+            self.assertRegex(panel[b"st3"][b"text"].decode(), r"^Waiting \d+ \xb7 acknowledged \d+ \xb7 heartbeat 30 s$")
             tabs[1].Click(tabs[1])                                    # 设置
             self.assertTrue(pages[b"settings"][b"shown"])
             zh = [b for b in panel[b"langs"].values() if b[b"setting"] == b"zhCN"][0]

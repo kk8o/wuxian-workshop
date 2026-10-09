@@ -5,8 +5,11 @@
 -- ms, <n> values)[: "<value>", ...][ (value <i> cut at <kept> of <size> bytes[, <m> more not sent])][ (<note>)...]" or
 -- "<job> error <chunk>: <error>\n<stack>". Each returned value is framed by Quote, so that no ", " or note in it, nor a
 -- colour code the link strips, blurs where it ends; at most LIMIT bytes of them go (src/wuxianworkshop/daemon/api.py,
--- parse_run, reads it). Jobs that ran are kept in the saved variables, so parts sent again never run one twice. The
--- setting hotLoad (/wb set hotLoad off) refuses them.
+-- parse_run, reads it). Jobs that ran are kept in the saved variables (the last DONE_KEPT), so parts sent again never run
+-- one twice; a job older than STALE by the PC's clock (the id is the companion's clock in ms, mod 1e10) is not run at all:
+-- its packet waited in the mailbox (a game restart, a slot read again), and nobody waits for it any more. A secret value
+-- or one whose tostring raises comes back as "<secret>" / "<type: ...>", and a result that cannot be put into words still
+-- goes back as an error: the agent always gets an answer. The setting hotLoad (/wb set hotLoad off) refuses them.
 -- Lifecycle: a first part flagged "reset" calls WoWBridgeNS[addon].OnUnload() before the code runs (pcall) and
 -- OnReload(<what OnUnload returned>) after it; "unload" and "reload" do one half each, so that a whole-addon load calls
 -- OnUnload before its first file and OnReload after its last.
@@ -20,6 +23,20 @@ WoWBridgeNS = WoWBridgeNS or {}       -- addon name -> its namespace; an addon r
 WoWBridgeNS[addonName] = ns
 local jobs = {}
 local unloaded = {}                   -- addon -> { value = what OnUnload returned }, until the reload half runs
+local DONE_KEPT = 500                 -- job ids kept as run
+local STALE = 900000                  -- ms: a job older than this is not run
+
+local function Secret(v)
+	return issecretvalue ~= nil and issecretvalue(v)
+end
+
+-- tostring that never raises: a secret value, or a __tostring that errors, says what it is
+local function Text(v)
+	if Secret(v) then return "<secret>" end
+	local ok, s = pcall(tostring, v)
+	if ok and type(s) == "string" then return s end
+	return ("<%s: tostring failed>"):format(type(v))
+end
 
 -- a readable dump of a value: tables down to `depth` levels (50 entries each, keys sorted), widgets as <Type name>,
 -- at most `limit` bytes. RUN results use it; agent code can call WoWBridge.Dump(value, depth, limit)
@@ -32,19 +49,22 @@ local function Dump(value, depth, limit)
 		return size < limit
 	end
 	local function keyText(k)
+		if Secret(k) then return "[<secret>]" end
 		if type(k) == "string" and k:match("^[%a_][%w_]*$") then return k end
-		return "[" .. (type(k) == "string" and ("%q"):format(k) or tostring(k)) .. "]"
+		return "[" .. (type(k) == "string" and ("%q"):format(k) or Text(k)) .. "]"
 	end
 	local function before(a, b)                    -- numbers, then strings, then the rest
+		if Secret(a) or Secret(b) then return Secret(b) and not Secret(a) end
 		local ta, tb = type(a), type(b)
 		if ta ~= tb then return ta == "number" or (ta == "string" and tb ~= "number") end
 		if ta == "number" or ta == "string" then return a < b end
-		return tostring(a) < tostring(b)
+		return Text(a) < Text(b)
 	end
 	local function walk(v, level, indent)
+		if Secret(v) then return put("<secret>") end
 		local t = type(v)
 		if t == "string" then return put(("%q"):format(v)) end
-		if t ~= "table" then return put(tostring(v)) end
+		if t ~= "table" then return put(Text(v)) end
 		if type(rawget(v, 0)) == "userdata" and type(v.GetObjectType) == "function" then
 			local okType, kind = pcall(v.GetObjectType, v)
 			local okName, name = pcall(v.GetName, v)
@@ -103,7 +123,59 @@ end
 local function Traceback(e)
 	local stack = debugstack and debugstack(2) or ""
 	stack = stack:match("^(.-)%[C%]: in function 'xpcall'") or stack   -- the job's own frames, not the loader's
-	return tostring(e) .. "\n" .. stack:gsub("%[tail call%]: %?\n", ""):sub(1, 1500)
+	return Text(e) .. "\n" .. stack:gsub("%[tail call%]: %?\n", ""):sub(1, 1500)
+end
+
+-- the values of a RUN result: (as the debug window shows them, framed for the result, the note on a cut, how many framed)
+local function Values(res)
+	local out, framed, room, cut = {}, {}, LIMIT, ""
+	for k = 2, res.n do
+		local x = res[k]
+		local v = (not Secret(x) and type(x) == "table") and Dump(x) or Text(x)
+		if #v > room then                         -- this one cut, the ones after it left out
+			local size = #v
+			v = Fit(v, room)
+			cut = (" (value %d cut at %d of %d bytes%s)"):format(k - 1, #v, size,
+				k < res.n and (", %d more not sent"):format(res.n - k) or "")
+		end
+		room = room - #v
+		out[#out + 1], framed[#framed + 1] = v, Quote(v)
+		if cut ~= "" then break end
+	end
+	return table.concat(out, ", "), table.concat(framed, ", "), cut, #framed
+end
+
+-- the job ids that ran, kept in the saved variables (the last DONE_KEPT), looked up through a set
+local done
+
+local function Done(id)
+	if not done then
+		done = {}
+		for _, d in ipairs(ns.db.codeDone or {}) do done[d] = true end
+	end
+	return done[id]
+end
+
+local function MarkDone(id)
+	Done(id)
+	local list = ns.db.codeDone or {}
+	ns.db.codeDone = list
+	list[#list + 1] = id
+	done[id] = true
+	while #list > DONE_KEPT do done[table.remove(list, 1)] = nil end
+end
+
+-- a job older than STALE by this PC's clock (its id is the companion's clock in ms, mod 1e10); one a little in the
+-- future is a clock set back, not an old job
+local function Stale(id)
+	local age = (time() * 1000 - tonumber(id)) % 1e10
+	return age > STALE and age < 1e10 - 3600000
+end
+
+-- the newest job that ran (the HELLO says it: after a /reload the companion knows which of its jobs ran before it)
+function A.LastJob()
+	local list = ns.db and ns.db.codeDone
+	return list and list[#list] or "0"
 end
 
 local function Result(text)
@@ -122,7 +194,7 @@ local function Unload(addon, space)
 	if not (space and type(space.OnUnload) == "function") then return "" end
 	local ok, value = pcall(space.OnUnload)
 	unloaded[addon] = { value = ok and value or nil }
-	return ok and " (OnUnload ok)" or (" (OnUnload error: %s)"):format(tostring(value))
+	return ok and " (OnUnload ok)" or (" (OnUnload error: %s)"):format(Text(value))
 end
 
 local function Reload(addon, space)
@@ -130,15 +202,12 @@ local function Reload(addon, space)
 	unloaded[addon] = nil
 	if not (space and type(space.OnReload) == "function") then return "" end
 	local ok, err = pcall(space.OnReload, kept and kept.value)
-	return ok and " (OnReload ok)" or (" (OnReload error: %s)"):format(tostring(err))
+	return ok and " (OnReload ok)" or (" (OnReload error: %s)"):format(Text(err))
 end
 
 local function RunJob(id, job)
 	jobs[id] = nil
-	local db = ns.db
-	db.codeDone = db.codeDone or {}
-	table.insert(db.codeDone, id)
-	if #db.codeDone > 50 then table.remove(db.codeDone, 1) end
+	MarkDone(id)
 	local code, short = table.concat(job.parts), job.name:gsub("^@Interface[/\\]AddOns[/\\]", "")
 	if ns.Setting("hotLoad") == false then
 		Result(("%s error %s: hot loading is off (/wb set hotLoad on)"):format(id, job.name))
@@ -167,24 +236,17 @@ local function RunJob(id, job)
 		failure = tostring(err)
 		Result(("%s error %s: %s"):format(id, job.name, failure))
 	elseif res[1] then
-		local out, framed, room, cut = {}, {}, LIMIT, ""
-		for k = 2, res.n do
-			local v = type(res[k]) == "table" and Dump(res[k]) or tostring(res[k])
-			if #v > room then                         -- this one cut, the ones after it left out
-				local size = #v
-				v = Fit(v, room)
-				cut = (" (value %d cut at %d of %d bytes%s)"):format(k - 1, #v, size,
-					k < res.n and (", %d more not sent"):format(res.n - k) or "")
-			end
-			room = room - #v
-			out[#out + 1], framed[#framed + 1] = v, Quote(v)
-			if cut ~= "" then break end
+		local fine, shown, framed, cut, n = pcall(Values, res)
+		if fine then
+			values = shown
+			Result(("%s ok %s (%d B, %.1f ms, %d value%s)%s%s%s"):format(id, job.name, #code, ms, res.n - 1,
+				res.n == 2 and "" or "s", n > 0 and (": " .. framed) or "", cut, note))
+		else
+			failure = "it ran, but its values could not be put into words: " .. Text(shown)
+			Result(("%s error %s: %s%s"):format(id, job.name, failure, note))
 		end
-		values = table.concat(out, ", ")
-		Result(("%s ok %s (%d B, %.1f ms, %d value%s)%s%s%s"):format(id, job.name, #code, ms, res.n - 1,
-			res.n == 2 and "" or "s", #framed > 0 and (": " .. table.concat(framed, ", ")) or "", cut, note))
 	else
-		failure = tostring(res[2])
+		failure = Text(res[2])
 		Result(("%s error %s: %s%s"):format(id, job.name, failure, note))
 	end
 	local ok = failure == nil
@@ -203,10 +265,7 @@ function A.Code(data)
 	local head, body = data:match("^([^\n]*)\n(.*)$")
 	local id, i, n, rest = (head or ""):match("^(%d+) (%d+)/(%d+) ?(.*)$")
 	i, n = tonumber(i), tonumber(n)
-	if not id or i < 1 or i > n then return end
-	for _, done in ipairs(ns.db.codeDone or {}) do
-		if done == id then return end
-	end
+	if not id or i < 1 or i > n or Done(id) or Stale(id) then return end
 	local job = jobs[id]
 	if not job then
 		job = { n = n, parts = {}, got = 0 }

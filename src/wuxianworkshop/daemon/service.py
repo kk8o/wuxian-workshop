@@ -26,12 +26,13 @@ from pathlib import Path
 from .. import __version__, agents, apidocs, content, i18n, scaffold
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
-from ..agent.snap import SnapError, snap_image
+from ..agent.snap import SnapError, capture, save_snap
 from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
 from ..paths import settings_file
 from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
+from .journal import REQUEST_ID
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
@@ -90,6 +91,7 @@ class Service:
         self.history_big = set()             # addons too big to keep: said once
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
+            self.worker.on_session = self.session_started
 
     # --- the worker thread -----------------------------------------------------------------------------------------
 
@@ -345,8 +347,9 @@ class Service:
             link.update(state="online" if comp.link_up else "offline", session=comp.current, slot_next=comp.slot,
                         slots_left=(MB.POOL - comp.slot + 1) if comp.slot is not None else None, hb=s.hb if s else None,
                         ping_p50=rtts[len(rtts) // 2] if rtts else None, last_frame=comp.last_frame,
-                        addon_version=s.version_text if s else None)
-            watch = sorted(str(p) for p in comp.watched)
+                        addon_version=s.version_text if s else None,
+                        slot_rate=round(comp.slot_rate(time.time(), s) * 60, 2) if comp.slot is not None else None)
+            watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
             reload_pending = comp.reload_sent is not None
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
@@ -495,8 +498,9 @@ class Service:
                 result["snap"] = await self.snap([x, y, w, h], None)
         return result
 
-    # an addon's API (WoWBridge API.lua): the events it emits, the functions it exposes
-    ADDON_NAME = re.compile(r"^[A-Za-z0-9_!.\-]{1,64}$")
+    # an addon's API (WoWBridge API.lua): the events it emits, the functions it exposes. A name is passed to the game
+    # quoted (probes.lua_str), so any text without control characters will do
+    ADDON_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
     CALL_NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 
     @staticmethod
@@ -511,11 +515,14 @@ class Service:
         return out
 
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
-        """the events addons sent with WoWBridge's Emit (journal entries of kind EVENT) from id `since` on, of that addon
-        and topic (a name or a glob: "MyAddon", "scan.*"), at most `limit`; with `wait` seconds and none there yet, it
-        waits for the first one. next = the id to ask from next time"""
-        if not isinstance(since, int) or isinstance(since, bool) or since < 0:
-            raise ApiError(400, "bad_request", "since: an entry id, 0 or more (the `next` of the last call)")
+        """the events addons sent with WoWBridge's Emit (journal entries of kind EVENT) from id `since` on (-1: only
+        the ones still to come), of that addon and topic (a name or a glob: "MyAddon", "scan.*"), at most `limit`;
+        with `wait` seconds and none there yet, it waits for the first one. next = the id to ask from next time"""
+        if not isinstance(since, int) or isinstance(since, bool) or since < -1:
+            raise ApiError(400, "bad_request", "since: an entry id, 0 or more (the `next` of the last call), or -1 for "
+                                               "the events still to come")
+        if since == -1:
+            since = self.journal.next_id
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
             raise ApiError(400, "bad_request", "limit: 1..1000")
         if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 <= wait <= 300:
@@ -529,7 +536,7 @@ class Service:
                     and (not topic or fnmatch.fnmatchcase(e.get("topic") or "", topic)))
 
         def pick():
-            entries, next_id, truncated = self.journal.since(since, self.journal.entries.maxlen, ["EVENT"])
+            entries, next_id, truncated = self.journal.since(since, self.journal.events.maxlen, ["EVENT"])
             hits = [e for e in entries if matches(e)]
             if len(hits) > limit:
                 hits, next_id = hits[:limit], hits[limit]["id"]
@@ -572,7 +579,7 @@ class Service:
         self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
         return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
 
-    REQUEST_ID = re.compile(r"^\d{1,5}\.\d{1,9}$")
+    REQUEST_ID = REQUEST_ID
 
     async def respond(self, request, data=None, timeout_ms=10000):
         """answer an addon's request (WoWBridge's Request, an event with `request` in `events`): data (JSON) goes to
@@ -591,9 +598,11 @@ class Service:
                 raise
             self.journal.add("INFO", f"respond {request}: failed: {e.message.splitlines()[0][:200]}")
             raise ApiError(400, "respond_failed", e.message) from None
-        addon, topic = (answer.get("addon"), answer.get("topic")) if isinstance(answer, dict) else (None, None)
-        self.journal.add("INFO", f"respond {request} ({addon} {topic}): delivered", addon=addon)
-        return dict(request=request, ok=True, addon=addon, topic=topic)
+        answer = answer if isinstance(answer, dict) else {}
+        addon, topic, failed = answer.get("addon"), answer.get("topic"), answer.get("callback_error")
+        self.journal.add("INFO", f"respond {request} ({addon} {topic}): delivered"
+                                 + (f", its callback raised: {str(failed)[:200]}" if failed else ""), addon=addon)
+        return dict(request=request, ok=True, addon=addon, topic=topic, **({"callback_error": failed} if failed else {}))
 
     async def addon_api(self, addon=None):
         """what an addon exposed with WoWBridge's Expose (name and doc, in the order it did) and the topics it emitted
@@ -608,7 +617,7 @@ class Service:
             return dict(addons=[tidy(a) for a in data["addons"] if isinstance(a, dict)])
         return tidy(data) if isinstance(data, dict) else dict(addon=addon, exposed=[], topics={})
 
-    TRY_KINDS = ("ERR", "WARN", "BLOCKED", "OUT", "RELOAD", "EVENT")
+    TRY_KINDS = ("ERR", "WARN", "BLOCKED", "OUT", "RELOAD", "EVENT", "SLOTS")
 
     async def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None,
                    timeout_ms=10000):
@@ -647,11 +656,13 @@ class Service:
                 data = await self.probe(probes.trace_stop(), 60000)       # also the end marker
             traced = probes.trace_result(data, events)
             traced.update(registered=begun.get("tracing"), unknown=begun.get("unknown") or [])
+            complete = await self.caught_up()
         else:
             action = await self.run(lua, timeout_ms, addon)
             await asyncio.sleep(seconds)
             try:
                 await self.run("return true", 15000, chunk="=probe")       # the end marker
+                complete = await self.caught_up()
             except ApiError:
                 complete = False
         entries, _, _ = self.journal.since(first, 1000, list(self.TRY_KINDS))
@@ -724,7 +735,7 @@ class Service:
             parts.append(f"{len(out['emitted'])} event{'s' if len(out['emitted']) > 1 else ''} emitted ({', '.join(topics)[:120]})")
         if not later and not out["blocked"]:
             parts.insert(0, "no errors")
-        tail = "" if out["complete"] else " (the end marker got no answer: later output may be missing, see logs)"
+        tail = "" if out["complete"] else " (not all of the game's output came in time: some may be missing, see logs)"
         return f"{head}; then in {out['seconds']:g} s: " + ", ".join(parts) + tail
 
     async def agents(self, action=None, host=None):
@@ -865,13 +876,18 @@ class Service:
             raise ApiError(400, "bad_request", "code: a non-empty string of Lua")
         if addon is not None and not isinstance(addon, str):
             raise ApiError(400, "bad_request", "addon: the name of the addon whose namespace the code gets, or null")
+        try:
+            data = code.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ApiError(400, "bad_request", "code: not valid text (a lone surrogate)") from None
         timeout = self.timeout_seconds(timeout_ms, 10000)
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
 
         def start():
             comp = self.worker.companion()
-            job = comp.code(code.encode("utf-8"), chunk, addon or "-")
+            self.ready(comp, "run")
+            job = comp.code(data, chunk, addon or "-")
             self.pending[job] = (loop, fut)       # on the worker thread, before any RUN result can come
             return job
 
@@ -879,10 +895,74 @@ class Service:
         try:
             res = await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            self.pending.pop(job, None)
-            raise ApiError(504, "timeout", f"no result for job {job} within {int(timeout * 1000)} ms: is the game "
-                                           f"running with WoWBridge online?", job=job) from None
+            raise ApiError(504, "timeout", f"no result for job {job} within {int(timeout * 1000)} ms: "
+                                           f"{await self.give_up(job)}", job=job) from None
+        finally:
+            self.pending.pop(job, None)           # also when the caller went away
         return self.run_result(res)
+
+    def ready(self, comp, what):
+        """(worker thread) the link takes `what` now, or an ApiError says why not: the mailbox of this game process is
+        full, or no frames come (the game is not running, is minimized, at the character screen, on a loading screen)"""
+        if getattr(comp, "full", False):
+            raise ApiError(409, "mailbox_full", f"{what}: the mailbox of this game process is full (all {MB.POOL} slots "
+                                                f"used), nothing reaches the game until it is fully restarted (a /reload "
+                                                f"does not help)")
+        if not getattr(comp, "link_up", True):
+            raise ApiError(409, "link_down", f"{what}: no frames come from the game (not running, minimized, at the "
+                                             f"character screen or on a loading screen); try again once `status` says "
+                                             f"the link is online")
+
+    async def give_up(self, job):
+        """a job nobody waits for any more: its parts still in the outbox are taken out; what that means, in words"""
+        try:
+            gone, sent = await self.call(lambda: self.worker.companion().withdraw(job))
+        except ApiError:
+            return "is the game running with WoWBridge online?"
+        if sent:
+            return "it went to the game and may still run there (see logs)"
+        return "it never reached the game and will not run" + (" (taken back)" if gone else "") + \
+            "; is the game running with WoWBridge online?"
+
+    def session_started(self, sid, last_job):
+        """(worker thread) a new UI session's HELLO: the jobs up to the newest one it says ran (last_job) ran in the
+        session before, whose results went with it; whoever waits for one hears so now rather than at its timeout"""
+        if not last_job:
+            return
+        for job in [j for j in list(self.pending) if j <= last_job]:      # a copy: the asyncio side pops too
+            waiter = self.pending.pop(job, None)
+            if waiter is None:
+                continue
+            loop, fut = waiter
+            res = dict(ok=False, job=job, chunk=None, stack="",
+                       error=f"it ran in the game, but the UI reloaded (now session {sid}) before its result came back")
+            try:
+                loop.call_soon_threadsafe(_resolve, fut, res)
+            except RuntimeError:
+                pass
+
+    async def caught_up(self, wait=6.0):
+        """after a try's end marker came back: whether every message the game sent before it is in, waiting up to `wait`
+        seconds (the marker, a RUN result, goes up before the game's other output; a lost frame comes again later)"""
+        def mark():
+            comp = self.worker.comp
+            return comp.mark() if comp is not None and hasattr(comp, "mark") else None
+
+        def covered(sid, msg):
+            comp = self.worker.comp
+            return comp is None or comp.covered(sid, msg)
+
+        if self.worker is None:
+            return True
+        at = await self.call(mark)
+        if at is None:
+            return True
+        deadline = time.time() + wait
+        while not await self.call(covered, *at):
+            if time.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+        return True
 
     async def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):
         """a file, or an addon's Lua files in .toc order, for the addon to run; waits for every job's result. check: the
@@ -915,6 +995,9 @@ class Service:
                 raise ApiError(400, "no_toc", f"load {target}: no .toc in that folder")
             files, addon = toc_files(toc)[0], path.name
         names = [str(f) for f in files]
+        # about 3.7 KB of Lua go into the game a second: a big addon gets the time it takes, whatever timeout_ms says
+        size = sum(f.stat().st_size for f in files if f.is_file())
+        timeout = min(max(timeout, 5 + size / 2500), MAX_TIMEOUT_MS / 1000)
         found = None
         if check:
             found = await asyncio.to_thread(self.precheck, path, files)
@@ -929,6 +1012,7 @@ class Service:
 
         def start():
             comp = w.companion()
+            self.ready(comp, f"load {target}")
             jobs = call_load(comp, target, reset)
             if jobs is None:
                 return None
@@ -947,17 +1031,22 @@ class Service:
             raise self.tell_error(tells, f"load {target}")
         deadline = loop.time() + timeout
         results, done = [], 0
-        for i, (job, fut) in enumerate(zip(jobs, futs)):
-            name = names[i] if i < len(names) else None
-            try:
-                res = await asyncio.wait_for(fut, max(0.0, deadline - loop.time()))
-            except asyncio.TimeoutError:
+        try:
+            for i, (job, fut) in enumerate(zip(jobs, futs)):
+                name = names[i] if i < len(names) else None
+                try:
+                    res = await asyncio.wait_for(fut, max(0.0, deadline - loop.time()))
+                except asyncio.TimeoutError:
+                    results.append(dict(file=name, job=job, ok=False, error=f"timeout: {await self.give_up(job)}",
+                                        stack=None, ms=None))
+                    continue
+                done += 1
+                results.append(dict(file=name or chunk_file(res.get("chunk") or ""), job=job, ok=res["ok"],
+                                    error=res.get("error"), stack=res.get("stack"), ms=res.get("ms"),
+                                    values=res.get("values")))
+        finally:
+            for job in jobs:                   # also when the caller went away
                 self.pending.pop(job, None)
-                results.append(dict(file=name, job=job, ok=False, error="timeout", stack=None, ms=None))
-                continue
-            done += 1
-            results.append(dict(file=name or chunk_file(res.get("chunk") or ""), job=job, ok=res["ok"],
-                                error=res.get("error"), stack=res.get("stack"), ms=res.get("ms"), values=res.get("values")))
         body = dict(files=results, addon=addon, ok=all(r["ok"] for r in results), reset=reset, kept=kept, check=found)
         if results and not done:
             raise ApiError(504, "timeout", f"no result for {len(results)} file(s) within {int(timeout * 1000)} ms: is the "
@@ -998,20 +1087,24 @@ class Service:
         if max_width is not None and not (isinstance(max_width, int) and not isinstance(max_width, bool) and 16 <= max_width <= 8192):
             raise ApiError(400, "bad_request", "max_width: 16..8192 pixels, or null to keep the size")
 
-        def do():
+        def grab():                       # on the worker thread: the window's picture, nothing more (it reads the link too)
             w = self.worker
             if w.win is None:
                 raise ApiError(409, "no_game", "no game window: nothing to snap")
             if w.win.minimized:
                 raise ApiError(409, "minimized", "the game window is minimized: nothing is drawn")
             try:
-                path, width, height = snap_image(w.win, w.wgc, region, max_width)
+                return capture(w.win, w.wgc), w.wgc is not None, f"{w.win.w}x{w.win.h} client area"
             except SnapError as e:
                 raise ApiError(409, "snap_failed", str(e)) from None
-            self.journal.add("SNAP", f"{path} {width}x{height}" + ("" if w.wgc is not None else " (GDI: anything over the game is in it)"))
-            return dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}")
 
-        return await self.call(do)
+        img, wgc, client = await self.call(grab)
+        try:
+            path, width, height = await asyncio.to_thread(save_snap, img, region, max_width, client)
+        except SnapError as e:
+            raise ApiError(409, "snap_failed", str(e)) from None
+        self.journal.add("SNAP", f"{path} {width}x{height}" + ("" if wgc else " (GDI: anything over the game is in it)"))
+        return dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}")
 
     async def snap_bytes(self, result):
         """the PNG of a snap() result (the MCP tool returns it as an image block)"""
@@ -1025,6 +1118,7 @@ class Service:
 
         def do():
             comp = self.worker.companion()
+            self.ready(comp, "reload")
             n = len(comp.outbox)
             comp.command("reload")                 # a nonce is appended to the command; the addon asks the user once
             nonce = next((int(d[7:]) for k, d in comp.outbox[n:] if k == MB.COMMAND and d.startswith(b"reload ")), None)
@@ -1038,8 +1132,13 @@ class Service:
         if not isinstance(text, str) or not text:
             raise ApiError(400, "bad_request", "text: what to show in the game's chat")
 
+        if len(text) > 4000:
+            raise ApiError(400, "bad_request", "text: at most 4,000 characters for the chat")
+
         def do():
-            self.worker.companion().say(text)
+            comp = self.worker.companion()
+            self.ready(comp, "say")
+            comp.say(text)
             self.journal.add("INFO", f"say: {text}")
             return dict(queued=True)
 

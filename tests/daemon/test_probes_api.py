@@ -102,11 +102,11 @@ class Probes(unittest.IsolatedAsyncioTestCase):
 
         async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
             self.sent.append(code)
-            m = re.match(r"local KEY, I = \[\[(\w+)\]\], (\d+)\n", code)
+            m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
             if m:
                 keys.append(m[1])
             else:
-                keys.append(re.search(r"local KEY, PIECE, MOST = \[\[(\w+)\]\]", code)[1])
+                keys.append(re.search(r'local KEY, PIECE, MOST = "(\w+)"', code)[1])
             i = int(m[2]) if m else 1
             flight["now"] += 1
             flight["most"] = max(flight["most"], flight["now"])

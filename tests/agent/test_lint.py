@@ -207,7 +207,7 @@ class Addons(unittest.TestCase):
         r = lint.check(self.folder)
         self.assertEqual(lint.live_names(r), ["C_Spell.GetSpelInfo", "FromAnotherAddon", "NobodyHasThis", "UnitHelth"])
         chunk = lint.live_chunk(lint.live_names(r), probes.LUA_JSON, probes.lua_str)
-        self.assertIn("[[C_Spell.GetSpelInfo]]", chunk)
+        self.assertIn('"C_Spell.GetSpelInfo"', chunk)
         self.assertIsNone(lint.compile_lua(chunk.encode(), "=chunk")[1])          # it compiles under Lua 5.1
         lint.apply_live(r, {"FromAnotherAddon": "table", "NobodyHasThis": "nil", "UnitHelth": "function",
                             "C_Spell.GetSpelInfo": "nil"})

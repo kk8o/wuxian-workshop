@@ -188,12 +188,14 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         async def endpoint(request):
             try:
                 result = await fn(request)
+                # made here: a value JSON cannot carry (NaN, a lone surrogate) is an error said like any other
+                return result if isinstance(result, Response) else JSONResponse(result)
             except ApiError as e:
                 return JSONResponse(e.body(), status_code=e.status)
             except Exception as e:                   # a bug: say so instead of a bare 500
                 service.journal.add("INFO", f"daemon error on {request.method} {request.url.path}: {e!r}")
-                return JSONResponse({"error": {"code": "internal", "message": f"{type(e).__name__}: {e}"}}, status_code=500)
-            return result if isinstance(result, Response) else JSONResponse(result)
+                return JSONResponse({"error": {"code": "internal", "message": f"{type(e).__name__}: {e!r}"[:2000]}},
+                                    status_code=500)
         return endpoint
 
     async def body_of(request):

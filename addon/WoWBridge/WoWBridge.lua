@@ -245,6 +245,9 @@ local function Init()
 	Frame.cfg.parent, Frame.cfg.snap, Frame.cfg.x, Frame.cfg.y = cfg.parent, cfg.snap, cfg.frameX or 0, cfg.frameY or 0
 	ns.SetLanguage(cfg.lang)
 	msgId = db.lastMsg or 0
+	-- never the last session's id: the companion tells a /reload by a new one (and keeps what it knows per id)
+	if session == db.lastSession then session = (session + 1 + math.random(0, 65533)) % 65536 end
+	db.lastSession = session
 	ns.session = session
 end
 

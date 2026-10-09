@@ -112,7 +112,7 @@ def build_parser():
     p = sub.add_parser("events", help="the events addons sent with WoWBridge's Emit")
     p.add_argument("--addon", help="only this addon's (a name or a glob)")
     p.add_argument("--topic", help="only these topics (a name or a glob: scan.*)")
-    p.add_argument("--since", type=int, default=0, help="from this entry id on (the next of the last call)")
+    p.add_argument("--since", type=int, default=0, help="from this entry id on (the next of the last call; -1: only new ones)")
     p.add_argument("--follow", "-f", action="store_true", help="keep printing new ones (Ctrl+C ends it)")
     p.add_argument("--json", action="store_true", help="print JSON")
     p = sub.add_parser("call", help="call a function an addon exposed with WoWBridge's Expose")
@@ -123,6 +123,7 @@ def build_parser():
     p = sub.add_parser("respond", help="answer an addon's question (WoWBridge's Request: an event with a request id)")
     p.add_argument("request", help="the request id the event carries (5974.3)")
     p.add_argument("data", nargs="?", help="""the answer as JSON ('{"text": "..."}')""")
+    p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
     p = sub.add_parser("addon-api", help="what addons expose (functions to call) and emit (event topics)")
     p.add_argument("addon", nargs="?", help="the addon (nothing: every addon with a WoWBridge handle)")
     p.add_argument("--json", action="store_true", help="print JSON")
@@ -414,8 +415,9 @@ def cmd_respond(client, args):
     except ValueError as e:
         say_error(f"data: not JSON ({e})")
         return 2
-    res = client.respond(args.request, data)
-    print(f"delivered to {res.get('addon')} ({res.get('topic')})")
+    res = client.respond(args.request, data, args.timeout_ms)
+    print(f"delivered to {res.get('addon')} ({res.get('topic')})"
+          + (f"; its callback raised: {res['callback_error']}" if res.get("callback_error") else ""))
     return 0
 
 

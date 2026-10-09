@@ -39,7 +39,8 @@ local clock = py.t0
 local timers, frames = {}, {}
 function GetTime() return clock end
 function debugprofilestop() return os.clock() * 1000 end
-time = os.time
+-- the PC's clock, which the companion's job ids come from: the mock's own (a test's companion runs on it too)
+function time(t) if t then return os.time(t) end return math.floor(clock) end
 date = os.date
 C_Timer = {}
 function C_Timer.After(d, fn) timers[#timers + 1] = { t = clock + d, fn = fn } end

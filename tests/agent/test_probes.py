@@ -270,8 +270,18 @@ class Probes(unittest.TestCase):
             P.inspect(None)
 
     def test_lua_strings_survive_any_text(self):
-        for text in ("plain", "a]]b", "x]=]y]==]", "ends with ]", "]", "\nleading newline", "引号 \" 和 ' 都行"):
+        """quoted with escapes: what long brackets got wrong ("[[" is an error in Lua 5.1, CR becomes LF) comes through"""
+        for text in ("plain", "a]]b", "x]=]y]==]", "ends with ]", "]", "\nleading newline", "引号 \" 和 ' 都行",
+                     "a[[b", "[[", "x\r\ny\rz", "nul \x00 del \x7f bell \x07", "back\\slash \\n", "1\x0012", "\\"):
             self.assertEqual(self.lua.execute("return " + P.lua_str(text)), text)
+        with self.assertRaises(ValueError):
+            P.lua_str("lone \ud800 surrogate")
+        self.assertEqual(self.lua.execute("return (" + P.lua_value({"a[[": ["x\ry", 2 ** 53, -1.5, None, True]}) +
+                                          ')["a[["][2]'), 2 ** 53)
+        for bad in (2 ** 53 + 1, float("nan"), {"k": "\udfff"}, object()):
+            with self.assertRaises(ValueError) as cm:
+                P.lua_value(bad)
+            self.assertTrue(str(cm.exception).startswith("args:"), cm.exception)
 
     def test_a_slash_command_runs_its_handler(self):
         """try's slash: the handler of SLASH_<KEY><n>, case-insensitive, with the rest of the line and the edit box"""

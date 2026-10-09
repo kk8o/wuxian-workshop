@@ -1,8 +1,9 @@
 """The snap command: a PNG of the game's client area, or part of it, saved in the snaps folder (paths.snaps_dir).
 
-snap_image() reads the window (WGC when a source is given: the window may be covered; GDI otherwise: the screen, so
-anything over the game is in the picture) and save_snap() cuts, scales and writes it. take_snap() is the text form the
-command file uses ("snap [x y w h]" in, one line for the logs out).
+capture() reads the window (WGC when a source is given: the window may be covered; GDI otherwise: the screen, so
+anything over the game is in the picture) and save_snap() cuts, scales and writes it; snap_image() does both. The daemon
+captures on its screen-reading thread and saves elsewhere, so that the frames the link shows meanwhile are not missed.
+take_snap() is the text form the command file uses ("snap [x y w h]" in, one line for the logs out).
 """
 import time
 
@@ -32,8 +33,8 @@ def save_snap(img, region=None, max_width=None, client=None):
     return path, pic.width, pic.height
 
 
-def snap_image(win, wgc, region=None, max_width=None):
-    """a snap of the game window's client area (or the region [x, y, w, h] of it) -> (path, width, height)"""
+def capture(win, wgc):
+    """the game window's client area as an RGB array (the part that needs the window; save_snap does the rest)"""
     if getattr(win, "minimized", False):
         raise SnapError("the game window is minimized: nothing is drawn")
     try:
@@ -42,7 +43,12 @@ def snap_image(win, wgc, region=None, max_width=None):
         raise SnapError(str(e)) from None
     if img is None:
         raise SnapError("no new frame from the game window within 1 s")
-    return save_snap(img, region, max_width, client=f"{win.w}x{win.h} client area")
+    return img
+
+
+def snap_image(win, wgc, region=None, max_width=None):
+    """a snap of the game window's client area (or the region [x, y, w, h] of it) -> (path, width, height)"""
+    return save_snap(capture(win, wgc), region, max_width, client=f"{win.w}x{win.h} client area")
 
 
 def take_snap(spec, win, wgc):

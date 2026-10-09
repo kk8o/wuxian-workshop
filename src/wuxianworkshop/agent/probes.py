@@ -258,14 +258,20 @@ def slash_call(line):
     return f"local LINE = {lua_str(line.strip())}\n" + SLASH_BODY
 
 
+_LUA_ESCAPES = {i: f"\\{i:03d}" for i in [*range(32), 127]}
+_LUA_ESCAPES.update({ord('"'): '\\"', ord("\\"): "\\\\"})
+
+
 def lua_str(s):
-    """a Lua string literal for any text: long brackets with a level that does not occur in it"""
-    s, level = str(s), 0
-    while f"]{'=' * level}]" in s + "]":          # + "]": a closing bracket must not start at the text's last "]"
-        level += 1
-    eq = "=" * level
-    lead = "\n" if s[:1] in ("\n", "\r") else ""  # Lua drops one newline right after the opening bracket
-    return f"[{eq}[{lead}{s}]{eq}]"
+    """a Lua string literal for any text: in double quotes, the quote, the backslash and every control character
+    escaped (\\ddd), the rest as it is (UTF-8 goes through untouched). Long brackets were not enough: Lua 5.1 refuses a
+    "[[" inside them and turns a CR into a newline. ValueError for text that is not valid Unicode (a lone surrogate)"""
+    s = str(s)
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("not valid Unicode text (a lone surrogate)") from None
+    return '"' + s.translate(_LUA_ESCAPES) + '"'
 
 
 def safe_events():
@@ -352,25 +358,30 @@ API_GUARD = ("if not (WoWBridge and WoWBridge.Call and WoWBridge.Describe) then 
 
 
 def lua_value(v, depth=0):
-    """a Lua literal for a JSON value (the arguments of a call): objects and arrays as tables, strings in long
-    brackets, finite numbers, booleans, nil; ValueError for anything else"""
+    """a Lua literal for a JSON value (the arguments of a call): objects and arrays as tables, strings quoted (lua_str),
+    finite numbers (whole ones up to 2^53, past which a Lua number is not exact), booleans, nil; ValueError for anything
+    else"""
     if depth > 20:
         raise ValueError("args: nested deeper than 20 levels")
     if v is None or isinstance(v, bool):
         return {None: "nil", True: "true", False: "false"}[v]
     if isinstance(v, int):
+        if abs(v) > 2 ** 53:
+            raise ValueError("args: whole numbers up to 2^53 (a Lua number holds no more exactly)")
         return str(v)
     if isinstance(v, float):
         if v != v or v in (float("inf"), float("-inf")):
             raise ValueError("args: numbers are finite")
         return repr(v)
-    if isinstance(v, str):
-        return lua_str(v)
-    if isinstance(v, (list, tuple)):
-        return "{" + ", ".join(lua_value(x, depth + 1) for x in v) + "}"
-    if isinstance(v, dict):
-        # [ [[key]] ]: the spaces keep "[[[" from opening a long string
-        return "{" + ", ".join(f"[ {lua_str(str(k))} ] = {lua_value(x, depth + 1)}" for k, x in v.items()) + "}"
+    try:
+        if isinstance(v, str):
+            return lua_str(v)
+        if isinstance(v, (list, tuple)):
+            return "{" + ", ".join(lua_value(x, depth + 1) for x in v) + "}"
+        if isinstance(v, dict):
+            return "{" + ", ".join(f"[{lua_str(str(k))}] = {lua_value(x, depth + 1)}" for k, x in v.items()) + "}"
+    except ValueError as e:
+        raise ValueError(e.args[0] if str(e).startswith("args:") else f"args: {e}") from None
     raise ValueError(f"args: a {type(v).__name__} is not JSON")
 
 

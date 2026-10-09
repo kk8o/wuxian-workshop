@@ -20,7 +20,9 @@ from pathlib import Path
 from ..core import mailbox as MB
 from . import lint
 
-CODE_CHUNK = 3700               # Lua bytes per CODE record: one record and the small ones still fit a 4,090-byte packet
+CODE_CHUNK = 3700               # Lua bytes per CODE record for a short header: one record and the small ones (PARTS, a
+                                # ping, a WELCOME) still fit a 4,090-byte packet; a longer header takes its room from it
+CODE_ROOM = MB.RECORD_MAX - CODE_CHUNK - 64   # what a CODE record's header may take before the Lua gets less
 RESET_FLAGS = {True: " reset", "reset": " reset", "unload": " unload", "reload": " reload"}   # code()'s reset -> header
 FRAMES = re.compile(r"<(Frame|Button|CheckButton|EditBox|ScrollFrame|Slider|StatusBar|Texture|FontString)\b")
 
@@ -69,13 +71,27 @@ class AgentCommands:
         before the code and OnReload(<its result>) after it); "unload" or "reload" flags one half only. Returns the job
         id; the addon reports the result as a RUN message"""
         self.last_job = job = max(int(self.clock() * 1000) % 10 ** 10, self.last_job + 1)   # unique across restarts
-        parts = [data[i:i + CODE_CHUNK] for i in range(0, max(len(data), 1), CODE_CHUNK)]
         flag = RESET_FLAGS.get(reset, "")
-        for i, chunk in enumerate(parts, 1):
+        # the longest header any part gets (the first names the addon and the chunk), as if the parts ran to 99999
+        head_max = len(f"{job} 99999/99999 {addon} {name}{flag}\n".encode())
+        chunk = CODE_CHUNK - max(0, head_max - CODE_ROOM)
+        if chunk < 512:
+            raise ValueError(f"the chunk name is too long for a mailbox record: {name[:80]}...")
+        parts = [data[i:i + chunk] for i in range(0, max(len(data), 1), chunk)]
+        for i, piece in enumerate(parts, 1):
             head = f"{job} {i}/{len(parts)}" + (f" {addon} {name}{flag}" if i == 1 else "")
-            self.outbox.append((MB.CODE, head.encode() + b"\n" + chunk))
+            self.outbox.append((MB.CODE, head.encode() + b"\n" + piece))
         self.note(f"code {job}: {name} ({len(data)} B, {len(parts)} parts{flag.replace(' ', ', ') if flag else ''})")
         return job
+
+    def withdraw(self, job):
+        """the CODE parts of a job still in the outbox taken out (nobody waits for its result any more): (how many,
+        whether a part had gone out already, so that it may still run)"""
+        prefix = f"{job} ".encode()
+        mine = [r for r in self.outbox if r[0] == MB.CODE and r[1].startswith(prefix)]
+        self.outbox = [r for r in self.outbox if not (r[0] == MB.CODE and r[1].startswith(prefix))]
+        sent = any(k == MB.CODE and d.startswith(prefix) for recs in self.written.values() for k, d in recs)
+        return len(mine), sent
 
     def _resolve(self, spec):
         """a file or folder: absolute, or relative to the AddOns folder or the client folder; None if it is not there"""
@@ -168,7 +184,9 @@ class AgentCommands:
         self._tell("WATCH", f"stopped watching {len(gone)} files")
 
     def _check_watch(self, now):
-        if not self.watched or now - self.watch_checked < 0.5:
+        # not while the link is down (the game away, a loading screen): a save meanwhile is loaded once it is back,
+        # instead of a load queued for every save
+        if not self.watched or now - self.watch_checked < 0.5 or not self.link_up:
             return
         self.watch_checked = now
         for f, (mtime, addon) in list(self.watched.items()):
@@ -188,6 +206,9 @@ class AgentCommands:
                     except Exception as e:              # the load goes on without it
                         self.note(f"before load of {f.name}: {e}")
                 self._tell("WATCH", f"{f.name} was saved: loading it")
-                self._load_file(f, addon)
+                before = self.watch_jobs.get(f)
+                if before is not None:                  # the last save's load, not gone out yet: this one replaces it
+                    self.withdraw(before)
+                self.watch_jobs[f] = self._load_file(f, addon)
             else:
                 self.watch_pending[f] = m
