@@ -22,6 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
 from .. import __version__, apidocs
+from . import kit as kit_tools
 from ..daemon.api import ApiError
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -57,7 +58,9 @@ Each `load`, the start of a `watch` and every save a watch loads first keep a ve
 `restore` goes back); `checkpoint` an addon you did not make before you change it, so the player's original is kept.
 `api_search` / `api_get` / `api_manual` read this client's own API manual (built in, no game needed): look an API up
 there before using it, and `run` it in the game when in doubt. `new_addon` makes a new addon from a template (with an
-AGENTS.md on how to work on it)."""
+AGENTS.md on how to work on it). When the game runs WuxianKit (无限工坊's standard library), each of its capabilities is
+a tool too, wk_<extension>_<name> (wk_tune_cvar_set, wk_sense_character ...): a Say or Do one answers with a proposal
+the player confirms in the game (its end: `events`, addon WuxianKit, topic kit.proposal)."""
 
 
 class HttpBackend:
@@ -472,6 +475,7 @@ def build_server(backend, name="wuxian"):
             raise ToolError(f"not_found: no manual topic {topic!r}; api_manual() lists them")
         return found if isinstance(found, dict) else dict(topics=found, about=ix.about())
 
+    kit_tools.attach(mcp, backend)                       # WuxianKit's capabilities, when the game runs it
     return mcp
 
 

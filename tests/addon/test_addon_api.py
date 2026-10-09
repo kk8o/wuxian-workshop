@@ -369,9 +369,87 @@ class McpTools(unittest.TestCase):
         asyncio.run(mcp.call_tool("addon_api", {}))
         asyncio.run(mcp.call_tool("respond", {"request": "12.3", "data": {"text": "x"}}))
         self.assertFalse(tools["respond"].annotations.read_only_hint)
-        self.assertEqual(backend.calls, [("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
+        self.assertEqual(backend.calls, [("addon_api", ("WuxianKit",)),           # no WuxianKit there: no wk_ tools
+                                         ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                                          ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                                          ("respond", ("12.3", {"text": "x"}, 10000))])
+
+
+class KitTools(unittest.TestCase):
+    """WuxianKit's capabilities as tools of their own: typed from their declarations, a Say / Do one with the proposal
+    options, called through call_exposed; read again after CACHE seconds, the last list kept while the game is away"""
+
+    CAPS = [
+        {"id": "sense.character", "kind": "see", "title": "See the character", "doc": "the player's character", "args": {}},
+        {"id": "tune.cvar.set", "kind": "do", "title": "Change a setting", "doc": "change a setting",
+         "args": {"name": "string", "value": "string|number|boolean"}},
+        {"id": "chat.send", "kind": "say", "title": "Send a message", "doc": "say something",
+         "args": {"channel": "guild|party", "text": "string", "target": "string?"}},
+        {"id": "data.put", "kind": "keep", "title": "Keep a record", "doc": "keep", "args": {"key": "string", "value": "any"}},
+        {"id": "gate.propose", "kind": "say", "title": "Hand a proposal", "doc": "hand", "args": {"steps": "table"}},
+    ]
+
+    def backend(self, caps):
+        class Backend:
+            def __init__(self):
+                self.calls, self.away = [], False
+
+            def __getattr__(self, name):
+                async def method(*args):
+                    self.calls.append((name, args))
+                    if self.away:
+                        raise ApiError(409, "link_down", "no frames come from the game")
+                    if name == "addon_api":
+                        return {"exposed": [{"name": "kit.capabilities"}, {"name": "tune.cvar.set"}]}
+                    if name == "call_exposed" and args[1] == "kit.capabilities":
+                        return {"ok": True, "result": caps}
+                    return {"addon": args[0], "name": args[1], "ok": True, "result": {"id": 7, "state": "pending"}}
+                return method
+        return Backend()
+
+    def test_tools_from_the_capabilities(self):
+        from wuxianworkshop.mcp.server import build_server
+
+        backend = self.backend(self.CAPS)
+        mcp = build_server(backend)
+        tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+        self.assertIn("run", tools)
+        self.assertEqual(sorted(n for n in tools if n.startswith("wk_")),
+                         ["wk_chat_send", "wk_data_put", "wk_gate_propose", "wk_sense_character", "wk_tune_cvar_set"])
+        self.assertTrue(tools["wk_sense_character"].annotations.read_only_hint)
+        self.assertFalse(tools["wk_tune_cvar_set"].annotations.read_only_hint)
+        cvar = tools["wk_tune_cvar_set"].input_schema
+        self.assertEqual((cvar["properties"]["value"], cvar["required"], sorted(cvar["properties"])),
+                         ({"type": ["string", "number", "boolean"]}, ["name", "value"],
+                          ["_after", "_title", "_ttl", "name", "value"]))
+        send = tools["wk_chat_send"].input_schema
+        self.assertEqual((send["properties"]["channel"], send["required"]),
+                         ({"type": "string", "enum": ["guild", "party"]}, ["channel", "text"]))
+        self.assertEqual(tools["wk_data_put"].input_schema["properties"], {"key": {"type": "string"}, "value": {}})
+        self.assertEqual(tools["wk_gate_propose"].input_schema["properties"]["steps"], {"type": ["object", "array"]})
+        self.assertIn("the player confirms it in the game", tools["wk_tune_cvar_set"].description)
+        result = asyncio.run(mcp.call_tool("wk_tune_cvar_set", {"name": "x", "value": 1, "_title": "t"}))
+        self.assertEqual(result.structured_content["result"], {"id": 7, "state": "pending"})
+        self.assertEqual(backend.calls[-1], ("call_exposed", ("WuxianKit", "tune.cvar.set", {"name": "x", "value": 1, "_title": "t"}, 30000)))
+        n = len(backend.calls)
+        asyncio.run(mcp.list_tools())                                   # within CACHE seconds: not read again
+        self.assertEqual(len(backend.calls), n)
+        backend.away = True
+        tools_again = asyncio.run(mcp.list_tools())                     # still cached
+        self.assertEqual(len([t for t in tools_again if t.name.startswith("wk_")]), 5)
+        with self.assertRaises(Exception):
+            asyncio.run(mcp.call_tool("wk_nope", {}))                   # read again for it, the game away: none
+
+    def test_no_wuxiankit(self):
+        from wuxianworkshop.mcp.server import build_server
+
+        class Backend:
+            def __getattr__(self, name):
+                async def method(*args):
+                    return {"exposed": []} if name == "addon_api" else {"ok": True}
+                return method
+        tools = asyncio.run(build_server(Backend()).list_tools())
+        self.assertFalse([t for t in tools if t.name.startswith("wk_")])
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
