@@ -132,7 +132,7 @@ class StdioReconnect(unittest.TestCase):
         from wuxianworkshop.mcp.server import HttpBackend
         calls = []
 
-        def reconnect():
+        def reconnect(start=True):
             calls.append(1)
             return second
         return HttpBackend(first, reconnect=reconnect), calls
