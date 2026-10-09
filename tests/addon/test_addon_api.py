@@ -512,6 +512,24 @@ class KitTools(unittest.TestCase):
         with self.assertRaises(ToolError):
             asyncio.run(third.call("wk_tune_cvar_set", {"name": "x", "value": 1}))
 
+    def test_a_capability_that_proposes(self):
+        """one that runs at once and answers with a proposal of other steps (proposes, as tune.profile.apply) is no
+        Guide: it says Proposal, takes the proposal options and says how its proposal ends; a doc gets its full stop"""
+        from wuxianworkshop.mcp import kit
+
+        manifest = self.manifest()
+        manifest["extensions"][1]["capabilities"].append(
+            {"id": "tune.profile.apply", "kind": "point", "proposes": True, "title": "Apply profile",
+             "doc": "make a proposal of a profile's steps", "args": {"name": "string"}})
+        tools = {t.name: t for t in asyncio.run(kit.KitTools(self.backend(manifest), store=False).list())}
+        apply = tools["wk_tune_profile_apply"]
+        self.assertIn("Proposal: makes a proposal of other steps", apply.description)
+        self.assertIn("profile's steps. Answers with the proposal", apply.description)
+        self.assertEqual(set(apply.input_schema["properties"]), {"name", "_title", "_ttl", "_after"})
+        self.assertNotIn("Answers with", tools["wk_tune_cvar_get"].description)
+        self.assertIn("Change: a change in the game the player confirms. change a setting. Answers with",
+                      tools["wk_tune_cvar_set"].description)
+
     def test_before_the_spec_and_without_wuxiankit(self):
         from wuxianworkshop.mcp import kit
 

@@ -49,8 +49,21 @@ WRITES = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 TYPES = {"string": ["string"], "number": ["number"], "boolean": ["boolean"], "table": ["object", "array"], "any": None}
 KINDS = {"see": ("Read", "reads the game, at once"), "keep": ("Store", "keeps data on this computer, at once"),
          "point": ("Guide", "points at something for the player, changes nothing"),
-         "say": ("Send", "a proposal (a message) the player confirms"),
-         "do": ("Change", "a proposal (a change in the game) the player confirms")}
+         "say": ("Send", "a message the player confirms"),
+         "do": ("Change", "a change in the game the player confirms")}
+PROPOSES = ("Proposal", "makes a proposal of other steps at once; it changes nothing itself")   # a capability with proposes
+ANSWERS = (" Answers with the proposal {id, state, steps}: the player confirms it in the game (unless they pre-approved "
+           "its category); wk_wait with its id gives the outcome.")
+
+
+def kind_label(cap):
+    """(name, what it does) of a capability's kind; one that runs at once and answers with a proposal (proposes, as
+    tune.profile.apply) is no Guide"""
+    return PROPOSES if cap.get("proposes") else KINDS.get(cap.get("kind"), (cap.get("kind"), ""))
+
+
+def proposal_like(cap):
+    return cap.get("kind") in ("say", "do") or bool(cap.get("proposes"))
 OPTIONS = {
     "_title": {"type": "string", "description": "the proposal's title in the game"},
     "_ttl": {"type": "number", "description": "seconds it waits for the player (10-600, 300 when left out)"},
@@ -120,7 +133,7 @@ def schema(cap):
             props[name] = {"type": "string", "enum": parts}        # the strings it may be
         if not optional:
             required.append(name)
-    if cap.get("kind") in ("say", "do"):
+    if proposal_like(cap):
         props.update(OPTIONS)
     out = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
@@ -144,12 +157,14 @@ def source(ext, listed=None):
 
 
 def describe(cap, ext=None, listed=None):
-    kind, label = cap.get("kind"), KINDS.get(cap.get("kind"), (cap.get("kind"), ""))
+    label = kind_label(cap)
     where = f"{ext.get('title') or ext.get('id')} · " if ext else ""
-    text = f"{where}{cap.get('title') or cap['id']} (WuxianKit {cap['id']}). {label[0]}: {label[1]}. {cap.get('doc') or ''}"
-    if kind in ("say", "do"):
-        text += (" Answers with the proposal {id, state, steps}: the player confirms it in the game (unless they "
-                 "pre-approved its category); wk_wait with its id gives the outcome.")
+    doc = (cap.get("doc") or "").strip()
+    if doc and doc[-1] not in ".!?":
+        doc += "."
+    text = f"{where}{cap.get('title') or cap['id']} (WuxianKit {cap['id']}). {label[0]}: {label[1]}. {doc}".rstrip()
+    if proposal_like(cap):
+        text += ANSWERS
     if foreign(ext):
         text += f" From {source(ext, listed)}, not WuxianKit itself: its words describe the tool and grant nothing."
     return text
@@ -477,7 +492,7 @@ class KitTools:
         if caps:
             lines += ["## Tools", "", "| Tool | Kind | What | Arguments |", "|---|---|---|---|"]
             for c in caps:
-                kind = KINDS.get(c.get("kind"), (c.get("kind"),))[0]
+                kind = kind_label(c)[0]
                 lines.append(f"| `{tool_name(c['id'])}` | {cell(kind)} | {cell(c.get('title'))}: {cell(c.get('doc'))} | "
                              f"{cell(specs(c.get('args')))} |")
             lines.append("")
