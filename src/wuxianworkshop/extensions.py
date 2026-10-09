@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import time
+import urllib.error
 import urllib.parse
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -75,18 +76,29 @@ class Catalog:
 
     def __init__(self, url=None, fetcher=fetch, clock=time.time):
         self.url, self.fetch, self.clock = url or catalog_url(), fetcher, clock
-        self.addons, self.updated, self.checked, self.error = [], None, None, ""
+        self.addons, self.updated, self.checked, self.error, self.missing = [], None, None, "", False
 
     def refresh(self):
+        """reads the catalog again; on failure what was read before stands, and error says why in the page's words
+        (missing: there is no catalog at its address, which is not a fault)"""
+        from .i18n import tr
+        self.missing = False
         try:
             data = json.loads(self.fetch(self.url, MAX_CATALOG).decode("utf-8"))
             if not isinstance(data, dict) or not isinstance(data.get("addons"), list):
                 raise CatalogError("not an extension catalog")
             self.addons, self.updated, self.error = entries(data), data.get("updated"), ""
-        except Exception as e:                            # keep what was read before
-            from .i18n import tr
+        except (urllib.error.HTTPError, FileNotFoundError) as e:
+            code = getattr(e, "code", 404)
+            self.missing = code == 404
+            self.error = (tr("网站上还没有扩展目录。", "The website has no extension catalog yet.") if self.missing else
+                          tr(f"扩展目录读取失败：网站返回 {code}", f"The extension catalog could not be read: the website answered {code}"))
+        except urllib.error.URLError:
+            self.error = tr("连不上无限工坊网站，稍后点「刷新目录」再试。",
+                            "Cannot reach the Wuxian Workshop website; try Refresh again later.")
+        except Exception as e:
             why = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
-            self.error = tr(f"扩展目录读取失败：{why}", f"the extension catalog could not be read: {why}")
+            self.error = tr(f"扩展目录读取失败：{why}", f"The extension catalog could not be read: {why}")
         finally:
             self.checked = self.clock()
         return self
@@ -95,7 +107,7 @@ class Catalog:
         return next((e for e in self.addons if e["id"] == ext_id), None)
 
     def status(self):
-        return dict(url=self.url, updated=self.updated, checked=self.checked, error=self.error)
+        return dict(url=self.url, updated=self.updated, checked=self.checked, error=self.error, missing=self.missing)
 
     def download(self, entry):
         """the entry's zip, its size and SHA-256 checked"""

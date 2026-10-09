@@ -692,7 +692,7 @@
       </div>
       <div class="pagebody">
         <p class="muted ext-intro">标准库和基于它的扩展插件，来自无限工坊网站的扩展目录。更新后在游戏里重载界面即可生效；第一次安装需要完整重启游戏。</p>
-        <div class="ext-note bad" x-show="ext.error" x-text="ext.error"></div>
+        <div class="ext-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
         <div class="ext-note" x-show="ext.note">
           <span x-text="ext.note"></span>
           <button class="btn" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(); ext.reload = false">重载界面</button>

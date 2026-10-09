@@ -60,6 +60,16 @@ class Catalog(unittest.TestCase):
         cat.refresh()
         self.assertTrue(cat.error)
         self.assertEqual(cat.addons, [entry])                                             # what was read stands
+        (self.dir / "extensions.json").unlink()                                          # none there yet: not a fault
+        self.assertEqual((cat.refresh().missing, cat.error), (True, "网站上还没有扩展目录。"))
+        self.assertEqual(cat.status()["missing"], True)
+        import urllib.error
+        for raised, said in ((urllib.error.HTTPError("u", 500, "x", None, None), "扩展目录读取失败：网站返回 500"),
+                             (urllib.error.URLError("offline"), "连不上无限工坊网站，稍后点「刷新目录」再试。")):
+            def fetcher(url, limit, raised=raised):
+                raise raised
+            other = X.Catalog(url="https://example.invalid/extensions.json", fetcher=fetcher).refresh()
+            self.assertEqual((other.missing, other.error), (False, said))
         with mock.patch.dict(os.environ, {"WUXIAN_EXTENSIONS_FEED": "C:/x/extensions.json"}):
             self.assertEqual(X.Catalog().url, "C:/x/extensions.json")
 

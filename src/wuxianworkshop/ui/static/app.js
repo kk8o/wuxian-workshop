@@ -185,7 +185,7 @@ function appState() {
     hist: { open: null, data: null, busy: false, note: '', diff: null, diffKey: '', diffBusy: false, confirm: '',
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
-    ext: { list: null, catalog: null, dir: null, busy: '', note: '', error: '', confirm: '', reload: false },   // 扩展
+    ext: { list: null, catalog: null, dir: null, busy: '', note: '', error: '', missing: false, confirm: '', reload: false },   // 扩展
     showToken: false,
     CALL_FILTERS, BROWSE_TABS,
     docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, busy: false, sel: null, topic: null,
@@ -561,8 +561,10 @@ function appState() {
         this.ext.catalog = d.catalog || null;
         this.ext.dir = d.addons_dir || null;
         if (d.catalog && d.catalog.error) this.ext.error = d.catalog.error;
+        this.ext.missing = !!(d.catalog && d.catalog.missing);   // no catalog on the site yet: said plainly, not as a fault
       } catch (e) {
         this.ext.error = t('读取扩展目录失败：') + e.message;
+        this.ext.missing = false;
         if (this.ext.list === null) this.ext.list = [];
       } finally {
         this.ext.busy = '';
