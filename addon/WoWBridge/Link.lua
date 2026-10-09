@@ -19,8 +19,8 @@ ns.Link = L
 L.VERSION = "0.9.5"
 
 -- the first byte of a message; Send's `kind` picks it
-L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST = 0, 1, 2, 3, 4
-local TYPE_OF = { debug = L.TYPE_DEBUG, run = L.TYPE_RUN, reload = L.TYPE_RELOAD,
+L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT = 0, 1, 2, 3, 4, 5
+local TYPE_OF = { debug = L.TYPE_DEBUG, run = L.TYPE_RUN, reload = L.TYPE_RELOAD, event = L.TYPE_EVENT,
 	burst = L.TYPE_TEST, long = L.TYPE_TEST, stream = L.TYPE_TEST, test = L.TYPE_TEST }
 
 local P = {
@@ -288,8 +288,8 @@ function L.Tick()
 	ns.UI.CheckSlots()
 end
 
--- queue a message of a kind (nil = user text, "debug", "run", "reload", or a link test: "burst", "long", "stream",
--- "test"); returns its id and its number of parts
+-- queue a message of a kind (nil = user text, "debug", "run", "reload", "event" (API.lua), or a link test: "burst",
+-- "long", "stream", "test"); returns its id and its number of parts
 function L.Send(text, kind)
 	local body = string.char(TYPE_OF[kind] or L.TYPE_TEXT) .. text
 	local W, H = P.dataW, P.dataH

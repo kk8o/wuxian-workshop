@@ -21,9 +21,11 @@ Messages from addon 0.8 on start with a type byte: TYPE_TEXT (what the user sent
 <function>", "DROPPED <n> ..."; a text the addon reported before comes again as "<text>\n(<n> more times)"), TYPE_RUN
 ("<job> ok ..." / "<job> error ..." for a code() job), TYPE_RELOAD ("asked: ..." / "later: ..." for the reload button) and
 TYPE_TEST (the link tests: "BURST DONE ...", "LONG n=<bytes> crc=<crc32 hex>\n<body>" of /wb long, which is checked
-against its body, "S <i> crc=<crc32 hex> <body>" of /wb stream along with the order of i, "STREAM DONE ..."). Debug, RUN
+against its body, "S <i> crc=<crc32 hex> <body>" of /wb stream along with the order of i, "STREAM DONE ...") and
+TYPE_EVENT (an addon's event, WoWBridge API.lua: {"a": addon, "t": topic, "d": data[, "x": dropped]} as JSON). Debug, RUN
 and RELOAD texts go to on_debug(kind, text) without WoW's colour and link escapes, kind being the debug word, "RUN" or
-"RELOAD". Addons before 0.8 send the same texts untyped, with the kind as a text prefix ("ERR ...", "RUN ...").
+"RELOAD"; an event goes to on_debug("EVENT", <its JSON as it came>). Addons before 0.8 send the same texts untyped, with
+the kind as a text prefix ("ERR ...", "RUN ...").
 """
 import re
 import time
@@ -39,8 +41,8 @@ LEGACY_HB = 5.0                 # heartbeat for addons before 0.7.0: they go off
 SLOT_WARN = (400, 100)          # mailbox slots left: tell the agent (debug.log) and the log
 WRAP = 65535                    # message ids run 1..WRAP, then start over at 1
 RECEIVED_MAX = 32768            # message ids a session remembers (half the ring: no id can come back that soon)
-TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST = range(5)
-TYPE_BYTES = {bytes([t]) for t in range(5)}
+TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT = range(6)
+TYPE_BYTES = {bytes([t]) for t in range(6)}
 
 
 def parse_control(payload):
@@ -187,7 +189,7 @@ class Companion(AgentCommands):
         self.stats = dict(packets=0, bytes=0, frames=0, data=0, dups=0, parts=0, long_ok=0, long_bad=0, stream_ok=0,
                           stream_bad=0, stream_late=0, stream_missing=None,
                           first_slot=None, last_slot=None, records={name: 0 for name in MB.NAMES.values()},
-                          debug=dict(err=0, out=0, warn=0, blocked=0, dropped=0, repeats=0, run=0, reload=0, info=0),
+                          debug=dict(err=0, out=0, warn=0, blocked=0, dropped=0, repeats=0, run=0, reload=0, info=0), events=0,
                           reloads=0, skipped=0)
         self.full = False
         self.reload_sent = None       # (when, session) of the last "reload" command, until a new session shows up
@@ -345,6 +347,10 @@ class Companion(AgentCommands):
             self._debug("RELOAD", plain(text).rstrip())
         elif mtype == TYPE_TEST:
             self._test(s, msg, data, text, p, now)
+        elif mtype == TYPE_EVENT:
+            self.stats["events"] += 1
+            if self.on_debug:
+                self.on_debug("EVENT", text)
         else:
             extra = f", {p['parts']} parts" if p["parts"] > 1 else ""
             self.note(f"#{msg} ({len(data)} B{extra}): {text[:80]}")

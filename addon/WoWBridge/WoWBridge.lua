@@ -1,6 +1,7 @@
 -- WoWBridge: draws frames on the screen that the companion program on this PC reads (see src/wuxianworkshop/), and reads
 -- what the companion writes back into the font mailbox (Mailbox.lua, Link.lua). Debug output is Debug.lua, hot loading
--- Agent.lua, dialogs UI.lua, the words Locale.lua, the settings panel Panel.lua, the minimap button Minimap.lua; the
+-- Agent.lua, what addons hand the agent (WoWBridge.Bind: events and exposed functions) API.lua with Json.lua, dialogs
+-- UI.lua, the words Locale.lua, the settings panel Panel.lua, the minimap button Minimap.lua; the
 -- experiments (probe frame, self-test, sweep, polling and font tests) are the separate addon WoWBridge_Lab (addon/lab).
 --   /wb                          the settings panel (status and commands in the chat when it is not there)
 --   /wb help                     the commands

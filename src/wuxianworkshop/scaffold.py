@@ -40,6 +40,11 @@ LUA_HEAD = """-- {title}{notes_line}
 local addonName, ns = ...
 WoWBridgeNS = WoWBridgeNS or {{}}                -- 让无限工坊热加载时把这个插件自己的命名空间交给文件
 WoWBridgeNS[addonName] = ns
+-- 和 Agent 对话（无限工坊）：WB:Emit(主题, 数据) 发事件给 Agent，WB:Expose(名字, 函数, 说明) 公开函数给 Agent 调用；
+-- 玩家没装无限工坊时 WB 是个空壳，这些调用什么也不做
+local WB = WoWBridge and WoWBridge.Bind and WoWBridge.Bind(addonName)
+\tor setmetatable({{}}, {{ __index = function() return function() end end }})
+ns.WB = WB
 
 local function Print(...)
 \tprint("|cffd8a85a" .. addonName .. "|r", ...)
@@ -61,6 +66,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 \telseif event == "PLAYER_LOGIN" and ns.db then
 \t\tns.db.logins = ns.db.logins + 1
 \t\tPrint(("已加载（第 %d 次登录），输入 /{slash} 试试"):format(ns.db.logins))
+\t\tWB:Emit("login", {{ logins = ns.db.logins }})      -- Agent 用 events 看得到
 \tend
 end)
 """
@@ -96,6 +102,11 @@ SLASH_{upper}1 = "/{slash}"
 SlashCmdList["{upper}"] = function(msg)
 \tPrint("你好！" .. (msg ~= "" and ("参数：" .. msg) or ""))
 end
+
+-- 给 Agent 调用的入口（无限工坊的 call：addon {name}，name hello，args 例如 {{"who": "Agent"}}）
+WB:Expose("hello", function(args)
+\treturn {{ text = "你好，" .. tostring(args and args.who or "艾泽拉斯") }}
+end, "打个招呼：args.who 是对谁说")
 """
 
 LUA_SLASH_WINDOW = """
@@ -104,6 +115,12 @@ SLASH_{upper}1 = "/{slash}"
 SlashCmdList["{upper}"] = function()
 \tns.window:SetShown(not ns.window:IsShown())
 end
+
+-- 给 Agent 调用的入口（无限工坊的 call：addon {name}，name toggle）
+WB:Expose("toggle", function()
+\tns.window:SetShown(not ns.window:IsShown())
+\treturn {{ shown = ns.window:IsShown() }}
+end, "开关窗口，返回现在开着没有")
 """
 
 LUA_RELOAD = """
@@ -137,6 +154,20 @@ EN_LUA = {
     "-- 热加载：无限工坊再跑这个文件之前调用 OnUnload，跑完调用 OnReload，并把 OnUnload 的返回值交给它":
         "-- hot-load: Wuxian Workshop calls OnUnload before it runs this file again, then OnReload with what OnUnload returned",
     "已热加载": "hot-loaded",
+    "-- 和 Agent 对话（无限工坊）：WB:Emit(主题, 数据) 发事件给 Agent，WB:Expose(名字, 函数, 说明) 公开函数给 Agent 调用；":
+        "-- talking with the agent (Wuxian Workshop): WB:Emit(topic, data) sends it an event, WB:Expose(name, fn, doc) a "
+        "function it may call;",
+    "-- 玩家没装无限工坊时 WB 是个空壳，这些调用什么也不做":
+        "-- for players without Wuxian Workshop WB is an empty shell on which these calls do nothing",
+    "-- Agent 用 events 看得到": "-- the agent sees it with `events`",
+    '-- 给 Agent 调用的入口（无限工坊的 call：addon {name}，name hello，args 例如 {{"who": "Agent"}}）':
+        '-- an entry point for the agent (Wuxian Workshop\'s call: addon {name}, name hello, args e.g. {{"who": "Agent"}})',
+    "你好，": "Hello, ",
+    "艾泽拉斯": "Azeroth",
+    "打个招呼：args.who 是对谁说": "say hello: args.who is to whom",
+    "-- 给 Agent 调用的入口（无限工坊的 call：addon {name}，name toggle）":
+        "-- an entry point for the agent (Wuxian Workshop's call: addon {name}, name toggle)",
+    "开关窗口，返回现在开着没有": "shows or hides the window; returns whether it is shown now",
 }
 
 
@@ -203,6 +234,17 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
   某一类就给 `events`，例如 `BAG_*, LOOT_*`。
 - 界面位置、大小、显隐不对：`inspect` 给一个框体（`MyAddonFrame`、`ns.window`），看它的矩形、锚点、层级和子框体；
   用户说「这里不对」时请他把鼠标放上去，用 `mouse=true`；加 `snap=true` 只截那一块。
+
+## 插件和你对话（WoWBridge）
+
+模板已经拿好句柄 `WB`（也在 `ns.WB`），它让插件和你直接交换数据：
+
+- `WB:Emit(主题, 数据)`：发一个事件给你，代替 `print` 调试。`events` 读或等这些事件（`addon`、`topic` 可以用通配，
+  例如 `scan.*`；带 `wait` 就等到有为止），`try` 也会列出它窗口里发出的事件（`emitted`）。
+- `WB:Expose(名字, 函数, 说明)`：公开一个函数，你用 `call` 调用（addon `{name}`、name、args 是 JSON），拿到它的第一个返回值。
+  要驱动插件的功能时用它代替 `run`：每次走同一个入口，不碰游戏里别的东西。模板里的 `hello` 就是一个。
+- `addon_api`：插件公开了哪些函数（带说明）、发过哪些事件。
+- 只传数据，不传代码；玩家没装无限工坊时 `WB` 是空壳，这些调用什么也不做，插件照常运行。
 
 ## 改坏了能退回去
 
@@ -303,6 +345,20 @@ own API manual before you fix and try again.
 - A frame in the wrong place, of the wrong size, shown or hidden when it should not be: `inspect` a frame
   (`MyAddonFrame`, `ns.window`) for its rectangle, anchors, strata and children; when the user says "this is wrong here",
   ask them to put the mouse on it and use `mouse=true`; `snap=true` takes a screenshot of just that part.
+
+## The addon talking with you (WoWBridge)
+
+The template has a handle `WB` already (also in `ns.WB`): the addon and you exchange data through it.
+
+- `WB:Emit(topic, data)`: sends you an event, instead of `print` debugging. `events` reads or waits for them (`addon`
+  and `topic` take globs such as `scan.*`; with `wait` it waits until there is one), and `try` lists the events emitted
+  in its window too (`emitted`).
+- `WB:Expose(name, fn, doc)`: a function you call with `call` (addon `{name}`, the name, args as JSON), getting its first
+  return value. Use it instead of `run` to drive the addon's features: the same entry point every time, nothing else of
+  the game touched. The template's `hello` is one.
+- `addon_api`: the functions the addon exposed (with what they do) and the events it sent.
+- Only data crosses, never code; for players without Wuxian Workshop `WB` is an empty shell on which these calls do
+  nothing, and the addon runs as it is.
 
 ## Going back after breaking something
 

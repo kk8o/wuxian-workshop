@@ -401,6 +401,22 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         return await service.inspect(b.get("target"), bool(b.get("mouse")), b.get("depth", 1), bool(b.get("snap")))
 
     @api
+    async def addon_events(request):
+        b = await body_of(request)
+        return await service.addon_events(b.get("addon"), b.get("topic"), b.get("since", 0), b.get("limit", 100),
+                                          b.get("wait", 0))
+
+    @api
+    async def call_(request):
+        b = await body_of(request)
+        return await service.call_exposed(b.get("addon"), b.get("name"), b.get("args"), b.get("timeout_ms", 10000))
+
+    @api
+    async def addon_api(request):
+        b = await body_of(request)
+        return await service.addon_api(b.get("addon"))
+
+    @api
     async def agents_(request):
         if request.method != "POST":
             return await service.agents()
@@ -460,6 +476,9 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         Route("/api/agents", agents_, methods=["GET", "POST"]),
         Route("/api/trace", trace, methods=["POST"]),
         Route("/api/inspect", inspect, methods=["POST"]),
+        Route("/api/addon_events", addon_events, methods=["POST"]),
+        Route("/api/call", call_, methods=["POST"]),
+        Route("/api/addon_api", addon_api, methods=["POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),

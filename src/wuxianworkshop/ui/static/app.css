@@ -267,7 +267,7 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .feed .fk::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
 .feed .k-ERR .fk { color: var(--bad); } .feed li.k-ERR { background: rgba(242, 139, 130, .05); }
 .feed .k-WARN .fk, .feed .k-BLOCKED .fk, .feed .k-SLOTS .fk { color: var(--gold-l); }
-.feed .k-OUT .fk { color: var(--ok); }
+.feed .k-OUT .fk, .feed .k-EVENT .fk { color: var(--ok); }
 .feed .k-RUN .fk, .feed .k-RELOAD .fk, .feed .k-SNAP .fk, .feed .k-WATCH .fk { color: var(--sky); }
 .feed .ft { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-feed .empty { padding: 18px 0; }
@@ -294,11 +294,11 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .kind { font-size: 10px; font-weight: 500; border-radius: 3px; padding: 0 4px; text-align: center; line-height: 16px; color: var(--muted); border: 1px solid var(--line); }
 .k-ERR.kind, .chip.k-ERR { color: var(--bad); border-color: rgba(242, 139, 130, .5); }
 .k-WARN.kind, .k-BLOCKED.kind, .chip.k-WARN, .chip.k-BLOCKED { color: var(--gold-l); border-color: var(--gold-d); }
-.k-OUT.kind, .chip.k-OUT { color: var(--ok); border-color: rgba(111, 207, 151, .5); }
+.k-OUT.kind, .chip.k-OUT, .k-EVENT.kind, .chip.k-EVENT { color: var(--ok); border-color: rgba(111, 207, 151, .5); }
 .k-RUN.kind, .k-RELOAD.kind, .k-SNAP.kind, .k-WATCH.kind, .chip.k-RUN, .chip.k-RELOAD, .chip.k-SNAP, .chip.k-WATCH { color: var(--sky); border-color: rgba(127, 179, 224, .5); }
 .chip.k-ERR.on { background: var(--bad-soft); }
 .chip.k-WARN.on, .chip.k-BLOCKED.on { background: var(--gold-soft); }
-.chip.k-OUT.on { background: var(--ok-soft); }
+.chip.k-OUT.on, .chip.k-EVENT.on { background: var(--ok-soft); }
 .chip.k-RUN.on, .chip.k-RELOAD.on, .chip.k-SNAP.on, .chip.k-WATCH.on { background: var(--sky-soft); }
 .chip.k-SLOTS.on, .chip.k-INFO.on { background: var(--panel2); color: var(--fg); }
 

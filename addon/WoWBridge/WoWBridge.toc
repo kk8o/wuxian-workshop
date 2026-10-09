@@ -23,5 +23,7 @@ Agent.lua
 UI.lua
 Link.lua
 WoWBridge.lua
+Json.lua
+API.lua
 Panel.lua
 Minimap.lua

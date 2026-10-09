@@ -12,6 +12,9 @@
     wuxian snap [--region x y w h]            a PNG of the game window
     wuxian trace [seconds] [--events BAG_*]   the events the game fires meanwhile (names, arguments, counts)
     wuxian inspect <lua expr> | --mouse       a frame of the running UI (place, size, anchors, children)
+    wuxian events [--addon A] [--topic T] [--follow]   what addons sent with WoWBridge's Emit (their events)
+    wuxian call <addon> <name> [json args]    call a function an addon exposed with WoWBridge's Expose
+    wuxian addon-api [addon]                  what addons expose (functions) and emit (event topics)
     wuxian history [addon] [id] [--against]   kept versions of addons; one version's diff with the files now
     wuxian checkpoint <addon> [note]          keep a version of an addon's files now
     wuxian restore <addon> <id>               put an addon's files back as a kept version had them
@@ -105,6 +108,20 @@ def build_parser():
     p.add_argument("--depth", type=int, default=1, help="levels of children (0-3, default 1)")
     p.add_argument("--snap", action="store_true", help="also a picture of the first frame")
     p.add_argument("--json", action="store_true", help="print JSON")
+    p = sub.add_parser("events", help="the events addons sent with WoWBridge's Emit")
+    p.add_argument("--addon", help="only this addon's (a name or a glob)")
+    p.add_argument("--topic", help="only these topics (a name or a glob: scan.*)")
+    p.add_argument("--since", type=int, default=0, help="from this entry id on (the next of the last call)")
+    p.add_argument("--follow", "-f", action="store_true", help="keep printing new ones (Ctrl+C ends it)")
+    p.add_argument("--json", action="store_true", help="print JSON")
+    p = sub.add_parser("call", help="call a function an addon exposed with WoWBridge's Expose")
+    p.add_argument("addon", help="the addon's folder name")
+    p.add_argument("name", help="the name it exposed")
+    p.add_argument("args", nargs="?", help="""its arguments as JSON ('{"n": 2}')""")
+    p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
+    p = sub.add_parser("addon-api", help="what addons expose (functions to call) and emit (event topics)")
+    p.add_argument("addon", nargs="?", help="the addon (nothing: every addon with a WoWBridge handle)")
+    p.add_argument("--json", action="store_true", help="print JSON")
     p = sub.add_parser("history", help="kept versions of addons; what changed since one of them")
     p.add_argument("addon", nargs="?", help="the addon (nothing: the addons with kept versions)")
     p.add_argument("id", nargs="?", type=int, help="a version: its diff with the files now")
@@ -122,7 +139,7 @@ def build_parser():
     p.add_argument("--follow", "-f", action="store_true", help="keep printing new entries (Ctrl+C ends it)")
     p.add_argument("--since", type=int, default=None, help="the first entry id (default: the last 50)")
     p.add_argument("--limit", type=int, default=200, help="at most this many entries (default 200)")
-    p.add_argument("--kinds", help="only these kinds, comma-separated: ERR,OUT,WARN,BLOCKED,RUN,RELOAD,SNAP,WATCH,SLOTS,INFO")
+    p.add_argument("--kinds", help="only these kinds, comma-separated: ERR,OUT,WARN,BLOCKED,RUN,RELOAD,EVENT,SNAP,WATCH,SLOTS,INFO")
     p = sub.add_parser("say", help="show a line of text in the game's chat")
     p.add_argument("text", nargs="+")
     p = sub.add_parser("doctor", help="the self-check (exit 1 when a check fails)")
@@ -350,6 +367,55 @@ def cmd_inspect(client, args):
         print("nothing there")
     if res.get("snap"):
         print(f"snap: {res['snap']['path']}")
+    return 0
+
+
+def show_event(e):
+    data = json.dumps(e.get("data"), ensure_ascii=False)
+    print(f"{fmt_time(e['t'])}  {e.get('addon')}  {e.get('topic')}  {data}"
+          + (f"  ({e['dropped']} dropped before it)" if e.get("dropped") else ""))
+
+
+def cmd_events(client, args):
+    since = args.since
+    while True:
+        res = client.addon_events(args.addon, args.topic, since, 1000, 25 if args.follow else 0)
+        for e in res["events"]:
+            if args.json:
+                print(json.dumps(e, ensure_ascii=False))
+            else:
+                show_event(e)
+        since = res["next"]
+        if not args.follow:
+            if not res["events"] and not args.json:
+                print("no events (an addon sends them with WB:Emit(topic, data), WB = WoWBridge.Bind(addonName))")
+            return 0
+
+
+def cmd_call(client, args):
+    try:
+        call_args = json.loads(args.args) if args.args else None
+    except ValueError as e:
+        say_error(f"args: not JSON ({e})")
+        return 2
+    res = client.call_exposed(args.addon, args.name, call_args, args.timeout_ms)
+    print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_addon_api(client, args):
+    res = client.addon_api(args.addon)
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    for a in res.get("addons") or [res]:
+        print(a.get("addon"))
+        for x in a.get("exposed") or []:
+            print(f"  call {x['name']}" + (f"  {x['doc']}" if x.get("doc") else ""))
+        for topic, n in sorted((a.get("topics") or {}).items()):
+            print(f"  event {topic}  ({n} sent)")
+        if not a.get("exposed") and not a.get("topics"):
+            print("  nothing yet (WB:Expose / WB:Emit, WB = WoWBridge.Bind(addonName))")
     return 0
 
 
@@ -668,7 +734,8 @@ CLIENT_COMMANDS = dict(status=cmd_status, run=cmd_run, load=cmd_load, watch=cmd_
                        **{"try": cmd_try},
                        restore=cmd_restore,
                        logs=cmd_logs, say=cmd_say, doctor=cmd_doctor, addons=cmd_addons, errors=cmd_errors,
-                       install=cmd_install, update=cmd_update, new=cmd_new)
+                       install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, call=cmd_call,
+                       **{"addon-api": cmd_addon_api})
 
 
 def run_program(name, rest):

@@ -6,7 +6,7 @@ import re
 
 from ..paths import daemon_file
 
-LOG_KINDS = ("ERR", "OUT", "WARN", "BLOCKED", "DROPPED", "RUN", "RELOAD", "SNAP", "WATCH", "SLOTS", "INFO")
+LOG_KINDS = ("ERR", "OUT", "WARN", "BLOCKED", "DROPPED", "RUN", "RELOAD", "EVENT", "SNAP", "WATCH", "SLOTS", "INFO")
 
 
 def read_daemon_json():

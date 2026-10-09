@@ -39,7 +39,11 @@ a click may reload on this client). Check `status` first: the game must be runni
 the errors with stacks, prints and blocked actions of the next seconds, the events that fired, a picture: use it to test
 a feature and to see whether a fix worked. `trace` records the events the game fires for a while (which event to
 handle, what its payload is); `inspect` describes a frame, or the frames under the mouse (layout bugs). Test without mouse and keyboard: call the slash handler
-(`SlashCmdList.NAME("args")`), your button's `:Click()`, your handler with made-up arguments. Code of `run` / `try`
+(`SlashCmdList.NAME("args")`), your button's `:Click()`, your handler with made-up arguments. Better: let the addon
+talk to you through WoWBridge (`local WB = WoWBridge and WoWBridge.Bind(addonName)`, or a stub for players without
+无限工坊, as the new_addon template does):
+`WB:Emit(topic, data)` sends an event that `events` reads or waits for (instead of print debugging), and
+`WB:Expose(name, fn, doc)` a function you `call` with JSON arguments (instead of `run`); `addon_api` lists both. Code of `run` / `try`
 runs tainted ('*** ForceTaint_Strong ***'): a Blizzard panel it opens (ToggleCharacter …) runs tainted too and can
 error on secret values (here even the player's own health and power) until a reload, so ask the player to open
 Blizzard's panels. Never register restricted events (COMBAT_LOG_EVENT_UNFILTERED and the like): the client blocks the
@@ -110,6 +114,15 @@ class HttpBackend:
 
     async def inspect(self, target=None, mouse=False, depth=1, snap=False):
         return await self._call("inspect", target, mouse, depth, snap)
+
+    async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
+        return await self._call("addon_events", addon, topic, since, limit, wait)
+
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+        return await self._call("call_exposed", addon, name, args, timeout_ms)
+
+    async def addon_api(self, addon=None):
+        return await self._call("addon_api", addon)
 
     async def history(self, addon=None, vid=None, against="now"):
         return await self._call("history", addon, vid, against)
@@ -269,6 +282,34 @@ def build_server(backend, name="wuxian"):
         if shot:
             out.append(Image(data=await call(backend.snap_bytes(shot)), format="png"))
         return out
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def events(addon: str | None = None, topic: str | None = None, since: int = 0, limit: int = 100,
+                     wait: float = 0) -> dict[str, Any]:
+        """The events addons sent with WoWBridge's Emit (`local WB = WoWBridge.Bind(addonName)`, `WB:Emit("scan.done",
+        {items = 120})`): what happened in an addon, as data, without a chat line. Each has its id, time, addon, topic
+        and data (and `dropped`: events its rate limit let go before it). `addon` / `topic`: a name or a glob
+        ("MyAddon", "scan.*"). From id `since` on (pass the `next` of the last call); with `wait` (seconds, up to 300)
+        and none there yet, it waits for the first one. Use it instead of print() debugging: Emit what the code does,
+        then read it here; `try` lists the events emitted in its window too."""
+        return await call(backend.addon_events(addon, topic, since, limit, wait))
+
+    @mcp.tool(name="call", annotations=WRITES)             # not `def call`: that is this server's helper above
+    async def call_exposed(addon: str, name: str, args: Any = None, timeout_ms: int = 10000) -> dict[str, Any]:
+        """Call a function an addon exposed with WoWBridge's Expose (`WB:Expose("reset", function(args) ... return
+        {ok = true} end, "清空缓存")`): `args` (JSON) reach it as a Lua table, its first return value comes back as
+        `result`. Only exposed functions can be called; `addon_api` lists them with what they do. A function that is
+        missing or raised is an error with the message and stack. Prefer it to `run` for driving an addon's features:
+        the same entry points every time, nothing else of the game touched."""
+        return await call(backend.call_exposed(addon, name, args, timeout_ms))
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def addon_api(addon: str | None = None) -> dict[str, Any]:
+        """What an addon offers the agent through WoWBridge: the functions it exposed (name and what it does, for
+        `call`) and the topics of the events it emitted so far (with how often, for `events`). No addon: every addon
+        that took a handle (WoWBridge.Bind). An addon that exposes nothing yet: add `local WB = WoWBridge and
+        WoWBridge.Bind(addonName)` and WB:Expose / WB:Emit calls (the new_addon template has them)."""
+        return await call(backend.addon_api(addon))
 
     @mcp.tool(annotations=READ_ONLY)
     async def history(addon: str | None = None, id: int | None = None, against: str | int = "now") -> dict[str, Any]:

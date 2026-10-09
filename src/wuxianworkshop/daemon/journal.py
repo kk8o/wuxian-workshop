@@ -2,9 +2,11 @@
 (the format of agent/debuglog.py) and handed to the subscribers (the SSE connections) through their asyncio loop.
 
 An entry is {"id", "t", "kind", "text", "addon", "job"}: kind is one of api.LOG_KINDS (the addon's debug kinds, the
-companion's notes as INFO), addon the first "Interface/AddOns/<name>/" in the text, job the id of a RUN result.
+companion's notes as INFO), addon the first "Interface/AddOns/<name>/" in the text, job the id of a RUN result. An EVENT
+(what an addon sent with WoWBridge's Emit) also has "topic", "data" and "dropped", its addon being the one that sent it.
 add() may be called from any thread; since() is what /api/logs returns.
 """
+import json
 import re
 import threading
 import time
@@ -14,12 +16,31 @@ from ..agent.debuglog import debug_writer
 from .api import parse_run
 
 CAPACITY = 5000
+SHOWN = 300                   # characters of an event's data in its log line (the entry keeps the data whole)
 _ADDON = re.compile(r"Interface[/\\]AddOns[/\\]([^/\\:\s]+)")
 
 
 def addon_of(text):
     m = _ADDON.search(text)
     return m[1] if m else None
+
+
+def event_fields(text):
+    """an addon's event (WoWBridge API.lua: {"a": addon, "t": topic, "d": data[, "x": dropped]}) as entry fields: addon,
+    topic, data, dropped (events the addon's rate limit let go before this one) and text, the topic and the data in one
+    line for the log; None when the text is not such JSON"""
+    try:
+        env = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(env, dict) or not isinstance(env.get("t"), str) or not isinstance(env.get("a"), str):
+        return None
+    data = env.get("d")
+    shown = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    shown = shown if len(shown) <= SHOWN else shown[:SHOWN] + "…"
+    dropped = env.get("x") if isinstance(env.get("x"), int) else 0
+    return dict(addon=env["a"], topic=env["t"], data=data, dropped=dropped,
+                text=f"{env['t']} {shown}" + (f" ({dropped} dropped before it)" if dropped else ""))
 
 
 class Journal:
@@ -32,12 +53,18 @@ class Journal:
         self.clock = clock
 
     def add(self, kind, text, addon=None, job=None):
-        """one entry; returns it. A RUN result's job id is taken from the text"""
+        """one entry; returns it. A RUN result's job id is taken from the text; an EVENT's JSON gives the entry its
+        addon, topic, data and a readable text"""
         if job is None and kind == "RUN":
             res = parse_run(text)
             job = res["job"] if res else None
+        event = event_fields(text) if kind == "EVENT" else None
+        if event:
+            addon, text = event["addon"], event.pop("text")
         with self.lock:
             entry = dict(id=self.next_id, t=round(self.clock(), 3), kind=kind, text=text, addon=addon or addon_of(text), job=job)
+            if event:
+                entry.update(event)
             self.next_id += 1
             self.entries.append(entry)
             subscribers = list(self.subscribers.values())

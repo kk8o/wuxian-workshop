@@ -116,7 +116,7 @@ const EXAMPLES = [                             // 试一下: an argument's name 
   [/bag(ID|Index)?$|containerIndex/i, '0'], [/slot|index$/i, '1'], [/cvar/i, '"scriptErrors"'], [/addon(Name|Index)?$/i, '"WoWBridge"'],
   [/^name$|playerName|characterName/i, 'UnitName("player")'],
 ];
-const KINDS = ['ERR', 'OUT', 'WARN', 'BLOCKED', 'RUN', 'RELOAD', 'SNAP', 'WATCH', 'SLOTS', 'INFO'];
+const KINDS = ['ERR', 'OUT', 'WARN', 'BLOCKED', 'RUN', 'RELOAD', 'EVENT', 'SNAP', 'WATCH', 'SLOTS', 'INFO'];
 const REASON_TEXT = { load: '热加载', watch: '开始监视', save: '保存后热加载', new: '新建', manual: '手动存', restore: '回退前' };
 const STATUS_TEXT = { added: '新增', changed: '改动', removed: '删除' };
 const CHECK_TEXT = {                           // agent/lint.py's codes, for people (the messages stay the agent's English)

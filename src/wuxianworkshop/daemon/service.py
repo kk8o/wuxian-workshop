@@ -12,9 +12,11 @@ not loaded), the other findings come with load's answer; check() is the whole re
 names it could not settle.
 """
 import asyncio
+import fnmatch
 import inspect
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -417,11 +419,12 @@ class Service:
         await asyncio.to_thread(self.keep, name, "new")
         return dict(res, hint=f"`load {name}` hot-loads it now; the game itself lists it after a full restart")
 
-    async def probe(self, code, timeout_ms):
+    async def probe(self, code, timeout_ms, chunk="=probe"):
         """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none. The answer
-        comes in pieces (probes.answer_chunk): the first with the chunk, the others asked for probes.BATCH at a time"""
+        comes in pieces (probes.answer_chunk): the first with the chunk (under that chunk name: "=call" shows in the game's
+        debug window, "=probe" does not), the others asked for probes.BATCH at a time"""
         key = secrets.token_hex(4)
-        n, first = await self.probe_piece(probes.answer_chunk(code, key), 1, timeout_ms)
+        n, first = await self.probe_piece(probes.answer_chunk(code, key), 1, timeout_ms, chunk)
         texts = [first]
         for start in range(2, n + 1, probes.BATCH):
             got = await asyncio.gather(*(self.probe_piece(probes.piece_chunk(key, i), i, timeout_ms)
@@ -435,9 +438,9 @@ class Service:
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 
-    async def probe_piece(self, code, i, timeout_ms):
+    async def probe_piece(self, code, i, timeout_ms, chunk="=probe"):
         """(how many pieces the answer has, the text of piece i): one run of a probe's chunk"""
-        res = await self.run(code, timeout_ms=timeout_ms, chunk="=probe")
+        res = await self.run(code, timeout_ms=timeout_ms, chunk=chunk)
         if not res.get("ok"):
             raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
         try:
@@ -492,7 +495,87 @@ class Service:
                 result["snap"] = await self.snap([x, y, w, h], None)
         return result
 
-    TRY_KINDS = ("ERR", "WARN", "BLOCKED", "OUT", "RELOAD")
+    # an addon's API (WoWBridge API.lua): the events it emits, the functions it exposes
+    ADDON_NAME = re.compile(r"^[A-Za-z0-9_!.\-]{1,64}$")
+    CALL_NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
+
+    async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
+        """the events addons sent with WoWBridge's Emit (journal entries of kind EVENT) from id `since` on, of that addon
+        and topic (a name or a glob: "MyAddon", "scan.*"), at most `limit`; with `wait` seconds and none there yet, it
+        waits for the first one. next = the id to ask from next time"""
+        if not isinstance(since, int) or isinstance(since, bool) or since < 0:
+            raise ApiError(400, "bad_request", "since: an entry id, 0 or more (the `next` of the last call)")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ApiError(400, "bad_request", "limit: 1..1000")
+        if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 <= wait <= 300:
+            raise ApiError(400, "bad_request", "wait: 0..300 seconds")
+        for name, value in (("addon", addon), ("topic", topic)):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ApiError(400, "bad_request", f"{name}: a name or a glob")
+
+        def matches(e):
+            return (e["kind"] == "EVENT" and (not addon or fnmatch.fnmatchcase(e.get("addon") or "", addon))
+                    and (not topic or fnmatch.fnmatchcase(e.get("topic") or "", topic)))
+
+        def pick():
+            entries, next_id, truncated = self.journal.since(since, self.journal.entries.maxlen, ["EVENT"])
+            hits = [e for e in entries if matches(e)]
+            if len(hits) > limit:
+                hits, next_id = hits[:limit], hits[limit]["id"]
+            return [dict(id=e["id"], t=e["t"], addon=e.get("addon"), topic=e.get("topic"), data=e.get("data"),
+                         dropped=e.get("dropped") or 0) for e in hits], next_id, truncated
+
+        loop, arrived = asyncio.get_running_loop(), asyncio.Event()
+        stop = self.journal.subscribe(loop, lambda e: arrived.set() if matches(e) else None)   # before the first look
+        try:
+            events, next_id, truncated = pick()
+            if not events and wait:
+                try:
+                    await asyncio.wait_for(arrived.wait(), wait)
+                except asyncio.TimeoutError:
+                    pass
+                events, next_id, truncated = pick()
+        finally:
+            stop()
+        return dict(events=events, next=next_id, truncated=truncated)
+
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+        """call a function an addon exposed with WoWBridge's Expose: args (JSON) go to it as a Lua table, its first
+        return value comes back as `result`. A function that is not there, or that raised, is an ApiError call_failed
+        with the message (and the stack)"""
+        if not isinstance(addon, str) or not self.ADDON_NAME.match(addon):
+            raise ApiError(400, "bad_request", "addon: the addon's folder name")
+        if not isinstance(name, str) or not self.CALL_NAME.match(name):
+            raise ApiError(400, "bad_request", "name: the name the addon exposed (letters, digits and _ . : -)")
+        try:
+            code = probes.call_chunk(addon, name, args)
+        except ValueError as e:
+            raise ApiError(400, "bad_request", str(e)) from None
+        t0 = time.time()
+        try:
+            data = await self.probe(code, timeout_ms, chunk="=call")
+        except ApiError as e:
+            if e.code != "probe_failed":
+                raise
+            self.journal.add("INFO", f"call {addon}.{name}: failed: {e.message.splitlines()[0][:200]}", addon=addon)
+            raise ApiError(400, "call_failed", e.message) from None
+        self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
+        return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
+
+    async def addon_api(self, addon=None):
+        """what an addon exposed with WoWBridge's Expose (name and doc, in the order it did) and the topics it emitted
+        (with how often); without addon, every addon that took a handle"""
+        if addon is not None and (not isinstance(addon, str) or not self.ADDON_NAME.match(addon)):
+            raise ApiError(400, "bad_request", "addon: the addon's folder name")
+        data = await self.probe(probes.describe_chunk(addon), 15000)
+
+        def tidy(a):                     # an empty Lua table comes as []: topics are an object
+            return dict(a, topics=a.get("topics") or {}, exposed=a.get("exposed") or [])
+        if isinstance(data, dict) and isinstance(data.get("addons"), list):
+            return dict(addons=[tidy(a) for a in data["addons"] if isinstance(a, dict)])
+        return tidy(data) if isinstance(data, dict) else dict(addon=addon, exposed=[], topics={})
+
+    TRY_KINDS = ("ERR", "WARN", "BLOCKED", "OUT", "RELOAD", "EVENT")
 
     async def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None,
                    timeout_ms=10000):
@@ -539,7 +622,7 @@ class Service:
             except ApiError:
                 complete = False
         entries, _, _ = self.journal.since(first, 1000, list(self.TRY_KINDS))
-        out = dict(action=action, seconds=seconds, errors=[], blocked=[], warnings=[], prints=[], notes=[],
+        out = dict(action=action, seconds=seconds, errors=[], blocked=[], warnings=[], prints=[], emitted=[], notes=[],
                    complete=complete)
         if not action.get("ok"):
             out["errors"].append(dict(t=0.0, message=action.get("error") or "", stack=action.get("stack") or "",
@@ -556,6 +639,8 @@ class Service:
                 out["warnings"].append(dict(t=t, message=text, addon=e.get("addon")))
             elif e["kind"] == "OUT":
                 out["prints"] += [dict(t=t, text=line) for line in text.split("\n")]
+            elif e["kind"] == "EVENT":
+                out["emitted"].append(dict(t=t, addon=e.get("addon"), topic=e.get("topic"), data=e.get("data")))
             else:
                 out["notes"].append(dict(t=t, kind=e["kind"], text=text))
         if traced is not None:
@@ -599,6 +684,9 @@ class Service:
         if out["warnings"]:
             parts.append(f"{len(out['warnings'])} warning{'s' if len(out['warnings']) > 1 else ''}")
         parts.append(f"{len(out['prints'])} print line{'s' if len(out['prints']) != 1 else ''}" if out["prints"] else "no prints")
+        if out.get("emitted"):
+            topics = sorted({e["topic"] or "?" for e in out["emitted"]})
+            parts.append(f"{len(out['emitted'])} event{'s' if len(out['emitted']) > 1 else ''} emitted ({', '.join(topics)[:120]})")
         if not later and not out["blocked"]:
             parts.insert(0, "no errors")
         tail = "" if out["complete"] else " (the end marker got no answer: later output may be missing, see logs)"

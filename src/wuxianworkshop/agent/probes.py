@@ -344,6 +344,46 @@ def inspect(target=None, mouse=False, depth=1, limit=30):
     return LUA_JSON + head + INSPECT_BODY
 
 
+# an addon's own API (WoWBridge API.lua: the functions it exposed, the topics it emitted): WoWBridge answers in JSON itself.
+# A WoWBridge from before it came says so instead of failing on a nil field
+API_GUARD = ("if not (WoWBridge and WoWBridge.Call and WoWBridge.Describe) then return '{\"error\":\"WoWBridge in the game has "
+             "no addon API (Emit / Expose / call): it came with 无限工坊 0.9.6; update the program, then restart the "
+             "game\"}' end\n")
+
+
+def lua_value(v, depth=0):
+    """a Lua literal for a JSON value (the arguments of a call): objects and arrays as tables, strings in long
+    brackets, finite numbers, booleans, nil; ValueError for anything else"""
+    if depth > 20:
+        raise ValueError("args: nested deeper than 20 levels")
+    if v is None or isinstance(v, bool):
+        return {None: "nil", True: "true", False: "false"}[v]
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValueError("args: numbers are finite")
+        return repr(v)
+    if isinstance(v, str):
+        return lua_str(v)
+    if isinstance(v, (list, tuple)):
+        return "{" + ", ".join(lua_value(x, depth + 1) for x in v) + "}"
+    if isinstance(v, dict):
+        # [ [[key]] ]: the spaces keep "[[[" from opening a long string
+        return "{" + ", ".join(f"[ {lua_str(str(k))} ] = {lua_value(x, depth + 1)}" for k, x in v.items()) + "}"
+    raise ValueError(f"args: a {type(v).__name__} is not JSON")
+
+
+def call_chunk(addon, name, args=None):
+    """the chunk that calls a function an addon exposed (WoWBridge.Call) with args and answers with its JSON"""
+    return API_GUARD + f"return WoWBridge.Call({lua_str(addon)}, {lua_str(name)}, {lua_value(args)})"
+
+
+def describe_chunk(addon=None):
+    """the chunk that answers with an addon's API in JSON (every addon's without one)"""
+    return API_GUARD + f"return WoWBridge.Describe({lua_str(addon) if addon else 'nil'})"
+
+
 def answer_chunk(chunk, key):
     """a probe chunk run so that its answer comes back in pieces: it returns the first piece after a line "1/<pieces>",
     and keeps the answer in the game under `key` for piece_chunk when there are more (the chunk's lines keep their
