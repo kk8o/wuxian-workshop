@@ -261,6 +261,22 @@ class WorkBuddy(Base):
         A.connect("workbuddy", home=self.home, env=self.env, verify=False)
         self.assertTrue(self.config().is_file())
 
+    def test_the_international_version_has_its_own_folder(self):
+        """WorkBuddy 国际版 (WorkBuddy AI): ~/.workbuddy-ai, installed for every user under Program Files"""
+        self.assertEqual(self.status("workbuddy-ai")["state"], "missing")
+        exe = Path(self.tmp.name) / "Program Files" / "WorkBuddyAI" / "WorkBuddyAI.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        self.env["PROGRAMFILES"] = str(exe.parent.parent)
+        st = self.status("workbuddy-ai")
+        self.assertEqual((st["state"], st["where"]), ("absent", str(self.home / ".workbuddy-ai" / "mcp.json")))
+        self.assertIn(st["title"], ("WorkBuddy 国际版", "WorkBuddy (international)"))
+        self.assertEqual(self.status("workbuddy")["state"], "missing")      # the Chinese version is another app
+        A.connect("workbuddy-ai", home=self.home, env=self.env, verify=False)
+        self.assertEqual(json.loads((self.home / ".workbuddy-ai" / "mcp.json").read_text(encoding="utf-8")),
+                         {"mcpServers": {"wuxian": {"command": PROG["command"], "args": ["mcp"]}}})
+        self.assertFalse(self.config().exists())
+
 
 class FakeClaude:
     """claude mcp add / remove / get against $CLAUDE_CONFIG_DIR/.claude.json, as the real command line does"""

@@ -136,11 +136,12 @@ class DevTools(unittest.TestCase):
         (root / "claude").mkdir()
         (root / "claude" / ".claude.json").write_text("{}", encoding="utf-8")
         env = {"USERPROFILE": str(home), "PATH": str(empty), "CLAUDE_CONFIG_DIR": str(root / "claude"),
-               "APPDATA": str(home / "AppData" / "Roaming"), "LOCALAPPDATA": str(home / "AppData" / "Local")}
+               "APPDATA": str(home / "AppData" / "Roaming"), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+               "PROGRAMFILES": str(root / "Program Files")}
         with mock.patch.dict(os.environ, env):
             states = {h["id"]: h["state"] for h in self.get("/api/agents")["hosts"]}
             self.assertEqual(states, {"claude": "absent", "codex": "absent", "cursor": "missing", "trae-cn": "missing",
-                                      "trae": "missing", "workbuddy": "missing"})
+                                      "trae": "missing", "workbuddy": "missing", "workbuddy-ai": "missing"})
             made = request(self.handle, "POST", "/api/agents", {"action": "connect", "host": "codex"})
             self.assertEqual(made["state"], "ok")
             self.assertIn("[mcp_servers.wuxian]", (home / ".codex" / "config.toml").read_text(encoding="utf-8"))

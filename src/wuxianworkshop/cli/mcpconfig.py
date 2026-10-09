@@ -9,12 +9,13 @@ from pathlib import Path
 
 from ..paths import logs_dir
 
-HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy")
+HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy", "workbuddy-ai")
 JSON_FILES = {   # the hosts that read the Cursor layout (mcpServers), and where
     "cursor": "# Cursor: .cursor/mcp.json in the project, or ~/.cursor/mcp.json for every project",
     "trae-cn": "# Trae CN: %APPDATA%\\Trae CN\\User\\mcp.json for every project, or paste it in 设置 → MCP → 添加 → 手动添加",
     "trae": "# Trae (international): %APPDATA%\\Trae\\User\\mcp.json for every project, or Settings → MCP → Add → Add Manually",
     "workbuddy": "# WorkBuddy: %USERPROFILE%\\.workbuddy\\mcp.json for every project, or 插件 → MCP 服务器 → 配置 MCP",
+    "workbuddy-ai": "# WorkBuddy (international): %USERPROFILE%\\.workbuddy-ai\\mcp.json for every project, or Plugins → MCP servers",
 }
 
 
@@ -46,7 +47,7 @@ def snippet(host, info=None, command=None, args=None, env=None):
         raise ValueError(f"host: one of {', '.join(HOSTS)}")
     if command is None:
         command, args = mcp_command()
-    if host in ("trae-cn", "trae", "workbuddy"):          # Trae takes no space in the command: its 8.3 form
+    if host in ("trae-cn", "trae", "workbuddy", "workbuddy-ai"):    # Trae takes no space in the command: its 8.3 form
         from ..agents import short_path
         command = short_path(str(command))
     env = environment() if env is None else env

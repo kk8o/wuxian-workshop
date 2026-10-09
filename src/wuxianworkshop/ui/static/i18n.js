@@ -616,7 +616,7 @@ const EN = {
   '# 或在终端：{cmd}': '# or in a terminal: {cmd}',
   '%USERPROFILE%\\.cursor\\mcp.json，或项目里的 .cursor\\mcp.json': '%USERPROFILE%\\.cursor\\mcp.json, or .cursor\\mcp.json in the project',
   '%APPDATA%\\Trae CN\\User\\mcp.json（国际版是 Trae 文件夹），或 设置 → MCP → 添加 → 手动添加': '%APPDATA%\\Trae CN\\User\\mcp.json (the Trae folder for the international version), or Settings → MCP → Add → Add Manually',
-  '%USERPROFILE%\\.workbuddy\\mcp.json，或 插件 → MCP 服务器 → 配置 MCP': '%USERPROFILE%\\.workbuddy\\mcp.json, or Plugins → MCP servers → Configure MCP',
+  '%USERPROFILE%\\.workbuddy\\mcp.json（国际版是 .workbuddy-ai 文件夹），或 插件 → MCP 服务器 → 配置 MCP': '%USERPROFILE%\\.workbuddy\\mcp.json (the .workbuddy-ai folder for the international version), or Plugins → MCP servers → Configure MCP',
   '{what} 已复制': '{what} copied',
   '已复制': 'Copied',
   '{s} 秒': '{s} s',

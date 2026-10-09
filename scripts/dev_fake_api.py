@@ -86,7 +86,7 @@ class Fake:
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
         # connected, no Cursor and no international Trae
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
-                       "workbuddy": "absent"}
+                       "workbuddy": "absent", "workbuddy-ai": "missing"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
         self.watch = []
         self.reload_pending = False
@@ -486,12 +486,13 @@ class Fake:
         """one agent as agents.py's Host.status() says it"""
         from wuxianworkshop import agents, i18n
         title = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor", "trae-cn": "Trae CN", "trae": "Trae 国际版",
-                 "workbuddy": "WorkBuddy"}[host]
+                 "workbuddy": "WorkBuddy", "workbuddy-ai": "WorkBuddy 国际版"}[host]
         where = {"claude": r"C:\Users\Someone\.claude.json", "codex": r"C:\Users\Someone\.codex\config.toml",
                  "cursor": r"C:\Users\Someone\.cursor\mcp.json",
                  "trae-cn": r"C:\Users\Someone\AppData\Roaming\Trae CN\User\mcp.json",
                  "trae": r"C:\Users\Someone\AppData\Roaming\Trae\User\mcp.json",
-                 "workbuddy": r"C:\Users\Someone\.workbuddy\mcp.json"}[host]
+                 "workbuddy": r"C:\Users\Someone\.workbuddy\mcp.json",
+                 "workbuddy-ai": r"C:\Users\Someone\.workbuddy-ai\mcp.json"}[host]
         state = self.agents[host]
         cmd = " ".join([self.PROGRAM["command"], *self.PROGRAM["args"]])
         detail = {"ok": "已接入：会启动 " + cmd, "absent": "还没有接入", "missing": f"没有找到 {title}",

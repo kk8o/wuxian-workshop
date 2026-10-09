@@ -135,11 +135,12 @@ class Endpoints(unittest.TestCase):
     def test_agents(self):
         """agents.py's shapes, which the 开始 and 接入 Agent pages read"""
         d = self.client.get("/api/agents", headers=AUTH).json()
-        self.assertEqual([h["id"] for h in d["hosts"]], ["claude", "codex", "cursor", "trae-cn", "trae", "workbuddy"])
+        self.assertEqual([h["id"] for h in d["hosts"]], ["claude", "codex", "cursor", "trae-cn", "trae", "workbuddy", "workbuddy-ai"])
         self.assertEqual({h["id"]: h["state"] for h in d["hosts"]}, {"claude": "other", "codex": "absent", "cursor": "missing",
-                                                                     "trae-cn": "absent", "trae": "missing", "workbuddy": "absent"})
+                                                                     "trae-cn": "absent", "trae": "missing", "workbuddy": "absent",
+                                                                     "workbuddy-ai": "missing"})
         self.assertEqual([h["id"] for h in d["hosts"] if h["can_verify"]], ["claude", "codex"])
-        self.assertTrue({"claude", "codex", "cursor", "trae-cn", "trae", "workbuddy", "other"} <= set(d["manual"]))
+        self.assertTrue({"claude", "codex", "cursor", "trae-cn", "trae", "workbuddy", "workbuddy-ai", "other"} <= set(d["manual"]))
         self.assertEqual(d["program"]["args"], ["mcp"])
         r = self.client.post("/api/agents", json={"action": "connect", "host": "codex"}, headers=AUTH).json()
         self.assertEqual((r["state"], r["verify"]["ok"]), ("ok", True))

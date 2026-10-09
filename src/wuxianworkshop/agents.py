@@ -11,7 +11,9 @@ r"""One-click connection of the coding agents to 无限工坊's MCP server (the 
     trae-cn  Trae CN (Trae 国内版) and trae (its international version): mcpServers.wuxian in the mcp.json beside the
              user settings, %APPDATA%\Trae CN\User\mcp.json and %APPDATA%\Trae\User\mcp.json (the folder is the app's
              product.json nameShort; Trae reads <user settings>\..\mcp.json and picks a change up while it runs)
-    workbuddy WorkBuddy: mcpServers.wuxian in ~/.workbuddy/mcp.json, its documented user-level file
+    workbuddy WorkBuddy 中文版 and workbuddy-ai (WorkBuddy 国际版, "WorkBuddy AI"): mcpServers.wuxian in the user-level
+             mcp.json of its built-in CodeBuddy, ~/.workbuddy/mcp.json (documented) and ~/.workbuddy-ai/mcp.json (the
+             international app's appHome); it watches the file
 Trae's documentation says the command may contain no spaces: Trae and WorkBuddy get a command with a space in it in its
 8.3 short form (short_path), when Windows keeps one.
 
@@ -35,7 +37,7 @@ from .cli.mcpconfig import mcp_command
 from .i18n import tr
 
 NAME = "wuxian"
-HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy")
+HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy", "workbuddy-ai")
 TIMEOUT = 90                 # seconds for an agent's command line (`claude mcp get` starts the server to check it)
 BACKUP = ".wuxian-backup"
 CMD_UNSAFE = '%^&|<>"'      # what cmd.exe would read itself in an argument handed to a .cmd / .bat (npm's shims)
@@ -478,22 +480,49 @@ class Trae(TraeCN):
 
 
 class WorkBuddy(JsonHost):
+    """WorkBuddy 中文版: its built-in CodeBuddy reads the user's MCP servers from <its config dir>\\mcp.json, the
+    folder being ~/.workbuddy (WORKBUDDY_CONFIG_DIR / CODEBUDDY_CONFIG_DIR move it), and watches that file"""
     id, title = "workbuddy", "WorkBuddy"
     program_dir, exe_name = "WorkBuddy", "WorkBuddy.exe"
+    data = ".workbuddy"
     short_command = True
     missing = ("没有找到 WorkBuddy（没有 ~/.workbuddy 文件夹）", "WorkBuddy not found (no ~/.workbuddy folder)")
-    apply = ("在 WorkBuddy 侧边栏「插件 → MCP 服务器」里能看到 wuxian，绿色就是连上了（没看到就重启 WorkBuddy）。",
-             "wuxian shows in WorkBuddy's sidebar under Plugins → MCP servers, green when it is connected (restart "
-             "WorkBuddy if it is not there).")
+    apply = ("在 WorkBuddy 侧边栏「插件 → MCP 服务器」里能看到 wuxian，第一次要打开它的开关，绿色就是连上了（没看到就重启 WorkBuddy）。",
+             "wuxian shows in WorkBuddy's sidebar under Plugins → MCP servers: turn its switch on the first time; green "
+             "means it is connected (restart WorkBuddy if it is not there).")
+
+    def app(self):
+        """its exe: under %LOCALAPPDATA%\\Programs, or %ProgramFiles% (an install for every user)"""
+        found = super().app()
+        if found:
+            return found
+        base = self.env.get("ProgramFiles") or self.env.get("PROGRAMFILES")
+        exe = Path(base) / self.program_dir / self.exe_name if base else None
+        return exe if exe is not None and exe.is_file() else None
 
     def folder(self):
-        return self.home / ".workbuddy"
+        return self.home / self.data
 
     def config(self):
         return self.folder() / "mcp.json"
 
 
-CLASSES = {"claude": Claude, "codex": Codex, "cursor": Cursor, "trae-cn": TraeCN, "trae": Trae, "workbuddy": WorkBuddy}
+class WorkBuddyIntl(WorkBuddy):
+    """WorkBuddy 国际版 (WorkBuddy AI, in %ProgramFiles%\\WorkBuddyAI): the same, with ~/.workbuddy-ai as its
+    config dir (its appHome)"""
+    id = "workbuddy-ai"
+    program_dir, exe_name = "WorkBuddyAI", "WorkBuddyAI.exe"
+    data = ".workbuddy-ai"
+    missing = ("没有找到 WorkBuddy 国际版（没有 ~/.workbuddy-ai 文件夹）",
+               "WorkBuddy (international) not found (no ~/.workbuddy-ai folder)")
+
+    @property
+    def title(self):
+        return tr("WorkBuddy 国际版", "WorkBuddy (international)")
+
+
+CLASSES = {"claude": Claude, "codex": Codex, "cursor": Cursor, "trae-cn": TraeCN, "trae": Trae, "workbuddy": WorkBuddy,
+           "workbuddy-ai": WorkBuddyIntl}
 
 
 def host(name, home=None, env=None, run=None):
@@ -516,7 +545,7 @@ def manual(prog):
         "claude": f"claude mcp add --scope user --transport stdio {NAME}{env} -- {quoted} {args}",
         "codex": "\n".join([tr("# %USERPROFILE%\\.codex\\config.toml 末尾加上：", "# add at the end of %USERPROFILE%\\.codex\\config.toml:"),
                             *Codex.block(prog)]),
-        "cursor": stdio, "trae-cn": short, "trae": short, "workbuddy": short, "other": stdio}
+        "cursor": stdio, "trae-cn": short, "trae": short, "workbuddy": short, "workbuddy-ai": short, "other": stdio}
 
 
 def status(home=None, env=None, run=None):

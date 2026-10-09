@@ -188,7 +188,8 @@ class McpConfig(unittest.TestCase):
 
     def test_trae_and_workbuddy_take_the_cursor_layout(self):
         for host, where in (("trae-cn", "%APPDATA%\\Trae CN\\User\\mcp.json"), ("trae", "%APPDATA%\\Trae\\User\\mcp.json"),
-                            ("workbuddy", "%USERPROFILE%\\.workbuddy\\mcp.json")):
+                            ("workbuddy", "%USERPROFILE%\\.workbuddy\\mcp.json"),
+                            ("workbuddy-ai", "%USERPROFILE%\\.workbuddy-ai\\mcp.json")):
             text = mcpconfig.snippet(host, None, command="wuxian", args=["mcp"], env={})
             self.assertIn(where, text.splitlines()[0])
             self.assertEqual(json.loads(text[text.index("{"):]), {"mcpServers": {"wuxian": {"command": "wuxian", "args": ["mcp"], "env": {}}}})

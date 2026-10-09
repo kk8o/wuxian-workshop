@@ -26,7 +26,7 @@
                                           state also comes with every status as status.update
      GET  /api/agents                  -> {program:{command, args}, hosts:[{id, title, present, can_connect, can_verify,
                                           state, detail, where, apply, entry}], manual:{claude, codex, cursor, trae-cn,
-                                          trae, workbuddy, other}}: the coding agents
+                                          trae, workbuddy, workbuddy-ai, other}}: the coding agents
                                           and this MCP server (agents.py); POST {action: connect|disconnect|verify, host}
                                           answers that host again, with verify:{ok, text} when checked
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
@@ -1524,7 +1524,7 @@ function appState() {
           } }, null, 2),
         },
         {
-          id: 'workbuddy', title: 'WorkBuddy · mcp.json', file: t('%USERPROFILE%\\.workbuddy\\mcp.json，或 插件 → MCP 服务器 → 配置 MCP'),
+          id: 'workbuddy', title: 'WorkBuddy · mcp.json', file: t('%USERPROFILE%\\.workbuddy\\mcp.json（国际版是 .workbuddy-ai 文件夹），或 插件 → MCP 服务器 → 配置 MCP'),
           text: JSON.stringify({ mcpServers: {
             'wuxian': { command: exe, args: c.args },
             'wuxian-http': { url: c.mcpUrl, headers: { Authorization: bearer } },

@@ -48,7 +48,7 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m unittest discover -s tests -t .    # 全部测试
 .venv\Scripts\wuxian install                                     # 把开发组件装进游戏（装完要完整重启游戏）
 .venv\Scripts\wuxian                                             # 窗口 + 托盘
-.venv\Scripts\wuxian mcp-config claude                           # 接入 Agent 的配置（也有 codex、cursor、trae-cn、trae、workbuddy）
+.venv\Scripts\wuxian mcp-config claude                           # 接入 Agent 的配置（也有 codex、cursor、trae-cn、trae、workbuddy、workbuddy-ai）
 ```
 
 打包：`powershell scripts\build.ps1`（PyInstaller，产物在 `dist\wuxian\`）；发布包：`powershell scripts\pack.ps1`（Velopack）。

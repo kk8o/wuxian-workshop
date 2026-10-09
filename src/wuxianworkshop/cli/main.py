@@ -30,9 +30,10 @@
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
     wuxian quit                               stop the daemon
-    wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy]   snippets that register the MCP server with those hosts
-    wuxian agents [connect|disconnect|verify] [claude|codex|cursor|trae-cn|trae|workbuddy|all]   register this program
-                                              with the agents
+    wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
+                                              with those hosts
+    wuxian agents [connect|disconnect|verify] [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai|all]   register
+                                              this program with the agents
     wuxian mcp                                the MCP server on stdio (for hosts that start it themselves)
     wuxian companion [...]                    the link alone, without the daemon;  wuxian monitor: print every frame
 
@@ -184,7 +185,8 @@ def build_parser():
     p = sub.add_parser("agents", help="the agents (Claude Code, Codex, Cursor, Trae, WorkBuddy) and this MCP server: state, "
                                       "connect, disconnect")
     p.add_argument("action", nargs="?", choices=("connect", "disconnect", "verify"), help="nothing: every agent's state")
-    p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor, trae-cn, trae, workbuddy or all (default)")
+    p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor, trae-cn, trae, workbuddy, workbuddy-ai or all "
+                                                          "(default)")
     p.add_argument("--json", action="store_true", help="print JSON")
     return ap
 
