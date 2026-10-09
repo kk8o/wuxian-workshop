@@ -13,7 +13,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
+import time
+from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server import MCPServer
@@ -23,6 +26,7 @@ from mcp_types import ToolAnnotations
 
 from .. import __version__, apidocs
 from . import kit as kit_tools
+from .changes import ListChanges, advertise
 from ..daemon.api import ApiError
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -180,9 +184,53 @@ def link_note(shot):
             "picture" + ("; a message was still going up, so it is bigger than at rest" if frame.get("busy") else ""))
 
 
+def code_stamp():
+    """the package's Python files as a process starting now would load them: how many, and the newest change (None when
+    frozen: a frozen program changes only by an update, which its version shows)"""
+    if getattr(sys, "frozen", False):
+        return None
+    count, newest = 0, 0
+    for path in Path(__file__).resolve().parents[1].rglob("*.py"):
+        try:
+            newest = max(newest, path.stat().st_mtime_ns)
+            count += 1
+        except OSError:
+            pass
+    return count, newest
+
+
+STARTED, LOADED = time.time(), code_stamp()      # when this process started, and the code it runs
+STALE_ACTION = ("reconnect this MCP server, so that a new process loads the current code and tools (Claude Code: /mcp, "
+                "then wuxian, Reconnect; other agents: restart their MCP server or the session)")
+
+
+def version_key(version):
+    return tuple(int(n) for n in re.findall(r"\d+", str(version or ""))[:3])
+
+
+def freshness(program_version):
+    """whether this MCP server process (on stdio it lives as long as the agent's session) still runs the program's
+    current code: it is stale when the program it talks to is a newer version, or (a source install) the package's files
+    changed after it started. Its tools are then those of its start: some may be missing (WuxianKit's wk_ tools came
+    with 0.9.7) or behave as they did."""
+    why = None
+    if program_version and version_key(program_version) > version_key(__version__):
+        why = f"the program is {program_version}; this MCP server process still runs {__version__}"
+    elif LOADED is not None and code_stamp() != LOADED:
+        why = "the program's source files changed after this MCP server process started"
+    out = dict(version=__version__, pid=os.getpid(), started=round(STARTED), stale=why is not None)
+    if why:
+        out.update(why=why, action=STALE_ACTION)
+    return out
+
+
 def build_server(backend, name="wuxian"):
-    """the MCPServer with the tools, over a Service or an HttpBackend"""
-    mcp = MCPServer(name, instructions=INSTRUCTIONS, version=__version__, log_level="WARNING")
+    """the MCPServer with the tools, over a Service or an HttpBackend. Its ListChanges (a middleware) tells the clients
+    that the tool, resource and prompt lists changed, in both eras of the protocol (mcp/changes.py)"""
+    changes = ListChanges()
+    mcp = MCPServer(name, instructions=INSTRUCTIONS, version=__version__, log_level="WARNING", middleware=[changes])
+    advertise(mcp)
+    mcp.list_changes = changes
 
     async def call(coro):
         try:
@@ -194,8 +242,12 @@ def build_server(backend, name="wuxian"):
     async def status() -> dict[str, Any]:
         """The daemon, the game window and the link: game.found / game.build, link.state (online = frames are coming
         in, so run / load work), link.slots_left (mailbox slots left in this game process), watch (files reloaded on
-        save), reload_pending. Call this first when a run or load times out."""
-        return await call(backend.status())
+        save), reload_pending. Call this first when a run or load times out. On stdio, mcp is this MCP server process:
+        mcp.stale = it runs older code than the program (tools missing or old): tell the user to reconnect it (mcp.action)."""
+        res = await call(backend.status())
+        if isinstance(backend, HttpBackend) and isinstance(res, dict):
+            res["mcp"] = freshness((res.get("daemon") or {}).get("version"))
+        return res
 
     @mcp.tool(annotations=WRITES)
     async def run(code: str, timeout_ms: int = 10000, addon: str | None = None) -> dict[str, Any]:
@@ -478,7 +530,7 @@ def build_server(backend, name="wuxian"):
         return found if isinstance(found, dict) else dict(topics=found, about=ix.about())
 
     # WuxianKit's tools, when the game runs it; over HTTP its watch asks now and then instead of waiting in a thread
-    kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300)
+    kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300, changes=changes)
     return mcp
 
 

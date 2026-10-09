@@ -29,6 +29,7 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp_types import (CallToolResult, GetPromptResult, Prompt, PromptArgument, PromptMessage, Resource, TextContent,
                        Tool, ToolAnnotations)
 
+from .changes import ListChanges
 from ..daemon.api import ApiError
 from ..extensions import listed_folders
 from ..paths import state_dir
@@ -633,22 +634,17 @@ def result(answer):
                           structured_content=answer if isinstance(answer, dict) else {"result": answer})
 
 
-async def tell_changed(mcp):
-    """the clients listening (subscriptions/listen) hear that the tools, resources and prompts changed"""
-    bus = getattr(mcp, "_subscriptions", None)
-    if bus is None:
-        return
-    from mcp.server.subscriptions import PromptsListChanged, ResourcesListChanged, ToolsListChanged
-    for event in (ToolsListChanged(), ResourcesListChanged(), PromptsListChanged()):
-        try:
-            await bus.publish(event)
-        except Exception:                                  # nobody listening, or a client gone
-            pass
+async def tell_changed(mcp, changes=None):
+    """the clients hear that the tools, resources and prompts changed: the ones listening (subscriptions/listen, the
+    2026-07-28 wire) on the server's subscription bus, and with changes (changes.ListChanges, the server's middleware) the
+    handshake-era ones by notification"""
+    await (changes if changes is not None else ListChanges()).tell(mcp)
 
 
-def attach(mcp, backend, store=None, wait=300):
-    """mcp lists and calls WuxianKit's tools, resources and prompts beside its own (wait: as KitTools')"""
-    kit = KitTools(backend, store, notify=lambda: tell_changed(mcp), wait=wait)
+def attach(mcp, backend, store=None, wait=300, changes=None):
+    """mcp lists and calls WuxianKit's tools, resources and prompts beside its own (wait: as KitTools'; changes: the
+    server's ListChanges, which tells the handshake-era clients too)"""
+    kit = KitTools(backend, store, notify=lambda: tell_changed(mcp, changes), wait=wait)
     own_tools, own_call = mcp.list_tools, mcp.call_tool
     own_resources, own_read = mcp.list_resources, mcp.read_resource
     own_prompts, own_prompt = mcp.list_prompts, mcp.get_prompt
