@@ -6,6 +6,10 @@
 --                                  from JSON) and its first return value goes back as JSON; `doc` says what it does
 -- An event goes out as an EVENT message {"a":addon,"t":topic,"d":data[,"x":events dropped before it]} (Json.lua), at most
 -- RATE a second for an addon (BURST at once), its data at most MAX bytes; while the link is not online the last KEEP wait.
+-- Events are best effort: the link carries about 4 messages a second, in order, so at most QUEUE of them wait in its queue
+-- (more are dropped and counted) and a burst of events never holds up a run's result by more than a couple of seconds.
+-- An addon that uses this names WoWBridge in its .toc (## OptionalDeps: WoWBridge): addons load in name order, and one
+-- that loads before WoWBridge finds no WoWBridge to bind to.
 -- A call is a chunk the daemon sends (agent/probes.py, call_chunk) that runs WoWBridge.Call(addon, name, args) and
 -- returns its answer as JSON; WoWBridge.Describe(addon) is what `addon_api` shows. Only data crosses: the agent calls what
 -- an addon exposed and nothing else. Without 无限工坊 there is no WoWBridge: the new_addon template takes a stub then, on
@@ -14,7 +18,7 @@ local _, ns = ...
 local WB = _G.WoWBridge
 local Json = ns.Json
 
-local RATE, BURST, MAX, KEEP = 20, 40, 8000, 50
+local RATE, BURST, MAX, KEEP, QUEUE = 10, 20, 8000, 20, 8
 
 local addons = {}     -- addon -> { exposed = { name -> { fn, doc } }, order = { names }, topics = { topic -> n }, tokens, at, dropped }
 local waiting = {}    -- events from before the link was online, oldest first
@@ -33,11 +37,12 @@ local function Online()
 	return link ~= nil and link.State() == "online"
 end
 
+-- what waited from before the link was online, as far as the link's queue has room (the ticker below comes back for more)
 local function Flush()
 	if #waiting == 0 or not Online() then return end
-	local send = waiting
-	waiting = {}
-	for i = 1, #send do ns.Link.Send(send[i], "event") end
+	while #waiting > 0 and ns.Link.Waiting("event") < QUEUE do
+		ns.Link.Send(table.remove(waiting, 1), "event")
+	end
 end
 
 local function Emit(self, topic, data)
@@ -45,8 +50,9 @@ local function Emit(self, topic, data)
 	local e = Entry(self.addon)
 	local now = GetTime()
 	e.tokens, e.at = math.min(BURST, e.tokens + (now - e.at) * RATE), now
-	if e.tokens < 1 then                                    -- too many: counted, and the next one that goes says so
-		e.dropped = e.dropped + 1
+	local online = Online()
+	if e.tokens < 1 or (online and ns.Link.Waiting("event") >= QUEUE) then   -- too many, or the link is busy: counted,
+		e.dropped = e.dropped + 1                                              -- and the next one that goes says so
 		return false
 	end
 	e.tokens = e.tokens - 1
@@ -56,12 +62,12 @@ local function Emit(self, topic, data)
 	local text = '{"a":' .. Json.Encode(self.addon) .. ',"t":' .. Json.Encode(topic) .. ',"d":' .. body
 		.. (e.dropped > 0 and (',"x":' .. e.dropped) or "") .. "}"
 	e.dropped = 0
-	if Online() then
-		Flush()
+	if online and #waiting == 0 then
 		ns.Link.Send(text, "event")
-	else
+	else                                                    -- behind the ones still waiting, in order
 		if #waiting >= KEEP then table.remove(waiting, 1) end
 		waiting[#waiting + 1] = text
+		Flush()
 	end
 	return true
 end

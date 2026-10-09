@@ -41,7 +41,7 @@ a feature and to see whether a fix worked. `trace` records the events the game f
 handle, what its payload is); `inspect` describes a frame, or the frames under the mouse (layout bugs). Test without mouse and keyboard: call the slash handler
 (`SlashCmdList.NAME("args")`), your button's `:Click()`, your handler with made-up arguments. Better: let the addon
 talk to you through WoWBridge (`local WB = WoWBridge and WoWBridge.Bind(addonName)`, or a stub for players without
-无限工坊, as the new_addon template does):
+无限工坊, as the new_addon template does; its .toc needs `## OptionalDeps: WoWBridge`, or it may load first and find none):
 `WB:Emit(topic, data)` sends an event that `events` reads or waits for (instead of print debugging), and
 `WB:Expose(name, fn, doc)` a function you `call` with JSON arguments (instead of `run`); `addon_api` lists both. Code of `run` / `try`
 runs tainted ('*** ForceTaint_Strong ***'): a Blizzard panel it opens (ToggleCharacter …) runs tainted too and can

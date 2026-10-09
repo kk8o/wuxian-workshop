@@ -30,6 +30,7 @@ TOC = """## Interface: {interface}
 ## Author: {author}
 ## Version: 0.1.0
 ## SavedVariables: {name}DB
+## OptionalDeps: WoWBridge
 ## X-Made-With: {made_with}
 
 {name}.lua
@@ -245,6 +246,8 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
   要驱动插件的功能时用它代替 `run`：每次走同一个入口，不碰游戏里别的东西。模板里的 `hello` 就是一个。
 - `addon_api`：插件公开了哪些函数（带说明）、发过哪些事件。
 - 只传数据，不传代码；玩家没装无限工坊时 `WB` 是空壳，这些调用什么也不做，插件照常运行。
+- `{name}.toc` 里的 `## OptionalDeps: WoWBridge` 不能删：插件按名字顺序加载，排在 WoWBridge 前面的插件加载时还没有
+  WoWBridge，`WB` 就成了空壳（`check` 会提醒）。事件尽力送达：链路每秒约 4 条，发太多会被丢掉并计数（`dropped`）。
 
 ## 改坏了能退回去
 
@@ -359,6 +362,9 @@ The template has a handle `WB` already (also in `ns.WB`): the addon and you exch
 - `addon_api`: the functions the addon exposed (with what they do) and the events it sent.
 - Only data crosses, never code; for players without Wuxian Workshop `WB` is an empty shell on which these calls do
   nothing, and the addon runs as it is.
+- Keep `## OptionalDeps: WoWBridge` in `{name}.toc`: addons load in name order, and one that loads before WoWBridge
+  finds none, so `WB` stays the empty shell (`check` warns). Events are best effort: the link carries about 4 messages
+  a second, and too many are dropped and counted (`dropped`).
 
 ## Going back after breaking something
 

@@ -1211,6 +1211,16 @@ def check(path, addons=None, ix=None):
                 add(rel, line, "event-unknown", f"{what}(\"{event}\"): not an event of this client (an error in the game)",
                     "api_search the event's name", "errors")
 
+    # an addon that talks with the agent through WoWBridge (WoWBridge.Bind) loads after it only when its .toc says so:
+    # addons load in name order, and one before WoWBridge finds no WoWBridge (its handle stays the template's stub)
+    uses_bridge = next(((rel_of(p), line) for p, s in scans.items() if _key(p) in targets
+                        for name, line in s["reads"] if name == "WoWBridge"), None)
+    if (uses_bridge and toc is not None and folder.name.lower() not in ("wowbridge", "wowbridge_lab")
+            and "wowbridge" not in {d.lower() for d in tocinfo["deps"]}):
+        add(uses_bridge[0], uses_bridge[1], "load-order", "it uses WoWBridge, but its .toc does not name it: addons load "
+            "in name order, so it may load before WoWBridge and find none (its WB handle stays an empty shell)",
+            "add the line ## OptionalDeps: WoWBridge to the .toc (the game reads it at launch: restart it)")
+
     # the .toc and the XML (for an addon folder)
     if path.is_dir() and toc is not None:
         trel = rel_of(toc)

@@ -72,18 +72,23 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.events(topic="nothing.*"), [])
 
     def test_a_flood_is_cut_and_the_next_event_says_so(self):
+        """events are best effort: at most QUEUE (8) wait in the link's queue, so that a flood never holds up a run's
+        result; what is dropped is counted, and the next event that goes says how many"""
         s = self.s
-        s.lua.execute(b'for i = 1, 60 do FooWB:Emit("flood", { i = i }) end')  # 40 at once (BURST), 20 a second after
-        s.run(30)
+        s.lua.execute(b'for i = 1, 60 do FooWB:Emit("flood", { i = i }) end')
+        s.run(15)
         s.lua.execute(b'FooWB:Emit("after", {})')
         s.run(6)
         flood = self.events(topic="flood", limit=1000)
-        self.assertEqual(len(flood), 40)
-        self.assertEqual(self.events(topic="after")[0]["dropped"], 20)
-        page = asyncio.run(self.svc.addon_events(topic="flood", limit=10))
-        self.assertEqual(len(page["events"]), 10)
+        self.assertEqual(len(flood), 8)
+        self.assertEqual(self.events(topic="after")[0]["dropped"], 52)
+        page = asyncio.run(self.svc.addon_events(topic="flood", limit=3))
+        self.assertEqual(len(page["events"]), 3)
         rest = asyncio.run(self.svc.addon_events(topic="flood", since=page["next"], limit=1000))["events"]
-        self.assertEqual(len(rest), 30)                                             # the next page picks up there
+        self.assertEqual([e["data"]["i"] for e in rest], [4, 5, 6, 7, 8])          # the next page picks up there
+        s.lua.execute(b'FooWB:Emit("big", { s = string.rep("x", 9000) })')         # over MAX: said, not sent
+        s.run(6)
+        self.assertEqual(self.events(topic="big")[0]["data"]["cut"], True)
 
     def test_call_and_addon_api(self):
         svc = self.svc
@@ -223,6 +228,28 @@ class Templates(unittest.TestCase):
             ns = self.run_in(bare, folder)
             self.assertIsNone(bare.lua.globals()[b"WoWBridge"])
             ns[b"WB"][b"Emit"](ns[b"WB"], b"x", None)                # the stub takes the calls and does nothing
+
+
+class LoadOrder(unittest.TestCase):
+    """check: an addon that uses WoWBridge names it in its .toc, or it may load before it and find none"""
+
+    def test_the_toc_must_name_wowbridge(self):
+        from wuxianworkshop.agent import lint
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / "Aaa"
+            folder.mkdir()
+            (folder / "Aaa.lua").write_text("local addonName, ns = ...\nlocal WB = WoWBridge and WoWBridge.Bind(addonName)\n"
+                                            "ns.WB = WB\n", encoding="utf-8")
+            (folder / "Aaa.toc").write_text("## Interface: 16001\nAaa.lua\n", encoding="utf-8")
+            codes = [w["code"] for w in lint.check(folder)["warnings"]]
+            self.assertIn("load-order", codes)
+            (folder / "Aaa.toc").write_text("## Interface: 16001\n## OptionalDeps: WoWBridge\nAaa.lua\n", encoding="utf-8")
+            self.assertNotIn("load-order", [w["code"] for w in lint.check(folder)["warnings"]])
+            made = Path(d) / "made"
+            made.mkdir()
+            scaffold.create(made, "Talker")                     # the template names it already
+            self.assertIn("## OptionalDeps: WoWBridge", (made / "Talker" / "Talker.toc").read_text(encoding="utf-8"))
+            self.assertNotIn("load-order", [w["code"] for w in lint.check(made / "Talker")["warnings"]])
 
 
 if __name__ == "__main__":
