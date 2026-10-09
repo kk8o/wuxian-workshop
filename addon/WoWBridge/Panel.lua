@@ -192,7 +192,8 @@ local function Build()
 	panel.version:SetPoint("TOPLEFT", panel.titleText, "BOTTOMLEFT", 0, -5)
 	-- WuxianKit's window, while the game runs it (Refresh shows the button then): the panel gives way to it
 	panel.kit = S.Button(panel, 64, 22)
-	panel.kit:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -40, -25)
+	panel.kit:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -40, -18)    -- level with the title: as wide as its name, it
+	                                                                -- stays clear of the subtitle below
 	panel.kit:SetScript("OnClick", function()
 		panel:Hide()
 		ns.Kit.Open()
