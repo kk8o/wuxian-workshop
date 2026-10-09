@@ -232,7 +232,8 @@ def front_matter(text):
 
 
 def skills_in(addons, rel):
-    """the skills of a docs folder (skills/*.md, by file name): [{name, description, arguments [(name, required)], body}]"""
+    """the skills of a docs folder (skills/*.md, by file name): [{name, title, description, arguments [(name, required)],
+    body}]"""
     folder = inside(addons, rel, "skills")
     if folder is None or not folder.is_dir():
         return []
@@ -250,7 +251,8 @@ def skills_in(addons, rel):
             a = a.strip()
             if re.match(r"^[a-z_][a-z0-9_]*\??$", a):
                 args.append((a.rstrip("?"), not a.endswith("?")))
-        out.append(dict(name=name, description=meta.get("description") or "", arguments=args, body=body.strip()))
+        out.append(dict(name=name, title=meta.get("title") or name, description=meta.get("description") or "",
+                        arguments=args, body=body.strip()))
     return out
 
 
@@ -596,7 +598,7 @@ class KitTools:
         return [ReadResourceContents(content=text, mime_type="text/markdown")]
 
     async def prompts(self):
-        return [Prompt(name=s["prompt"], title=s["name"], description=f"{s['description']} (WuxianKit · {s['ext']['id']})",
+        return [Prompt(name=s["prompt"], title=s["title"], description=f"{s['description']} (WuxianKit · {s['ext']['id']})",
                        arguments=[PromptArgument(name=n, required=r) for n, r in s["arguments"]])
                 for s in await self.skills()]
 

@@ -567,10 +567,12 @@ class KitTools(unittest.TestCase):
         addons = Path(self.home.name) / "AddOns"
         (addons / "WuxianKit/skills").mkdir(parents=True)
         (addons / "WuxianKit/skills/kit-extension.md").write_text(
-            "---\nname: kit-extension\ndescription: Write one\n---\nUse wk_docs.\n", encoding="utf-8")
+            "---\nname: kit-extension\ntitle: Write an extension\ndescription: Write one\n---\nUse wk_docs.\n",
+            encoding="utf-8")
         manifest = self.manifest()
         mcp = build_server(self.backend(manifest, addons=addons))
-        self.assertEqual([p.name for p in asyncio.run(mcp.list_prompts())], ["kit-extension"])
+        self.assertEqual([(p.name, p.title) for p in asyncio.run(mcp.list_prompts())],
+                         [("kit-extension", "Write an extension")])                  # its title, where it has one
         manifest["protocol"] = 2
         mcp = build_server(self.backend(dict(manifest, revision="r2"), addons=addons))
         tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
