@@ -634,7 +634,7 @@ const EN = {
   '读取扩展目录…': 'Reading the extension catalog…',
   '目录里还没有扩展。': 'The catalog has no extensions yet.',
   '包含': 'Includes',
-  '技能': 'Skills',
+  'Agent 技能': 'Agent skills',
   '更新说明': 'Release notes',
   '安装': 'Install',
   '更新中…': 'Updating…',

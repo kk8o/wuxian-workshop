@@ -710,7 +710,7 @@
             <p class="ext-summary" x-text="loc(a.summary)"></p>
             <dl class="spec">
               <div x-show="a.extensions && a.extensions.length"><dt>包含</dt><dd x-text="(a.extensions || []).map(e => loc(e.title)).join(t('、'))"></dd></div>
-              <div x-show="a.skills && a.skills.length"><dt>技能</dt><dd class="mono" x-text="(a.skills || []).map(s => s.name).join(', ')"></dd></div>
+              <div x-show="a.skills && a.skills.length"><dt>Agent 技能</dt><dd :title="(a.skills || []).map(s => loc(s.description)).join('\n')" x-text="(a.skills || []).map(s => loc(s.title) || s.name).join(t('、'))"></dd></div>
               <div x-show="loc(a.notes)"><dt>更新说明</dt><dd class="ext-notes" x-text="loc(a.notes)"></dd></div>
             </dl>
             <div class="ext-acts">

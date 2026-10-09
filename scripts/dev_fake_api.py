@@ -403,7 +403,14 @@ class Fake:
          "extensions": [{"id": i, "title": {"zh": z, "en": e}, "tools": n, "events": v} for i, z, e, n, v in (
              ("tune", "调校", "Tune", 33, 0), ("chat", "聊天", "Chat", 4, 1), ("gate", "远程", "Remote", 3, 3),
              ("data", "数据", "Data", 4, 0), ("guide", "指引", "Guide", 5, 1), ("sense", "角色信息", "Character info", 8, 0))],
-         "skills": [{"name": "guild-qa", "extension": "chat", "description": "Answer game questions in guild chat"}],
+         "skills": [{"name": n, "extension": x, "title": {"zh": z, "en": n}, "description": {"zh": dz, "en": de}}
+                    for n, x, z, dz, de in (
+                        ("kit-extension", "kit", "写一个标准库扩展", "按标准库的架构，把一个插件接入标准库，或新写一个扩展",
+                         "Make an addon a WuxianKit extension, or write a new extension"),
+                        ("tune-setup", "tune", "调一套设置", "按玩家的要求调整一组设置、按键、宏、界面布局或天赋配置，合成一个可以整体撤销的提案",
+                         "Change a set of settings in one proposal the player can undo as one"),
+                        ("guide-tour", "guide", "分步讲解界面", "用高亮和简短说明，一步步带玩家熟悉游戏界面的某个功能",
+                         "Walk the player through a part of the UI step by step"))],
          "notes": {"zh": "0.3.0：新增远程、数据、指引三个扩展；界面用语改写，支持中英文切换。",
                    "en": "0.3.0: Remote, Data and Guide extensions; plainer wording with a Chinese/English switch."},
          "released": "2026-10-10", "homepage": "https://wuxianwow.com/workshop/extensions"},
