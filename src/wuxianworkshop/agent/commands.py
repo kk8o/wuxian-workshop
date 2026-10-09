@@ -10,10 +10,12 @@ Commands: "reload" (the addon shows a button: only a click may reload the UI on 
 RELOAD "asked: ..." / "later: ..."); "run <lua>" and "load <file>" send Lua for the addon to run (CODE records, see code()),
 which answers RUN "<job> ok <chunk name> (<bytes> B, <ms> ms, <n> values)[: <returned values, framed>]" or "<job> error
 <chunk name>: <error>" (daemon/api.py parse_run reads them); "watch <file | addon>" and "unwatch" are handled here.
+data_call() sends what the agent asks of an addon's API (call, respond, addon_api) as data (CALL records), not code.
 Anything else goes to the addon as a COMMAND record.
 A load may flag its first CODE part "reset" (one file) or "unload" / "reload" (the first / last file of an addon): the
 addon then calls the addon's OnUnload() before the code runs and OnReload(<what OnUnload returned>) after it.
 """
+import json
 import re
 from pathlib import Path
 
@@ -84,13 +86,31 @@ class AgentCommands:
         self.note(f"code {job}: {name} ({len(data)} B, {len(parts)} parts{flag.replace(' ', ', ') if flag else ''})")
         return job
 
+    def data_call(self, verb, payload):
+        """what the agent asks of an addon's API (WoWBridge API.lua) as data, not code: CALL records "<job> <i>/<n>[
+        <verb>]\n<JSON>" in parts of CODE_CHUNK bytes. verb: "call" {a: addon, n: name, d: args}, "reply" {r: request id,
+        d: data}, "describe" {a: addon or None}, "piece" {k: job, i: piece}. WoWBridge (0.9.7 on, link features DATA)
+        compiles nothing for it, so it works with hot loading off; it answers with a RUN message, as for code(). Returns
+        the job id"""
+        self.last_job = job = max(int(self.clock() * 1000) % 10 ** 10, self.last_job + 1)
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        parts = [data[i:i + CODE_CHUNK] for i in range(0, max(len(data), 1), CODE_CHUNK)]
+        for i, piece in enumerate(parts, 1):
+            head = f"{job} {i}/{len(parts)}" + (f" {verb}" if i == 1 else "")
+            self.outbox.append((MB.CALL, head.encode() + b"\n" + piece))
+        self.note(f"data call {job}: {verb} ({len(data)} B, {len(parts)} parts)")
+        return job
+
     def withdraw(self, job):
-        """the CODE parts of a job still in the outbox taken out (nobody waits for its result any more): (how many,
-        whether a part had gone out already, so that it may still run)"""
+        """the CODE / CALL parts of a job still in the outbox taken out (nobody waits for its result any more): (how
+        many, whether a part had gone out already, so that it may still run)"""
         prefix = f"{job} ".encode()
-        mine = [r for r in self.outbox if r[0] == MB.CODE and r[1].startswith(prefix)]
-        self.outbox = [r for r in self.outbox if not (r[0] == MB.CODE and r[1].startswith(prefix))]
-        sent = any(k == MB.CODE and d.startswith(prefix) for recs in self.written.values() for k, d in recs)
+
+        def its(kind, data):
+            return kind in (MB.CODE, MB.CALL) and data.startswith(prefix)
+        mine = [r for r in self.outbox if its(*r)]
+        self.outbox = [r for r in self.outbox if not its(*r)]
+        sent = any(its(k, d) for recs in self.written.values() for k, d in recs)
         return len(mine), sent
 
     def _resolve(self, spec):

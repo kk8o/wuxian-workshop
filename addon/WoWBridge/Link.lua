@@ -26,7 +26,8 @@ local band, floor, char = bit.band, math.floor, string.char
 local L = {}
 ns.Link = L
 L.VERSION = "0.9.6"
-L.FEATURES = 1     -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=
+L.FEATURES = 2     -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
+                   -- 2 (0.9.7): also takes CALL records (data calls, Agent.lua)
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT, L.TYPE_BATCH = 0, 1, 2, 3, 4, 5, 6
@@ -322,6 +323,8 @@ local function Record(r, pkt)
 		L.Command(r.data)
 	elseif r.kind == "CODE" then
 		ns.Agent.Code(r.data)
+	elseif r.kind == "CALL" then
+		ns.Agent.Call(r.data)
 	elseif r.kind == "PARTS" and pkt.session == ns.session then
 		Parts(r.data)
 	end

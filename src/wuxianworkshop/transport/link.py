@@ -17,7 +17,8 @@ part / parts); it counts as received when every part is in. Message ids run 1..6
 last RECEIVED_MAX of them. Everything below an addon's oldest message (m=) has left its queue, so the ack moves past it.
 Records the companion writes besides WELCOME / HEARTBEAT / TEXT / COMMAND: PARTS "<id>:<hex bitmap>" for a message still
 missing parts (bit i of byte i // 8 = part i received; no bits: none of it came), so that the addon shows only the
-missing parts again.
+missing parts again; CODE (agent/commands.py code) and, to an addon with link features DATA (f=2, 0.9.7), CALL: a data
+call (agent/commands.py data_call).
 Acknowledgements: an addon before 0.9.6 shows a message again 4 s after it went up unless acknowledged, so the ack goes
 out within ack_every (1 s) of a message coming. An addon with link features LAZY (f=1, 0.9.6) takes rto, a longer
 window and pack=1 from its WELCOME: the companion then acknowledges ack_lazy seconds after the first message it has not
@@ -55,6 +56,7 @@ TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT, TYPE_BATCH 
 TYPE_BYTES = {bytes([t]) for t in range(7)}
 URGENT_TYPES = (TYPE_RUN, TYPE_RELOAD)   # the addon shows these before the others: a later id may come before them
 LAZY = 1                        # the link features (f=) from which the acks go lazily and PARTS ask at once (0.9.6)
+DATA = 2                        # ... from which the addon takes CALL records: data calls (0.9.7)
 NACK_AGAIN = 5.0                # a message asked for is asked for again after this long while it is still missing
 NACK_SPAN = 1024                # ids past the ack looked through for missing ones, at most
 PARTS_MAX = 8                   # PARTS records in one packet, at most
@@ -125,7 +127,7 @@ DEBUG_KINDS = ("ERR", "OUT", "WARN", "BLOCKED", "DROPPED")
 LEGACY_KINDS = DEBUG_KINDS + ("RUN", "RELOAD")   # untyped messages of addons before 0.8: the kind is the first word
 DEBUG_LABELS = dict(ERR="lua error", OUT="print", WARN="lua warning", BLOCKED="blocked", DROPPED="dropped", RUN="run",
                     RELOAD="reload", INFO="debug")
-RESEND = (MB.TEXT, MB.COMMAND, MB.CODE, MB.WELCOME)   # records sent again when the slot that carried them was lost
+RESEND = (MB.TEXT, MB.COMMAND, MB.CODE, MB.CALL, MB.WELCOME)   # sent again when the slot that carried them was lost
 PING_FORGET = 60.0              # seconds after which an unanswered ping is forgotten
 _LINKS = re.compile(r"\|H[^|]*\|h(.*?)\|h")
 _ESCAPES = re.compile(r"\|c[0-9a-fA-F]{8}|\|r|\|T[^|]*\|t|\|A[^|]*\|a")
@@ -288,8 +290,8 @@ class Companion(AgentCommands):
     def _forget(self):
         """what this companion knew of a game process that is gone, and the commands and code that waited for it (a
         later process must not run them); returns how many of those"""
-        stale = [r for r in self.outbox if r[0] in (MB.CODE, MB.COMMAND, MB.WELCOME)]
-        self.outbox = [r for r in self.outbox if r[0] not in (MB.CODE, MB.COMMAND, MB.WELCOME)]
+        stale = [r for r in self.outbox if r[0] in (MB.CODE, MB.CALL, MB.COMMAND, MB.WELCOME)]
+        self.outbox = [r for r in self.outbox if r[0] not in (MB.CODE, MB.CALL, MB.COMMAND, MB.WELCOME)]
         self.slot, self.addon_slot, self.sessions, self.current, self.full = None, None, {}, None, False
         self.written, self.written_at, self.written_as, self.slots_warned = {}, {}, {}, set()
         self.pings, self.reload_sent, self.watch_jobs = {}, None, {}
@@ -811,6 +813,11 @@ class Companion(AgentCommands):
                 del self.written[i]
                 self.written_at.pop(i, None)
                 self.written_as.pop(i, None)
+
+    def data_calls(self):
+        """whether the addon of the current session takes data calls (CALL records: link features DATA, 0.9.7 on)"""
+        s = self.sessions.get(self.current)
+        return s is not None and s.features >= DATA
 
     def mark(self):
         """(the current session, the latest message id received from it), or None: try waits until every message up to

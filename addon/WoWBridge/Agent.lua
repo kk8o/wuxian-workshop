@@ -9,7 +9,8 @@
 -- one twice; a job older than STALE by the PC's clock (the id is the companion's clock in ms, mod 1e10) is not run at all:
 -- its packet waited in the mailbox (a game restart, a slot read again), and nobody waits for it any more. A secret value
 -- or one whose tostring raises comes back as "<secret>" / "<type: ...>", and a result that cannot be put into words still
--- goes back as an error: the agent always gets an answer. The setting hotLoad (/wb set hotLoad off) refuses them.
+-- goes back as an error: the agent always gets an answer. The setting hotLoad (/wb set hotLoad off) refuses them (not
+-- the data calls of CALL records, A.Call below: those carry no code).
 -- Lifecycle: a first part flagged "reset" calls WoWBridgeNS[addon].OnUnload() before the code runs (pcall) and
 -- OnReload(<what OnUnload returned>) after it; "unload" and "reload" do one half each, so that a whole-addon load calls
 -- OnUnload before its first file and OnReload after its last.
@@ -285,4 +286,104 @@ function A.Code(data)
 	end
 	if not job.parts[i] then job.parts[i], job.got = body, job.got + 1 end
 	if job.got == job.n and job.name then RunJob(id, job) end
+end
+
+-- Data calls (link features 2, 0.9.7): a CALL record "<job> <i>/<n>[ <verb>]\n<JSON>", in parts as a CODE job's, carries
+-- what the agent asks of an addon's API (API.lua) as data: "call" {"a": addon, "n": name, "d": args} runs a function the
+-- addon exposed, "reply" {"r": request id, "d": data} answers its request, "describe" {"a": addon or null} says what
+-- addons expose, "piece" {"k": job, "i": n} brings piece n of a long answer. WoWBridge reads them itself and compiles
+-- nothing: they work with hot loading off, and the addon's function runs as any addon code does, without the taint the
+-- client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
+-- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds.
+local PIECE, ANSWER_MOST, ANSWER_KEPT = 3900, 256 * 1024, 300
+local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece" }
+local answers = {}                    -- job id -> { s, cuts, left, at }: answers longer than a piece
+
+-- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece)
+local function Pieces(s)
+	if #s > ANSWER_MOST then
+		s = ns.Json.Encode({ error = ("the answer is %d KB, more than the %d KB a call brings back"):format(
+			math.ceil(#s / 1024), ANSWER_MOST / 1024) })
+	end
+	local cuts, from = {}, 1
+	repeat
+		local to = math.min(#s, from + PIECE - 1)
+		for _ = 1, 3 do                       -- between two UTF-8 characters: the next byte starts one
+			local b = s:byte(to + 1)
+			if not b or b < 128 or b >= 192 then break end
+			to = to - 1
+		end
+		cuts[#cuts + 1] = to
+		from = to + 1
+	until from > #s
+	return s, cuts
+end
+
+-- (the answer's text, or nil + why not) for a data call
+local function Answer(verb, req)
+	local WB = _G.WoWBridge
+	if verb == "call" then return WB.Call(req.a, req.n, req.d) end
+	if verb == "reply" then return WB.Reply(req.r, req.d) end
+	if verb == "describe" then return WB.Describe(req.a) end
+	if verb ~= "piece" then return nil, ("no data call %q"):format(tostring(verb)) end
+	local key, i = tostring(req.k), tonumber(req.i)
+	local a = answers[key]
+	if not a or not i or i < 2 or not a.cuts[i] then
+		return nil, "the rest of this answer is no longer kept in the game (the UI reloaded?)"
+	end
+	a.left = a.left - 1
+	if a.left <= 0 then answers[key] = nil end
+	return ("%d/%d\n%s"):format(i, #a.cuts, a.s:sub(a.cuts[i - 1] + 1, a.cuts[i]))
+end
+
+local function RunCall(id, job)
+	jobs[id] = nil
+	MarkDone(id)
+	local t0, body, chunk = debugprofilestop(), table.concat(job.parts), CHUNK[job.verb] or "=call"
+	local req, err = ns.Json.Decode(body)
+	local text, failure
+	if err then
+		failure = "its data is not JSON: " .. err
+	elseif type(req) ~= "table" then
+		failure = "its data is not a JSON object"
+	else
+		local ok, a, why = pcall(Answer, job.verb, req)
+		if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
+	end
+	if text and job.verb ~= "piece" then
+		local s, cuts = Pieces(text)
+		if #cuts > 1 then
+			for k, kept in pairs(answers) do
+				if GetTime() - kept.at > ANSWER_KEPT then answers[k] = nil end   -- left by a daemon that never asked
+			end
+			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime() }
+		end
+		text = "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
+	end
+	local ms = debugprofilestop() - t0
+	if failure then
+		Result(("%s error %s: %s"):format(id, chunk, failure))
+	else
+		Result(("%s ok %s (%d B, %.1f ms, 1 value): %s"):format(id, chunk, #body, ms, Quote(text)))
+	end
+	if job.verb ~= "call" and job.verb ~= "reply" then return end      -- the app's own looks, as probes are
+	local addon = type(req) == "table" and (job.verb == "call" and req.a or "-") or "-"
+	Count(chunk, failure == nil)
+	pcall(ns.Console.Job, chunk, tostring(addon), nil, failure == nil, ms, text or "", failure)
+end
+
+-- a CALL record (Link.lua hands them over); its parts gather in the same table as CODE jobs' (the ids never meet)
+function A.Call(data)
+	local head, body = data:match("^([^\n]*)\n(.*)$")
+	local id, i, n, verb = (head or ""):match("^(%d+) (%d+)/(%d+) ?(%S*)$")
+	i, n = tonumber(i), tonumber(n)
+	if not id or i < 1 or i > n or Done(id) or Stale(id) then return end
+	local job = jobs[id]
+	if not job then
+		job = { n = n, parts = {}, got = 0 }
+		jobs[id] = job
+	end
+	if i == 1 then job.verb = verb end
+	if not job.parts[i] then job.parts[i], job.got = body, job.got + 1 end
+	if job.got == job.n and job.verb then RunCall(id, job) end
 end

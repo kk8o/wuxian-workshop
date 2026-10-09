@@ -11,7 +11,9 @@ A packet, inside fontpack's "WF" envelope:
     record: type (1) | length (2) | data
 session = the addon UI session the packet answers, ack = the highest message id received without gaps in that session.
 A CODE record carries part of a Lua job for the addon to run: "<job> <i>/<n>[ <addon> <chunk name>]\n<bytes>" (the
-addon name and chunk name only in part 1; addon "-" = none).
+addon name and chunk name only in part 1; addon "-" = none). A CALL record (addon 0.9.7 on, link features 2) carries part
+of a data call the same way, "<job> <i>/<n>[ <verb>]\n<JSON>": what the agent asks of an addon's API, which WoWBridge reads
+without compiling anything (agent/commands.py data_call).
 """
 import struct
 import zlib
@@ -22,8 +24,9 @@ from .game import atomic_write
 POOL = 4096
 MAGIC = b"WM"
 VERSION = 1
-WELCOME, HEARTBEAT, TEXT, COMMAND, PARTS, CODE = 1, 2, 3, 4, 5, 6
-NAMES = {WELCOME: "WELCOME", HEARTBEAT: "HEARTBEAT", TEXT: "TEXT", COMMAND: "COMMAND", PARTS: "PARTS", CODE: "CODE"}
+WELCOME, HEARTBEAT, TEXT, COMMAND, PARTS, CODE, CALL = 1, 2, 3, 4, 5, 6, 7
+NAMES = {WELCOME: "WELCOME", HEARTBEAT: "HEARTBEAT", TEXT: "TEXT", COMMAND: "COMMAND", PARTS: "PARTS", CODE: "CODE",
+         CALL: "CALL"}
 HEAD = struct.Struct(">2sBBIHHHH")
 MAX_PACKET = 4096 - 6        # the addon reads at most 4096 bytes of "WF" payload (FontProbe.lua Font.MAX_PACKET)
 RECORD_MAX = MAX_PACKET - HEAD.size - 4 - 3   # the most data one record carries: a packet of it alone

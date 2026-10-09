@@ -1,6 +1,7 @@
 """agent/commands.py: the files load and watch take from an addon folder (toc_files): what the 无限 client (camelot)
 loads of it, read as agent/lint.py reads it (the .toc's load conditions, the XML files' <Script> / <Include>), and the
-Companion's load / watch of an addon for several game types."""
+Companion's load / watch of an addon for several game types; data_call's CALL records."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,6 +118,26 @@ class LoadAndWatch(unittest.TestCase):
         why = "the client does not load this addon: its ## AllowLoadGameType leaves out camelot"
         self.assertEqual([t for t in self.told if t[0] == "RUN"], [("RUN", f"load Other: {why}"), ("RUN", f"watch Other: {why}")])
         self.assertEqual((self.chunks(), self.c.watched), ([], {}))
+
+
+class DataCalls(unittest.TestCase):
+    """data_call: what the agent asks of an addon's API as CALL records, in parts with the verb on the first, the JSON
+    whole once they are joined; withdraw takes them out as it does code"""
+
+    def test_records(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        comp = link.Companion(Path(tmp.name), clock=lambda: 1000.0, log=lambda text: None)
+        payload = {"a": "Foo", "n": "echo", "d": {"s": "两" * 2000, "q": '"\\\n'}}
+        job = comp.data_call("call", payload)
+        recs = [r for r in comp.outbox if r[0] == MB.CALL]
+        self.assertEqual([r[1].split(b"\n", 1)[0].decode() for r in recs], [f"{job} 1/2 call", f"{job} 2/2"])
+        self.assertEqual(json.loads(b"".join(r[1].split(b"\n", 1)[1] for r in recs)), payload)
+        self.assertTrue(all(len(r[1]) <= MB.RECORD_MAX for r in recs))
+        other = comp.data_call("describe", {"a": None})
+        self.assertGreater(other, job)                                          # ids only go up
+        self.assertEqual(comp.withdraw(job), (2, False))
+        self.assertEqual([r[1] for r in comp.outbox], [f"{other} 1/1 describe\n".encode() + b'{"a":null}'])
 
 
 if __name__ == "__main__":

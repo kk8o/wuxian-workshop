@@ -427,29 +427,82 @@ class Service:
         comes in pieces (probes.answer_chunk): the first with the chunk (under that chunk name: "=call" shows in the game's
         debug window, "=probe" does not), the others asked for probes.BATCH at a time"""
         key = secrets.token_hex(4)
-        n, first = await self.probe_piece(probes.answer_chunk(code, key), 1, timeout_ms, chunk)
-        texts = [first]
+        return await self.pieces(lambda: self.run(probes.answer_chunk(code, key), timeout_ms=timeout_ms, chunk=chunk),
+                                 lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"))
+
+    async def data_probe(self, verb, payload, timeout_ms, what):
+        """a data call (agent/commands.py data_call: what the agent asks of an addon's API, sent as data) answered in
+        pieces as a probe is; its JSON answer, or the ApiError that says why there is none"""
+        first = {}
+
+        async def start():
+            first["job"], res = await self.data(verb, payload, timeout_ms, what)
+            return res
+        return await self.pieces(start, lambda i: self.data_result("piece", {"k": str(first["job"]), "i": i}, timeout_ms,
+                                                                    what))
+
+    async def pieces(self, first, more):
+        """the JSON answer that first() (a RUN result: piece 1 of n) and more(i) (piece i) bring, more asked for
+        probes.BATCH at a time"""
+        n, text = self.piece(await first(), 1)
+        texts = [text]
         for start in range(2, n + 1, probes.BATCH):
-            got = await asyncio.gather(*(self.probe_piece(probes.piece_chunk(key, i), i, timeout_ms)
-                                         for i in range(start, min(start + probes.BATCH, n + 1))), return_exceptions=True)
-            for g in got:
+            numbers = range(start, min(start + probes.BATCH, n + 1))
+            got = await asyncio.gather(*(more(i) for i in numbers), return_exceptions=True)
+            for i, g in zip(numbers, got):
                 if isinstance(g, BaseException):
                     raise g
-            texts += [text for _, text in got]
+                texts.append(self.piece(g, i)[1])
         try:
             return probes.parse(["".join(texts)])
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 
-    async def probe_piece(self, code, i, timeout_ms, chunk="=probe"):
-        """(how many pieces the answer has, the text of piece i): one run of a probe's chunk"""
-        res = await self.run(code, timeout_ms=timeout_ms, chunk=chunk)
+    @staticmethod
+    def piece(res, i):
+        """(how many pieces the answer has, the text of piece i) from a RUN result"""
         if not res.get("ok"):
             raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
         try:
             return probes.piece(res.get("values"), i)
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
+
+    def data_calls(self):
+        """whether the addon in the game takes data calls (CALL records: link features DATA, WoWBridge 0.9.7 on); before
+        that, call / respond / addon_api go as code (probes.py chunks)"""
+        comp = self.worker.comp if self.worker is not None else None
+        try:
+            return comp is not None and comp.data_calls()
+        except AttributeError:
+            return False
+
+    async def data(self, verb, payload, timeout_ms, what):
+        """a data call for WoWBridge; waits for its RUN result: (the job id, the result as run() gives it)"""
+        timeout = self.timeout_seconds(timeout_ms, 10000)
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+
+        def start():
+            comp = self.worker.companion()
+            self.ready(comp, what)
+            job = comp.data_call(verb, payload)
+            self.pending[job] = (loop, fut)       # on the worker thread, before any RUN result can come
+            return job
+
+        job = await self.call(start)
+        try:
+            res = await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            raise ApiError(504, "timeout", f"no answer to {what} (job {job}) within {int(timeout * 1000)} ms: "
+                                           f"{await self.give_up(job)}", job=job) from None
+        finally:
+            self.pending.pop(job, None)           # also when the caller went away
+        return job, self.run_result(res)
+
+    async def data_result(self, verb, payload, timeout_ms, what):
+        """data() without the job id"""
+        return (await self.data(verb, payload, timeout_ms, what))[1]
 
     async def trace(self, seconds=10, events=None, max_events=200, args=6):
         """the events the game fires for `seconds` (probes.py): each kept one with its time, name and first arguments,
@@ -565,12 +618,15 @@ class Service:
         if not isinstance(name, str) or not self.CALL_NAME.match(name):
             raise ApiError(400, "bad_request", "name: the name the addon exposed (letters, digits and _ . : -)")
         try:
-            code = probes.call_chunk(addon, name, args)
+            code = probes.call_chunk(addon, name, args)       # also what checks args (JSON a Lua table can hold)
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
         t0 = time.time()
         try:
-            data = await self.probe(code, timeout_ms, chunk="=call")
+            if self.data_calls():
+                data = await self.data_probe("call", {"a": addon, "n": name, "d": args}, timeout_ms, "call")
+            else:
+                data = await self.probe(code, timeout_ms, chunk="=call")
         except ApiError as e:
             if e.code != "probe_failed":
                 raise
@@ -592,7 +648,10 @@ class Service:
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e).replace("args:", "data:")) from None
         try:
-            answer = await self.probe(code, timeout_ms, chunk="=respond")
+            if self.data_calls():
+                answer = await self.data_probe("reply", {"r": request, "d": data}, timeout_ms, "respond")
+            else:
+                answer = await self.probe(code, timeout_ms, chunk="=respond")
         except ApiError as e:
             if e.code != "probe_failed":
                 raise
@@ -609,7 +668,10 @@ class Service:
         (with how often); without addon, every addon that took a handle"""
         if addon is not None and (not isinstance(addon, str) or not self.ADDON_NAME.match(addon)):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
-        data = await self.probe(probes.describe_chunk(addon), 15000)
+        if self.data_calls():
+            data = await self.data_probe("describe", {"a": addon}, 15000, "addon_api")
+        else:
+            data = await self.probe(probes.describe_chunk(addon), 15000)
 
         def tidy(a):                     # an empty Lua table comes as []: topics are an object
             return dict(a, topics=a.get("topics") or {}, exposed=a.get("exposed") or [])

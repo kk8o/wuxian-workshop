@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tests.support.wowmock import Session, lupa, toc_files
 from wuxianworkshop import scaffold
+from wuxianworkshop.core import mailbox as MB
 from wuxianworkshop.daemon.api import ApiError, parse_run
 from wuxianworkshop.daemon.journal import Journal
 from wuxianworkshop.daemon.service import Service
@@ -57,7 +58,15 @@ class EndToEnd(unittest.TestCase):
                     return True
                 s.run(0.25)
             return comp.covered(*at)
-        self.svc.run, self.svc.caught_up = run, caught_up
+        async def data(verb, payload, timeout_ms=10000, what="call"):      # the daemon's data call, over this session
+            job = comp.data_call(verb, payload)
+            for _ in range(400):
+                s.run(0.25)
+                text = next((t for k, t in got if k == "RUN" and t.startswith(f"{job} ")), None)
+                if text is not None:
+                    return job, Service.run_result(parse_run(text))
+            self.fail(f"no RUN result for data call {job}")
+        self.svc.run, self.svc.caught_up, self.svc.data, self.svc.data_calls = run, caught_up, data, comp.data_calls
         self.addCleanup(s.close)
         comp.new_process("P1-100")
         s.lua.execute(ADDON_FOO)                         # loaded with the UI, before the link is up: its event waits
@@ -125,10 +134,6 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(asyncio.run(svc.addon_api("Bar")), dict(addon="Bar", exposed=[], topics={}, unbound=True))
         calls = [t for k, t in self.got if k == "RUN" and " =call " in t]
         self.assertTrue(calls)                                                      # under its own chunk name
-        self.s.lua.execute(b"WoWBridge.Call = nil")                                 # a WoWBridge from before 0.9.6
-        with self.assertRaises(ApiError) as cm:
-            asyncio.run(svc.call_exposed("Foo", "double", {"n": 1}))
-        self.assertIn("no addon API", cm.exception.message)
         for bad in (("", "double"), ("Foo", "a b"), ("../x", "double")):
             with self.assertRaises(ApiError):
                 asyncio.run(svc.call_exposed(*bad))
@@ -173,6 +178,122 @@ class EndToEnd(unittest.TestCase):
         res = asyncio.run(self.svc.try_(code='FooWB:Emit("tried", { ok = true }) return 1', seconds=0))
         self.assertEqual([(e["addon"], e["topic"], e["data"]) for e in res["emitted"]], [("Foo", "tried", {"ok": True})])
         self.assertIn("1 event emitted (tried)", res["summary"])
+
+    def test_calls_go_as_data(self):
+        """WoWBridge 0.9.7 takes call / respond / addon_api as data (CALL records): no code goes, so they work with hot
+        loading off; big arguments go in parts, a long answer comes in pieces, a record read twice runs once"""
+        s, svc, comp = self.s, self.svc, self.comp
+        self.assertTrue(comp.data_calls())
+        code = comp.stats["records"]["CODE"]
+        s.lua.execute(b'FooWB:Expose("echo", function(a) return a end) '
+                      b'FooWB:Expose("long", function(a) return string.rep(a.s, a.n) end)')
+        text = "两 ]] |x \\ \" é \U0001F600 \t\n"
+        res = asyncio.run(svc.call_exposed("Foo", "double", {"n": 21, "s": text}))
+        self.assertEqual(res["result"], {"n": 42, "s": text})
+        big = {"s": "長" * 3000, "list": list(range(50)), "deep": {"a": [True, False, 1.5, -2, 1e300, 2 ** 53]}}
+        self.assertEqual(asyncio.run(svc.call_exposed("Foo", "echo", big))["result"], big)    # 9 KB each way
+        long = asyncio.run(svc.call_exposed("Foo", "long", {"s": "无限", "n": 3000}))["result"]
+        self.assertEqual(long, "无限" * 3000)                                   # 18 KB: five pieces
+        self.assertEqual(comp.stats["records"]["CODE"], code)                   # none of it was code
+        self.assertGreater(comp.stats["records"]["CALL"], 6)
+        s.slash("set hotLoad off")
+        self.assertEqual(asyncio.run(svc.call_exposed("Foo", "double", {"n": 2, "s": ""}))["result"], {"n": 4, "s": ""})
+        self.assertEqual(asyncio.run(svc.addon_api("Foo"))["exposed"][0], {"name": "double", "doc": "doubles n"})
+        ran = asyncio.run(svc.run("return 1"))
+        self.assertFalse(ran["ok"])
+        self.assertIn("hot loading is off", ran["error"])
+        s.slash("set hotLoad on")
+        job = comp.data_call("call", {"a": "Foo", "n": "double", "d": {"n": 1}})   # what a lost slot sends again
+        record = comp.outbox[-1]
+        s.run(6)
+        comp.outbox.append(record)
+        s.run(6)
+        self.assertEqual(len([t for k, t in self.got if k == "RUN" and t.startswith(f"{job} ")]), 1)
+
+    def test_a_data_call_the_game_cannot_read(self):
+        """what WoWBridge says of a CALL record it cannot do: not JSON, an unknown verb, a piece no longer kept"""
+        s, comp = self.s, self.comp
+
+        def answer(body, verb="call"):
+            comp.last_job = job = max(int(comp.clock() * 1000) % 10 ** 10, comp.last_job + 1)   # data_call's ids
+            comp.outbox.append((MB.CALL, f"{job} 1/1 {verb}\n".encode() + body))
+            s.run(6)
+            return next(t for k, t in self.got if k == "RUN" and t.startswith(f"{job} "))
+        self.assertIn("error =call: its data is not JSON: no comma or } at byte", answer(b'{"a":"Foo" "n":1}'))
+        self.assertIn("error =call: its data is not a JSON object", answer(b'"Foo"'))
+        self.assertIn('error =call: no data call "open"', answer(b'{}', "open"))
+        self.assertIn("error =piece: the rest of this answer is no longer kept", answer(b'{"k":"1","i":2}', "piece"))
+
+    def test_json_decode(self):
+        """WoWBridge's JSON reader (Json.lua): escapes, surrogate pairs, numbers, nesting, and where a text breaks"""
+        lua = self.s.lua
+        lua.execute(b"function JD(s) local v, err = WoWBridgeNS.WoWBridge.Json.Decode(s) return v, err end")
+        jd = lua.globals()[b"JD"]
+
+        def py(v):
+            if lupa.lua_type(v) != "table":
+                return v.decode() if isinstance(v, bytes) else v
+            items = {(k.decode() if isinstance(k, bytes) else k): py(x) for k, x in v.items()}
+            if items and sorted(items, key=str) == sorted(range(1, len(items) + 1), key=str):
+                return [items[i] for i in range(1, len(items) + 1)]
+            return items
+
+        def dec(text):
+            v, err = jd(text.encode())
+            return py(v), err and err.decode()
+        self.assertEqual(dec('{"a": [1, 2.5, -3e2, 1E-2, 0], "b": {"c": true, "d": false}, "e": ""}'),
+                         ({"a": [1, 2.5, -300, 0.01, 0], "b": {"c": True, "d": False}, "e": ""}, None))
+        self.assertEqual(dec('"\\u4e24\\ud83d\\ude00\\n\\t\\"\\\\\\/\\b\\f\\r"'),
+                         ('两\U0001F600\n\t"\\/\b\f\r', None))
+        self.assertEqual(dec('"\\ud800 x \\udc00"'), ("\ufffd x \ufffd", None))          # lone halves of a pair
+        self.assertEqual(dec("null"), (None, None))
+        self.assertEqual(dec(" [ ] "), ({}, None))
+        self.assertEqual(dec("[1, null, 3]"), ({1: 1, 3: 3}, None))                      # a hole where the null was
+        for bad, why in (('{"a":}', "not a JSON value at byte 6"), ("[1,]", "not a JSON value at byte 4"),
+                         ("{a:1}", "an object key that is not a string at byte 2"), ('"abc', "a string with no end"),
+                         ("[1] x", "text after the value at byte 5"), ('"\x01"', "a control byte in a string at byte 2"),
+                         ('"\\x"', "an unknown escape at byte 2"), ('"\\u12"', "a \\u escape without four hex digits"),
+                         ("[" * 40 + "]" * 40, "more than 32 levels"), ("tru", "not a JSON value at byte 1")):
+            v, err = dec(bad)
+            self.assertIsNone(v, bad)
+            self.assertIn(why, err or "", bad)
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class BeforeDataCalls(unittest.TestCase):
+    """a WoWBridge before 0.9.7 (link features 1) takes no CALL records: call / respond / addon_api go to it as code"""
+
+    def test_code_for_an_older_wowbridge(self):
+        got, journal = [], Journal()
+        s = Session(self)
+        self.addCleanup(s.close)
+        comp = link.Companion(s.addons, clock=s.now, log=lambda text: None,
+                              on_debug=lambda kind, text: (got.append((kind, text)), journal.add(kind, text)))
+        s.comp = comp
+        svc = Service(lambda **kw: None, journal=journal)
+
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+            job = comp.code(code.encode("utf-8"), chunk, addon or "-")
+            for _ in range(400):
+                s.run(0.25)
+                text = next((t for k, t in got if k == "RUN" and t.startswith(f"{job} ")), None)
+                if text is not None:
+                    return Service.run_result(parse_run(text))
+            self.fail(f"no RUN result for job {job}")
+        svc.run, svc.data_calls = run, comp.data_calls
+        comp.new_process("P1-100")
+        s.ns[b"Link"][b"FEATURES"] = 1                               # what 0.9.6 says in its HELLO
+        s.lua.execute(ADDON_FOO)
+        s.login()
+        s.run(8)
+        self.assertFalse(comp.data_calls())
+        res = asyncio.run(svc.call_exposed("Foo", "double", {"n": 21, "s": "两"}))
+        self.assertEqual(res["result"], {"n": 42, "s": "两"})
+        self.assertEqual((comp.stats["records"]["CALL"] > 0, comp.stats["records"]["CODE"] > 0), (False, True))
+        s.lua.execute(b"WoWBridge.Call = nil")                                 # a WoWBridge from before 0.9.6
+        with self.assertRaises(ApiError) as cm:
+            asyncio.run(svc.call_exposed("Foo", "double", {"n": 1}))
+        self.assertIn("no addon API", cm.exception.message)
 
 
 class Events(unittest.TestCase):

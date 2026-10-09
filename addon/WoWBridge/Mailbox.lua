@@ -13,7 +13,7 @@ local byte = string.byte
 local M = {}
 ns.Mailbox = M
 M.POOL = 4096
-M.KINDS = { [1] = "WELCOME", [2] = "HEARTBEAT", [3] = "TEXT", [4] = "COMMAND", [5] = "PARTS", [6] = "CODE" }
+M.KINDS = { [1] = "WELCOME", [2] = "HEARTBEAT", [3] = "TEXT", [4] = "COMMAND", [5] = "PARTS", [6] = "CODE", [7] = "CALL" }
 
 local DIR = "Interface\\AddOns\\WoWBridge\\mail\\"
 local RESET_AFTER = 1.0     -- a FontString gets SetFont again this often while the slot is not readable: loading is

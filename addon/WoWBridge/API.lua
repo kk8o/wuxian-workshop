@@ -16,9 +16,12 @@
 -- frame, and a run's result goes up before them. Topics and addon names are at most NAME_MAX bytes.
 -- An addon that uses this names WoWBridge in its .toc (## OptionalDeps: WoWBridge): addons load in name order, and one
 -- that loads before WoWBridge finds no WoWBridge to bind to.
--- A call is a chunk the daemon sends (agent/probes.py, call_chunk) that runs WoWBridge.Call(addon, name, args) and
--- returns its answer as JSON; WoWBridge.Describe(addon) is what `addon_api` shows. Only data crosses: the agent calls what
--- an addon exposed and nothing else. Calls and answers run in the code the agent sent, which this client taints. An
+-- A call reaches WoWBridge.Call(addon, name, args) as data (a CALL record that Agent.lua reads, from 0.9.7) or, for a
+-- WoWBridge before that, as a chunk the daemon sends (agent/probes.py, call_chunk); its answer is JSON either way, and
+-- WoWBridge.Describe(addon) is what `addon_api` shows. Only data crosses: the agent calls what an addon exposed and nothing
+-- else. A data call compiles nothing: it works with hot loading off, and the addon's function runs as any addon code does,
+-- without the taint this client gives code loaded at run time (ForceTaint_Strong); a chunk is code the agent sent, which
+-- this client taints (as `respond` was before 0.9.7, too). An
 -- addon's callback that raises is reported as any error of the game is (with its stack), and `respond` says so. A name
 -- stays exposed until the UI reloads: exposing it again replaces the function. Without 无限工坊 there is no WoWBridge:
 -- the new_addon template takes a stub then, on which the same calls do nothing, so the addon runs for players as it is.
