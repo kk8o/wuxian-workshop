@@ -231,22 +231,34 @@ return I .. "/" .. #a.cuts .. "\n" .. a.s:sub(a.cuts[I - 1] + 1, a.cuts[I])
 
 
 # a slash command as the chat would run it: the handler an addon registered (SLASH_<KEY><n> = "/cmd", SlashCmdList.KEY)
-# called with the rest of the line; LINE is set before it
+# called with the rest of the line; LINE is set before it. On this client SlashCmdList is a front table over another (its
+# metatable's __index): the client moves the commands registered in the front one to the one behind (seen in the game:
+# all of them, soon after login), where pairs does not look. So every table of the __index chain is searched, from the
+# front (a handler registered since, say by a hot-loaded file, before the one it replaced), then the chat's cache,
+# hash_SlashCmdList
 SLASH_BODY = r"""
 local cmd, msg = LINE:match("^(/%S+)%s*(.-)%s*$")
 if not cmd then error("not a slash command: " .. LINE, 0) end
-local want = cmd:upper()
-for key, handler in pairs(SlashCmdList) do
-	local i = 1
-	while true do
-		local s = _G["SLASH_" .. key .. i]
-		if type(s) ~= "string" then break end
-		if s:upper() == want then
-			return handler(msg, DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.editBox)
+local want, box = cmd:upper(), DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.editBox
+local seen, list = {}, SlashCmdList
+while type(list) == "table" and not seen[list] do
+	seen[list] = true
+	for key, handler in pairs(list) do
+		local i = 1
+		while true do
+			local s = _G["SLASH_" .. key .. i]
+			if type(s) ~= "string" then break end
+			if s:upper() == want then
+				return handler(msg, box)
+			end
+			i = i + 1
 		end
-		i = i + 1
 	end
+	local meta = getmetatable(list)
+	list = type(meta) == "table" and rawget(meta, "__index") or nil
 end
+local hashed = type(hash_SlashCmdList) == "table" and hash_SlashCmdList[want]
+if hashed then return hashed(msg, box) end
 error("no slash command " .. cmd .. " (an addon registers one with SLASH_NAME1 = \"/cmd\" and SlashCmdList.NAME)", 0)
 """
 

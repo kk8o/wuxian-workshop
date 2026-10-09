@@ -295,6 +295,43 @@ class Probes(unittest.TestCase):
         with self.assertRaises(ValueError):
             P.slash_call("foo")
 
+    def test_a_slash_command_registered_while_loading(self):
+        """seen in the game (BlinkHealthText's /bht, client 1.60.1): SlashCmdList is a front table over another (its
+        metatable's __index), and the client moves the commands registered in the front one to the one behind: pairs
+        saw none of them and try found no command. One registered since (a hot-loaded file) is in the front table and
+        hides the one it replaced, from the chat's cache too; behind an __index function the cache, hash_SlashCmdList,
+        still knows a command typed before; a loop of __index tables or a hidden metatable ends the search"""
+        self.lua.execute(r"""
+			DEFAULT_CHAT_FRAME = { editBox = "box" }
+			LOADED = { BLINKHEALTH = function(msg, box) return "bht [" .. msg .. "]", box end,
+				FOO = function(msg) return "old foo " .. msg end }
+			SlashCmdList = setmetatable({}, { __index = LOADED })
+			SLASH_BLINKHEALTH1, SLASH_FOO1 = "/bht", "/foo"
+		""")
+        self.assertEqual(self.lua.execute("local n = 0 for _ in pairs(SlashCmdList) do n = n + 1 end return n"), 0)
+        self.assertEqual(self.lua.execute(P.slash_call("/bht move")), ("bht [move]", "box"))
+        self.assertEqual(self.lua.execute(P.slash_call("/BHT")), ("bht []", "box"))
+        self.lua.execute('hash_SlashCmdList = { ["/FOO"] = LOADED.FOO } '                   # typed before the hot load
+                         'SlashCmdList.FOO = function(msg) return "new foo " .. msg end')   # in the front table
+        self.assertEqual(self.lua.execute(P.slash_call("/foo x")), "new foo x")
+
+        self.lua.execute('setmetatable(LOADED, { __index = SlashCmdList })')                # a loop
+        with self.assertRaises(lupa.LuaError) as cm:
+            self.lua.execute(P.slash_call("/nothere"))
+        self.assertIn("no slash command /nothere", str(cm.exception))
+
+        self.lua.execute(r"""
+			local function baz(msg, box) return "baz [" .. msg .. "]", box end
+			SlashCmdList = setmetatable({}, { __index = function(_, k) if k == "BAZ" then return baz end end })
+			SLASH_BAZ1, hash_SlashCmdList = "/baz", { ["/BAZ"] = baz }
+		""")
+        self.assertEqual(self.lua.execute(P.slash_call("/baz hi")), ("baz [hi]", "box"))
+        self.lua.execute('hash_SlashCmdList = nil '
+                         'SlashCmdList = setmetatable({}, { __index = LOADED, __metatable = "hidden" })')
+        with self.assertRaises(lupa.LuaError) as cm:
+            self.lua.execute(P.slash_call("/bht"))
+        self.assertIn("no slash command /bht", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
