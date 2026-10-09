@@ -896,7 +896,7 @@ class PanelAndLanguage(unittest.TestCase):
             button.Click(button, "LeftButton")                       # Shift or not: the panel, as before
             self.assertFalse(panel[b"shown"])
             s.slash("kit")
-            self.assertIn("WuxianKit (the workshop's standard library) is not running", s.chat())
+            self.assertIn("WuxianKit is not running: not installed, or disabled in the addon list", s.chat())
             s.slash("help")
             self.assertNotIn("kit", s.chat().splitlines()[-1])
             g[b"__shift"] = False
@@ -916,9 +916,9 @@ class PanelAndLanguage(unittest.TestCase):
             g[b"__shift"] = False
             self.assertEqual(list(g[b"__opened"].values()), [b"last", b"tune", b"last"])
             self.assertEqual(enter()[-4:], [b"Left-click: the panel", b"Right-click: the debug output",
-                                            b"Shift-click: WuxianKit's window", b"Drag: move this button"])
+                                            b"Shift-click: the Kit window", b"Drag: move this button"])
             s.slash("help")
-            self.assertIn("| kit [page] (WuxianKit's window)", s.chat().splitlines()[-1])
+            self.assertIn("| kit [page] (the Kit window)", s.chat().splitlines()[-1])
             s.slash("lang zh")
             button.Click(button, "LeftButton")
             self.assertEqual(panel[b"kit"][b"text"].decode(), "标准库")

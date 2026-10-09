@@ -163,10 +163,10 @@ T.enUS = {
 	USAGE_LOG = "usage: /wb log [errors|runs|output]",
 	-- WuxianKit (the workshop's standard library), while the game runs it
 	BTN_KIT = "Kit",
-	KIT_TIP = "WuxianKit's window: proposals, permissions, extensions (/wk)",
-	MM_KIT = "Shift-click: WuxianKit's window",
-	NO_KIT = "WuxianKit (the workshop's standard library) is not running: not installed, or turned off",
-	HELP_KIT = " | kit [page] (WuxianKit's window)",
+	KIT_TIP = "Open the Kit window (/wk)",
+	MM_KIT = "Shift-click: the Kit window",
+	NO_KIT = "WuxianKit is not running: not installed, or disabled in the addon list",
+	HELP_KIT = " | kit [page] (the Kit window)",
 }
 
 T.zhCN = {
@@ -315,9 +315,9 @@ T.zhCN = {
 	MM_ERRORS = "新的 Lua 报错 %d 条：右键查看",
 	USAGE_LOG = "用法：/wb log [errors|runs|output]",
 	BTN_KIT = "标准库",
-	KIT_TIP = "标准库（WuxianKit）的窗口：提案、权限、扩展（/wk）",
+	KIT_TIP = "打开标准库窗口（/wk）",
 	MM_KIT = "Shift+左键：标准库窗口",
-	NO_KIT = "没有运行标准库（WuxianKit）：没装，或者在插件列表里关掉了",
+	NO_KIT = "未检测到标准库（WuxianKit）：未安装，或已在插件列表中禁用",
 	HELP_KIT = " | kit [页] 标准库窗口",
 }
 
