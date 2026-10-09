@@ -35,6 +35,7 @@ from ..paths import state_dir
 
 ADDON, PREFIX, PROTOCOL, URI = "WuxianKit", "wk_", 1, "wuxian://kit"
 RECHECK, AWAY = 600, 30                     # seconds: ask the game for the revision again after; while it is away
+ASK_EVERY = 15                              # seconds wk_wait waits for an event before it asks the game itself
 POLL = 10                                   # seconds between the watch's asks when it may not wait for events
 # the calls of the watch: in the background, so they never start the daemon (a daemon the player quit stays quit; a
 # client's own call starts one, as before). HttpBackend reads it
@@ -513,7 +514,7 @@ class KitTools:
                 return dict(now, timeout=True)
             t0 = time.monotonic()
             try:
-                answer = await self.backend.addon_events(ADDON, "kit.proposal", mark, 100, min(left, 300)) or {}
+                answer = await self.backend.addon_events(ADDON, "kit.proposal", mark, 100, min(left, ASK_EVERY)) or {}
             except ApiError as e:
                 raise ToolError(f"{e.code}: {e.message}") from None
             mark = answer.get("next", mark)
@@ -526,8 +527,17 @@ class KitTools:
                     except ApiError:
                         full = None
                     return full if isinstance(full, dict) and full.get("state") in FINAL else now
-            elif time.monotonic() - t0 < 0.5:              # nothing came, at once: do not spin
-                await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+            else:                                          # none of it: an event may have been dropped, ask the game
+                try:
+                    fresh = await self.kit("kit.proposal", {"id": proposal})
+                except ApiError:
+                    fresh = None
+                if isinstance(fresh, dict) and fresh.get("state"):
+                    now = fresh
+                    if now["state"] in FINAL:
+                        return now
+                if time.monotonic() - t0 < 0.5:            # nothing came, at once: do not spin
+                    await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         return now
 
     async def ran(self, proposal):

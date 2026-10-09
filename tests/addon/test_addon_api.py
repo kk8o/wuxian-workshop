@@ -667,6 +667,17 @@ class KitTools(unittest.TestCase):
         self.assertEqual((done["id"], done["state"], done.get("timeout")), (7, "declined", None))
         late = asyncio.run(tools.call("wk_wait", {"proposal": 7, "seconds": 1})).structured_content
         self.assertEqual((late["state"], late["timeout"]), ("pending", True))
+        reads, real = [], backend.call_exposed                         # done meanwhile, its event dropped:
+
+        async def flipping(addon, name, args=None, timeout_ms=10000):  # the game is asked again
+            if name != "kit.proposal":
+                return await real(addon, name, args, timeout_ms)
+            reads.append(name)
+            return {"ok": True, "result": {"id": 7, "state": "pending" if len(reads) == 1 else "done"}}
+        backend.call_exposed = flipping
+        gone = asyncio.run(tools.call("wk_wait", {"proposal": 7, "seconds": 5})).structured_content
+        self.assertEqual((gone["state"], gone.get("timeout"), len(reads)), ("done", None, 2))
+        backend.call_exposed = real
         old = asyncio.run(tools.call("wk_wait", {"proposal": 3})).structured_content    # older: from the history
         self.assertEqual((old["id"], old["state"]), (3, "undone"))
         with self.assertRaises(ToolError):
