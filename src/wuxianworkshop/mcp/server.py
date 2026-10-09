@@ -476,7 +476,8 @@ def build_server(backend, name="wuxian"):
             raise ToolError(f"not_found: no manual topic {topic!r}; api_manual() lists them")
         return found if isinstance(found, dict) else dict(topics=found, about=ix.about())
 
-    kit_tools.attach(mcp, backend)                       # WuxianKit's capabilities, when the game runs it
+    # WuxianKit's tools, when the game runs it; over HTTP its watch asks now and then instead of waiting in a thread
+    kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300)
     return mcp
 
 

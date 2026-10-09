@@ -30,6 +30,7 @@ from ..paths import state_dir
 
 ADDON, PREFIX, PROTOCOL, URI = "WuxianKit", "wk_", 1, "wuxian://kit"
 RECHECK, AWAY = 600, 30                     # seconds: ask the game for the revision again after; while it is away
+POLL = 10                                   # seconds between the watch's asks when it may not wait for events
 INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities"}             # read by this module, not tools
 FINAL = {"done", "failed", "declined", "expired", "undone"}
 MAX_DOC, MAX_SKILLS = 64 * 1024, 20
@@ -220,10 +221,11 @@ def specs(d):
 class KitTools:
     """WuxianKit in the game as MCP tools, docs and prompts, read through a backend (Service or HttpBackend). store: the
     file of the kept manifest (None: state\\kit-manifest.json; False: none). notify: a coroutine function that tells the
-    clients the lists changed"""
+    clients the lists changed. wait: how long the watch waits for an event in one ask (0: it asks every POLL seconds
+    instead; over HTTP a long wait holds a thread the process would wait for when it ends)"""
 
-    def __init__(self, backend, store=None, notify=None):
-        self.backend, self.store, self.notify = backend, store, notify
+    def __init__(self, backend, store=None, notify=None, wait=300):
+        self.backend, self.store, self.notify, self.wait_events = backend, store, notify, wait
         self.manifest, self.loaded, self.stale, self.away, self.checked = None, False, True, False, None
         self.tools, self.ids, self.exts = [], {}, {}
         self.addons, self.watching = None, None
@@ -320,7 +322,7 @@ class KitTools:
         while True:
             t0 = time.monotonic()
             try:
-                answer = await self.backend.addon_events(ADDON, "kit.*", since, 100, 300)
+                answer = await self.backend.addon_events(ADDON, "kit.*", since, 100, self.wait_events)
             except Exception:                              # the daemon away: try again later (not a cancel)
                 answer = None
             if not isinstance(answer, dict) or "next" not in answer:
@@ -328,7 +330,7 @@ class KitTools:
                 continue
             since = answer["next"]
             if not answer.get("events") and time.monotonic() - t0 < 0.5:
-                await asyncio.sleep(1)                     # it did not wait: do not spin
+                await asyncio.sleep(POLL if not self.wait_events else 1)     # it did not wait: do not spin
             if self.heard(answer.get("events")):
                 self.stale = True
                 await self.current()
@@ -562,9 +564,9 @@ async def tell_changed(mcp):
             pass
 
 
-def attach(mcp, backend, store=None):
-    """mcp lists and calls WuxianKit's tools, resources and prompts beside its own"""
-    kit = KitTools(backend, store, notify=lambda: tell_changed(mcp))
+def attach(mcp, backend, store=None, wait=300):
+    """mcp lists and calls WuxianKit's tools, resources and prompts beside its own (wait: as KitTools')"""
+    kit = KitTools(backend, store, notify=lambda: tell_changed(mcp), wait=wait)
     own_tools, own_call = mcp.list_tools, mcp.call_tool
     own_resources, own_read = mcp.list_resources, mcp.read_resource
     own_prompts, own_prompt = mcp.list_prompts, mcp.get_prompt
