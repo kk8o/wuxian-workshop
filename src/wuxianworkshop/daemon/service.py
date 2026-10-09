@@ -23,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .. import __version__, agents, apidocs, content, i18n, scaffold
+from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
 from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
@@ -79,6 +79,7 @@ class Service:
         self.addon_sync, self.addons_pending = None, None
         self.updater, self.update_checks = updater, None      # updater.Updater; made in start() unless given
         self.content, self.content_checks = None, None        # content.ContentUpdater: newer content packs
+        self.ext_catalog = extensions.Catalog()               # the 扩展 page's catalog, read when it looks
         self.started = time.time()
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
@@ -818,6 +819,68 @@ class Service:
         check = result.get("verify")
         self.journal.add("INFO", f"agents: {action} {host} -> {result['state']}" + (f" ({check['text']})" if check else ""))
         return result
+
+    # --- the extension catalog (extensions.py): the 扩展 page --------------------------------------------------------
+
+    CATALOG_AGE = 600                         # seconds a catalog read stands before the page's next look reads it again
+
+    async def extensions(self, refresh=False):
+        """the extension catalog's addons and what the game folder holds of each: {catalog: {url, updated, checked,
+        error}, addons: [the catalog's entry with there, installed (its .toc's version) and state], addons_dir, app}"""
+        cat = self.ext_catalog
+        if refresh or cat.checked is None or time.time() - cat.checked > self.CATALOG_AGE:
+            await asyncio.to_thread(cat.refresh)
+        try:
+            addons = self.addons_dir()
+        except ApiError:
+            addons = None
+
+        def look():
+            out = []
+            for e in cat.addons:
+                there, version = extensions.installed(addons, e["folder"]) if addons else (False, None)
+                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version)))
+            return out
+        return dict(catalog=cat.status(), addons=await asyncio.to_thread(look), addons_dir=str(addons) if addons else None,
+                    app=extensions.app_version())
+
+    async def extension(self, action, ext_id):
+        """install (an update too) or remove an addon of the catalog: {action, result, addon (as extensions() lists it)}.
+        An install downloads the catalog's zip and checks it before anything in the game folder changes"""
+        if action not in ("install", "remove"):
+            raise ApiError(400, "bad_request", "action: install or remove")
+        if not isinstance(ext_id, str) or not ext_id:
+            raise ApiError(400, "bad_request", "id: an addon of the extension catalog")
+        cat = self.ext_catalog
+        entry = cat.get(ext_id)
+        if entry is None:
+            await asyncio.to_thread(cat.refresh)
+            entry = cat.get(ext_id)
+        if entry is None:
+            raise ApiError(404, "no_such_extension", f"{ext_id!r} is not in the extension catalog")
+        addons = self.addons_dir()
+        if action == "install":
+            if extensions.state_of(entry, False, None) == "needs_app":
+                raise ApiError(409, "needs_app", f"{entry['id']} {entry['version']} needs 无限工坊 {entry['min_app']} or later")
+            try:
+                raw = await asyncio.to_thread(cat.download, entry)
+            except (OSError, ValueError, extensions.CatalogError) as e:
+                raise ApiError(502, "download_failed", str(e) or type(e).__name__) from None
+            from ..installer.addons import client_interface
+            interface = client_interface(addons.parent.parent)[1]
+            work = (extensions.install, addons, entry, raw, interface)
+        else:
+            work = (extensions.remove, addons, entry)
+        try:
+            result = await asyncio.to_thread(*work)
+        except extensions.CatalogError as e:
+            raise ApiError(422, "bad_package", str(e)) from None
+        except OSError as e:
+            raise ApiError(500, "extension_failed", f"{type(e).__name__}: {e}") from None
+        self.journal.add("INFO", f"extension {entry['id']}: {action} {entry['version'] if action == 'install' else ''}"
+                                 f" ({entry['folder']}, kept #{result.get('kept')})")
+        listing = await self.extensions()
+        return dict(action=action, result=result, addon=next((a for a in listing["addons"] if a["id"] == ext_id), None))
 
     async def history(self, addon=None, vid=None, against="now"):
         """kept versions (agent/history.py): no addon = the addons that have some; an addon = its versions, newest

@@ -88,6 +88,7 @@ class Fake:
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
                        "workbuddy": "absent", "workbuddy-ai": "missing"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
+        self.ext_installed = {"wuxiankit": "0.2.0"}   # extensions.py's shapes: the catalog's addons in the game folder
         self.watch = []
         self.reload_pending = False
         self.fixed = False
@@ -392,6 +393,52 @@ class Fake:
             return None
         last = k["versions"][-1]
         return dict(versions=len(k["versions"]), latest=last["time"], latest_id=last["id"])
+
+    EXT_CATALOG = [
+        {"id": "wuxiankit", "folder": "WuxianKit", "version": "0.3.0",
+         "title": {"zh": "无限工坊 · 标准库", "en": "Wuxian Workshop · Kit"},
+         "summary": {"zh": "让插件与 AI Agent 协作的标准库：聊天、设置、指引等扩展。改动先预览，确认后才执行，并可撤销。",
+                     "en": "A standard library for addons that work with an AI agent: chat, settings, guides and more."},
+         "file": "WuxianKit-0.3.0.zip", "size": 82675, "sha256": "b" * 64, "min_app": "0.9.7", "protocol": 1,
+         "extensions": [{"id": i, "title": {"zh": z, "en": e}, "tools": n, "events": v} for i, z, e, n, v in (
+             ("tune", "调校", "Tune", 33, 0), ("chat", "聊天", "Chat", 4, 1), ("gate", "远程", "Remote", 3, 3),
+             ("data", "数据", "Data", 4, 0), ("guide", "指引", "Guide", 5, 1), ("sense", "角色信息", "Character info", 8, 0))],
+         "skills": [{"name": "guild-qa", "extension": "chat", "description": "Answer game questions in guild chat"}],
+         "notes": {"zh": "0.3.0：新增远程、数据、指引三个扩展；界面用语改写，支持中英文切换。",
+                   "en": "0.3.0: Remote, Data and Guide extensions; plainer wording with a Chinese/English switch."},
+         "released": "2026-10-10", "homepage": "https://wuxianwow.com/workshop/extensions"},
+        {"id": "raidnotes", "folder": "RaidNotes", "version": "1.1.0", "title": {"zh": "团队笔记", "en": "Raid Notes"},
+         "summary": {"zh": "团长的 Agent 给全团发战术提示，每人在自己的客户端里确认。",
+                     "en": "The raid leader's agent sends tactics to the raid; each member confirms them."},
+         "file": "RaidNotes-1.1.0.zip", "size": 12034, "sha256": "c" * 64, "min_app": "0.9.7",
+         "extensions": [{"id": "raidnotes", "title": {"zh": "团队笔记", "en": "Raid Notes"}, "tools": 3, "events": 1}],
+         "skills": [], "notes": {"zh": "", "en": ""}, "homepage": "https://wuxianwow.com/workshop/extensions"},
+    ]
+
+    def ext_row(self, e):
+        mine = self.ext_installed.get(e["id"])
+        state = "available" if mine is None else "update" if mine != e["version"] else "current"
+        return dict(e, there=mine is not None, installed=mine, state=state)
+
+    def extensions(self):
+        return dict(catalog=dict(url="https://wuxianwow.com/workshop/data/extensions.json", updated="2026-10-10T08:00:00+00:00",
+                                 checked=time.time(), error=""),
+                    addons=[self.ext_row(e) for e in self.EXT_CATALOG], addons_dir=GAME_DIR + "\\Interface\\AddOns", app="0.9.7")
+
+    def extension(self, action, ext_id):
+        e = next((x for x in self.EXT_CATALOG if x["id"] == ext_id), None)
+        if e is None:
+            raise KeyError(f"{ext_id!r} is not in the extension catalog")
+        if action == "install":
+            was = self.ext_installed.get(ext_id)
+            self.ext_installed[ext_id] = e["version"]
+            result = dict(id=ext_id, folder=e["folder"], version=e["version"], was=was, kept=7 if was else None,
+                          restart=was is None)
+        else:
+            removed = self.ext_installed.pop(ext_id, None) is not None
+            result = dict(id=ext_id, folder=e["folder"], removed=removed, kept=8 if removed else None)
+        self.entry("INFO", f"extension {ext_id}: {action}")
+        return dict(action=action, result=result, addon=self.ext_row(e))
 
     def history(self, addon=None, vid=None, against="now"):
         if not addon:
@@ -833,6 +880,19 @@ def create_app(fake=None, ticker=True):
                       f("Bar.lua", 30, "typo", "UnitHelth is neither the client's nor this addon's", "did you mean UnitHealth?")],
             notes=[]))
 
+    async def extensions_(request):
+        try:
+            if request.method == "GET":
+                return JSONResponse(fake.extensions())
+            body = await json_body(request)
+            if body.get("action") not in ("install", "remove"):
+                return error("bad_request", "action: install or remove", 400)
+            return JSONResponse(fake.extension(body["action"], body.get("id")))
+        except KeyError as e:
+            return error("no_such_extension", str(e.args[0]), 404)
+        except ValueError as e:
+            return error("bad_request", str(e), 400)
+
     async def history_(request):
         try:
             if request.method == "GET":
@@ -898,6 +958,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/reveal", reveal, methods=["POST"]),
         Route("/api/agents", agents_, methods=["GET", "POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
+        Route("/api/extensions", extensions_, methods=["GET", "POST"]),
         Route("/api/check", check, methods=["POST"]),
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]

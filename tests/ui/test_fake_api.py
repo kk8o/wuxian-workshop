@@ -167,6 +167,23 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(self.client.post("/api/history", json={"action": "forget", "addon": "Foo"}, headers=AUTH).json()["forgotten"], True)
         self.assertEqual(self.client.get("/api/history?addon=Foo", headers=AUTH).json()["versions"], [])
 
+    def test_extensions(self):
+        """extensions.py's shapes, which the 扩展 page reads: the catalog with each addon's state; install, remove"""
+        d = self.client.get("/api/extensions", headers=AUTH).json()
+        self.assertEqual(d["catalog"]["error"], "")
+        rows = {a["id"]: a for a in d["addons"]}
+        self.assertEqual((rows["wuxiankit"]["state"], rows["wuxiankit"]["installed"], rows["raidnotes"]["state"]),
+                         ("update", "0.2.0", "available"))
+        self.assertEqual(rows["wuxiankit"]["extensions"][0]["title"], {"zh": "调校", "en": "Tune"})
+        r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit"}, headers=AUTH).json()
+        self.assertEqual((r["result"]["restart"], r["addon"]["state"]), (False, "current"))
+        r = self.client.post("/api/extensions", json={"action": "install", "id": "raidnotes"}, headers=AUTH).json()
+        self.assertTrue(r["result"]["restart"])                                  # new: the game starts again
+        r = self.client.post("/api/extensions", json={"action": "remove", "id": "raidnotes"}, headers=AUTH).json()
+        self.assertEqual((r["result"]["removed"], r["addon"]["state"]), (True, "available"))
+        self.assertEqual(self.client.post("/api/extensions", json={"action": "install", "id": "nope"}, headers=AUTH).status_code, 404)
+        self.assertEqual(self.client.post("/api/extensions", json={"action": "zap", "id": "x"}, headers=AUTH).status_code, 400)
+
     def test_check(self):
         """agent/lint.py's shape, which the 插件 page's 检查 reads"""
         d = self.client.post("/api/check", json={"target": "Bar", "live": True}, headers=AUTH).json()

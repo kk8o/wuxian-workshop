@@ -496,6 +496,24 @@ pre.diff span { display: block; white-space: pre; padding: 0 10px; min-width: ma
 pre.diff .add { color: var(--ok); background: var(--ok-soft); }
 pre.diff .del { color: var(--bad); background: var(--bad-soft); }
 pre.diff .hunk { color: var(--sky); }
+/* 扩展 */
+.ext-intro { margin: 0 0 12px; font-size: 12.5px; line-height: 1.6; }
+.ext-note { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 8px 12px; border-radius: 6px; font-size: 12.5px;
+  border: 1px solid var(--gold-d); background: var(--gold-soft); color: var(--fg); }
+.ext-note.bad { border-color: rgba(242, 139, 130, .45); background: var(--bad-soft); }
+.ext-card { padding: 12px 14px 10px; gap: 8px; }
+.pagebody > .ext-card + .ext-card { margin-top: 12px; }
+.ext-card > header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ext-card > header h2 { margin: 0; font-size: 14px; }
+.ext-card > header .ico { color: var(--gold-d); flex: none; }
+.ext-card > header .pill { margin-left: auto; }
+.ext-summary { margin: 0; line-height: 1.6; }
+.ext-card .spec dd { white-space: normal; text-align: right; }
+.ext-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; }
+.ext-acts .btn { display: inline-flex; align-items: center; gap: 6px; }
+.ext-confirm { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ext-foot { margin: 12px 0 0; font-size: 11.5px; word-break: break-all; }
+
 .checks { list-style: none; margin: 0; padding: 0; }
 .check { display: flex; gap: 12px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line2); }
 .check:last-child { border-bottom: 0; }

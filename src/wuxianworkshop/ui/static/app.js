@@ -38,6 +38,10 @@
                                           latest, latest_id} | null. POST {action: checkpoint|restore|forget, addon, id,
                                           note}: checkpoint -> {id, new, ...}; restore -> {restored, saved, written,
                                           removed, skipped, hint}
+     GET  /api/extensions[?refresh=1] -> {catalog:{url, updated, checked, error}, addons:[the catalog's entry with there,
+                                          installed, state], addons_dir, app}: the 扩展 page (extensions.py); POST {action:
+                                          install|remove, id} -> {action, result:{version, was, kept, restart} |
+                                          {removed, kept}, addon}
 
    The 开始 page (start) is the first-run wizard: it opens while settings.onboarded is false and ticks its five steps from
    what the daemon reports (doctor, link, agents, a hot-load); window.pywebview.api.pick_folder (ui/shell.py) is the
@@ -46,10 +50,11 @@
    The page keeps at most MAX_LOGS log entries. */
 'use strict';
 
-const PAGES = [                                // the navigation, in its order on the left (Ctrl+1.. go there; Ctrl+8 设置)
+const PAGES = [                                // the navigation, in its order on the left (Ctrl+1.. go there; Ctrl+9 设置)
   { id: 'status', label: '概览', icon: 'i-home' },
   { id: 'dev', label: '开发台', icon: 'i-console' },
   { id: 'addons', label: '插件', icon: 'i-addons' },
+  { id: 'extensions', label: '扩展', icon: 'i-puzzle' },
   { id: 'api', label: 'API 手册', icon: 'i-book' },
   { id: 'connect', label: '接入 Agent', icon: 'i-plug' },
   { id: 'doctor', label: '自检与修复', icon: 'i-shield' },
@@ -118,7 +123,8 @@ const EXAMPLES = [                             // 试一下: an argument's name 
   [/^name$|playerName|characterName/i, 'UnitName("player")'],
 ];
 const KINDS = ['ERR', 'OUT', 'WARN', 'BLOCKED', 'RUN', 'RELOAD', 'EVENT', 'SNAP', 'WATCH', 'SLOTS', 'INFO'];
-const REASON_TEXT = { load: '热加载', watch: '开始监视', save: '保存后热加载', new: '新建', manual: '手动存', restore: '回退前' };
+const REASON_TEXT = { load: '热加载', watch: '开始监视', save: '保存后热加载', new: '新建', manual: '手动存', restore: '回退前',
+                      update: '更新前', remove: '卸载前' };
 const STATUS_TEXT = { added: '新增', changed: '改动', removed: '删除' };
 const CHECK_TEXT = {                           // agent/lint.py's codes, for people (the messages stay the agent's English)
   syntax: '语法错误', 'missing-lib': '客户端没有的库', lua52: 'Lua 5.1 没有', 'event-unknown': '未知事件',
@@ -179,6 +185,7 @@ function appState() {
     hist: { open: null, data: null, busy: false, note: '', diff: null, diffKey: '', diffBusy: false, confirm: '',
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
+    ext: { list: null, catalog: null, dir: null, busy: '', note: '', error: '', confirm: '', reload: false },   // 扩展
     showToken: false,
     CALL_FILTERS, BROWSE_TABS,
     docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, busy: false, sel: null, topic: null,
@@ -205,10 +212,10 @@ function appState() {
       if (!this.desktop) {                     // once: what a desktop program does with keys and the right button
         this.desktop = true;
         window.addEventListener('keydown', (e) => {
-          if (!e.ctrlKey || e.altKey || e.shiftKey || !/^[1-8]$/.test(e.key)) return;
+          if (!e.ctrlKey || e.altKey || e.shiftKey || !/^[1-9]$/.test(e.key)) return;
           const n = Number(e.key);
           e.preventDefault();
-          this.go(n === 8 ? 'settings' : (NAV[n - 1] || {}).id);
+          this.go(n === 9 ? 'settings' : (NAV[n - 1] || {}).id);
         });
         document.addEventListener('contextmenu', (e) => {   // no browser menu (back, reload, print) on the program's chrome
           if (!e.target.closest('input, textarea, pre, code, .selectable, .md')) e.preventDefault();
@@ -253,6 +260,7 @@ function appState() {
       if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
       if (id === 'doctor' && !this.doctor.checks.length) this.runDoctor();
       if (id === 'addons' && this.addons.list === null) this.loadAddons();
+      if (id === 'extensions' && this.ext.list === null) this.loadExtensions();
       if (id === 'dev') this.scrollLogs(true);
       if (id === 'api') this.docsInit();
       if (id === 'start') this.startInit();
@@ -541,6 +549,82 @@ function appState() {
       } catch (e) {
         this.say(t('watch 失败：') + e.message);
       }
+    },
+
+    // ---- 扩展: the website's extension catalog (extensions.py through /api/extensions): install, update, remove
+    async loadExtensions(refresh) {
+      this.ext.busy = 'list';
+      this.ext.error = '';
+      try {
+        const d = await this.api('/api/extensions' + (refresh ? '?refresh=1' : ''));
+        this.ext.list = d.addons || [];
+        this.ext.catalog = d.catalog || null;
+        this.ext.dir = d.addons_dir || null;
+        if (d.catalog && d.catalog.error) this.ext.error = d.catalog.error;
+      } catch (e) {
+        this.ext.error = t('读取扩展目录失败：') + e.message;
+        if (this.ext.list === null) this.ext.list = [];
+      } finally {
+        this.ext.busy = '';
+      }
+    },
+    loc(o) {                                   // a catalog's {zh, en} text in the language in force
+      if (!o) return '';
+      if (typeof o === 'string') return o;
+      return (this.lang === 'en' ? (o.en || o.zh) : (o.zh || o.en)) || '';
+    },
+    extState(a) {
+      if (a.state === 'needs_app') return t('需要无限工坊 {v} 或更高版本', { v: a.min_app });
+      if (a.state === 'available') return t('未安装');
+      if (a.state === 'update') return t('已安装 {mine}，可更新', { mine: a.installed });
+      if (a.state === 'current') return t('已是最新');
+      if (a.state === 'newer') return t('已安装 {mine}（比目录新）', { mine: a.installed });
+      return t('已安装');
+    },
+    extPill(a) {
+      return { available: 'off', update: 'warn', installed: 'warn', current: 'ok', needs_app: 'bad' }[a.state] || '';
+    },
+    get extSummary() {
+      const list = this.ext.list || [];
+      const n = list.filter((a) => a.state === 'update').length;
+      return t('共 {n} 个', { n: list.length }) + (n ? t('，{n} 个可更新', { n }) : '');
+    },
+    get extCatalogLine() {
+      const c = this.ext.catalog;
+      if (!c) return '';
+      return t('目录：{url}', { url: c.url }) + (c.updated ? ' · ' + t('更新于 {d}', { d: String(c.updated).slice(0, 10) }) : '');
+    },
+    async extAct(a, action) {
+      if (action === 'remove' && this.ext.confirm !== a.id) { this.ext.confirm = a.id; return; }
+      this.ext.confirm = '';
+      this.ext.busy = a.id;
+      this.ext.note = '';
+      this.ext.reload = false;
+      const name = this.loc(a.title) || a.folder;
+      try {
+        const d = await this.api('/api/extensions', { body: { action, id: a.id } });
+        const r = d.result || {};
+        if (action === 'remove') {
+          this.ext.note = r.removed ? t('已卸载 {name}，重载界面后不再加载。', { name }) : t('{name} 没有安装。', { name });
+          this.ext.reload = !!r.removed;
+        } else if (r.restart) {
+          this.ext.note = t('已安装 {name} {v}：完整重启游戏后生效（游戏只在启动时发现新文件）。', { name, v: r.version });
+        } else {
+          this.ext.note = t('已更新 {name} 到 {v}：重载界面后生效。', { name, v: r.version });
+          this.ext.reload = true;
+        }
+        if (d.addon) this.ext.list = (this.ext.list || []).map((x) => (x.id === d.addon.id ? d.addon : x));
+      } catch (e) {
+        this.ext.note = t('操作失败：') + e.message;
+      } finally {
+        this.ext.busy = '';
+      }
+    },
+    openOut(url) {                             // a page of 无限工坊's site, in the user's browser
+      if (!/^https:\/\/wuxianwow\.com\//.test(url || '')) return;
+      const api = window.pywebview && window.pywebview.api;
+      if (api && api.open_url) api.open_url(url);
+      else window.open(url, '_blank', 'noopener');
     },
 
     // ---- doctor

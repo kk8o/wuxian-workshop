@@ -442,6 +442,13 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         return await service.check(b.get("target"), b.get("live", True) is not False)
 
     @api
+    async def extensions_(request):
+        if request.method != "POST":
+            return await service.extensions(request.query_params.get("refresh") in ("1", "true"))
+        b = await body_of(request)
+        return await service.extension(b.get("action"), b.get("id"))
+
+    @api
     async def history_(request):
         if request.method != "POST":
             p = request.query_params
@@ -488,6 +495,7 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         Route("/api/addon_api", addon_api, methods=["POST"]),
         Route("/api/respond", respond, methods=["POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
+        Route("/api/extensions", extensions_, methods=["GET", "POST"]),
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),
     ]

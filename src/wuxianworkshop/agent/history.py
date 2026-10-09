@@ -8,8 +8,9 @@ the game, and any saved version can be put back.
 
 save() makes a version. The daemon does when it hot-loads an addon or one of its files ("load"), when a watch starts
 ("watch": the files as they are before the agent edits them), when a watched file was saved and is loaded again
-("save"), when an addon is made from a template ("new"), when asked (the checkpoint tool, the App's 存一份: "manual")
-and before a restore ("restore": a restore is undone the same way). No version is made when the files are those of the
+("save"), when an addon is made from a template ("new"), when asked (the checkpoint tool, the App's 存一份: "manual"),
+before a restore ("restore": a restore is undone the same way) and before the 扩展 page updates or removes an addon of
+the extension catalog ("update", "remove"; extensions.py). No version is made when the files are those of the
 latest one; a file whose size and time stamp are the latest version's is not read again.
 
 A version holds the files of the addon's folder and its sub-folders, except folders whose name starts with "." (.git and
@@ -38,7 +39,7 @@ MAX_TOTAL = 256 * 1024 * 1024   # bytes of an addon's kept files
 MAX_FILES = 20000
 LIST_MAX = 50                   # paths a summary lists per kind of change
 DIFF_LINES = 400                # lines of diff() text, all files together
-REASONS = ("load", "watch", "save", "new", "manual", "restore")
+REASONS = ("load", "watch", "save", "new", "manual", "restore", "update", "remove")
 AUTO = ("load", "save")         # what goes first beyond KEEP
 OWN = ("wowbridge", "!wuxianworkshop")
 TMP = ".wuxian-tmp"             # the suffix of a file being written back
