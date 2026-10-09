@@ -30,8 +30,9 @@
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
     wuxian quit                               stop the daemon
-    wuxian mcp-config [claude|codex|cursor]   snippets that register the MCP server with those hosts
-    wuxian agents [connect|disconnect|verify] [claude|codex|cursor|all]   register this program with the agents
+    wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy]   snippets that register the MCP server with those hosts
+    wuxian agents [connect|disconnect|verify] [claude|codex|cursor|trae-cn|trae|workbuddy|all]   register this program
+                                              with the agents
     wuxian mcp                                the MCP server on stdio (for hosts that start it themselves)
     wuxian companion [...]                    the link alone, without the daemon;  wuxian monitor: print every frame
 
@@ -45,6 +46,7 @@ import importlib
 import json
 import sys
 import time
+import unicodedata
 
 from .. import __version__
 from ..i18n import tr
@@ -176,11 +178,13 @@ def build_parser():
     p.add_argument("action", nargs="?", choices=("check", "download", "apply"), help="nothing: the state")
     p.add_argument("--background", action="store_true", help="apply: start the new version without its window")
     sub.add_parser("quit", help="stop the running daemon")
-    p = sub.add_parser("mcp-config", help="snippets that register the MCP server with Claude Code, Codex or Cursor")
-    p.add_argument("host", nargs="?", choices=mcpconfig.HOSTS, help="one host (default: all three)")
-    p = sub.add_parser("agents", help="the agents (Claude Code, Codex, Cursor) and this MCP server: state, connect, disconnect")
+    p = sub.add_parser("mcp-config", help="snippets that register the MCP server with Claude Code, Codex, Cursor, Trae or "
+                                          "WorkBuddy")
+    p.add_argument("host", nargs="?", choices=mcpconfig.HOSTS, help="one host (default: all of them)")
+    p = sub.add_parser("agents", help="the agents (Claude Code, Codex, Cursor, Trae, WorkBuddy) and this MCP server: state, "
+                                      "connect, disconnect")
     p.add_argument("action", nargs="?", choices=("connect", "disconnect", "verify"), help="nothing: every agent's state")
-    p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor or all (default)")
+    p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor, trae-cn, trae, workbuddy or all (default)")
     p.add_argument("--json", action="store_true", help="print JSON")
     return ap
 
@@ -552,6 +556,12 @@ def cmd_new(client, args):
     return 0
 
 
+def pad(text, width):
+    """text padded to width columns of the terminal (a CJK character takes two)"""
+    cols = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+    return text + " " * max(1, width - cols)
+
+
 def cmd_agents(args):
     """the agents' connection to this program's MCP server (agents.py), done here (no daemon)"""
     from .. import agents
@@ -578,7 +588,7 @@ def cmd_agents(args):
         return 1 if failed else 0
     mark = {"ok": "[ok]", "other": "[!!]", "absent": "[--]", "missing": "[  ]", "error": "[!!]"}
     for h in rows:
-        print(f"{mark.get(h['state'], '[??]')} {h['title']:<12} {h['detail']}")
+        print(f"{mark.get(h['state'], '[??]')} {pad(h['title'], 13)}{h['detail']}")
         if h.get("verify"):
             print(f"     {'✓' if h['verify']['ok'] else '✕'} {h['verify']['text']}")
         if h["state"] != "missing":

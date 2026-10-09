@@ -161,7 +161,7 @@ class Cursor(Base):
         self.config().parent.mkdir()
         self.config().write_text(json.dumps({"mcpServers": {"other": {"command": "node", "args": ["x.js"]}}}), encoding="utf-8")
         st = A.connect("cursor", home=self.home, env=self.env, verify=False)
-        self.assertEqual(st["state"], "ok")
+        self.assertEqual((st["state"], st["can_verify"]), ("ok", False))
         data = json.loads(self.config().read_text(encoding="utf-8"))
         self.assertEqual(data["mcpServers"]["wuxian"], {"command": PROG["command"], "args": ["mcp"]})
         self.assertEqual(data["mcpServers"]["other"], {"command": "node", "args": ["x.js"]})
@@ -183,6 +183,82 @@ class Cursor(Base):
         exe.write_bytes(b"")
         self.assertEqual(self.status("cursor")["state"], "absent")
         A.connect("cursor", home=self.home, env=self.env, verify=False)
+        self.assertTrue(self.config().is_file())
+
+
+class Trae(Base):
+    def config(self, folder="Trae CN"):
+        return self.home / "AppData" / "Roaming" / folder / "User" / "mcp.json"
+
+    def test_trae_cn_is_there_once_installed_or_started(self):
+        self.assertEqual(self.status("trae-cn")["state"], "missing")
+        exe = self.home / "AppData" / "Local" / "Programs" / "Trae CN" / "Trae CN.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        st = self.status("trae-cn")
+        self.assertEqual((st["state"], st["title"], st["can_connect"], st["can_verify"]), ("absent", "Trae CN", True, False))
+        self.assertEqual(st["where"], str(self.config()))
+        self.assertEqual(self.status("trae")["state"], "missing")      # the international version is another app
+
+    def test_connect_writes_the_mcp_json_beside_the_user_settings(self):
+        user = self.config().parent
+        user.mkdir(parents=True)
+        (user / "settings.json").write_text("{}", encoding="utf-8")   # what a Trae CN that has started has
+        st = A.connect("trae-cn", home=self.home, env=self.env, verify=False)
+        self.assertEqual(st["state"], "ok")
+        self.assertEqual(json.loads(self.config().read_text(encoding="utf-8")),
+                         {"mcpServers": {"wuxian": {"command": PROG["command"], "args": ["mcp"]}}})
+        self.assertEqual((user / "settings.json").read_text(encoding="utf-8"), "{}")
+        A.disconnect("trae-cn", home=self.home, env=self.env)
+        self.assertEqual(json.loads(self.config().read_text(encoding="utf-8")), {"mcpServers": {}})
+        self.assertEqual(self.status("trae-cn")["state"], "absent")
+
+    def test_the_international_version(self):
+        (self.home / "AppData" / "Roaming" / "Trae").mkdir(parents=True)
+        st = A.connect("trae", home=self.home, env=self.env, verify=False)
+        self.assertEqual(st["state"], "ok")
+        self.assertIn(st["title"], ("Trae 国际版", "Trae (international)"))
+        self.assertTrue(self.config("Trae").is_file())
+        self.assertFalse(self.config().exists())
+
+    def test_a_command_with_a_space_goes_in_short(self):
+        exe = Path(self.tmp.name) / "With Space" / "wuxian.exe"
+        exe.parent.mkdir()
+        exe.write_bytes(b"")
+        if A.short_path(str(exe)) == str(exe):
+            self.skipTest("no 8.3 short names on this volume")
+        self.config().parent.mkdir(parents=True)
+        with unittest.mock.patch.object(A, "program", lambda env=None: dict(PROG, command=str(exe), env={})):
+            st = A.connect("trae-cn", home=self.home, env=self.env, verify=False)
+            written = json.loads(self.config().read_text(encoding="utf-8"))["mcpServers"]["wuxian"]["command"]
+            self.assertNotIn(" ", written)
+            self.assertEqual(st["state"], "ok")                          # the short form is this program too
+            self.assertNotIn(" ", json.loads(A.status(home=self.home, env=self.env)["manual"]["trae-cn"])["mcpServers"]["wuxian"]["command"])
+
+
+class WorkBuddy(Base):
+    def config(self):
+        return self.home / ".workbuddy" / "mcp.json"
+
+    def test_connect_into_its_user_level_file(self):
+        self.assertEqual(self.status("workbuddy")["state"], "missing")
+        self.config().parent.mkdir()
+        self.config().write_text('{\n  "mcpServers": {}\n}', encoding="utf-8")       # as WorkBuddy leaves it at first start
+        self.assertEqual(self.status("workbuddy")["state"], "absent")
+        st = A.connect("workbuddy", home=self.home, env=self.env, verify=False)
+        self.assertEqual((st["state"], st["can_verify"]), ("ok", False))
+        self.assertEqual(json.loads(self.config().read_text(encoding="utf-8")),
+                         {"mcpServers": {"wuxian": {"command": PROG["command"], "args": ["mcp"]}}})
+        self.assertTrue(self.config().with_name("mcp.json" + A.BACKUP).is_file())
+        A.disconnect("workbuddy", home=self.home, env=self.env)
+        self.assertEqual(json.loads(self.config().read_text(encoding="utf-8")), {"mcpServers": {}})
+
+    def test_present_with_the_program_installed_only(self):
+        exe = self.home / "AppData" / "Local" / "Programs" / "WorkBuddy" / "WorkBuddy.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        self.assertEqual(self.status("workbuddy")["state"], "absent")
+        A.connect("workbuddy", home=self.home, env=self.env, verify=False)
         self.assertTrue(self.config().is_file())
 
 
@@ -237,6 +313,7 @@ class Claude(Base):
         self.put_cli()
         st = self.status("claude")
         self.assertEqual((st["state"], st["can_connect"], st["where"]), ("absent", True, str(self.cfg / ".claude.json")))
+        self.assertTrue(st["can_verify"])                              # its command line can tell (mcp get)
         st = A.connect("claude", home=self.home, env=self.env, run=self.fake)
         self.assertEqual(st["state"], "ok")
         self.assertEqual(st["verify"], {"ok": True, "text": "Claude Code 启动它：✔ Connected"})

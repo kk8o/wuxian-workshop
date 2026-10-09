@@ -8,14 +8,20 @@ r"""One-click connection of the coding agents to 无限工坊's MCP server (the 
     codex    Codex (command line, desktop app and IDE extension share ~/.codex/config.toml; CODEX_HOME moves it): the
              [mcp_servers.wuxian] table, written here with the start-up and tool timeouts its command line cannot set
     cursor   Cursor: mcpServers.wuxian in ~/.cursor/mcp.json
+    trae-cn  Trae CN (Trae 国内版) and trae (its international version): mcpServers.wuxian in the mcp.json beside the
+             user settings, %APPDATA%\Trae CN\User\mcp.json and %APPDATA%\Trae\User\mcp.json (the folder is the app's
+             product.json nameShort; Trae reads <user settings>\..\mcp.json and picks a change up while it runs)
+    workbuddy WorkBuddy: mcpServers.wuxian in ~/.workbuddy/mcp.json, its documented user-level file
+Trae's documentation says the command may contain no spaces: Trae and WorkBuddy get a command with a space in it in its
+8.3 short form (short_path), when Windows keeps one.
 
 status() tells for each agent whether it is there and whether wuxian is registered with this program: state "ok" (this
 program), "other" (another command, e.g. a copy that moved), "absent", "missing" (the agent is not installed) or "error"
-(its config could not be read); with where the entry lives and how a change takes effect. connect() registers this
-program, replacing an entry of the same name; disconnect() removes it. A file is backed up first (<file>.wuxian-backup),
-and the new text is parsed again and compared with the old one (only wuxian's entry may differ) before it replaces the
-original. verify() asks Claude Code or Codex whether it can use the entry (`mcp get`; Claude Code starts the server to
-tell). Every message is meant for the page, in Chinese.
+(its config could not be read); with where the entry lives, how a change takes effect and whether verify() can ask the
+agent (can_verify). connect() registers this program, replacing an entry of the same name; disconnect() removes it. A
+file is backed up first (<file>.wuxian-backup), and the new text is parsed again and compared with the old one (only
+wuxian's entry may differ) before it replaces the original. verify() asks Claude Code or Codex whether it can use the
+entry (`mcp get`; Claude Code starts the server to tell). Every message is meant for the page, in Chinese.
 """
 import json
 import os
@@ -29,7 +35,7 @@ from .cli.mcpconfig import mcp_command
 from .i18n import tr
 
 NAME = "wuxian"
-HOSTS = ("claude", "codex", "cursor")
+HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy")
 TIMEOUT = 90                 # seconds for an agent's command line (`claude mcp get` starts the server to check it)
 BACKUP = ".wuxian-backup"
 CMD_UNSAFE = '%^&|<>"'      # what cmd.exe would read itself in an argument handed to a .cmd / .bat (npm's shims)
@@ -48,11 +54,40 @@ def program(env=None):
                 env={"WUXIAN_HOME": env["WUXIAN_HOME"]} if env.get("WUXIAN_HOME") else {})
 
 
+def _win_path(function, path):
+    """path through kernel32's GetShortPathNameW / GetLongPathNameW; as it is where that cannot be done (not Windows,
+    no such file)"""
+    try:
+        import ctypes
+        fn = getattr(ctypes.windll.kernel32, function)
+        size = fn(path, None, 0)
+        if size:
+            buf = ctypes.create_unicode_buffer(size)
+            if fn(path, buf, size):
+                return buf.value
+    except (AttributeError, OSError, ValueError):
+        pass
+    return path
+
+
+def short_path(path):
+    """a path with a space in it in its 8.3 form, which has none, when Windows keeps short names there; else as it is"""
+    if " " not in path:
+        return path
+    short = _win_path("GetShortPathNameW", path)
+    return short if " " not in short else path
+
+
+def long_path(path):
+    """an 8.3 path in its long form (as it is when it has none)"""
+    return _win_path("GetLongPathNameW", path) if "~" in path else path
+
+
 def same(entry, prog):
-    """whether an agent's entry starts this program the same way (paths compared as Windows does)"""
+    """whether an agent's entry starts this program the same way (paths compared as Windows does, 8.3 forms too)"""
     if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
         return False
-    norm = lambda p: os.path.normcase(os.path.normpath(p))              # noqa: E731
+    norm = lambda p: os.path.normcase(os.path.normpath(long_path(p)))   # noqa: E731
     env = entry.get("env") if isinstance(entry.get("env"), dict) else {}
     return (norm(entry["command"]) == norm(prog["command"]) and list(entry.get("args") or []) == prog["args"]
             and ({"WUXIAN_HOME": env["WUXIAN_HOME"]} if env.get("WUXIAN_HOME") else {}) == prog["env"])
@@ -108,8 +143,13 @@ class Host:
     def can_connect(self):
         return True, ""
 
+    def can_verify(self):
+        """whether verify() can ask the agent about the entry"""
+        return False
+
     def status(self, prog):
-        base = dict(id=self.id, title=self.title, where=self.where(), apply=tr(*self.apply), entry=None, can_connect=False)
+        base = dict(id=self.id, title=self.title, where=self.where(), apply=tr(*self.apply), entry=None, can_connect=False,
+                    can_verify=self.can_verify())
         present, why = self.present()
         if not present:
             return dict(base, present=False, state="missing", detail=why)
@@ -165,6 +205,9 @@ class Claude(Host):
             return True, ""
         return False, tr("找到了 Claude Code 的设置，但没有找到 claude 命令：请在终端里运行下面的命令",
                          "Claude Code's settings are there but the claude command is not: run the command below in a terminal")
+
+    def can_verify(self):
+        return bool(self.cli())
 
     def entry(self):
         path = self.config()
@@ -255,6 +298,9 @@ class Codex(Host):
     def cli(self):
         return shutil.which("codex", path=self.env.get("PATH"))
 
+    def can_verify(self):
+        return bool(self.cli())
+
     def present(self):
         if self.cli() or self.folder().is_dir():
             return True, ""
@@ -338,26 +384,25 @@ class Codex(Host):
                     else tr("Codex 读设置出错：", "Codex failed reading the settings: ") + last_line(out))
 
 
-class Cursor(Host):
-    id, title = "cursor", "Cursor"
-    apply = ("在 Cursor 的 设置 → MCP 里能看到 wuxian；第一次可能要手动打开它的开关。",
-             "wuxian shows under Cursor's Settings → MCP; the first time, its switch may need turning on by hand.")
-
-    def folder(self):
-        return self.home / ".cursor"
-
-    def config(self):
-        return self.folder() / "mcp.json"
+class JsonHost(Host):
+    """an agent that reads mcpServers from a JSON file (Cursor, Trae, WorkBuddy): wuxian's entry is written there,
+    everything else kept. Subclasses give folder() (it is there = the agent is), config() and app() (its exe)"""
+    program_dir = exe_name = ""          # app(): %LOCALAPPDATA%\Programs\<program_dir>\<exe_name>
+    short_command = False                # the command in its 8.3 form when it has a space (short_path)
+    missing = ("", "")                   # present()'s message when neither the folder nor the exe is there
 
     def app(self):
         local = self.env.get("LOCALAPPDATA")
-        exe = Path(local) / "Programs" / "cursor" / "Cursor.exe" if local else None
+        exe = Path(local) / "Programs" / self.program_dir / self.exe_name if local else None
         return exe if exe is not None and exe.is_file() else None
 
     def present(self):
         if self.folder().is_dir() or self.app():
             return True, ""
-        return False, tr("没有找到 Cursor（没有 ~/.cursor 文件夹）", "Cursor not found (no ~/.cursor folder)")
+        return False, tr(*self.missing)
+
+    def command(self, prog):
+        return short_path(prog["command"]) if self.short_command else prog["command"]
 
     def load(self):
         path = self.config()
@@ -378,7 +423,7 @@ class Cursor(Host):
 
     def connect(self, prog):
         data = self.load()
-        entry = {"command": prog["command"], "args": prog["args"]}
+        entry = {"command": self.command(prog), "args": prog["args"]}
         if prog["env"]:
             entry["env"] = prog["env"]
         data.setdefault("mcpServers", {})[NAME] = entry
@@ -391,7 +436,64 @@ class Cursor(Host):
             write_file(self.config(), json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
-CLASSES = {"claude": Claude, "codex": Codex, "cursor": Cursor}
+class Cursor(JsonHost):
+    id, title = "cursor", "Cursor"
+    program_dir, exe_name = "cursor", "Cursor.exe"
+    missing = ("没有找到 Cursor（没有 ~/.cursor 文件夹）", "Cursor not found (no ~/.cursor folder)")
+    apply = ("在 Cursor 的 设置 → MCP 里能看到 wuxian；第一次可能要手动打开它的开关。",
+             "wuxian shows under Cursor's Settings → MCP; the first time, its switch may need turning on by hand.")
+
+    def folder(self):
+        return self.home / ".cursor"
+
+    def config(self):
+        return self.folder() / "mcp.json"
+
+
+class TraeCN(JsonHost):
+    id, title = "trae-cn", "Trae CN"
+    program_dir, exe_name = "Trae CN", "Trae CN.exe"
+    short_command = True
+    missing = ("没有找到 Trae CN（没有 %APPDATA%\\Trae CN 文件夹）", "Trae CN not found (no %APPDATA%\\Trae CN folder)")
+    apply = ("在 Trae 的「设置 → MCP」里能看到 wuxian（开着的 Trae 一般会自己读到，没看到就重启 Trae）；内置的智能体「Agent」自动带上它。",
+             "wuxian shows under Trae's Settings → MCP (a running Trae usually picks it up; restart Trae if not); the built-in "
+             "agent \"Agent\" has it.")
+
+    def folder(self):
+        """its user data folder (%APPDATA%\\<product.json nameShort>), made at its first start"""
+        return Path(self.env.get("APPDATA") or self.home / "AppData" / "Roaming") / self.program_dir
+
+    def config(self):
+        return self.folder() / "User" / "mcp.json"
+
+
+class Trae(TraeCN):
+    id = "trae"
+    program_dir, exe_name = "Trae", "Trae.exe"
+    missing = ("没有找到 Trae 国际版（没有 %APPDATA%\\Trae 文件夹）", "Trae (international) not found (no %APPDATA%\\Trae folder)")
+
+    @property
+    def title(self):
+        return tr("Trae 国际版", "Trae (international)")
+
+
+class WorkBuddy(JsonHost):
+    id, title = "workbuddy", "WorkBuddy"
+    program_dir, exe_name = "WorkBuddy", "WorkBuddy.exe"
+    short_command = True
+    missing = ("没有找到 WorkBuddy（没有 ~/.workbuddy 文件夹）", "WorkBuddy not found (no ~/.workbuddy folder)")
+    apply = ("在 WorkBuddy 侧边栏「插件 → MCP 服务器」里能看到 wuxian，绿色就是连上了（没看到就重启 WorkBuddy）。",
+             "wuxian shows in WorkBuddy's sidebar under Plugins → MCP servers, green when it is connected (restart "
+             "WorkBuddy if it is not there).")
+
+    def folder(self):
+        return self.home / ".workbuddy"
+
+    def config(self):
+        return self.folder() / "mcp.json"
+
+
+CLASSES = {"claude": Claude, "codex": Codex, "cursor": Cursor, "trae-cn": TraeCN, "trae": Trae, "workbuddy": WorkBuddy}
 
 
 def host(name, home=None, env=None, run=None):
@@ -406,13 +508,15 @@ def manual(prog):
     quoted = f'"{cmd}"' if " " in cmd else cmd
     args = " ".join(prog["args"])
     env = "".join(f" --env {k}={v}" for k, v in prog["env"].items())
-    stdio = {"command": cmd, "args": prog["args"], **({"env": prog["env"]} if prog["env"] else {})}
-    return dict(
-        claude=f"claude mcp add --scope user --transport stdio {NAME}{env} -- {quoted} {args}",
-        codex="\n".join([tr("# %USERPROFILE%\\.codex\\config.toml 末尾加上：", "# add at the end of %USERPROFILE%\\.codex\\config.toml:"),
-                         *Codex.block(prog)]),
-        cursor=json.dumps({"mcpServers": {NAME: stdio}}, indent=2, ensure_ascii=False),
-        other=json.dumps({"mcpServers": {NAME: stdio}}, indent=2, ensure_ascii=False))
+    extra = {"env": prog["env"]} if prog["env"] else {}
+    stdio = json.dumps({"mcpServers": {NAME: {"command": cmd, "args": prog["args"], **extra}}}, indent=2, ensure_ascii=False)
+    short = json.dumps({"mcpServers": {NAME: {"command": short_path(cmd), "args": prog["args"], **extra}}}, indent=2,
+                       ensure_ascii=False)                          # Trae and WorkBuddy: no space in the command
+    return {
+        "claude": f"claude mcp add --scope user --transport stdio {NAME}{env} -- {quoted} {args}",
+        "codex": "\n".join([tr("# %USERPROFILE%\\.codex\\config.toml 末尾加上：", "# add at the end of %USERPROFILE%\\.codex\\config.toml:"),
+                            *Codex.block(prog)]),
+        "cursor": stdio, "trae-cn": short, "trae": short, "workbuddy": short, "other": stdio}
 
 
 def status(home=None, env=None, run=None):

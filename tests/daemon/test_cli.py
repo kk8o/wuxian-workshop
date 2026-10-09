@@ -186,6 +186,13 @@ class McpConfig(unittest.TestCase):
         cfg = json.loads(cursor[cursor.index("{"):])
         self.assertEqual(cfg, {"mcpServers": {"wuxian": {"command": "wuxian", "args": ["mcp"], "env": {}}}})
 
+    def test_trae_and_workbuddy_take_the_cursor_layout(self):
+        for host, where in (("trae-cn", "%APPDATA%\\Trae CN\\User\\mcp.json"), ("trae", "%APPDATA%\\Trae\\User\\mcp.json"),
+                            ("workbuddy", "%USERPROFILE%\\.workbuddy\\mcp.json")):
+            text = mcpconfig.snippet(host, None, command="wuxian", args=["mcp"], env={})
+            self.assertIn(where, text.splitlines()[0])
+            self.assertEqual(json.loads(text[text.index("{"):]), {"mcpServers": {"wuxian": {"command": "wuxian", "args": ["mcp"], "env": {}}}})
+
     def test_codex_toml(self):
         text = mcpconfig.snippet("codex", None, command=r"C:\Tools\wuxian.exe", args=["mcp"], env={"WUXIAN_LOG": r"C:\x\mcp.log"})
         self.assertIn("[mcp_servers.wuxian]\ncommand = 'C:\\Tools\\wuxian.exe'\nargs = [\"mcp\"]", text)

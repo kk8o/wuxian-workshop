@@ -1,6 +1,7 @@
-r"""Configuration snippets for the MCP hosts (`wuxian mcp-config [claude|codex|cursor]`): how Claude Code, Codex and
-Cursor start `wuxian mcp` on stdio, and the Streamable HTTP alternative at the running daemon's /mcp (its port and token
-change with every start, so the stdio form is the one to keep; the web page's 接入 tab fills the live values in)."""
+r"""Configuration snippets for the MCP hosts (`wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy]`): how
+Claude Code, Codex, Cursor, Trae and WorkBuddy start `wuxian mcp` on stdio, and the Streamable HTTP alternative at the
+running daemon's /mcp (its port and token change with every start, so the stdio form is the one to keep; the web page's
+接入 tab fills the live values in)."""
 import json
 import os
 import sys
@@ -8,7 +9,13 @@ from pathlib import Path
 
 from ..paths import logs_dir
 
-HOSTS = ("claude", "codex", "cursor")
+HOSTS = ("claude", "codex", "cursor", "trae-cn", "trae", "workbuddy")
+JSON_FILES = {   # the hosts that read the Cursor layout (mcpServers), and where
+    "cursor": "# Cursor: .cursor/mcp.json in the project, or ~/.cursor/mcp.json for every project",
+    "trae-cn": "# Trae CN: %APPDATA%\\Trae CN\\User\\mcp.json for every project, or paste it in 设置 → MCP → 添加 → 手动添加",
+    "trae": "# Trae (international): %APPDATA%\\Trae\\User\\mcp.json for every project, or Settings → MCP → Add → Add Manually",
+    "workbuddy": "# WorkBuddy: %USERPROFILE%\\.workbuddy\\mcp.json for every project, or 插件 → MCP 服务器 → 配置 MCP",
+}
 
 
 def mcp_command():
@@ -39,6 +46,9 @@ def snippet(host, info=None, command=None, args=None, env=None):
         raise ValueError(f"host: one of {', '.join(HOSTS)}")
     if command is None:
         command, args = mcp_command()
+    if host in ("trae-cn", "trae", "workbuddy"):          # Trae takes no space in the command: its 8.3 form
+        from ..agents import short_path
+        command = short_path(str(command))
     env = environment() if env is None else env
     url = info.get("mcp_url") if info else None
     token = info.get("token") if info else None
@@ -72,8 +82,7 @@ def snippet(host, info=None, command=None, args=None, env=None):
         servers = {"wuxian": stdio}
         if url:
             servers["wuxian-http"] = {"url": url, "headers": {"Authorization": f"Bearer {token}"}}
-        lines += ["# Cursor: .cursor/mcp.json in the project, or ~/.cursor/mcp.json for every project",
-                  json.dumps({"mcpServers": servers}, indent=2, ensure_ascii=False)]
+        lines += [JSON_FILES[host], json.dumps({"mcpServers": servers}, indent=2, ensure_ascii=False)]
     return "\n".join(lines) + "\n"
 
 

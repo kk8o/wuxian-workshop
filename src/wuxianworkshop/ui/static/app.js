@@ -24,8 +24,9 @@
      GET  /api/update, POST {action}   -> {supported, reason, state, current, latest, size, notes, progress, error,
                                           checked}; actions check / download / apply (apply restarts the program); the
                                           state also comes with every status as status.update
-     GET  /api/agents                  -> {program:{command, args}, hosts:[{id, title, present, can_connect, state, detail,
-                                          where, apply, entry}], manual:{claude, codex, cursor, other}}: the coding agents
+     GET  /api/agents                  -> {program:{command, args}, hosts:[{id, title, present, can_connect, can_verify,
+                                          state, detail, where, apply, entry}], manual:{claude, codex, cursor, trae-cn,
+                                          trae, workbuddy, other}}: the coding agents
                                           and this MCP server (agents.py); POST {action: connect|disconnect|verify, host}
                                           answers that host again, with verify:{ok, text} when checked
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
@@ -1226,7 +1227,8 @@ function appState() {
                { path: r.path, name: r.name });
     },
 
-    // ---- the agents (agents.py through /api/agents): one click registers this program with Claude Code, Codex, Cursor
+    // ---- the agents (agents.py through /api/agents): one click registers this program with Claude Code, Codex, Cursor,
+    // Trae and WorkBuddy
     async loadAgents() {
       try {
         const d = await this.api('/api/agents');
@@ -1509,6 +1511,20 @@ function appState() {
         },
         {
           id: 'cursor', title: 'Cursor · mcp.json', file: t('%USERPROFILE%\\.cursor\\mcp.json，或项目里的 .cursor\\mcp.json'),
+          text: JSON.stringify({ mcpServers: {
+            'wuxian': { command: exe, args: c.args },
+            'wuxian-http': { url: c.mcpUrl, headers: { Authorization: bearer } },
+          } }, null, 2),
+        },
+        {
+          id: 'trae', title: 'Trae · mcp.json', file: t('%APPDATA%\\Trae CN\\User\\mcp.json（国际版是 Trae 文件夹），或 设置 → MCP → 添加 → 手动添加'),
+          text: JSON.stringify({ mcpServers: {
+            'wuxian': { command: exe, args: c.args },
+            'wuxian-http': { url: c.mcpUrl, headers: { Authorization: bearer } },
+          } }, null, 2),
+        },
+        {
+          id: 'workbuddy', title: 'WorkBuddy · mcp.json', file: t('%USERPROFILE%\\.workbuddy\\mcp.json，或 插件 → MCP 服务器 → 配置 MCP'),
           text: JSON.stringify({ mcpServers: {
             'wuxian': { command: exe, args: c.args },
             'wuxian-http': { url: c.mcpUrl, headers: { Authorization: bearer } },

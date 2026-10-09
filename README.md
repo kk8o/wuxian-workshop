@@ -2,7 +2,7 @@
 
 **用 AI 写魔兽插件。**
 
-无限工坊让你的 AI Agent（Claude Code、Codex、Cursor 等支持 MCP 的 Agent）自己写《魔兽世界：无限》插件、自己调试：从零写一个
+无限工坊让你的 AI Agent（Claude Code、Codex、Cursor、Trae、WorkBuddy 等支持 MCP 的 Agent）自己写《魔兽世界：无限》插件、自己调试：从零写一个
 新插件，或者修改你已经装着的插件（别人写的也行）；写完先检查，再在正在运行的游戏里试，看报错、print 输出和截图，在游戏里执行
 Lua 查状态，对照这个客户端自己的 API 手册找到原因、改好再试。你只需说清想要什么，在游戏里验收。
 
@@ -48,7 +48,7 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m unittest discover -s tests -t .    # 全部测试
 .venv\Scripts\wuxian install                                     # 把开发组件装进游戏（装完要完整重启游戏）
 .venv\Scripts\wuxian                                             # 窗口 + 托盘
-.venv\Scripts\wuxian mcp-config claude                           # 接入 Agent 的配置（也有 codex、cursor）
+.venv\Scripts\wuxian mcp-config claude                           # 接入 Agent 的配置（也有 codex、cursor、trae-cn、trae、workbuddy）
 ```
 
 打包：`powershell scripts\build.ps1`（PyInstaller，产物在 `dist\wuxian\`）；发布包：`powershell scripts\pack.ps1`（Velopack）。
@@ -85,7 +85,7 @@ notes/                各版本的更新说明
 
 ---
 
-**English.** Wuxian Workshop lets your AI agent (Claude Code, Codex, Cursor or any MCP client) write and debug World of
+**English.** Wuxian Workshop lets your AI agent (Claude Code, Codex, Cursor, Trae, WorkBuddy or any MCP client) write and debug World of
 Warcraft addons for the Chinese 1.60 "无限" client by itself: it checks the code before the game, hot-loads it into the
 running game, tries it and reads back the errors (with stacks), prints and screenshots. The program and the addon talk
 through a frame code drawn on the screen and a font mailbox — no memory reading, no injection, no synthetic input.

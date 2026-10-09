@@ -139,7 +139,8 @@ class DevTools(unittest.TestCase):
                "APPDATA": str(home / "AppData" / "Roaming"), "LOCALAPPDATA": str(home / "AppData" / "Local")}
         with mock.patch.dict(os.environ, env):
             states = {h["id"]: h["state"] for h in self.get("/api/agents")["hosts"]}
-            self.assertEqual(states, {"claude": "absent", "codex": "absent", "cursor": "missing"})
+            self.assertEqual(states, {"claude": "absent", "codex": "absent", "cursor": "missing", "trae-cn": "missing",
+                                      "trae": "missing", "workbuddy": "missing"})
             made = request(self.handle, "POST", "/api/agents", {"action": "connect", "host": "codex"})
             self.assertEqual(made["state"], "ok")
             self.assertIn("[mcp_servers.wuxian]", (home / ".codex" / "config.toml").read_text(encoding="utf-8"))

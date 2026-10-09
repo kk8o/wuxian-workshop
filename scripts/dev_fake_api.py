@@ -83,8 +83,10 @@ class Fake:
         self.subscribers = set()
         self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR, "autostart": False,
                          "language": "auto", "onboarded": False}   # the daemon's shape (daemon/service.py settings())
-        # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex is not connected, no Cursor
-        self.agents = {"claude": "other", "codex": "absent", "cursor": "missing"}
+        # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
+        # connected, no Cursor and no international Trae
+        self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
+                       "workbuddy": "absent"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
         self.watch = []
         self.reload_pending = False
@@ -482,22 +484,27 @@ class Fake:
 
     def agent(self, host):
         """one agent as agents.py's Host.status() says it"""
-        from wuxianworkshop import agents
-        title = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor"}[host]
+        from wuxianworkshop import agents, i18n
+        title = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor", "trae-cn": "Trae CN", "trae": "Trae 国际版",
+                 "workbuddy": "WorkBuddy"}[host]
         where = {"claude": r"C:\Users\Someone\.claude.json", "codex": r"C:\Users\Someone\.codex\config.toml",
-                 "cursor": r"C:\Users\Someone\.cursor\mcp.json"}[host]
+                 "cursor": r"C:\Users\Someone\.cursor\mcp.json",
+                 "trae-cn": r"C:\Users\Someone\AppData\Roaming\Trae CN\User\mcp.json",
+                 "trae": r"C:\Users\Someone\AppData\Roaming\Trae\User\mcp.json",
+                 "workbuddy": r"C:\Users\Someone\.workbuddy\mcp.json"}[host]
         state = self.agents[host]
         cmd = " ".join([self.PROGRAM["command"], *self.PROGRAM["args"]])
         detail = {"ok": "已接入：会启动 " + cmd, "absent": "还没有接入", "missing": f"没有找到 {title}",
                   "other": r"已接入，但启动的是另一个程序：D:\old\wuxian\wuxian.exe（点「接入」改成现在这个）"}[state]
-        return dict(id=host, title=title, present=state != "missing", can_connect=state != "missing", state=state,
-                    detail=detail, where=where, apply=agents.CLASSES[host].apply,
+        return dict(id=host, title=title, present=state != "missing", can_connect=state != "missing",
+                    can_verify=host in ("claude", "codex"), state=state, detail=detail, where=where,
+                    apply=i18n.tr(*agents.CLASSES[host].apply),
                     entry={"command": self.PROGRAM["command"], "args": ["mcp"]} if state == "ok" else None)
 
     def agents_status(self):
         from wuxianworkshop import agents
         return dict(program=dict(command=self.PROGRAM["command"], args=self.PROGRAM["args"]),
-                    hosts=[self.agent(h) for h in ("claude", "codex", "cursor")], manual=agents.manual(self.PROGRAM))
+                    hosts=[self.agent(h) for h in agents.HOSTS], manual=agents.manual(self.PROGRAM))
 
     def agent_action(self, action, host):
         if host not in self.agents or self.agents[host] == "missing":
@@ -509,7 +516,7 @@ class Fake:
         elif action != "verify":
             raise ValueError('action: "connect", "disconnect" or "verify"')
         answer = self.agent(host)
-        if action in ("connect", "verify") and host != "cursor":
+        if action in ("connect", "verify") and host in ("claude", "codex"):
             answer["verify"] = {"ok": True, "text": "Claude Code 启动它：✔ Connected" if host == "claude" else "Codex 读到了 wuxian 的设置"}
         self.entry("INFO", f"agents: {action} {host} -> {answer['state']} (fake: nothing written)")
         return answer
