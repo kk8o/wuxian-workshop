@@ -559,6 +559,32 @@ class KitTools(unittest.TestCase):
         self.assertTrue(text.endswith("Listen for 2 hours."))
         self.assertIn("grants nothing", text)
 
+    def test_the_watch_never_starts_the_daemon(self):
+        """a passive call (the watch's) that finds the daemon gone reconnects to a running one only; a client's call may
+        start one, as before"""
+        from wuxianworkshop.cli.client import DaemonGone
+        from wuxianworkshop.mcp import kit
+        from wuxianworkshop.mcp.server import HttpBackend
+
+        class Gone:
+            def addon_events(self, *a):
+                raise DaemonGone("nobody listens")
+
+        starts = []
+
+        def reconnect(start=True):
+            starts.append(start)
+            raise ConnectionError("no daemon")
+        backend = HttpBackend(Gone(), reconnect=reconnect)
+
+        async def passive():
+            kit.PASSIVE.set(True)
+            return await backend.addon_events("WuxianKit", "kit.*", -1, 100, 0)
+        for call in (passive(), backend.addon_events("WuxianKit", "kit.*", -1, 100, 0)):
+            with self.assertRaises(ApiError):
+                asyncio.run(call)
+        self.assertEqual(starts, [False, True])
+
     def test_wait_and_propose(self):
         from wuxianworkshop.mcp import kit
 

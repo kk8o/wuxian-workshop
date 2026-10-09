@@ -14,6 +14,7 @@ the clients that the lists changed) or answers kit.revision with another one (as
 AWAY seconds while it does not answer). While the game is away the last manifest stands and calling its tools fails. A
 WuxianKit from before the spec still gets its tools, from kit.capabilities."""
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -31,6 +32,9 @@ from ..paths import state_dir
 ADDON, PREFIX, PROTOCOL, URI = "WuxianKit", "wk_", 1, "wuxian://kit"
 RECHECK, AWAY = 600, 30                     # seconds: ask the game for the revision again after; while it is away
 POLL = 10                                   # seconds between the watch's asks when it may not wait for events
+# the calls of the watch: in the background, so they never start the daemon (a daemon the player quit stays quit; a
+# client's own call starts one, as before). HttpBackend reads it
+PASSIVE = contextvars.ContextVar("wuxian_kit_passive", default=False)
 INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities"}             # read by this module, not tools
 FINAL = {"done", "failed", "declined", "expired", "undone"}
 MAX_DOC, MAX_SKILLS = 64 * 1024, 20
@@ -318,6 +322,7 @@ class KitTools:
         return False
 
     async def watch_loop(self):
+        PASSIVE.set(True)                                  # this task's calls only
         since = -1
         while True:
             t0 = time.monotonic()

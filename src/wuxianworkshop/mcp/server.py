@@ -67,8 +67,9 @@ an agent), each capability of its extensions is a tool too, wk_<extension>_<name
 class HttpBackend:
     """the Service's methods over HTTP, for the stdio server (cli.client.DaemonClient underneath). The daemon may
     restart while this server runs, on a new port with a new token: a request that found nobody listening, or that
-    was turned away for its token, did nothing, so it is sent once more to the daemon that runs now (reconnect():
-    cli.client.connect, which also starts one). Other failures are reported, never repeated (a run may have run)."""
+    was turned away for its token, did nothing, so it is sent once more to the daemon that runs now (reconnect(start):
+    cli.client.connect, which also starts one, unless the call is a passive one: kit.PASSIVE, the watch of WuxianKit's
+    tools). Other failures are reported, never repeated (a run may have run)."""
 
     def __init__(self, client, reconnect=None):
         self.client, self.reconnect = client, reconnect
@@ -89,7 +90,7 @@ class HttpBackend:
             if attempt or self.reconnect is None:
                 raise failure
             try:
-                self.client = await asyncio.to_thread(self.reconnect)
+                self.client = await asyncio.to_thread(self.reconnect, not kit_tools.PASSIVE.get())
             except ConnectionError as e:
                 raise ApiError(503, "daemon_unreachable", str(e)) from None
 
@@ -499,7 +500,7 @@ def main(argv=None):
         logger.error(str(e))
         return 2
     logger.info(f"serving the tools on stdio for the daemon at {client.base}")
-    backend = HttpBackend(client, reconnect=lambda: connect(start=not args.no_start, log=logger.info))
+    backend = HttpBackend(client, reconnect=lambda start=True: connect(start=start and not args.no_start, log=logger.info))
     build_server(backend).run()                       # stdio
     return 0
 
