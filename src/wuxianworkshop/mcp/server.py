@@ -200,8 +200,9 @@ def code_stamp():
 
 
 STARTED, LOADED = time.time(), code_stamp()      # when this process started, and the code it runs
-STALE_ACTION = ("reconnect this MCP server, so that a new process loads the current code and tools (Claude Code: /mcp, "
-                "then wuxian, Reconnect; other agents: restart their MCP server or the session)")
+STALE_ACTION = ("restart this MCP server, so that a new process loads the current code and tools: Claude Code in a "
+                "terminal: /mcp, then wuxian, Reconnect; the Claude desktop app (its MCP list has no Reconnect) and other "
+                "agents: start a new session or restart the agent")
 
 
 def version_key(version):
