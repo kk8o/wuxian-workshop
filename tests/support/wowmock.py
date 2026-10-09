@@ -270,6 +270,8 @@ Settings = {
 }
 tinsert = table.insert
 function GetCursorPosition() return 0, 0 end
+__shift = false
+function IsShiftKeyDown() return __shift end
 function HideUIPanel() end
 __locale = "enUS"
 function GetLocale() return __locale end

@@ -1,5 +1,6 @@
 -- WoWBridge's minimap button and its entry in the addon compartment (the minimap's addon list): left-click opens the
--- settings panel, right-click the debug window (Console.lua), dragging moves the button round the minimap. Lua errors
+-- settings panel, right-click the debug window (Console.lua), Shift-click WuxianKit's window (while the game runs it),
+-- dragging moves the button round the minimap. Lua errors
 -- that came while the debug window was closed show as a red count on the button (M.Badge). Its place
 -- (minimapAngle, degrees) and whether it shows (minimapHide) are kept for this character. The icon is 无限工坊's mark
 -- (Skin.lua), grey while the link is off; the tooltip says the link's state in its colour.
@@ -37,7 +38,9 @@ local function Tooltip(owner)
 	GameTooltip:AddLine(L.ST_LINK:format(ns.StateName(state)), c[1], c[2], c[3])
 	if ns.Console.unseen > 0 then GameTooltip:AddLine(L.MM_ERRORS:format(ns.Console.unseen), C.bad[1], C.bad[2], C.bad[3]) end
 	GameTooltip:AddLine(" ")
-	for _, key in ipairs({ "MM_LEFT", "MM_RIGHT", "MM_DRAG" }) do
+	local keys = { "MM_LEFT", "MM_RIGHT", "MM_DRAG" }
+	if ns.Kit.Present() then table.insert(keys, 3, "MM_KIT") end
+	for _, key in ipairs(keys) do
 		GameTooltip:AddLine(L[key], C.muted[1], C.muted[2], C.muted[3])
 	end
 	GameTooltip:Show()
@@ -73,7 +76,13 @@ local function Build()
 	button.count:SetJustifyH("CENTER")
 	M.Badge(ns.Console.unseen)
 	button:SetScript("OnClick", function(_, which)
-		if which == "RightButton" then ns.Console.Toggle() else ns.Panel.Toggle() end
+		if which == "RightButton" then
+			ns.Console.Toggle()
+		elseif IsShiftKeyDown() and ns.Kit.Present() then
+			ns.Kit.Open()
+		else
+			ns.Panel.Toggle()
+		end
 	end)
 	button:SetScript("OnDragStart", function(self)
 		GameTooltip:Hide()

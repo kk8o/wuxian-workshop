@@ -283,6 +283,25 @@ events:SetScript("OnEvent", function(_, event, arg1)
 	end
 end)
 
+-- WuxianKit (无限工坊's standard library, an addon of its own): while the game runs it, the panel's head, Shift-click on
+-- the minimap button and /wb kit open its window; without it nothing of WoWBridge changes
+local Kit = {}
+ns.Kit = Kit
+
+function Kit.Present()
+	local kit = _G.WuxianKit
+	return type(kit) == "table" and type(kit.Window) == "function"
+end
+
+-- page: the extension to open it on ("tune", "chat" ...), else the one it showed last; an error of its own goes to the
+-- error handler (the debug window), not into the click that opened it
+function Kit.Open(page)
+	if not Kit.Present() then return false end
+	local ok, err = pcall(_G.WuxianKit.Window, _G.WuxianKit, page)
+	if not ok then geterrorhandler()(err) end
+	return ok
+end
+
 SLASH_WOWBRIDGE1 = "/wb"
 SLASH_WOWBRIDGE2 = "/wowbridge"
 SlashCmdList.WOWBRIDGE = function(msg)
@@ -340,6 +359,8 @@ SlashCmdList.WOWBRIDGE = function(msg)
 		else
 			Print(L.USAGE_LOG)
 		end
+	elseif cmd == "kit" then
+		if Kit.Present() then Kit.Open(rest ~= "" and rest:lower() or nil) else Print(L.NO_KIT) end
 	elseif cmd == "diag" then
 		local d = WB.Diag()
 		for i = 1, #d, 200 do Print(d:sub(i, i + 199)) end
@@ -348,6 +369,6 @@ SlashCmdList.WOWBRIDGE = function(msg)
 	else
 		Print(L.STATUS:format(VERSION, session, current and L.ON_SCREEN:format(current.kind, current.msg) or L.NO_FRAME))
 		Print(ns.Link.Status())
-		Print(L.HELP)
+		Print(L.HELP .. (Kit.Present() and L.HELP_KIT or ""))
 	end
 end

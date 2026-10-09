@@ -876,6 +876,60 @@ class PanelAndLanguage(unittest.TestCase):
         finally:
             s.close()
 
+    def test_wuxiankit_while_the_game_runs_it(self):
+        """WuxianKit (无限工坊's standard library, an addon of its own): without it nothing changes (no button in the
+        panel's head, the minimap button's tooltip and /wb's help as they were, /wb kit says it is not there); with it the
+        head has a button to its window (the panel gives way), Shift-click on the minimap button and /wb kit [page] open
+        it, and an error of its own goes to the error handler"""
+        s = self.start()
+        try:
+            g = s.lua.globals()
+            button = g[b"WoWBridgeMinimapButton"]
+            enter = lambda: (button[b"scripts"][b"OnEnter"](button), list(g[b"GameTooltip"][b"lines"].values()))[1]
+            button.Click(button, "LeftButton")
+            panel = g[b"WoWBridgePanel"]
+            self.assertTrue(panel[b"shown"])
+            self.assertFalse(panel[b"kit"][b"shown"])
+            self.assertEqual(enter()[-3:], [b"Left-click: the panel", b"Right-click: the debug output",
+                                            b"Drag: move this button"])
+            g[b"__shift"] = True
+            button.Click(button, "LeftButton")                       # Shift or not: the panel, as before
+            self.assertFalse(panel[b"shown"])
+            s.slash("kit")
+            self.assertIn("WuxianKit (the workshop's standard library) is not running", s.chat())
+            s.slash("help")
+            self.assertNotIn("kit", s.chat().splitlines()[-1])
+            g[b"__shift"] = False
+
+            s.lua.execute(b"__opened = {} WuxianKit = { Window = function(self, page) "
+                          b"__opened[#__opened + 1] = page or 'last' return true end }")
+            button.Click(button, "LeftButton")
+            s.run(1.1)                                                # the panel's next refresh
+            self.assertTrue(panel[b"kit"][b"shown"])
+            self.assertEqual(panel[b"kit"][b"text"], b"Kit")
+            panel[b"kit"].Click(panel[b"kit"])
+            self.assertFalse(panel[b"shown"])                         # the panel gives way to it
+            s.slash("kit Tune")
+            g[b"__shift"] = True
+            button.Click(button, "LeftButton")
+            self.assertFalse(panel[b"shown"])
+            g[b"__shift"] = False
+            self.assertEqual(list(g[b"__opened"].values()), [b"last", b"tune", b"last"])
+            self.assertEqual(enter()[-4:], [b"Left-click: the panel", b"Right-click: the debug output",
+                                            b"Shift-click: WuxianKit's window", b"Drag: move this button"])
+            s.slash("help")
+            self.assertIn("| kit [page] (WuxianKit's window)", s.chat().splitlines()[-1])
+            s.slash("lang zh")
+            button.Click(button, "LeftButton")
+            self.assertEqual(panel[b"kit"][b"text"].decode(), "标准库")
+            s.lua.execute(b"WuxianKit.Window = function() error('kit broke') end")
+            n = len(g[b"__errors"])
+            s.slash("kit")                                            # its error: to the handler, not into /wb
+            self.assertEqual(len(g[b"__errors"]), n + 1)
+            self.assertIn(b"kit broke", g[b"__errors"][n + 1])
+        finally:
+            s.close()
+
     def test_panel_and_minimap_button(self):
         s = self.start()
         try:
