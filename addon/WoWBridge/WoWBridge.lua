@@ -283,7 +283,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 	end
 end)
 
--- WuxianKit (无限工坊's standard library, an addon of its own): while the game runs it, the panel's head, Shift-click on
+-- WuxianKit (the extension framework, an optional addon of its own): while the game runs it, the panel's head, Shift-click on
 -- the minimap button and /wb kit open its window; without it nothing of WoWBridge changes
 local Kit = {}
 ns.Kit = Kit

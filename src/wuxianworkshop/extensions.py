@@ -1,5 +1,5 @@
-r"""The extension catalog (wuxianwow.com/workshop/data/extensions.json): addons that work with WuxianKit, 无限工坊's
-standard library (WuxianKit itself first), which the 扩展 page installs, updates and removes. Its versions are its own,
+r"""The extension catalog (wuxianwow.com/workshop/data/extensions.json): addons that work with WuxianKit, the
+optional extension framework (WuxianKit itself first), which the 扩展 page installs, updates and removes. Its versions are its own,
 not the program's.
 
     {"format": 1, "updated": "...", "addons": [{"id": "wuxiankit", "folder": "WuxianKit", "version": "0.3.0",

@@ -396,20 +396,20 @@ class Fake:
 
     EXT_CATALOG = [
         {"id": "wuxiankit", "folder": "WuxianKit", "version": "0.3.0",
-         "title": {"zh": "无限工坊 · 标准库", "en": "Wuxian Workshop · Kit"},
-         "summary": {"zh": "让插件与 AI Agent 协作的标准库：聊天、设置、指引等扩展。改动先预览，确认后才执行，并可撤销。",
-                     "en": "A standard library for addons that work with an AI agent: chat, settings, guides and more."},
+         "title": {"zh": "无限工坊 · 扩展框架", "en": "Wuxian Workshop · WuxianKit"},
+         "summary": {"zh": "插件的 Agent 接入框架。插件把功能声明为能力，供 AI Agent 经无限工坊调用；更改游戏的操作由玩家确认，可以撤销。",
+                     "en": "Connects addons to an AI agent. Addons declare capabilities, which the agent uses through Wuxian Workshop."},
          "file": "WuxianKit-0.3.0.zip", "size": 82675, "sha256": "b" * 64, "min_app": "0.9.7", "protocol": 1,
          "extensions": [{"id": i, "title": {"zh": z, "en": e}, "tools": n, "events": v} for i, z, e, n, v in (
              ("tune", "调校", "Tune", 33, 0), ("chat", "聊天", "Chat", 4, 1), ("gate", "远程", "Remote", 3, 3),
              ("data", "数据", "Data", 4, 0), ("guide", "指引", "Guide", 5, 1), ("sense", "角色信息", "Character info", 8, 0))],
-         "skills": [{"name": n, "extension": x, "title": {"zh": z, "en": n}, "description": {"zh": dz, "en": de}}
-                    for n, x, z, dz, de in (
-                        ("kit-extension", "kit", "写一个标准库扩展", "按标准库的架构，把一个插件接入标准库，或新写一个扩展",
+         "skills": [{"name": n, "extension": x, "title": {"zh": z, "en": e}, "description": {"zh": dz, "en": de}}
+                    for n, x, z, e, dz, de in (
+                        ("kit-extension", "kit", "写一个扩展", "Write an extension", "按扩展框架的架构，把插件接入扩展框架，或新写一个扩展",
                          "Make an addon a WuxianKit extension, or write a new extension"),
-                        ("tune-setup", "tune", "调一套设置", "按玩家的要求调整一组设置、按键、宏、界面布局或天赋配置，合成一个可以整体撤销的提案",
+                        ("tune-setup", "tune", "调一套设置", "Tune a setup", "按玩家的要求调整一组设置、按键、宏、界面布局或天赋配置，合成一个可以整体撤销的提案",
                          "Change a set of settings in one proposal the player can undo as one"),
-                        ("guide-tour", "guide", "分步讲解界面", "用高亮和简短说明，一步步带玩家熟悉游戏界面的某个功能",
+                        ("guide-tour", "guide", "分步讲解界面", "Guided UI tour", "用高亮和简短说明，一步步带玩家熟悉游戏界面的某个功能",
                          "Walk the player through a part of the UI step by step"))],
          "notes": {"zh": "0.3.0：新增远程、数据、指引三个扩展；界面用语改写，支持中英文切换。",
                    "en": "0.3.0: Remote, Data and Guide extensions; plainer wording with a Chinese/English switch."},

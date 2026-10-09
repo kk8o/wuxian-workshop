@@ -246,6 +246,7 @@ function P.Refresh()
 	panel.tabs.SetLabels(function(id) return L[TAB_WORDS[id]] end)
 	for _, h in ipairs(headings) do h[1]:SetText(L[h[2]]) end
 	for _, w in ipairs(labels) do w[1]:SetText(L[w[2]]) end
+	panel.kit:SetWidth(math.max(64, math.floor(panel.kit.label:GetStringWidth() + 0.5) + 20))   -- its name, either language
 	panel.kit:SetShown(ns.Kit.Present())
 
 	-- 概览

@@ -161,12 +161,12 @@ T.enUS = {
 	BTN_CONSOLE = "Debug output",
 	MM_ERRORS = "%d new Lua errors: right-click to see them",
 	USAGE_LOG = "usage: /wb log [errors|runs|output]",
-	-- WuxianKit (the workshop's standard library), while the game runs it
-	BTN_KIT = "Kit",
-	KIT_TIP = "Open the Kit window (/wk)",
-	MM_KIT = "Shift-click: the Kit window",
+	-- WuxianKit (the extension framework, an optional addon), while the game runs it
+	BTN_KIT = "WuxianKit",
+	KIT_TIP = "Open WuxianKit (/wk)",
+	MM_KIT = "Shift-click: WuxianKit",
 	NO_KIT = "WuxianKit is not running: not installed, or disabled in the addon list",
-	HELP_KIT = " | kit [page] (the Kit window)",
+	HELP_KIT = " | kit [page] (WuxianKit)",
 }
 
 T.zhCN = {
@@ -314,11 +314,11 @@ T.zhCN = {
 	BTN_CONSOLE = "调试输出",
 	MM_ERRORS = "新的 Lua 报错 %d 条：右键查看",
 	USAGE_LOG = "用法：/wb log [errors|runs|output]",
-	BTN_KIT = "标准库",
-	KIT_TIP = "打开标准库窗口（/wk）",
-	MM_KIT = "Shift+左键：标准库窗口",
-	NO_KIT = "未检测到标准库（WuxianKit）：未安装，或已在插件列表中禁用",
-	HELP_KIT = " | kit [页] 标准库窗口",
+	BTN_KIT = "扩展框架",
+	KIT_TIP = "打开扩展框架窗口（/wk）",
+	MM_KIT = "Shift+左键：扩展框架窗口",
+	NO_KIT = "未检测到扩展框架（WuxianKit）：未安装，或已在插件列表中禁用",
+	HELP_KIT = " | kit [页] 扩展框架窗口",
 }
 
 ns.LANGUAGES = { "auto", "zhCN", "enUS" }

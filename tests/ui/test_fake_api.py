@@ -175,7 +175,7 @@ class Endpoints(unittest.TestCase):
         self.assertEqual((rows["wuxiankit"]["state"], rows["wuxiankit"]["installed"], rows["raidnotes"]["state"]),
                          ("update", "0.2.0", "available"))
         self.assertEqual(rows["wuxiankit"]["extensions"][0]["title"], {"zh": "调校", "en": "Tune"})
-        self.assertEqual([s["title"]["zh"] for s in rows["wuxiankit"]["skills"]], ["写一个标准库扩展", "调一套设置", "分步讲解界面"])
+        self.assertEqual([s["title"]["zh"] for s in rows["wuxiankit"]["skills"]], ["写一个扩展", "调一套设置", "分步讲解界面"])
         r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit"}, headers=AUTH).json()
         self.assertEqual((r["result"]["restart"], r["addon"]["state"]), (False, "current"))
         r = self.client.post("/api/extensions", json={"action": "install", "id": "raidnotes"}, headers=AUTH).json()

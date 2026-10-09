@@ -682,7 +682,7 @@
       </div>
     </section>
 
-    <!-- 扩展：网站扩展目录里的插件（标准库和它的扩展），在这里安装、更新、卸载；它们的版本跟程序的分开 -->
+    <!-- 扩展：网站扩展目录里的插件（扩展框架和它的扩展，都是可选的），在这里安装、更新、卸载；它们的版本跟程序的分开 -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
@@ -691,7 +691,7 @@
         <button class="btn" @click="loadExtensions(true)" :disabled="ext.busy !== ''"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' ? t('读取中…') : t('刷新目录')"></span></button>
       </div>
       <div class="pagebody">
-        <p class="muted ext-intro">标准库和基于它的扩展插件，来自无限工坊网站的扩展目录。更新后在游戏里重载界面即可生效；第一次安装需要完整重启游戏。</p>
+        <p class="muted ext-intro">扩展框架（WuxianKit）及基于它的扩展，来自无限工坊网站的扩展目录。均为可选，无限工坊不依赖它们。首次安装后需完整重启游戏，更新后重载界面即可。</p>
         <div class="ext-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
         <div class="ext-note" x-show="ext.note">
           <span x-text="ext.note"></span>

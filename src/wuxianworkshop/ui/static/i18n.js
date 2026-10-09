@@ -630,7 +630,7 @@ const EN = {
   '扩展': 'Extensions',
   '刷新目录': 'Refresh',
   '读取中…': 'Reading…',
-  '标准库和基于它的扩展插件，来自无限工坊网站的扩展目录。更新后在游戏里重载界面即可生效；第一次安装需要完整重启游戏。': 'The Kit and the extension addons built on it, from the extension catalog on the Wuxian Workshop website. An update takes effect after a UI reload in the game; a first install needs a full restart of the game.',
+  '扩展框架（WuxianKit）及基于它的扩展，来自无限工坊网站的扩展目录。均为可选，无限工坊不依赖它们。首次安装后需完整重启游戏，更新后重载界面即可。': 'WuxianKit (the extension framework) and the extensions built on it, from the extension catalog on the Wuxian Workshop website. All are optional; Wuxian Workshop does not depend on them. Restart the game after the first install; after an update, reload the UI.',
   '读取扩展目录…': 'Reading the extension catalog…',
   '目录里还没有扩展。': 'The catalog has no extensions yet.',
   '包含': 'Includes',

@@ -58,10 +58,10 @@ Each `load`, the start of a `watch` and every save a watch loads first keep a ve
 `restore` goes back); `checkpoint` an addon you did not make before you change it, so the player's original is kept.
 `api_search` / `api_get` / `api_manual` read this client's own API manual (built in, no game needed): look an API up
 there before using it, and `run` it in the game when in doubt. `new_addon` makes a new addon from a template (with an
-AGENTS.md on how to work on it). When the game runs WuxianKit (无限工坊's standard library for addons that work with
-an agent), each capability of its extensions is a tool too, wk_<extension>_<name> (wk_tune_cvar_set, wk_sense_character
-...): `wk_docs` says how to use them; a Send or Change one answers with a proposal the player confirms in the game, and
-`wk_wait` waits for its outcome."""
+AGENTS.md on how to work on it). When the game runs WuxianKit (the optional extension framework for addons
+that work with an agent), each capability of its extensions is a tool too, wk_<extension>_<name> (wk_tune_cvar_set,
+wk_sense_character ...): `wk_docs` says how to use them; a Send or Change one answers with a proposal the player
+confirms in the game, and `wk_wait` waits for its outcome."""
 
 
 class HttpBackend:

@@ -876,8 +876,10 @@ class PanelAndLanguage(unittest.TestCase):
         finally:
             s.close()
 
+    FITS = b"WoWBridgePanel.kit:GetWidth() >= WoWBridgePanel.kit.label:GetStringWidth() + 16"
+
     def test_wuxiankit_while_the_game_runs_it(self):
-        """WuxianKit (无限工坊's standard library, an addon of its own): without it nothing changes (no button in the
+        """WuxianKit (the extension framework, an optional addon of its own): without it nothing changes (no button in the
         panel's head, the minimap button's tooltip and /wb's help as they were, /wb kit says it is not there); with it the
         head has a button to its window (the panel gives way), Shift-click on the minimap button and /wb kit [page] open
         it, and an error of its own goes to the error handler"""
@@ -906,7 +908,8 @@ class PanelAndLanguage(unittest.TestCase):
             button.Click(button, "LeftButton")
             s.run(1.1)                                                # the panel's next refresh
             self.assertTrue(panel[b"kit"][b"shown"])
-            self.assertEqual(panel[b"kit"][b"text"], b"Kit")
+            self.assertEqual(panel[b"kit"][b"text"], b"WuxianKit")
+            self.assertTrue(s.lua.eval(self.FITS))                       # the button as wide as its name
             panel[b"kit"].Click(panel[b"kit"])
             self.assertFalse(panel[b"shown"])                         # the panel gives way to it
             s.slash("kit Tune")
@@ -916,12 +919,13 @@ class PanelAndLanguage(unittest.TestCase):
             g[b"__shift"] = False
             self.assertEqual(list(g[b"__opened"].values()), [b"last", b"tune", b"last"])
             self.assertEqual(enter()[-4:], [b"Left-click: the panel", b"Right-click: the debug output",
-                                            b"Shift-click: the Kit window", b"Drag: move this button"])
+                                            b"Shift-click: WuxianKit", b"Drag: move this button"])
             s.slash("help")
-            self.assertIn("| kit [page] (the Kit window)", s.chat().splitlines()[-1])
+            self.assertIn("| kit [page] (WuxianKit)", s.chat().splitlines()[-1])
             s.slash("lang zh")
             button.Click(button, "LeftButton")
-            self.assertEqual(panel[b"kit"][b"text"].decode(), "标准库")
+            self.assertEqual(panel[b"kit"][b"text"].decode(), "扩展框架")
+            self.assertTrue(s.lua.eval(self.FITS))
             s.lua.execute(b"WuxianKit.Window = function() error('kit broke') end")
             n = len(g[b"__errors"])
             s.slash("kit")                                            # its error: to the handler, not into /wb

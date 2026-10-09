@@ -1,4 +1,4 @@
-r"""WuxianKit (无限工坊's standard library, an addon of its own) for the agent, by its Agent access spec: the game's
+r"""WuxianKit (the extension framework, an optional addon of its own) for the agent, by its Agent access spec: the game's
 WuxianKit gives a manifest (kit.manifest: protocol, its version, the language, a revision, every extension with its state
 and its docs folder under Interface\AddOns, and for those that are on their capabilities and the events they emit). This
 module turns it into MCP:
