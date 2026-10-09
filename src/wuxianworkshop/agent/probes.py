@@ -384,6 +384,16 @@ def describe_chunk(addon=None):
     return API_GUARD + f"return WoWBridge.Describe({lua_str(addon) if addon else 'nil'})"
 
 
+REPLY_GUARD = ("if not (WoWBridge and WoWBridge.Reply) then return '{\"error\":\"WoWBridge in the game takes no answers "
+               "(Request / respond): it came with 无限工坊 0.9.6; update the program, then restart the game\"}' end\n")
+
+
+def reply_chunk(request, data=None):
+    """the chunk that hands the answer to an addon's request (WoWBridge.Reply) to its callback, and says whether it was
+    still waiting"""
+    return REPLY_GUARD + f"return WoWBridge.Reply({lua_str(request)}, {lua_value(data)})"
+
+
 def answer_chunk(chunk, key):
     """a probe chunk run so that its answer comes back in pieces: it returns the first piece after a line "1/<pieces>",
     and keeps the answer in the game under `key` for piece_chunk when there are more (the chunk's lines keep their

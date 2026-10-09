@@ -499,6 +499,17 @@ class Service:
     ADDON_NAME = re.compile(r"^[A-Za-z0-9_!.\-]{1,64}$")
     CALL_NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 
+    @staticmethod
+    def event_view(e):
+        """an EVENT entry as `events` and `try` show it; a request (Request) also with its id, how long it waits and
+        until when (t + wait), for `respond`"""
+        out = dict(id=e["id"], t=e["t"], addon=e.get("addon"), topic=e.get("topic"), data=e.get("data"),
+                   dropped=e.get("dropped") or 0)
+        if e.get("request"):
+            out.update(request=e["request"], wait=e.get("wait"),
+                       expires=round(e["t"] + e["wait"], 3) if e.get("wait") else None)
+        return out
+
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         """the events addons sent with WoWBridge's Emit (journal entries of kind EVENT) from id `since` on, of that addon
         and topic (a name or a glob: "MyAddon", "scan.*"), at most `limit`; with `wait` seconds and none there yet, it
@@ -522,8 +533,7 @@ class Service:
             hits = [e for e in entries if matches(e)]
             if len(hits) > limit:
                 hits, next_id = hits[:limit], hits[limit]["id"]
-            return [dict(id=e["id"], t=e["t"], addon=e.get("addon"), topic=e.get("topic"), data=e.get("data"),
-                         dropped=e.get("dropped") or 0) for e in hits], next_id, truncated
+            return [self.event_view(e) for e in hits], next_id, truncated
 
         loop, arrived = asyncio.get_running_loop(), asyncio.Event()
         stop = self.journal.subscribe(loop, lambda e: arrived.set() if matches(e) else None)   # before the first look
@@ -561,6 +571,29 @@ class Service:
             raise ApiError(400, "call_failed", e.message) from None
         self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
         return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
+
+    REQUEST_ID = re.compile(r"^\d{1,5}\.\d{1,9}$")
+
+    async def respond(self, request, data=None, timeout_ms=10000):
+        """answer an addon's request (WoWBridge's Request, an event with `request` in `events`): data (JSON) goes to
+        its callback as a Lua table. A request that is no longer waiting (timed out, answered, the UI reloaded) is an
+        ApiError respond_failed"""
+        if not isinstance(request, str) or not self.REQUEST_ID.match(request):
+            raise ApiError(400, "bad_request", "request: the id an event of `events` carries (\"5974.3\")")
+        try:
+            code = probes.reply_chunk(request, data)
+        except ValueError as e:
+            raise ApiError(400, "bad_request", str(e).replace("args:", "data:")) from None
+        try:
+            answer = await self.probe(code, timeout_ms, chunk="=respond")
+        except ApiError as e:
+            if e.code != "probe_failed":
+                raise
+            self.journal.add("INFO", f"respond {request}: failed: {e.message.splitlines()[0][:200]}")
+            raise ApiError(400, "respond_failed", e.message) from None
+        addon, topic = (answer.get("addon"), answer.get("topic")) if isinstance(answer, dict) else (None, None)
+        self.journal.add("INFO", f"respond {request} ({addon} {topic}): delivered", addon=addon)
+        return dict(request=request, ok=True, addon=addon, topic=topic)
 
     async def addon_api(self, addon=None):
         """what an addon exposed with WoWBridge's Expose (name and doc, in the order it did) and the topics it emitted
@@ -640,7 +673,9 @@ class Service:
             elif e["kind"] == "OUT":
                 out["prints"] += [dict(t=t, text=line) for line in text.split("\n")]
             elif e["kind"] == "EVENT":
-                out["emitted"].append(dict(t=t, addon=e.get("addon"), topic=e.get("topic"), data=e.get("data")))
+                seen = self.event_view(e)
+                out["emitted"].append(dict(t=t, addon=seen["addon"], topic=seen["topic"], data=seen["data"],
+                                           **({"request": seen["request"]} if seen.get("request") else {})))
             else:
                 out["notes"].append(dict(t=t, kind=e["kind"], text=text))
         if traced is not None:

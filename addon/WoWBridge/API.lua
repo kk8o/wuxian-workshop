@@ -1,10 +1,15 @@
--- WoWBridge for addons: WoWBridge.Bind(<the addon's name>) gives a handle with two calls an addon makes for the agent that
--- works on it through 无限工坊 (MCP `events`, `call`, `addon_api`):
+-- WoWBridge for addons: WoWBridge.Bind(<the addon's name>) gives a handle with the calls an addon makes for the agent that
+-- works on it through 无限工坊 (MCP `events`, `call`, `respond`, `addon_api`):
 --   handle:Emit(topic, data)       an event: what happened, as data (no chat line, no print); the agent reads or waits for
 --                                  it with `events`
 --   handle:Expose(name, fn, doc)   a function the agent may call with `call`: fn gets the call's arguments (a table made
 --                                  from JSON) and its first return value goes back as JSON; `doc` says what it does
--- An event goes out as an EVENT message {"a":addon,"t":topic,"d":data[,"x":events dropped before it]} (Json.lua), at most
+--   handle:Request(topic, data, callback, timeout)   a question for the agent: an event that carries a request id, which
+--                                  the agent answers with `respond`; callback(reply) then, or callback(nil, "timeout") when
+--                                  no answer came in `timeout` seconds (default 60), or callback(nil, "dropped") at once
+--                                  when it could not go (the link busy); returns the request id
+-- An event goes out as an EVENT message {"a":addon,"t":topic,"d":data[,"x":events dropped before it][,"r":request id,
+-- "w":seconds the request waits]} (Json.lua), at most
 -- RATE a second for an addon (BURST at once), its data at most MAX bytes; while the link is not online the last KEEP wait.
 -- Events are best effort: the link carries about 4 messages a second, in order, so at most QUEUE of them wait in its queue
 -- (more are dropped and counted) and a burst of events never holds up a run's result by more than a couple of seconds.
@@ -22,6 +27,8 @@ local RATE, BURST, MAX, KEEP, QUEUE = 10, 20, 8000, 20, 8
 
 local addons = {}     -- addon -> { exposed = { name -> { fn, doc } }, order = { names }, topics = { topic -> n }, tokens, at, dropped }
 local waiting = {}    -- events from before the link was online, oldest first
+local pending = {}    -- request id -> { addon, topic, callback }, until answered or timed out
+local asked = 0       -- requests made in this UI session (the ids: "<WoWBridge session>.<n>")
 
 local function Entry(addon)
 	local e = addons[addon]
@@ -45,8 +52,8 @@ local function Flush()
 	end
 end
 
-local function Emit(self, topic, data)
-	if type(topic) ~= "string" or topic == "" then error("Emit(topic, data): the topic is a non-empty string", 2) end
+-- an event out (or waiting for the link), with `extra` added to its JSON; false when it was dropped
+local function Send(self, topic, data, extra)
 	local e = Entry(self.addon)
 	local now = GetTime()
 	e.tokens, e.at = math.min(BURST, e.tokens + (now - e.at) * RATE), now
@@ -60,7 +67,7 @@ local function Emit(self, topic, data)
 	local body = Json.Encode(data)
 	if #body > MAX then body = ('{"cut":true,"bytes":%d}'):format(#body) end
 	local text = '{"a":' .. Json.Encode(self.addon) .. ',"t":' .. Json.Encode(topic) .. ',"d":' .. body
-		.. (e.dropped > 0 and (',"x":' .. e.dropped) or "") .. "}"
+		.. (e.dropped > 0 and (',"x":' .. e.dropped) or "") .. (extra or "") .. "}"
 	e.dropped = 0
 	if online and #waiting == 0 then
 		ns.Link.Send(text, "event")
@@ -70,6 +77,39 @@ local function Emit(self, topic, data)
 		Flush()
 	end
 	return true
+end
+
+local function Emit(self, topic, data)
+	if type(topic) ~= "string" or topic == "" then error("Emit(topic, data): the topic is a non-empty string", 2) end
+	return Send(self, topic, data)
+end
+
+-- an addon's callback, its errors reported as the client reports any (the debug window, logs) and not thrown at us
+local function Safe(fn, ...)
+	local args, n = { ... }, select("#", ...)
+	local ok, err = pcall(fn, unpack(args, 1, n))
+	if not ok then geterrorhandler()(err) end
+end
+
+local function Request(self, topic, data, callback, timeout)
+	if type(topic) ~= "string" or topic == "" then error("Request(topic, data, callback, timeout): the topic is a non-empty string", 2) end
+	if type(callback) ~= "function" then error("Request(topic, data, callback, timeout): callback is a function", 2) end
+	timeout = math.max(1, math.min(tonumber(timeout) or 60, 600))
+	asked = asked + 1
+	local id = ("%d.%d"):format(ns.session or 0, asked)
+	if not Send(self, topic, data, (',"r":"%s","w":%d'):format(id, timeout)) then
+		C_Timer.After(0, function() Safe(callback, nil, "dropped") end)
+		return nil
+	end
+	pending[id] = { addon = self.addon, topic = topic, callback = callback }
+	C_Timer.After(timeout, function()
+		local p = pending[id]
+		if p then
+			pending[id] = nil
+			Safe(p.callback, nil, "timeout")
+		end
+	end)
+	return id
 end
 
 local function Expose(self, name, fn, doc)
@@ -83,7 +123,7 @@ local function Expose(self, name, fn, doc)
 	return true
 end
 
-local Handle = { Emit = Emit, Expose = Expose }
+local Handle = { Emit = Emit, Expose = Expose, Request = Request }
 Handle.__index = Handle
 
 -- the handle of an addon (its name: the first ... of its files)
@@ -111,10 +151,26 @@ function WB.Call(addon, name, args)
 	return Json.Encode({ ok = false, error = value })
 end
 
+-- `respond`: the answer to a request goes to its callback; {"ok":true,"addon":...,"topic":...} or {"ok":false,"error":...}
+function WB.Reply(id, data)
+	local p = pending[id]
+	if not p then
+		return Json.Encode({ ok = false, error = ("no request %s is waiting for an answer (it timed out or was answered, or "
+			.. "the UI reloaded)"):format(tostring(id)) })
+	end
+	pending[id] = nil
+	Safe(p.callback, data)
+	return Json.Encode({ ok = true, addon = p.addon, topic = p.topic })
+end
+
 local function Describe(name, e)
 	local exposed = {}
 	for i, n in ipairs(e.order) do exposed[i] = { name = n, doc = e.exposed[n].doc } end
-	return { addon = name, exposed = exposed, topics = e.topics }
+	local waiting_for = 0
+	for _, p in pairs(pending) do
+		if p.addon == name then waiting_for = waiting_for + 1 end
+	end
+	return { addon = name, exposed = exposed, topics = e.topics, requests = waiting_for }
 end
 
 -- `addon_api`: what an addon exposed (in the order it did) and the topics of the events it sent, as JSON; without an

@@ -15,6 +15,7 @@
     wuxian events [--addon A] [--topic T] [--follow]   what addons sent with WoWBridge's Emit (their events)
     wuxian call <addon> <name> [json args]    call a function an addon exposed with WoWBridge's Expose
     wuxian addon-api [addon]                  what addons expose (functions) and emit (event topics)
+    wuxian respond <request> [json data]      answer an addon's question (an event of `events` with a request id)
     wuxian history [addon] [id] [--against]   kept versions of addons; one version's diff with the files now
     wuxian checkpoint <addon> [note]          keep a version of an addon's files now
     wuxian restore <addon> <id>               put an addon's files back as a kept version had them
@@ -119,6 +120,9 @@ def build_parser():
     p.add_argument("name", help="the name it exposed")
     p.add_argument("args", nargs="?", help="""its arguments as JSON ('{"n": 2}')""")
     p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
+    p = sub.add_parser("respond", help="answer an addon's question (WoWBridge's Request: an event with a request id)")
+    p.add_argument("request", help="the request id the event carries (5974.3)")
+    p.add_argument("data", nargs="?", help="""the answer as JSON ('{"text": "..."}')""")
     p = sub.add_parser("addon-api", help="what addons expose (functions to call) and emit (event topics)")
     p.add_argument("addon", nargs="?", help="the addon (nothing: every addon with a WoWBridge handle)")
     p.add_argument("--json", action="store_true", help="print JSON")
@@ -373,7 +377,8 @@ def cmd_inspect(client, args):
 def show_event(e):
     data = json.dumps(e.get("data"), ensure_ascii=False)
     print(f"{fmt_time(e['t'])}  {e.get('addon')}  {e.get('topic')}  {data}"
-          + (f"  ({e['dropped']} dropped before it)" if e.get("dropped") else ""))
+          + (f"  ({e['dropped']} dropped before it)" if e.get("dropped") else "")
+          + (f"  [request {e['request']}, answer within {e.get('wait')} s]" if e.get("request") else ""))
 
 
 def cmd_events(client, args):
@@ -400,6 +405,17 @@ def cmd_call(client, args):
         return 2
     res = client.call_exposed(args.addon, args.name, call_args, args.timeout_ms)
     print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_respond(client, args):
+    try:
+        data = json.loads(args.data) if args.data else None
+    except ValueError as e:
+        say_error(f"data: not JSON ({e})")
+        return 2
+    res = client.respond(args.request, data)
+    print(f"delivered to {res.get('addon')} ({res.get('topic')})")
     return 0
 
 
@@ -734,7 +750,7 @@ CLIENT_COMMANDS = dict(status=cmd_status, run=cmd_run, load=cmd_load, watch=cmd_
                        **{"try": cmd_try},
                        restore=cmd_restore,
                        logs=cmd_logs, say=cmd_say, doctor=cmd_doctor, addons=cmd_addons, errors=cmd_errors,
-                       install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, call=cmd_call,
+                       install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, call=cmd_call, respond=cmd_respond,
                        **{"addon-api": cmd_addon_api})
 
 

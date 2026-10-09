@@ -106,6 +106,9 @@ class DaemonClient:
     def call_exposed(self, addon, name, args=None, timeout_ms=10000):
         return self.post("/api/call", addon=addon, name=name, args=args, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)
 
+    def respond(self, request, data=None, timeout_ms=10000):
+        return self.post("/api/respond", request=request, data=data, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)
+
     def addon_api(self, addon=None):
         return self.post("/api/addon_api", addon=addon, timeout=60)
 

@@ -3,7 +3,8 @@
 
 An entry is {"id", "t", "kind", "text", "addon", "job"}: kind is one of api.LOG_KINDS (the addon's debug kinds, the
 companion's notes as INFO), addon the first "Interface/AddOns/<name>/" in the text, job the id of a RUN result. An EVENT
-(what an addon sent with WoWBridge's Emit) also has "topic", "data" and "dropped", its addon being the one that sent it.
+(what an addon sent with WoWBridge's Emit or Request) also has "topic", "data" and "dropped", its addon being the one
+that sent it; a request also "request" and "wait".
 add() may be called from any thread; since() is what /api/logs returns.
 """
 import json
@@ -26,9 +27,10 @@ def addon_of(text):
 
 
 def event_fields(text):
-    """an addon's event (WoWBridge API.lua: {"a": addon, "t": topic, "d": data[, "x": dropped]}) as entry fields: addon,
-    topic, data, dropped (events the addon's rate limit let go before this one) and text, the topic and the data in one
-    line for the log; None when the text is not such JSON"""
+    """an addon's event (WoWBridge API.lua: {"a": addon, "t": topic, "d": data[, "x": dropped][, "r": request id,
+    "w": seconds]}) as entry fields: addon, topic, data, dropped (events the addon's rate limit let go before this one),
+    for a request its id and how long it waits (request, wait), and text, the topic and the data in one line for the
+    log; None when the text is not such JSON"""
     try:
         env = json.loads(text)
     except ValueError:
@@ -39,8 +41,13 @@ def event_fields(text):
     shown = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     shown = shown if len(shown) <= SHOWN else shown[:SHOWN] + "…"
     dropped = env.get("x") if isinstance(env.get("x"), int) else 0
-    return dict(addon=env["a"], topic=env["t"], data=data, dropped=dropped,
-                text=f"{env['t']} {shown}" + (f" ({dropped} dropped before it)" if dropped else ""))
+    fields = dict(addon=env["a"], topic=env["t"], data=data, dropped=dropped,
+                  text=f"{env['t']} {shown}" + (f" ({dropped} dropped before it)" if dropped else ""))
+    if isinstance(env.get("r"), str):                    # a request (Request): the agent answers it with `respond`
+        wait = env.get("w") if isinstance(env.get("w"), int) else None
+        fields.update(request=env["r"], wait=wait)
+        fields["text"] += f" (request {env['r']}" + (f", answer within {wait} s)" if wait else ")")
+    return fields
 
 
 class Journal:

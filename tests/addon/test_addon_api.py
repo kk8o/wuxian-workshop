@@ -116,6 +116,42 @@ class EndToEnd(unittest.TestCase):
             with self.assertRaises(ApiError):
                 asyncio.run(svc.call_exposed(*bad))
 
+    def test_a_request_and_its_answer(self):
+        """Request: an event with a request id; respond hands the answer to the callback once; no answer in time is
+        "timeout", a link too busy to take the question "dropped" at once"""
+        s, svc = self.s, self.svc
+        s.lua.execute(b"""
+            Answers = {}
+            ReqId = FooWB:Request("ask", { q = "where" }, function(reply, err)
+                Answers[#Answers + 1] = { reply = reply, err = err }
+            end, 30)""")
+        s.run(6)
+        asked = self.events(topic="ask")[0]
+        self.assertEqual(asked["data"], {"q": "where"})
+        self.assertEqual((asked["request"], asked["wait"]), (s.lua.globals()[b"ReqId"].decode(), 30))
+        self.assertAlmostEqual(asked["expires"], asked["t"] + 30, places=2)
+        self.assertEqual(asyncio.run(svc.addon_api("Foo"))["requests"], 1)
+        res = asyncio.run(svc.respond(asked["request"], {"text": "两 ]] |x"}))
+        self.assertEqual(res, dict(request=asked["request"], ok=True, addon="Foo", topic="ask"))
+        answers = s.lua.globals()[b"Answers"]
+        self.assertEqual(answers[1][b"reply"][b"text"].decode(), "两 ]] |x")
+        self.assertIsNone(answers[1][b"err"])
+        with self.assertRaises(ApiError) as cm:                      # answered: no longer waiting
+            asyncio.run(svc.respond(asked["request"], {"text": "again"}))
+        self.assertEqual(cm.exception.code, "respond_failed")
+        self.assertIn("no request", cm.exception.message)
+        s.lua.execute(b'FooWB:Request("slow", {}, function(reply, err) Answers[#Answers + 1] = { err = err } end, 2)')
+        s.run(4)
+        self.assertEqual(answers[2][b"err"], b"timeout")
+        s.lua.execute(b'for i = 1, 20 do FooWB:Emit("fill", {}) end '
+                      b'FooWB:Request("crowded", {}, function(reply, err) Answers[#Answers + 1] = { err = err } end)')
+        s.run(0.1)
+        self.assertEqual(answers[3][b"err"], b"dropped")
+        self.assertEqual(asyncio.run(svc.addon_api("Foo"))["requests"], 0)
+        for bad in ("", "abc", "1.2.3", "5974"):
+            with self.assertRaises(ApiError):
+                asyncio.run(svc.respond(bad, {}))
+
     def test_try_lists_the_events_emitted_in_its_window(self):
         res = asyncio.run(self.svc.try_(code='FooWB:Emit("tried", { ok = true }) return 1', seconds=0))
         self.assertEqual([(e["addon"], e["topic"], e["data"]) for e in res["emitted"]], [("Foo", "tried", {"ok": True})])
@@ -136,6 +172,9 @@ class Events(unittest.TestCase):
         long = self.journal.add("EVENT", event("Foo", "big", {"s": "x" * 500}))
         self.assertTrue(long["text"].endswith("…"))
         self.assertEqual(long["data"], {"s": "x" * 500})                           # the entry keeps it whole
+        asked = self.journal.add("EVENT", json.dumps(dict(a="Foo", t="ask", d={"q": 1}, r="12.3", w=60)))
+        self.assertEqual((asked["request"], asked["wait"]), ("12.3", 60))
+        self.assertEqual(asked["text"], 'ask {"q":1} (request 12.3, answer within 60 s)')
         odd = self.journal.add("EVENT", "not json")
         self.assertEqual((odd["text"], odd.get("topic")), ("not json", None))
 
@@ -188,8 +227,11 @@ class McpTools(unittest.TestCase):
         asyncio.run(mcp.call_tool("call", {"addon": "Foo", "name": "double", "args": {"n": 2}}))
         asyncio.run(mcp.call_tool("events", {"addon": "Foo", "wait": 1}))
         asyncio.run(mcp.call_tool("addon_api", {}))
+        asyncio.run(mcp.call_tool("respond", {"request": "12.3", "data": {"text": "x"}}))
+        self.assertFalse(tools["respond"].annotations.read_only_hint)
         self.assertEqual(backend.calls, [("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
-                                         ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,))])
+                                         ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
+                                         ("respond", ("12.3", {"text": "x"}))])
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")

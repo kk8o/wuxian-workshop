@@ -412,6 +412,11 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         return await service.call_exposed(b.get("addon"), b.get("name"), b.get("args"), b.get("timeout_ms", 10000))
 
     @api
+    async def respond(request):
+        b = await body_of(request)
+        return await service.respond(b.get("request"), b.get("data"), b.get("timeout_ms", 10000))
+
+    @api
     async def addon_api(request):
         b = await body_of(request)
         return await service.addon_api(b.get("addon"))
@@ -479,6 +484,7 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         Route("/api/addon_events", addon_events, methods=["POST"]),
         Route("/api/call", call_, methods=["POST"]),
         Route("/api/addon_api", addon_api, methods=["POST"]),
+        Route("/api/respond", respond, methods=["POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),
