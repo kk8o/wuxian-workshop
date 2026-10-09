@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wuxianworkshop"
-version = "0.9.6"
+version = "0.9.7"
 description = "无限工坊：用 AI 写魔兽插件——把 AI Agent（MCP）接到正在运行的《魔兽世界：无限》客户端：写完先检查、热加载、在游戏里试、报错与截图、API 手册（屏幕帧码 + 字体信箱通道）"
 readme = "README.md"
 license = "MIT"
