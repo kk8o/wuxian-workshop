@@ -79,7 +79,7 @@ class Service:
         self.addon_sync, self.addons_pending = None, None
         self.updater, self.update_checks = updater, None      # updater.Updater; made in start() unless given
         self.content, self.content_checks = None, None        # content.ContentUpdater: newer content packs
-        self.ext_catalog = extensions.Catalog()               # the 扩展 page's catalog, read when it looks
+        self.ext_catalog = extensions.Catalog(store=extensions.catalog_store())   # the 扩展 page's, read when it looks
         self.started = time.time()
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
@@ -877,6 +877,9 @@ class Service:
             raise ApiError(422, "bad_package", str(e)) from None
         except OSError as e:
             raise ApiError(500, "extension_failed", f"{type(e).__name__}: {e}") from None
+        if action == "remove" and result.get("removed") and entry["folder"] == "WuxianKit":
+            from ..mcp.kit import forget_cached
+            forget_cached()                        # its tools go with it, in every agent's session
         self.journal.add("INFO", f"extension {entry['id']}: {action} {entry['version'] if action == 'install' else ''}"
                                  f" ({entry['folder']}, kept #{result.get('kept')})")
         listing = await self.extensions()

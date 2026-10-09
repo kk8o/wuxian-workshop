@@ -73,6 +73,20 @@ class Catalog(unittest.TestCase):
         with mock.patch.dict(os.environ, {"WUXIAN_EXTENSIONS_FEED": "C:/x/extensions.json"}):
             self.assertEqual(X.Catalog().url, "C:/x/extensions.json")
 
+    def test_the_catalog_is_kept_for_the_agent(self):
+        """a catalog read is kept (its addons' id, folder and version) when the Catalog has a store; a failed read
+        leaves what was kept"""
+        make_catalog(self.dir, make_zip())
+        store = self.dir / "state" / X.KEPT
+        cat = X.Catalog(url=str(self.dir / "extensions.json"), store=store).refresh()
+        self.assertEqual(json.loads(store.read_text(encoding="utf-8"))["addons"],
+                         [{"id": "demo", "folder": "Demo", "version": "1.0.0"}])
+        self.assertEqual(X.listed_folders(store), {"Demo"})
+        (self.dir / "extensions.json").write_text("{not json", encoding="utf-8")
+        cat.refresh()
+        self.assertEqual(X.listed_folders(store), {"Demo"})
+        self.assertIsNone(X.listed_folders(self.dir / "none.json"))
+
     def test_every_member_is_checked(self):
         for extra, why in (({"Demo/../evil.lua": "x"}, "not a file of"), ({"Other/x.lua": "x"}, "not a file of"),
                            ({"Demo/run.exe": "x"}, "not a kind of file"), ({"/abs.lua": "x"}, "not a file of")):

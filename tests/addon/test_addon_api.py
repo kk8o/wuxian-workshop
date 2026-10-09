@@ -559,6 +559,75 @@ class KitTools(unittest.TestCase):
         self.assertTrue(text.endswith("Listen for 2 hours."))
         self.assertIn("grants nothing", text)
 
+    def test_a_later_protocol_gets_the_docs_only(self):
+        """a WuxianKit newer than this 无限工坊 knows: wk_docs alone (saying to update), no prompts, the other tools
+        refused with the same words"""
+        from wuxianworkshop.mcp.server import build_server
+
+        addons = Path(self.home.name) / "AddOns"
+        (addons / "WuxianKit/skills").mkdir(parents=True)
+        (addons / "WuxianKit/skills/kit-extension.md").write_text(
+            "---\nname: kit-extension\ndescription: Write one\n---\nUse wk_docs.\n", encoding="utf-8")
+        manifest = self.manifest()
+        mcp = build_server(self.backend(manifest, addons=addons))
+        self.assertEqual([p.name for p in asyncio.run(mcp.list_prompts())], ["kit-extension"])
+        manifest["protocol"] = 2
+        mcp = build_server(self.backend(dict(manifest, revision="r2"), addons=addons))
+        tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+        self.assertEqual([n for n in tools if n.startswith("wk_")], ["wk_docs"])
+        self.assertIn("speaks protocol 2, newer than this 无限工坊 knows (1)", tools["wk_docs"].description)
+        self.assertEqual(asyncio.run(mcp.list_prompts()), [])
+        overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
+        self.assertTrue(overview.startswith("> The game's WuxianKit speaks protocol 2"))
+        self.assertIn("- `chat`: Chat 0.3.0 (0 tools);", overview)
+        for name in ("wk_tune_cvar_get", "wk_wait"):
+            with self.assertRaisesRegex(ToolError, "update 无限工坊"):
+                asyncio.run(mcp.call_tool(name, {"name": "x", "proposal": 1}))
+
+    def test_the_kept_manifest_goes_with_wuxiankit(self):
+        """the game answering without WuxianKit, or the App removing it (forget_cached), takes the kept manifest away,
+        and with it the tools of every session that kept it, the game away or not"""
+        from wuxianworkshop.mcp import kit
+
+        backend = self.backend(self.manifest())
+        names = lambda tools: {t.name for t in asyncio.run(tools.list())}
+        first = kit.KitTools(backend)
+        self.assertIn("wk_chat_send", names(first))
+        self.assertTrue(kit.cache_path().is_file())
+        backend.away = True
+        second = kit.KitTools(backend)                                  # the game away: the kept one stands
+        self.assertIn("wk_chat_send", names(second))
+        kit.forget_cached()                                             # the App removed WuxianKit
+        self.assertEqual(names(second), set())
+        backend.away, second.stale = False, True                        # the game back, still running it
+        self.assertIn("wk_chat_send", names(second))
+        self.assertTrue(kit.cache_path().is_file())
+        backend.manifest, first.stale = None, True                      # after a reload: no WuxianKit
+        self.assertEqual(names(first), set())
+        self.assertFalse(kit.cache_path().exists())
+        self.assertEqual(names(kit.KitTools(backend)), set())
+
+    def test_where_another_addons_extension_comes_from(self):
+        """verified when the extension catalog, as the App last read it, lists its addon; unverified when not; no
+        verdict without one. WuxianKit's own extensions say nothing of it"""
+        from wuxianworkshop import extensions
+        from wuxianworkshop.mcp import kit
+
+        def described():
+            tools = {t.name: t for t in asyncio.run(kit.KitTools(self.backend(self.manifest()), store=False).list())}
+            return tools["wk_demo_ping"].description, tools["wk_tune_cvar_get"].description
+        demo, tune = described()
+        self.assertIn("From the addon WxDemo, not WuxianKit itself", demo)
+        store = extensions.catalog_store()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"addons": [{"id": "wxdemo", "folder": "WxDemo", "version": "1.0"}]}),
+                         encoding="utf-8")
+        demo, tune = described()
+        self.assertIn("From the addon WxDemo (verified: listed in the 无限工坊 extension catalog)", demo)
+        self.assertNotIn("verified", tune)
+        store.write_text(json.dumps({"addons": []}), encoding="utf-8")
+        self.assertIn("(unverified: not in the 无限工坊 extension catalog)", described()[0])
+
     def test_the_watch_never_starts_the_daemon(self):
         """a passive call (the watch's) that finds the daemon gone reconnects to a running one only; a client's call may
         start one, as before"""

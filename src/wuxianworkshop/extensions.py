@@ -1,6 +1,6 @@
-r"""The extension catalog (wuxianwow.com/workshop/data/extensions.json): addons that work with WuxianKit, the
-optional extension framework (WuxianKit itself first), which the 扩展 page installs, updates and removes. Its versions are its own,
-not the program's.
+r"""The extension catalog (wuxianwow.com/workshop/data/extensions.json): addons that work with WuxianKit, the optional
+extension framework (WuxianKit itself first), which the 扩展 page installs, updates and removes. Its versions are its
+own, not the program's.
 
     {"format": 1, "updated": "...", "addons": [{"id": "wuxiankit", "folder": "WuxianKit", "version": "0.3.0",
       "title": {"zh": ..., "en": ...}, "summary": {"zh", "en"}, "file": "WuxianKit-0.3.0.zip", "size": 82675,
@@ -13,7 +13,8 @@ addon has, MAX_UNPACKED bytes at most) and that its .toc is of the catalog's ver
 in agent/history.py, reason "update": it can be put back), writes the new one beside it, swaps the two and makes the
 .toc's Interface the client's, as for the bundled addons. A removal keeps a version too ("remove"), then the folder goes.
 WUXIAN_EXTENSIONS_FEED overrides the catalog's URL (a URL or a local extensions.json): for tests, and to try a catalog
-before it is uploaded.
+before it is uploaded. The daemon keeps the addons it last read (id, folder, version) in the state folder
+(extension-catalog.json): the agent's WuxianKit tools (mcp/kit.py) tell by it the addons the catalog lists.
 """
 import hashlib
 import io
@@ -31,6 +32,7 @@ from . import __version__
 from .agent import history
 from .content import fetch, version_key
 from .installer.addons import find_toc, read_toc, toc_with_interface
+from .paths import state_dir
 
 CATALOG = "https://wuxianwow.com/workshop/data/extensions.json"
 MAX_CATALOG = 1 << 20
@@ -42,6 +44,7 @@ CODE = {".lua", ".toc", ".xml"}                     # the files the client finds
 ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
+KEPT = "extension-catalog.json"              # the catalog's addons as last read
 
 
 class CatalogError(Exception):
@@ -54,6 +57,21 @@ def catalog_url():
 
 def app_version():
     return __version__.split(".dev")[0]
+
+
+def catalog_store():
+    return state_dir() / KEPT
+
+
+def listed_folders(path=None):
+    """the addon folders of the catalog as the daemon last read it; None when it never read one"""
+    try:
+        data = json.loads(Path(path or catalog_store()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("addons"), list):
+        return None
+    return {a["folder"] for a in data["addons"] if isinstance(a, dict) and isinstance(a.get("folder"), str)}
 
 
 def entries(data):
@@ -72,10 +90,11 @@ def entries(data):
 
 
 class Catalog:
-    """the catalog as last read; refresh() reads it again (blocking: run it in a thread)"""
+    """the catalog as last read; refresh() reads it again (blocking: run it in a thread). store: the file its addons
+    are kept in when read (id, folder, version: listed_folders), None: none"""
 
-    def __init__(self, url=None, fetcher=fetch, clock=time.time):
-        self.url, self.fetch, self.clock = url or catalog_url(), fetcher, clock
+    def __init__(self, url=None, fetcher=fetch, clock=time.time, store=None):
+        self.url, self.fetch, self.clock, self.store = url or catalog_url(), fetcher, clock, store
         self.addons, self.updated, self.checked, self.error, self.missing = [], None, None, "", False
 
     def refresh(self):
@@ -88,6 +107,8 @@ class Catalog:
             if not isinstance(data, dict) or not isinstance(data.get("addons"), list):
                 raise CatalogError("not an extension catalog")
             self.addons, self.updated, self.error = entries(data), data.get("updated"), ""
+            if self.store:
+                self.keep()
         except (urllib.error.HTTPError, FileNotFoundError) as e:
             code = getattr(e, "code", 404)
             self.missing = code == 404
@@ -102,6 +123,18 @@ class Catalog:
         finally:
             self.checked = self.clock()
         return self
+
+    def keep(self):
+        """the addons read, kept in store for the agent's tools; a failure to write changes nothing"""
+        try:
+            path = Path(self.store)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            kept = [{k: e[k] for k in ("id", "folder", "version")} for e in self.addons]
+            tmp.write_text(json.dumps({"updated": self.updated, "addons": kept}), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def get(self, ext_id):
         return next((e for e in self.addons if e["id"] == ext_id), None)
