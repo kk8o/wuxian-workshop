@@ -26,7 +26,7 @@ from pathlib import Path
 from .. import __version__, agents, apidocs, content, i18n, scaffold
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
-from ..agent.snap import SnapError, capture, save_snap
+from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
 from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
 from ..paths import settings_file
@@ -1140,7 +1140,14 @@ class Service:
             raise self.tell_error(tells, f"watch {target}")
         return dict(watched=watched, kept=kept) if action == "start" else dict(watched=watched)
 
+    SNAP_WAIT, SNAP_AGAIN = 3.0, 0.1   # a snap waits this long at most for WoWBridge's frame to rest, looking this often
+
     async def snap(self, region=None, max_width=1280):
+        """a picture of the client area (or the region of it) in the snaps folder. WoWBridge's frame is in it where the
+        player put it; one that shows a message going up is bigger than at rest, over the UI next to it, and the answer
+        the daemon has just read stays up 0.2 s at least (after an inspect or a try nearly always): while the region
+        shows such a frame the picture is taken again, SNAP_WAIT seconds at most. link_frame: where the frame shows in
+        the picture, busy when it still showed a message"""
         if region is not None:
             if not (isinstance(region, (list, tuple)) and len(region) == 4
                     and all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in region)):
@@ -1160,13 +1167,27 @@ class Service:
             except SnapError as e:
                 raise ApiError(409, "snap_failed", str(e)) from None
 
-        img, wgc, client = await self.call(grab)
+        loop = asyncio.get_running_loop()
+        until = loop.time() + self.SNAP_WAIT
+        while True:
+            img, wgc, client = await self.call(grab)
+            found = await asyncio.to_thread(link_frame, img)
+            size = (img.shape[1], img.shape[0])
+            busy = found is not None and not found[1] and in_picture(found[0], region, size) is not None
+            if not busy or loop.time() >= until:
+                break
+            await asyncio.sleep(self.SNAP_AGAIN)
         try:
             path, width, height = await asyncio.to_thread(save_snap, img, region, max_width, client)
         except SnapError as e:
             raise ApiError(409, "snap_failed", str(e)) from None
-        self.journal.add("SNAP", f"{path} {width}x{height}" + ("" if wgc else " (GDI: anything over the game is in it)"))
-        return dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}")
+        self.journal.add("SNAP", f"{path} {width}x{height}" + ("" if wgc else " (GDI: anything over the game is in it)")
+                         + (f" (WoWBridge's frame still showed a message after {self.SNAP_WAIT:g} s)" if busy else ""))
+        out = dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}")
+        at = in_picture(found[0], region, size, (width, height)) if found is not None else None
+        if at is not None:
+            out["link_frame"] = dict(rect=at, busy=busy)
+        return out
 
     async def snap_bytes(self, result):
         """the PNG of a snap() result (the MCP tool returns it as an image block)"""

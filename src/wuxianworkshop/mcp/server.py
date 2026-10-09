@@ -165,6 +165,16 @@ class HttpBackend:
         return await self._call("install", game_dir, clean)
 
 
+def link_note(shot):
+    """a line on WoWBridge's frame in a snap (its link_frame), so that it is not taken for the UI; None when the
+    picture does not show it"""
+    frame = (shot or {}).get("link_frame")
+    if not frame:
+        return None
+    return (f"WoWBridge's link frame (its block of coloured cells, not part of the UI) covers {frame['rect']} of this "
+            "picture" + ("; a message was still going up, so it is bigger than at rest" if frame.get("busy") else ""))
+
+
 def build_server(backend, name="wuxian"):
     """the MCPServer with the tools, over a Service or an HttpBackend"""
     mcp = MCPServer(name, instructions=INSTRUCTIONS, version=__version__, log_level="WARNING")
@@ -238,7 +248,8 @@ def build_server(backend, name="wuxian"):
         in client pixels for a part of it. The picture is scaled down to `max_width` pixels wide."""
         res = await call(backend.snap(region, max_width))
         png = await call(backend.snap_bytes(res))
-        return [Image(data=png, format="png"), f"{res['path']} ({res['width']}x{res['height']})"]
+        note = link_note(res)
+        return [Image(data=png, format="png"), f"{res['path']} ({res['width']}x{res['height']})" + (f"; {note}" if note else "")]
 
     @mcp.tool(annotations=WRITES)
     async def trace(seconds: float = 10, events: str | None = None, max_events: int = 200, args: int = 6) -> dict[str, Any]:
@@ -272,6 +283,9 @@ def build_server(backend, name="wuxian"):
         out = [json.dumps(res, ensure_ascii=False)]
         if shot:
             out.append(Image(data=await call(backend.snap_bytes(shot)), format="png"))
+            note = link_note(shot)
+            if note:
+                out.append(note)
         return out
 
     @mcp.tool(annotations=READ_ONLY)
@@ -289,6 +303,9 @@ def build_server(backend, name="wuxian"):
         out = [json.dumps(res, ensure_ascii=False)]
         if shot:
             out.append(Image(data=await call(backend.snap_bytes(shot)), format="png"))
+            note = link_note(shot)
+            if note:
+                out.append(note)
         return out
 
     @mcp.tool(annotations=READ_ONLY)
