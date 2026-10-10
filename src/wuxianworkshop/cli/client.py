@@ -109,8 +109,8 @@ class DaemonClient:
     def respond(self, request, data=None, timeout_ms=10000):
         return self.post("/api/respond", request=request, data=data, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)
 
-    def addon_api(self, addon=None):
-        return self.post("/api/addon_api", addon=addon, timeout=60)
+    def addon_api(self, addon=None, brief=False):
+        return self.post("/api/addon_api", addon=addon, timeout=60, **({"brief": True} if brief else {}))
 
     def history(self, addon=None, vid=None, against="now"):
         return self.get("/api/history", addon=addon, id=vid, against=against)

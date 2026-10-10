@@ -421,7 +421,7 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
     @api
     async def addon_api(request):
         b = await body_of(request)
-        return await service.addon_api(b.get("addon"))
+        return await service.addon_api(b.get("addon"), b.get("brief") is True)
 
     @api
     async def agents_(request):

@@ -402,9 +402,10 @@ def call_chunk(addon, name, args=None):
     return API_GUARD + f"return WoWBridge.Call({lua_str(addon)}, {lua_str(name)}, {lua_value(args)})"
 
 
-def describe_chunk(addon=None):
-    """the chunk that answers with an addon's API in JSON (every addon's without one)"""
-    return API_GUARD + f"return WoWBridge.Describe({lua_str(addon) if addon else 'nil'})"
+def describe_chunk(addon=None, brief=False):
+    """the chunk that answers with an addon's API in JSON (every addon's without one); brief: the names without their
+    docs (a WoWBridge before 0.9.9 gives them all the same)"""
+    return API_GUARD + f"return WoWBridge.Describe({lua_str(addon) if addon else 'nil'}{', true' if brief else ''})"
 
 
 REPLY_GUARD = ("if not (WoWBridge and WoWBridge.Reply) then return '{\"error\":\"WoWBridge in the game takes no answers "

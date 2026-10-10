@@ -25,7 +25,7 @@ T.enUS = {
 	STATUS = "%s, session %d, %s",
 	ON_SCREEN = "%s frame #%d on screen",
 	NO_FRAME = "no frame on screen",
-	HELP = "/wb opens the panel | log (the debug output) | link | send <text> | burst [n] | long [bytes] | stream [s] | set <key> on|off | "
+	HELP = "/wb opens the panel | log (the debug output) | link | flush (drop what waits to go up) | send <text> | burst [n] | long [bytes] | stream [s] | set <key> on|off | "
 		.. "lang auto|zh|en | unlock | lock | reset | on | off | parent ui|world | snap default|on|off | mode 0|1|2 | diag",
 	LANG = "language: %s",
 	USAGE_LANG = "usage: /wb lang auto|zh|en",
@@ -38,6 +38,7 @@ T.enUS = {
 	CONNECTED = "connected to the companion (mailbox slot %d)",
 	OFFLINE = "no packet from the companion for %d s: offline, %d messages waiting",
 	CUT = "message cut from %d to %d bytes (255 parts)",
+	FLUSHED = "%d messages waiting to go up dropped",
 	LINK_STATUS = "link %s, mailbox slot %d (%s, %d left), %d packets read; %d waiting, %d acknowledged (avg %.2f s, max %.2f s), "
 		.. "%d parts shown again; drawing %.1f ms avg, %.1f ms max",
 	AGENT_CODE = "agent code %s (%d B): %s",
@@ -186,7 +187,7 @@ T.zhCN = {
 	STATUS = "%s，会话 %d，%s",
 	ON_SCREEN = "屏幕上是 %s 帧 #%d",
 	NO_FRAME = "屏幕上没有帧码",
-	HELP = "/wb 打开面板 | log 调试输出 | link 链路状态 | send <文本> | burst [n] | long [字节] | stream [秒] | set <开关> on|off | "
+	HELP = "/wb 打开面板 | log 调试输出 | link 链路状态 | flush 清空待发 | send <文本> | burst [n] | long [字节] | stream [秒] | set <开关> on|off | "
 		.. "lang auto|zh|en 语言 | unlock 解锁位置 | lock 锁定 | reset 复位 | on 打开 | off 关闭 | parent ui|world | snap default|on|off | "
 		.. "mode 0|1|2 | diag",
 	LANG = "语言：%s",
@@ -200,6 +201,7 @@ T.zhCN = {
 	CONNECTED = "已连接无限工坊 App（信箱槽位 %d）",
 	OFFLINE = "%d 秒没有收到 App 的包：离线，%d 条消息待发",
 	CUT = "消息从 %d 字节截到 %d 字节（最多 255 段）",
+	FLUSHED = "已清空待发消息 %d 条",
 	LINK_STATUS = "链路%s，信箱槽位 %d（%s，剩 %d），已读 %d 个包；待发 %d 条，已确认 %d 条（平均 %.2f 秒，最长 %.2f 秒），"
 		.. "补发 %d 段；绘制平均 %.1f 毫秒，最长 %.1f 毫秒",
 	AGENT_CODE = "Agent 代码 %s（%d 字节）：%s",

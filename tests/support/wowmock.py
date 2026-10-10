@@ -424,11 +424,13 @@ class Session:
     frames and writes the mailbox."""
 
     def __init__(self, test, client=None, db=None, t0=1000.0, config=None, comp=None, tmp=None,
-                 early=None, bridge=True, saved=None, locale="enUS"):
+                 early=None, bridge=True, saved=None, locale="enUS", patch=None):
         """early: load !WuxianWorkshop first (True), or load it and then call early(lua) (what addons loading in between
         do), before WoWBridge; bridge: load WoWBridge; db: WoWBridgeDB as a Lua table literal; saved: {global name: Lua
-        table literal} for the other saved variables; config: entries for WoWBridge_Config; locale: what GetLocale() says"""
+        table literal} for the other saved variables; config: entries for WoWBridge_Config; locale: what GetLocale() says;
+        patch: {file name: function(source bytes) -> bytes} for the addons' files as loaded (an older version's code)"""
         self.test = test
+        self.patch = patch or {}
         if tmp is None:
             tmp = Path(tempfile.mkdtemp())
             addons = tmp / "AddOns"
@@ -489,7 +491,8 @@ class Session:
         folder = ADDON / name
         ns = ns if ns is not None else self.lua.table()
         for f in files:
-            fn, err = load((folder / f).read_bytes(), f"@{name}/{f}".encode())
+            source = (folder / f).read_bytes()
+            fn, err = load(self.patch[f](source) if f in self.patch else source, f"@{name}/{f}".encode())
             self.test.assertIsNone(err, f"{name}/{f}")
             fn(name.encode(), ns)
         self.loaded.append(name)
@@ -537,6 +540,7 @@ class Session:
         db = saved.pop("WoWBridgeDB", None)
         kw = dict(dict(early=self.early is not None or None, bridge=self.bridge), **kw)
         kw.setdefault("locale", self.locale)                 # the same client: the same language
+        kw.setdefault("patch", self.patch)                   # ... and the same code
         return Session(self.test, client=self.client, db=db, t0=self.now() + 5, comp=self.comp, tmp=self.tmp, saved=saved, **kw)
 
     def slash(self, text, name="WOWBRIDGE"):

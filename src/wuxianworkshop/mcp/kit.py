@@ -419,7 +419,7 @@ class KitTools:
         describe_ = getattr(self.backend, "addon_api", None)
         if describe_ is None:
             return None
-        answer = await describe_(ADDON)
+        answer = await describe_(ADDON, True)                        # brief, the names: the docs come to tens of KB
         if not isinstance(answer, dict):
             return None
         return {e.get("name") for e in answer.get("exposed") or [] if isinstance(e, dict)}

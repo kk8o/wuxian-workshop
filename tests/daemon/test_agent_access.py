@@ -71,7 +71,7 @@ class Game:
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return {"events": [], "next": 1}
 
-    async def addon_api(self, addon=None):
+    async def addon_api(self, addon=None, brief=False):
         return described(self)
 
 
@@ -99,7 +99,7 @@ class Daemon(Game):
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return {"events": [], "next": 1}
 
-    def addon_api(self, addon=None):
+    def addon_api(self, addon=None, brief=False):
         return described(self)
 
     def post(self, path, timeout=None, **body):

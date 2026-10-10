@@ -2,11 +2,14 @@
 loads of it, read as agent/lint.py reads it (the .toc's load conditions, the XML files' <Script> / <Include>), and the
 Companion's load / watch of an addon for several game types; data_call's CALL records."""
 import json
+import random
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 from wuxianworkshop.agent import commands
+from wuxianworkshop.agent.commands import CODE_CHUNK
 from wuxianworkshop.core import mailbox as MB
 from wuxianworkshop.transport import link
 
@@ -138,6 +141,52 @@ class DataCalls(unittest.TestCase):
         self.assertGreater(other, job)                                          # ids only go up
         self.assertEqual(comp.withdraw(job), (2, False))
         self.assertEqual([r[1] for r in comp.outbox], [f"{other} 1/1 describe\n".encode() + b'{"a":null}'])
+
+
+class Compressed(unittest.TestCase):
+    """to an addon that inflates (zipping), a job of ZIP_MIN bytes or more goes as raw DEFLATE when that pays: the first
+    part says z:<bytes>:<adler-32> after its count, and the joined parts inflate to what was sent"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.comp = link.Companion(Path(tmp.name), clock=lambda: 1000.0, log=lambda text: None)
+        self.comp.zipping = lambda: True
+
+    def joined(self, kind):
+        recs = [r[1] for r in self.comp.outbox if r[0] == kind]
+        return [r.split(b"\n", 1)[0].decode() for r in recs], b"".join(r.split(b"\n", 1)[1] for r in recs)
+
+    def test_code(self):
+        lua = b"".join(b'print("line %d of some Lua that repeats itself")\n' % i for i in range(600))
+        job = self.comp.code(lua, "@Interface/AddOns/Foo/Foo.lua", "Foo", reset=True)
+        heads, body = self.joined(MB.CODE)
+        self.assertEqual(heads[0], f"{job} 1/{len(heads)} z:{len(lua)}:{zlib.adler32(lua):08x} Foo "
+                                   f"@Interface/AddOns/Foo/Foo.lua reset")
+        self.assertEqual(zlib.decompress(body, -15), lua)
+        self.assertLess(len(heads), len(lua) // CODE_CHUNK)
+
+    def test_small_or_incompressible_jobs_go_as_they_are(self):
+        job = self.comp.code(b"return 1", "=run")
+        gen = random.Random(1)
+        rnd = bytes(gen.getrandbits(8) for _ in range(4000))
+        other = self.comp.code(rnd, "=run")
+        heads, body = self.joined(MB.CODE)
+        self.assertEqual(heads, [f"{job} 1/1 - =run", f"{other} 1/2 - =run", f"{other} 2/2"])
+        self.assertEqual(body, b"return 1" + rnd)
+
+    def test_data_call(self):
+        payload = {"a": "Foo", "n": "echo", "d": {"s": "两" * 3000}}
+        job = self.comp.data_call("call", payload)
+        heads, body = self.joined(MB.CALL)
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        self.assertEqual(heads, [f"{job} 1/1 z:{len(data)}:{zlib.adler32(data):08x} call"])
+        self.assertEqual(json.loads(zlib.decompress(body, -15)), payload)
+
+    def test_not_without_an_addon_that_inflates(self):
+        del self.comp.zipping                                            # the Companion's own: no session, no ZIP
+        self.comp.code(b"x = 1\n" * 1000, "=run")
+        self.assertNotIn(" z:", " ".join(self.joined(MB.CODE)[0]))
 
 
 if __name__ == "__main__":

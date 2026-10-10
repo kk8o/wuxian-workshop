@@ -9,14 +9,20 @@ the addon, agent/history.py).
 Commands: "reload" (the addon shows a button: only a click may reload the UI on this client, and the addon reports
 RELOAD "asked: ..." / "later: ..."); "run <lua>" and "load <file>" send Lua for the addon to run (CODE records, see code()),
 which answers RUN "<job> ok <chunk name> (<bytes> B, <ms> ms, <n> values)[: <returned values, framed>]" or "<job> error
-<chunk name>: <error>" (daemon/api.py parse_run reads them); "watch <file | addon>" and "unwatch" are handled here.
+<chunk name>: <error>" (daemon/api.py parse_run reads them); "flush" drops what waits in the addon to go up, as
+/wb flush does (Link.lua L.Flush); "watch <file | addon>" and "unwatch" are handled here.
 data_call() sends what the agent asks of an addon's API (call, respond, addon_api) as data (CALL records), not code.
 Anything else goes to the addon as a COMMAND record.
 A load may flag its first CODE part "reset" (one file) or "unload" / "reload" (the first / last file of an addon): the
 addon then calls the addon's OnUnload() before the code runs and OnReload(<what OnUnload returned>) after it.
+To an addon that inflates (link features ZIP, 0.9.9: zipping()), a CODE or CALL job of ZIP_MIN bytes or more goes as raw
+DEFLATE when that takes it to ZIP_GAIN of its size or less: its first part says " z:<bytes>:<Adler-32, hex>" right after
+the count, and the addon (Agent.lua, Inflate.lua) unpacks and checks the joined parts before the job runs. Lua and JSON
+come out at about a third: fewer mailbox slots, and less of the game's time measuring glyphs.
 """
 import json
 import re
+import zlib
 from pathlib import Path
 
 from ..core import mailbox as MB
@@ -27,6 +33,14 @@ CODE_CHUNK = 3700               # Lua bytes per CODE record for a short header: 
 CODE_ROOM = MB.RECORD_MAX - CODE_CHUNK - 64   # what a CODE record's header may take before the Lua gets less
 RESET_FLAGS = {True: " reset", "reset": " reset", "unload": " unload", "reload": " reload"}   # code()'s reset -> header
 FRAMES = re.compile(r"<(Frame|Button|CheckButton|EditBox|ScrollFrame|Slider|StatusBar|Texture|FontString)\b")
+ZIP_MIN = 512                   # bytes from which a job goes compressed to an addon that inflates ...
+ZIP_GAIN = 0.8                  # ... when deflate takes it to this share of its size or less
+
+
+def deflate(data):
+    """raw DEFLATE (no zlib header), as Inflate.lua reads it"""
+    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return c.compress(data) + c.flush()
 
 
 def _makes_frames(xml):
@@ -67,38 +81,56 @@ class AgentCommands:
             return self.unwatch(text[8:].strip() or None)
         self.outbox.append((MB.COMMAND, text.encode()))
 
+    def zipping(self):
+        """whether jobs may go compressed (the Companion says it for the addon of the current session)"""
+        return False
+
+    def _packed(self, data):
+        """(the bytes a job sends, what its first part says after the count): deflated for an addon that inflates them
+        (zipping()) when that pays, else as they are"""
+        if len(data) < ZIP_MIN or not self.zipping():
+            return data, ""
+        packed = deflate(data)
+        if len(packed) > len(data) * ZIP_GAIN or zlib.decompress(packed, -15) != data:
+            return data, ""
+        return packed, f" z:{len(data)}:{zlib.adler32(data):08x}"
+
     def code(self, data, name, addon="-", reset=False):
         """Lua for the addon to run (loadstring under chunk name `name`, with (addon, its namespace) as "..."), in parts
-        of CODE_CHUNK bytes. reset: True flags the first part "reset" (the addon calls WoWBridgeNS[addon].OnUnload()
-        before the code and OnReload(<its result>) after it); "unload" or "reload" flags one half only. Returns the job
-        id; the addon reports the result as a RUN message"""
+        of CODE_CHUNK bytes, compressed when the addon inflates (_packed). reset: True flags the first part "reset" (the
+        addon calls WoWBridgeNS[addon].OnUnload() before the code and OnReload(<its result>) after it); "unload" or
+        "reload" flags one half only. Returns the job id; the addon reports the result as a RUN message"""
         self.last_job = job = max(int(self.clock() * 1000) % 10 ** 10, self.last_job + 1)   # unique across restarts
         flag = RESET_FLAGS.get(reset, "")
+        payload, zipped = self._packed(data)
         # the longest header any part gets (the first names the addon and the chunk), as if the parts ran to 99999
-        head_max = len(f"{job} 99999/99999 {addon} {name}{flag}\n".encode())
+        head_max = len(f"{job} 99999/99999{zipped} {addon} {name}{flag}\n".encode())
         chunk = CODE_CHUNK - max(0, head_max - CODE_ROOM)
         if chunk < 512:
             raise ValueError(f"the chunk name is too long for a mailbox record: {name[:80]}...")
-        parts = [data[i:i + chunk] for i in range(0, max(len(data), 1), chunk)]
+        parts = [payload[i:i + chunk] for i in range(0, max(len(payload), 1), chunk)]
         for i, piece in enumerate(parts, 1):
-            head = f"{job} {i}/{len(parts)}" + (f" {addon} {name}{flag}" if i == 1 else "")
+            head = f"{job} {i}/{len(parts)}" + (f"{zipped} {addon} {name}{flag}" if i == 1 else "")
             self.outbox.append((MB.CODE, head.encode() + b"\n" + piece))
-        self.note(f"code {job}: {name} ({len(data)} B, {len(parts)} parts{flag.replace(' ', ', ') if flag else ''})")
+        packed = f", {len(payload)} B deflated" if zipped else ""
+        self.note(f"code {job}: {name} ({len(data)} B{packed}, {len(parts)} parts{flag.replace(' ', ', ') if flag else ''})")
         return job
 
     def data_call(self, verb, payload):
         """what the agent asks of an addon's API (WoWBridge API.lua) as data, not code: CALL records "<job> <i>/<n>[
         <verb>]\n<JSON>" in parts of CODE_CHUNK bytes. verb: "call" {a: addon, n: name, d: args}, "reply" {r: request id,
         d: data}, "describe" {a: addon or None}, "piece" {k: job, i: piece}. WoWBridge (0.9.7 on, link features DATA)
-        compiles nothing for it, so it works with hot loading off; it answers with a RUN message, as for code(). Returns
-        the job id"""
+        compiles nothing for it, so it works with hot loading off; it answers with a RUN message, as for code(). The JSON
+        goes compressed as code() does (_packed). Returns the job id"""
         self.last_job = job = max(int(self.clock() * 1000) % 10 ** 10, self.last_job + 1)
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-        parts = [data[i:i + CODE_CHUNK] for i in range(0, max(len(data), 1), CODE_CHUNK)]
+        sent, zipped = self._packed(data)
+        parts = [sent[i:i + CODE_CHUNK] for i in range(0, max(len(sent), 1), CODE_CHUNK)]
         for i, piece in enumerate(parts, 1):
-            head = f"{job} {i}/{len(parts)}" + (f" {verb}" if i == 1 else "")
+            head = f"{job} {i}/{len(parts)}" + (f"{zipped} {verb}" if i == 1 else "")
             self.outbox.append((MB.CALL, head.encode() + b"\n" + piece))
-        self.note(f"data call {job}: {verb} ({len(data)} B, {len(parts)} parts)")
+        packed = f", {len(sent)} B deflated" if zipped else ""
+        self.note(f"data call {job}: {verb} ({len(data)} B{packed}, {len(parts)} parts)")
         return job
 
     def withdraw(self, job):

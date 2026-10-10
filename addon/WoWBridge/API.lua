@@ -214,9 +214,9 @@ function WB.Reply(id, data)
 	return Json.Encode({ ok = true, addon = p.addon, topic = p.topic, callback_error = failed })
 end
 
-local function Describe(name, e)
+local function Describe(name, e, brief)
 	local exposed = {}
-	for i, n in ipairs(e.order) do exposed[i] = { name = n, doc = e.exposed[n].doc } end
+	for i, n in ipairs(e.order) do exposed[i] = { name = n, doc = not brief and e.exposed[n].doc or nil } end
 	local waiting_for = 0
 	for _, p in pairs(pending) do
 		if p.addon == name then waiting_for = waiting_for + 1 end
@@ -231,14 +231,14 @@ function WB.Online()
 end
 
 -- `addon_api`: what an addon exposed (in the order it did) and the topics of the events it sent, as JSON; without an
--- addon, every addon that took a handle
-function WB.Describe(addon)
+-- addon, every addon that took a handle. brief: the names without their docs (WuxianKit's tools ask what runs so)
+function WB.Describe(addon, brief)
 	if addon then
 		local e = addons[addon]
-		return Json.Encode(e and Describe(addon, e) or { addon = addon, exposed = {}, topics = {}, unbound = true })
+		return Json.Encode(e and Describe(addon, e, brief) or { addon = addon, exposed = {}, topics = {}, unbound = true })
 	end
 	local all = {}
-	for name, e in pairs(addons) do all[#all + 1] = Describe(name, e) end
+	for name, e in pairs(addons) do all[#all + 1] = Describe(name, e, brief) end
 	table.sort(all, function(a, b) return a.addon < b.addon end)
 	return Json.Encode({ addons = all })
 end

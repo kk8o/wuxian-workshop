@@ -19,6 +19,11 @@ Records the companion writes besides WELCOME / HEARTBEAT / TEXT / COMMAND: PARTS
 missing parts (bit i of byte i // 8 = part i received; no bits: none of it came), so that the addon shows only the
 missing parts again; CODE (agent/commands.py code) and, to an addon with link features DATA (f=2, 0.9.7), CALL: a data
 call (agent/commands.py data_call).
+To an addon with link features ZIP (f=3, 0.9.9) the CODE and CALL jobs that are worth it go compressed (agent/commands.py
+_packed); a job the addon could not unpack ("could not be unpacked" in its RUN result) turns that off for the session.
+Display time: a LAZY addon is told show_lazy (0.15 s) for each part of a long message; the first time the companion has
+to ask again for something that went up while the link had been up a while (STEADY), it tells that session show_safe
+(0.2 s) in a new WELCOME, for good. A /reload starts the next session at show_lazy again.
 Acknowledgements: an addon before 0.9.6 shows a message again 4 s after it went up unless acknowledged, so the ack goes
 out within ack_every (1 s) of a message coming. An addon with link features LAZY (f=1, 0.9.6) takes rto, a longer
 window and pack=1 from its WELCOME: the companion then acknowledges ack_lazy seconds after the first message it has not
@@ -26,6 +31,9 @@ acknowledged came (while messages flow, a packet every ack_lazy seconds instead 
 mailbox slots), and asks at once (PARTS) for the messages it knows went up but misses, which the addon then shows again
 at once: a message that is not a RUN result or RELOAD report goes up after every lower id, and HB l= says up to where
 everything went up. A link test (TYPE_TEST) is acknowledged within ack_every: its latency is what it measures.
+The cumulative ack cannot pass a message that has not come, so a LAZY addon is also told of the messages in whole past
+it (PARTS with every bit, _sacks) before it would show them again; and a message asked for ASK_MAX times with nothing
+more of it coming is given up (_give_up): the link goes on without it rather than wait on it for good.
 Messages from addon 0.8 on start with a type byte: TYPE_TEXT (what the user sent with /wb send), TYPE_DEBUG ("ERR
 <error>\n<stack>" for a Lua error of any addon, "OUT <lines>" print() output, "WARN <warning>", "BLOCKED <event> <addon>
 <function>", "DROPPED <n> ..."; a text the addon reported before comes again as "<text>\n(<n> more times)"), TYPE_RUN
@@ -57,9 +65,17 @@ TYPE_BYTES = {bytes([t]) for t in range(7)}
 URGENT_TYPES = (TYPE_RUN, TYPE_RELOAD)   # the addon shows these before the others: a later id may come before them
 LAZY = 1                        # the link features (f=) from which the acks go lazily and PARTS ask at once (0.9.6)
 DATA = 2                        # ... from which the addon takes CALL records: data calls (0.9.7)
+ZIP = 3                         # ... from which it inflates compressed CODE and CALL jobs (0.9.9)
+UNPACK_FAILED = "could not be unpacked"   # in a RUN result: a compressed job did not come out whole in the game
+STEADY = 10.0                   # seconds the link has been up (and the session online) before a frame asked for again
+                                # counts against the short display time (a covered window, a loading screen and the
+                                # first frames of a session miss frames whatever it is)
 NACK_AGAIN = 5.0                # a message asked for is asked for again after this long while it is still missing
 NACK_SPAN = 1024                # ids past the ack looked through for missing ones, at most
 PARTS_MAX = 8                   # PARTS records in one packet, at most
+SACK_AFTER = 5.0                # a message in whole past a gap in the ack is said in whole once the gap has lasted this
+SACK_AGAIN = 15.0               # long (well within rto_lazy: before the addon would show it again), then this often
+ASK_MAX = 12                    # asks for a message with no part more of it coming in between, before it is given up
 WELCOME_AGAIN = 5.0             # a HELLO past the slot of its session's WELCOME gets one again, this long after it at most
 SESSIONS_KEPT = 8               # sessions remembered (a /reload makes a new one)
 NOTES_KEPT = 2000               # notes kept for the report
@@ -200,6 +216,11 @@ class Session:
         self.nacked = {}          # id -> when a PARTS record last asked for it
         self.unacked_at = None    # when the ack first moved past the one last written
         self.ack_soon = False     # a link test came: acknowledged within ack_every
+        self.show = None          # the display time its WELCOME said (a LAZY addon): show_lazy, then show_safe for good
+        self.zip_off = False      # a compressed job could not be unpacked: the next ones go as they are
+        self.beyond = {}          # id -> (parts, since when): messages in whole past a gap in the ack (_sacks) ...
+        self.sacked = {}          # ... -> when a PARTS record last said it is in whole
+        self.tries = {}           # id -> (asks with no part more coming in between, parts in at the last ask): _give_up
 
     def remember(self, msg):
         self.received.add(msg)
@@ -223,25 +244,33 @@ class Session:
             self.advance()
 
     def tidy(self):
-        """partial messages and asks the ack has passed are forgotten"""
+        """partial messages, asks and the messages past a gap that the ack has passed are forgotten"""
         for msg in [m for m in self.partial if not ahead(self.ack, m)]:
             del self.partial[msg]
         for msg in [m for m in self.nacked if not ahead(self.ack, m)]:
             del self.nacked[msg]
+        for msg in [m for m in self.beyond if not ahead(self.ack, m)]:
+            del self.beyond[msg]
+            self.sacked.pop(msg, None)
+        for msg in [m for m in self.tries if not ahead(self.ack, m)]:
+            del self.tries[msg]
 
 
 class Companion(AgentCommands):
     def __init__(self, addons, clock=time.time, log=print, hb_every=15.0, ack_every=1.0, send_every=0.5,
                  ping_every=10.0, down_after=6.0, parts_after=1.5, stuck_after=3.0, welcome=None, on_debug=None,
-                 reload_wait=600.0, echo_debug=True, hb_lazy=30.0, ack_lazy=10.0, rto_lazy=15, win_lazy=64, show_lazy=0.2):
+                 reload_wait=600.0, echo_debug=True, hb_lazy=30.0, ack_lazy=10.0, rto_lazy=15, win_lazy=64, show_lazy=0.15,
+                 show_safe=0.2):
         self.addons, self.clock, self.log, self.on_debug = addons, clock, log, on_debug
         self.echo_debug = echo_debug  # False: what goes to on_debug is not also written to log (the daemon journals it once)
         self.hb_every, self.ack_every, self.send_every = hb_every, ack_every, send_every
         self.ping_every, self.down_after, self.parts_after, self.stuck_after = ping_every, down_after, parts_after, stuck_after
-        # what a LAZY addon is told: measured in the game (1.60.1.70245, 30 fps in the background) a frame shown for at
-        # least 0.2 s was read every time (0.15 s too, in fewer rounds); a frame missed now and then is asked for at once
+        # what a LAZY addon is told: measured in the game (1.60.1.70245, 30 fps in the background) frames shown for 0.25,
+        # 0.2 and 0.15 s were all read (an 8,000-byte message in 1.3 / 1.1 / 1.0 s, nothing asked for again): a session
+        # starts at show_lazy and goes to show_safe once a frame is missed (_missed); one missed is asked for at once
         self.hb_lazy, self.ack_lazy, self.rto_lazy, self.win_lazy = hb_lazy, ack_lazy, rto_lazy, win_lazy
-        self.show_lazy = show_lazy
+        self.show_lazy, self.show_safe = show_lazy, show_safe
+        self.up_since = None          # when the link last came up (frames visible)
         self.reload_wait = reload_wait
         self.welcome = welcome or dict(mode=1, w=64, h=16, bw=128, bh=32, win=16, show=0.25)   # + hb, per session
         self.slot = None              # the next slot to write: unknown until the addon says where it reads
@@ -265,7 +294,8 @@ class Companion(AgentCommands):
                           stream_bad=0, stream_late=0, stream_missing=None,
                           first_slot=None, last_slot=None, records={name: 0 for name in MB.NAMES.values()},
                           debug=dict(err=0, out=0, warn=0, blocked=0, dropped=0, repeats=0, run=0, reload=0, info=0), events=0,
-                          reloads=0, skipped=0, batches=0, asked=0, bad_parts=0, dropped_records=0)
+                          reloads=0, skipped=0, batches=0, asked=0, sacked=0, given_up=0, bad_parts=0,
+                          dropped_records=0)
         self.full = False
         self.reload_sent = None       # (when, session) of the last "reload" command, until a new session shows up
         self.last_job = 0             # the AgentCommands state: the last code() job id ...
@@ -342,7 +372,7 @@ class Companion(AgentCommands):
         self.stats["frames"] += 1
         self.last_frame = now
         if not self.link_up:
-            self.link_up = True
+            self.link_up, self.up_since = True, now
             self.note("link up: frames are visible")
         self.current = sid
         s = self.sessions.get(sid)
@@ -444,7 +474,9 @@ class Companion(AgentCommands):
         s.welcomed, s.welcomed_at = True, now
         params = dict(self.welcome, hb=int(s.hb))
         if s.features >= LAZY:
-            params.update(win=self.win_lazy, show=self.show_lazy, rto=self.rto_lazy, pack=1)
+            if s.show is None:
+                s.show = self.show_lazy
+            params.update(win=self.win_lazy, show=s.show, rto=self.rto_lazy, pack=1)
         text = f"v={VERSION};s={s.sid};" + ";".join(f"{a}={b}" for a, b in params.items())
         self.outbox = [r for r in self.outbox if r[0] != MB.WELCOME]
         self.outbox.insert(0, (MB.WELCOME, text.encode()))
@@ -474,6 +506,8 @@ class Companion(AgentCommands):
         s.remember(msg)
         s.newest = newer(s.newest, msg)
         s.advance()
+        if ahead(s.ack, msg):                              # in, but past a gap the cumulative ack cannot cross yet
+            s.beyond[msg] = (p["parts"], now)
         s.tidy()
         if s.ack != s.ack_sent and s.unacked_at is None:
             s.unacked_at = now
@@ -511,6 +545,9 @@ class Companion(AgentCommands):
             else:
                 self._debug("INFO", plain(text).rstrip())
         elif mtype == TYPE_RUN:
+            if UNPACK_FAILED in text and not s.zip_off:
+                s.zip_off = True
+                self.note(f"session {s.sid}: a compressed job could not be unpacked in the game; its next jobs go uncompressed")
             self._debug("RUN", plain(text).rstrip())
         elif mtype == TYPE_RELOAD:
             self._debug("RELOAD", plain(text).rstrip())
@@ -609,6 +646,46 @@ class Companion(AgentCommands):
             if msg not in seen and now - s.nacked.get(msg, -1e9) >= NACK_AGAIN and len(out) < PARTS_MAX:
                 out.append((msg, bits))
         return out
+
+    def _sacks(self, s, now):
+        """(id, every part's bit) for the messages in whole past a gap in the ack that has lasted SACK_AFTER seconds, at
+        most every SACK_AGAIN seconds each: a LAZY addon then marks their parts in and shows them no more (PassAgain
+        finds none). The cumulative ack cannot pass a message the addon has not shown yet, and without this it shows
+        everything after it again every rto seconds; RUN results, which go first, could then fill the frame for good and
+        keep that one message from ever going up (an addon before 0.9.9 got stuck so after a reload, with WuxianKit's
+        answers coming in pieces). A gap that closes within SACK_AFTER (a RUN result that went before a print) costs
+        no packet"""
+        out = []
+        for msg in sorted(s.beyond, key=lambda i: (i - s.ack) % WRAP):
+            parts, since = s.beyond[msg]
+            if now - since >= SACK_AFTER and now - s.sacked.get(msg, -1e9) >= SACK_AGAIN:
+                out.append((msg, bitmap(parts, range(parts))))
+                if len(out) >= PARTS_MAX:
+                    break
+        return out
+
+    def _give_up(self, s, now):
+        """the messages asked for ASK_MAX times with no part more of them coming in between (tick asks only while frames
+        come), once the last ask has had its time: the link goes on without them. They count as in, the ack moves past
+        them (soon: the addon then drops them) and a note says so; a RUN result among them never comes (the agent's call
+        has timed out by then). One whose frames cannot be read (a big frame cut off at the screen's edge, say) would
+        otherwise hold the ack, and be shown again, for good"""
+        for msg, (n, _) in list(s.tries.items()):
+            if n < ASK_MAX or now - s.nacked.get(msg, -1e9) < NACK_AGAIN or msg in s.received:
+                continue
+            p = s.partial.pop(msg, None)
+            s.nacked.pop(msg, None)
+            del s.tries[msg]
+            s.remember(msg)
+            s.advance()
+            s.tidy()
+            if s.ack != s.ack_sent and s.unacked_at is None:
+                s.unacked_at = now
+            s.ack_soon = True
+            self.stats["given_up"] += 1
+            have = f", {len(p['got'])} of its {p['parts']} parts in" if p else ", none of it in"
+            self._tell("INFO", f"message {msg} of session {s.sid} given up after {n} asks with nothing more of it coming"
+                               f"{have}: the link goes on without it")
 
     def _resend(self, records):
         """the records of slots the addon did not read that go out again: texts, commands, code and WELCOMEs, but not the
@@ -718,12 +795,13 @@ class Companion(AgentCommands):
             self.last_packet, since = now, 0.0
         free = since is None or since >= self.send_every
         if s.features >= LAZY:
-            asks = self._asks(s, now)
+            self._give_up(s, now)
+            asks, sacks = self._asks(s, now), self._sacks(s, now)
             wait = self.ack_every if s.ack_soon else self.ack_lazy
             ack_due = s.ack != s.ack_sent and s.unacked_at is not None and now - s.unacked_at >= wait
-            due = (free and (bool(self.outbox) or bool(asks) or ack_due)) or since is None or since >= s.hb
+            due = (free and (bool(self.outbox) or bool(asks) or bool(sacks) or ack_due)) or since is None or since >= s.hb
         else:
-            asks = self._parts_records(s, now, only_stale=False)
+            asks, sacks = self._parts_records(s, now, only_stale=False), []
             stale = self._parts_records(s, now, only_stale=True)
             due = (self.outbox and free) \
                 or ((s.ack != s.ack_sent or stale) and (since is None or since >= self.ack_every)) \
@@ -742,13 +820,19 @@ class Companion(AgentCommands):
             self.last_ping = now
             self.pings[str(self.ping_id)] = now
             self.command(f"ping {self.ping_id}")
-        records, size, asked = [], MB.HEAD.size + 4, []
+        records, size, asked, said = [], MB.HEAD.size + 4, [], []
         for msg, bits in asks:
             rec = (MB.PARTS, f"{msg}:{bits}".encode())
             if size + 3 + len(rec[1]) <= MB.MAX_PACKET:
                 records.append(rec)
                 size += 3 + len(rec[1])
                 asked.append((msg, bits))
+        for msg, bits in sacks:
+            rec = (MB.PARTS, f"{msg}:{bits}".encode())
+            if len(asked) + len(said) < PARTS_MAX and size + 3 + len(rec[1]) <= MB.MAX_PACKET:
+                records.append(rec)
+                size += 3 + len(rec[1])
+                said.append(msg)
         while self.outbox and size + 3 + len(self.outbox[0][1]) <= MB.MAX_PACKET:
             size += 3 + len(self.outbox[0][1])
             records.append(self.outbox.pop(0))
@@ -762,10 +846,20 @@ class Companion(AgentCommands):
             self.note(f"could not write mailbox slot {self.slot} ({e}): its records wait for the next packet")
             return
         for msg, bits in asked:
-            if msg in s.partial:
-                s.partial[msg]["reported"] = bits
+            p = s.partial.get(msg)
+            if p is not None:
+                p["reported"] = bits
             s.nacked[msg] = now
+            if s.features >= LAZY:                  # counted for _give_up: a part more since the last ask starts over
+                n, before = s.tries.get(msg, (0, -1))
+                got = len(p["got"]) if p is not None else 0
+                s.tries[msg] = (n + 1 if got <= before else 1, got)
         self.stats["asked"] += len(asked) if s.features >= LAZY else 0
+        for msg in said:
+            s.sacked[msg] = now
+        self.stats["sacked"] += len(said)
+        if asked and s.features >= LAZY:
+            self._missed(s, now)
         self.written[self.slot], self.written_at[self.slot] = records, now
         self.written_as[self.slot] = (s.sid, s.ack)
         if any(kind == MB.WELCOME for kind, _ in records):
@@ -814,10 +908,27 @@ class Companion(AgentCommands):
                 self.written_at.pop(i, None)
                 self.written_as.pop(i, None)
 
+    def _missed(self, s, now):
+        """something that went up was asked for again: a session on the short display time goes to show_safe for good
+        (a new WELCOME), unless the link or the session only just came up"""
+        if s.show is None or s.show >= self.show_safe:
+            return
+        if self.up_since is None or now - self.up_since < STEADY or s.online_at is None or now - s.online_at < STEADY:
+            return
+        s.show = self.show_safe
+        self.note(f"session {s.sid}: a frame shown {self.show_lazy} s was missed; frames stay up {self.show_safe} s from now on")
+        self._welcome(s, now)
+
     def data_calls(self):
         """whether the addon of the current session takes data calls (CALL records: link features DATA, 0.9.7 on)"""
         s = self.sessions.get(self.current)
         return s is not None and s.features >= DATA
+
+    def zipping(self):
+        """whether the jobs for the current session go compressed (link features ZIP, 0.9.9 on), unless one could not
+        be unpacked there"""
+        s = self.sessions.get(self.current)
+        return s is not None and s.features >= ZIP and not s.zip_off
 
     def mark(self):
         """(the current session, the latest message id received from it), or None: try waits until every message up to
@@ -841,6 +952,7 @@ class Companion(AgentCommands):
                            online_at=s.online_at,
                            handshake=round(s.online_at - s.hello_at, 3) if s.online_at and s.hello_at else None,
                            beats=s.beats, messages=len(s.messages), dups=s.dups, dup_parts=s.dup_parts, ack=s.ack,
-                           base=s.base, incomplete=sorted(s.partial), features=s.features,
+                           base=s.base, incomplete=sorted(s.partial), features=s.features, show=s.show,
+                           zip=s.features >= ZIP and not s.zip_off,
                            last=[dict(id=i, bytes=n, parts=k, text=t[:200]) for _, i, n, k, t in list(s.messages)[-5:]])
                       for s in self.sessions.values()])

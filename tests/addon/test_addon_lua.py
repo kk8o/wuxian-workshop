@@ -42,7 +42,7 @@ class Link(unittest.TestCase):
             s.run(8)
             chat = s.chat()
             self.assertIn("connected to the companion (mailbox slot 1)", chat)
-            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 1, 64 in flight, 0.20 s a frame, "
+            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 1, 64 in flight, 0.15 s a frame, "
                           "a heartbeat every 5 s", chat)
             self.assertIn("> 你好 WoWBridge", chat)
             sess = comp.sessions[comp.current]
@@ -277,6 +277,7 @@ class HotLoad(unittest.TestCase):
         logs, got = [], []
         s = Session(self)
         comp = link.Companion(s.addons, clock=s.now, log=logs.append, on_debug=lambda kind, text: got.append((kind, text)))
+        comp.zipping = lambda: False                     # the parts as they are (compressed jobs: test_link_099)
         s.comp = comp
 
         def runs():

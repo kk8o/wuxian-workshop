@@ -54,7 +54,7 @@ class Lazy(unittest.TestCase):
         self.c.tick()
         welcome = MB.read_slot(self.addons, 1)["records"][0]
         self.assertEqual(welcome[0], MB.WELCOME)
-        for field in (b";win=64", b";show=0.2", b";hb=30", b";rto=15", b";pack=1"):
+        for field in (b";win=64", b";show=0.15", b";hb=30", b";rto=15", b";pack=1"):
             self.assertIn(field, welcome[1])
         for msg in (1, 2, 3):
             self.frame(F.TYPE_DATA, msg, b"\x01OUT line %d" % msg)
@@ -78,7 +78,9 @@ class Lazy(unittest.TestCase):
         self.wait(3)                                                      # asked again only after NACK_AGAIN
         self.assertEqual(len([r for p in self.packets(2) for r in p["records"] if r[0] == MB.PARTS]), 1)
         self.wait(2.5)
-        self.assertEqual(len([r for p in self.packets(2) for r in p["records"] if r[0] == MB.PARTS]), 2)
+        asked = [r[1] for p in self.packets(2) for r in p["records"] if r[0] == MB.PARTS]
+        self.assertEqual(asked.count(b"2:"), 2)
+        self.assertIn(b"3:01", asked)                 # 3 came in whole past the gap (SACK_AFTER): not shown again
         self.frame(F.TYPE_DATA, 2, b"\x01OUT two")
         self.assertEqual(self.c.sessions[5].ack, 3)
         self.assertEqual([t for k, t in self.got if k == "OUT"], ["one", "three", "two"])

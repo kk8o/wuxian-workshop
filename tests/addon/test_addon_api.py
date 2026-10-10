@@ -141,6 +141,18 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(api["topics"], {"early": 1})
         self.assertEqual([a["addon"] for a in asyncio.run(svc.addon_api())["addons"]], ["Foo"])
         self.assertEqual(asyncio.run(svc.addon_api("Bar")), dict(addon="Bar", exposed=[], topics={}, unbound=True))
+
+        def describes():
+            return len([t for k, t in self.got if k == "RUN" and " =describe " in t])
+
+        async def at_once():                    # three agents ask the same at once, a fourth only the names
+            return await asyncio.gather(*(svc.addon_api("Foo") for _ in range(3)), svc.addon_api("Foo", True))
+        before = describes()
+        *same, brief = asyncio.run(at_once())
+        self.assertEqual(same, [api] * 3)
+        self.assertEqual(brief["exposed"], [{"name": "double"}, {"name": "boom"}])
+        self.assertEqual(describes() - before, 2)                                    # one answer for the three
+        self.assertEqual(svc.describing, {})
         calls = [t for k, t in self.got if k == "RUN" and " =call " in t]
         self.assertTrue(calls)                                                      # under its own chunk name
         for bad in (("", "double"), ("Foo", "a b"), ("../x", "double")):
@@ -380,7 +392,7 @@ class McpTools(unittest.TestCase):
         self.assertFalse(tools["respond"].annotations.read_only_hint)
         watch = ("addon_events", ("WuxianKit", "kit.*", -1, 100, 300))       # WuxianKit's watch, whenever it runs
         self.assertEqual([c for c in backend.calls if c != watch],
-                         [("status", ()), ("addon_api", ("WuxianKit",)),       # not running: no call of it, no wk_ tools
+                         [("status", ()), ("addon_api", ("WuxianKit", True)),  # not running: no call of it, no wk_ tools
                           ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                           ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                           ("respond", ("12.3", {"text": "x"}, 10000))])
@@ -718,8 +730,8 @@ class KitTools(unittest.TestCase):
         backend = self.backend(self.manifest(), addons=addons)
         exposed = {"names": None}
 
-        async def addon_api(addon=None):
-            backend.calls.append(("addon_api", addon))
+        async def addon_api(addon=None, brief=False):
+            backend.calls.append(("addon_api", addon) if brief else ("addon_api with the docs", addon))
             if exposed["names"] is None:
                 return {"addon": addon, "exposed": [], "topics": {}, "unbound": True}
             return {"addon": addon, "exposed": [{"name": n} for n in exposed["names"]], "topics": {}}
@@ -915,6 +927,8 @@ class Templates(unittest.TestCase):
             g = s.lua.globals()
             api = json.loads(g[b"WoWBridge"][b"Describe"](b"Talker"))
             self.assertEqual(api["exposed"][0]["name"], name)
+            brief = json.loads(g[b"WoWBridge"][b"Describe"](b"Talker", True))
+            self.assertEqual(brief["exposed"], [{"name": e["name"]} for e in api["exposed"]])     # the names only
             out = s.lua.execute(f'return WoWBridge.Call("Talker", "{name}", {{ who = "Agent" }})'.encode()).decode()
             self.assertIn(answer, out)
             bare = Session(self, bridge=False)                      # a player without 无限工坊: the same file runs

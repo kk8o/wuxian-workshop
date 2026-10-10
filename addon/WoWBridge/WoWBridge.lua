@@ -315,6 +315,8 @@ SlashCmdList.WOWBRIDGE = function(msg)
 		WB.Long(tonumber(rest))
 	elseif cmd == "link" or cmd == "queue" then
 		WB.LinkStatus()
+	elseif cmd == "flush" then
+		Print(L.FLUSHED:format(ns.Link.Flush()))
 	elseif cmd == "send" then
 		WB.Send(rest)
 	elseif cmd == "set" then

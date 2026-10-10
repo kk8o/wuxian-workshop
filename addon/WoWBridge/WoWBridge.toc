@@ -16,6 +16,7 @@ Skin.lua
 Console.lua
 Debug.lua
 Codec.lua
+Inflate.lua
 Frame.lua
 FontProbe.lua
 Mailbox.lua

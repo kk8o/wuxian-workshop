@@ -118,8 +118,8 @@ class HttpBackend:
     async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
         return await self._call("call_exposed", addon, name, args, timeout_ms)
 
-    async def addon_api(self, addon=None):
-        return await self._call("addon_api", addon)
+    async def addon_api(self, addon=None, brief=False):
+        return await self._call("addon_api", addon, brief)
 
     async def respond(self, request, data=None, timeout_ms=10000):
         return await self._call("respond", request, data, timeout_ms)

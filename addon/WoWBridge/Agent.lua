@@ -14,6 +14,10 @@
 -- Lifecycle: a first part flagged "reset" calls WoWBridgeNS[addon].OnUnload() before the code runs (pcall) and
 -- OnReload(<what OnUnload returned>) after it; "unload" and "reload" do one half each, so that a whole-addon load calls
 -- OnUnload before its first file and OnReload after its last.
+-- Compressed jobs (link features 3, 0.9.9): a first part may say "z:<bytes>:<Adler-32, hex>" right after its count (a
+-- colon cannot stand in an addon's folder name); the job's parts then join into raw DEFLATE (Inflate.lua), which must
+-- come out at that size and checksum before the job runs. One that does not fails with "could not be unpacked", and the
+-- companion sends that session's later jobs uncompressed.
 local addonName, ns = ...
 
 local A = {}
@@ -206,6 +210,31 @@ local function Reload(addon, space)
 	return ok and " (OnReload ok)" or (" (OnReload error: %s)"):format(Text(err))
 end
 
+-- a compressed job's first part: "z:<bytes>:<adler-32 hex>" at the head of what follows its count; the rest after it
+local function Zip(job, rest)
+	local size, sum, more = rest:match("^z:(%d+):(%x+) ?(.*)$")
+	if not size then return rest end
+	job.zip = { size = tonumber(size), sum = tonumber(sum, 16) }
+	return more
+end
+
+-- a compressed job's joined parts as they were sent, or nil + why not
+local function Unpack(s, zip, what)
+	local ok, text = false, "Inflate.lua is not loaded"     -- the .toc the client read before it came (until a restart)
+	if ns.Inflate then ok, text = pcall(ns.Inflate.Raw, s, zip.size) end
+	local why
+	if not ok then
+		why = tostring(text)
+	elseif #text ~= zip.size then
+		why = ("%d bytes instead of %d"):format(#text, zip.size)
+	elseif ns.Inflate.Adler32(text) ~= zip.sum then
+		why = "its checksum does not match"
+	else
+		return text
+	end
+	return nil, ("its compressed %s could not be unpacked (%s); the next ones come uncompressed"):format(what, why)
+end
+
 local function RunJob(id, job)
 	jobs[id] = nil
 	MarkDone(id)
@@ -214,6 +243,15 @@ local function RunJob(id, job)
 		Result(("%s error %s: hot loading is off (/wb set hotLoad on)"):format(id, job.name))
 		Count(job.name, false)
 		return
+	end
+	if job.zip then
+		local text, why = Unpack(code, job.zip, "code")
+		if not text then
+			Result(("%s error %s: %s"):format(id, job.name, why))
+			Count(job.name, false)
+			return
+		end
+		code = text
 	end
 	local f, err = loadstring(code, job.name)
 	local t0, res, note = debugprofilestop(), nil, ""
@@ -273,7 +311,7 @@ function A.Code(data)
 		jobs[id] = job
 	end
 	if i == 1 then
-		local addon, name = rest:match("^(%S+) (.+)$")
+		local addon, name = Zip(job, rest):match("^(%S+) (.+)$")
 		if name then
 			local flag = name:match(" (%a+)$")
 			if flag and FLAGS[flag] then
@@ -290,10 +328,10 @@ end
 
 -- Data calls (link features 2, 0.9.7): a CALL record "<job> <i>/<n>[ <verb>]\n<JSON>", in parts as a CODE job's, carries
 -- what the agent asks of an addon's API (API.lua) as data: "call" {"a": addon, "n": name, "d": args} runs a function the
--- addon exposed, "reply" {"r": request id, "d": data} answers its request, "describe" {"a": addon or null} says what
--- addons expose, "piece" {"k": job, "i": n} brings piece n of a long answer. WoWBridge reads them itself and compiles
--- nothing: they work with hot loading off, and the addon's function runs as any addon code does, without the taint the
--- client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
+-- addon exposed, "reply" {"r": request id, "d": data} answers its request, "describe" {"a": addon or null, "b": true for
+-- the names only} says what addons expose, "piece" {"k": job, "i": n} brings piece n of a long answer. WoWBridge reads
+-- them itself and compiles nothing: they work with hot loading off, and the addon's function runs as any addon code
+-- does, without the taint the client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
 -- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds.
 local PIECE, ANSWER_MOST, ANSWER_KEPT = 3900, 256 * 1024, 300
 local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece" }
@@ -324,7 +362,7 @@ local function Answer(verb, req)
 	local WB = _G.WoWBridge
 	if verb == "call" then return WB.Call(req.a, req.n, req.d) end
 	if verb == "reply" then return WB.Reply(req.r, req.d) end
-	if verb == "describe" then return WB.Describe(req.a) end
+	if verb == "describe" then return WB.Describe(req.a, req.b == true) end
 	if verb ~= "piece" then return nil, ("no data call %q"):format(tostring(verb)) end
 	local key, i = tostring(req.k), tonumber(req.i)
 	local a = answers[key]
@@ -340,15 +378,21 @@ local function RunCall(id, job)
 	jobs[id] = nil
 	MarkDone(id)
 	local t0, body, chunk = debugprofilestop(), table.concat(job.parts), CHUNK[job.verb] or "=call"
-	local req, err = ns.Json.Decode(body)
-	local text, failure
-	if err then
-		failure = "its data is not JSON: " .. err
-	elseif type(req) ~= "table" then
-		failure = "its data is not a JSON object"
-	else
-		local ok, a, why = pcall(Answer, job.verb, req)
-		if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
+	local req, err, text, failure
+	if job.zip then
+		local unpacked, why = Unpack(body, job.zip, "data")
+		body, failure = unpacked or "", why
+	end
+	if not failure then
+		req, err = ns.Json.Decode(body)
+		if err then
+			failure = "its data is not JSON: " .. err
+		elseif type(req) ~= "table" then
+			failure = "its data is not a JSON object"
+		else
+			local ok, a, why = pcall(Answer, job.verb, req)
+			if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
+		end
 	end
 	if text and job.verb ~= "piece" then
 		local s, cuts = Pieces(text)
@@ -375,7 +419,7 @@ end
 -- a CALL record (Link.lua hands them over); its parts gather in the same table as CODE jobs' (the ids never meet)
 function A.Call(data)
 	local head, body = data:match("^([^\n]*)\n(.*)$")
-	local id, i, n, verb = (head or ""):match("^(%d+) (%d+)/(%d+) ?(%S*)$")
+	local id, i, n, rest = (head or ""):match("^(%d+) (%d+)/(%d+) ?(.*)$")
 	i, n = tonumber(i), tonumber(n)
 	if not id or i < 1 or i > n or Done(id) or Stale(id) then return end
 	local job = jobs[id]
@@ -383,7 +427,7 @@ function A.Call(data)
 		job = { n = n, parts = {}, got = 0 }
 		jobs[id] = job
 	end
-	if i == 1 then job.verb = verb end
+	if i == 1 then job.verb = Zip(job, rest):match("^(%S*)$") end
 	if not job.parts[i] then job.parts[i], job.got = body, job.got + 1 end
 	if job.got == job.n and job.verb then RunCall(id, job) end
 end

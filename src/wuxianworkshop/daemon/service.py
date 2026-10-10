@@ -85,6 +85,7 @@ class Service:
         self.kit_view = None         # mcp.kit.KitTools of the page, made when it first looks
         self.started = time.time()
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
+        self.describing = {}         # (UI session, addon, brief) -> the addon_api answer on its way: callers share it
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -668,15 +669,32 @@ class Service:
                                  + (f", its callback raised: {str(failed)[:200]}" if failed else ""), addon=addon)
         return dict(request=request, ok=True, addon=addon, topic=topic, **({"callback_error": failed} if failed else {}))
 
-    async def addon_api(self, addon=None):
+    async def addon_api(self, addon=None, brief=False):
         """what an addon exposed with WoWBridge's Expose (name and doc, in the order it did) and the topics it emitted
-        (with how often); without addon, every addon that took a handle"""
+        (with how often); without addon, every addon that took a handle. brief: the names without the docs (WuxianKit's
+        tools ask so what runs: its docs come to tens of KB; a WoWBridge before 0.9.9 sends them all the same). The same
+        question asked while it is on its way, in the same UI session, shares its answer: after a reload every agent's
+        WuxianKit tools ask at once, and each answer goes up the game's link"""
         if addon is not None and (not isinstance(addon, str) or not self.ADDON_NAME.match(addon)):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
+        key = (getattr(getattr(self.worker, "comp", None), "current", None), addon, bool(brief))
+        task = self.describing.get(key)
+        if task is None:
+            task = self.describing[key] = asyncio.ensure_future(self.describe(addon, brief))
+            task.add_done_callback(lambda t: self.described(key, t))
+        return await asyncio.shield(task)
+
+    def described(self, key, task):
+        if self.describing.get(key) is task:
+            del self.describing[key]
+        if not task.cancelled():
+            task.exception()             # retrieved: callers that went away leave no "never retrieved" warning
+
+    async def describe(self, addon, brief):
         if self.data_calls():
-            data = await self.data_probe("describe", {"a": addon}, 15000, "addon_api")
+            data = await self.data_probe("describe", dict(a=addon, **({"b": True} if brief else {})), 15000, "addon_api")
         else:
-            data = await self.probe(probes.describe_chunk(addon), 15000)
+            data = await self.probe(probes.describe_chunk(addon, brief), 15000)
 
         def tidy(a):                     # an empty Lua table comes as []: topics are an object
             return dict(a, topics=a.get("topics") or {}, exposed=a.get("exposed") or [])

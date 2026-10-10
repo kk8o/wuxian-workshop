@@ -13,7 +13,10 @@
 -- first (the agent waits on them), then the messages not shown yet in order, then parts shown again. Message ids run
 -- 1..65535 and wrap. A message is dropped when a packet's cumulative ack covers it; `rto` seconds after a message's last
 -- part was shown, the parts the companion has not confirmed (PARTS records) are shown again, and at once when a PARTS
--- record names it after that (the companion asks for what it misses).
+-- record names it after that (the companion asks for what it misses). Passes nobody asked for come further apart each
+-- time (rto, 2 rto, 4 rto ... at most AGAIN_MAX s) and never before a message that has not gone up yet: the cumulative
+-- ack waits for that one (0.9.9; before, a stream of RUN results shown again could keep it from ever going up, and the
+-- frame never stopped changing). /wb flush, or the companion's "flush", drops every message waiting.
 -- From 0.9.6 (FEATURES, f= in HELLO and PONG) a WELCOME may also set rto (the companion then acknowledges every few
 -- seconds instead of every second, which saves mailbox slots, and asks at once for what went missing) and pack=1: a small
 -- message joins the last one of its kind not shown yet, as a batch (TYPE_BATCH: type, length (2 bytes), text, ...), so
@@ -26,14 +29,18 @@ local band, floor, char = bit.band, math.floor, string.char
 local L = {}
 ns.Link = L
 L.VERSION = "0.9.8"
-L.FEATURES = 2     -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
-                   -- 2 (0.9.7): also takes CALL records (data calls, Agent.lua)
+-- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
+-- 2 (0.9.7): also takes CALL records (data calls, Agent.lua);
+-- 3 (0.9.9): also inflates the CODE and CALL jobs that come compressed (Agent.lua, Inflate.lua; a client that read the
+-- .toc before Inflate.lua came, until the game restarts, does not load it)
+L.FEATURES = ns.Inflate and 3 or 2
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT, L.TYPE_BATCH = 0, 1, 2, 3, 4, 5, 6
 local TYPE_OF = { debug = L.TYPE_DEBUG, run = L.TYPE_RUN, reload = L.TYPE_RELOAD, event = L.TYPE_EVENT,
 	burst = L.TYPE_TEST, long = L.TYPE_TEST, stream = L.TYPE_TEST, test = L.TYPE_TEST }
 local URGENT = { run = true, reload = true }     -- shown before everything else, never packed
+local AGAIN_MAX = 120                            -- seconds between a message's passes nobody asked for, at most
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
@@ -139,10 +146,13 @@ local function PassPart(m, now)
 	return nil
 end
 
--- a new pass over the parts the companion has not confirmed: rto after the last one ended, or at once when it asked for
--- them (m.rush: a PARTS record named the message); the first part of it, or nil
+-- a new pass over the parts the companion has not confirmed: at once when it asked for them (m.rush: a PARTS record
+-- named the message), else rto after the last pass ended, twice that after the next one and so on, at most AGAIN_MAX s
+-- (a message the companion cannot take, or an ack held up, must not keep the frame busy; the count starts over when the
+-- link comes back); the first part of it, or nil
 local function PassAgain(m, now)
-	if m.pending or not (m.rush or now - m.passEnd >= P.rto) then return nil end
+	if m.pending or not (m.rush or now - m.passEnd >= math.min(P.rto * 2 ^ m.again, AGAIN_MAX)) then return nil end
+	if not m.rush then m.again = m.again + 1 end
 	m.rush = nil
 	local p = {}
 	for i = 1, #m.frags do
@@ -155,21 +165,22 @@ local function PassAgain(m, now)
 	return p[1]
 end
 
--- the message whose part goes up next: a RUN result or RELOAD report first (its first pass, or a pass again; also past
--- the window: the agent waits on it), then the first message not shown yet, then the first whose parts are due again
+-- the message whose part goes up next: a RUN result or RELOAD report first (its first pass, a pass going on, or one the
+-- companion asked for; also past the window: the agent waits on it), then the first message not shown yet, then the
+-- first whose parts are due again (a RUN result's also past the window). A pass nobody asked for never comes before a
+-- message's first: the companion's cumulative ack waits for that one
 local function Pick(now)
 	local fresh
 	for n, m in ipairs(queue) do
 		if m.urgent then
-			if PassPart(m, now) or (m.shown and PassAgain(m, now)) then return m end
+			if PassPart(m, now) or (m.rush and PassAgain(m, now)) then return m end
 		elseif n <= P.win and not fresh and not m.shown and PassPart(m, now) then
 			fresh = m
 		end
 	end
 	if fresh then return fresh end
 	for n, m in ipairs(queue) do
-		if n > P.win then break end
-		if not m.urgent and m.shown and (PassPart(m, now) or PassAgain(m, now)) then return m end
+		if (m.urgent or n <= P.win) and m.shown and (PassPart(m, now) or PassAgain(m, now)) then return m end
 	end
 end
 
@@ -240,6 +251,8 @@ function L.Command(text)
 	local cmd, rest = text:match("^(%S+)%s*(.-)$")
 	if cmd == "ping" then
 		pong = rest
+	elseif cmd == "flush" then
+		Print(ns.L.FLUSHED:format(L.Flush()))
 	elseif cmd == "reload" then
 		-- "reload <nonce>": on this client only a click or key press may reload the UI (ReloadUI and ConsoleExec from a
 		-- timer: "interface action failed"), so a button asks the user. The nonce is saved first: a packet read again
@@ -338,6 +351,7 @@ local function OnPacket(pkt)
 		state = "online"
 		Print(ns.L.CONNECTED:format(pkt.slot))
 		ns.Console.Add("LINK", ns.L.CON_LINK_UP)
+		for _, m in ipairs(queue) do m.again = 0 end    -- what went up while nobody read it goes again within rto
 	end
 	if pkt.session == ns.session and pkt.ack > 0 then
 		lastAck = pkt.ack
@@ -411,7 +425,8 @@ function L.Send(text, kind)
 	local id = nextId
 	nextId = nextId % 65535 + 1
 	db.nextData = nextId
-	local m = { id = id, type = t, items = { text }, kind = kind, urgent = URGENT[kind], ok = {}, passEnd = 0, resent = 0 }
+	local m = { id = id, type = t, items = { text }, kind = kind, urgent = URGENT[kind], ok = {}, passEnd = 0, resent = 0,
+		again = 0 }
 	Shape(m, char(t) .. text)
 	queue[#queue + 1] = m
 	while #queue > P.keep do            -- nobody acknowledges them: the companion learns of the gap from HB m=
@@ -491,6 +506,19 @@ function L.Stream(seconds)
 		s.n, s.last = i, L.Send(StreamText(i), "stream")
 	end)
 	return seconds
+end
+
+-- drops every message waiting to go up (/wb flush, or the companion's "flush"): the frame goes quiet. The next control
+-- frame says the oldest message (m=), and the companion moves its ack past the ones dropped; a RUN result dropped so is
+-- never answered (the agent's call times out). Returns how many messages went
+function L.Flush()
+	local n = 0
+	for i = #queue, 1, -1 do
+		n = n + #queue[i].items
+		queue[i] = nil
+	end
+	lastControl = nil                    -- that control frame goes up next
+	return n
 end
 
 function L.State() return state end
