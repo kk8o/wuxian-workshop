@@ -459,6 +459,11 @@ class Fake:
                      tools=[dict(name=f"wk_{i}_{c.replace('.', '_')}", cap=f"{i}.{c}", kind=k, label=lab, title=t)
                             for c, k, lab, t in tools]) for i, (title, tools) in self.KIT_TOOLS.items()]
         exts.append(dict(id="gate", title="远程", version="0.4.0", addon="WuxianKit", builtin=True, state="off", tools=[]))
+        exts.append(dict(id="eui", title="扩展框架 · EllesmereUI", version="0.3.1", addon="WuxianKit_EllesmereUI", builtin=False,
+                         state="on", tools=[dict(name="wk_eui_setting_get", cap="eui.setting.get", kind="see", label="Read",
+                                                 title="读取设置"),
+                                            dict(name="wk_eui_layout_tidy", cap="eui.layout.tidy", kind="do", label="Change",
+                                                 title="整理布局")]))
         exts[0]["tools"] += [dict(name=n, cap=None, kind=None, label=lab, title=t) for n, lab, t in (
             ("wk_docs", "Read", "WuxianKit docs"), ("wk_wait", "Read", "Wait for a proposal"),
             ("wk_propose", "Proposal", "One proposal of several steps"))]
@@ -468,7 +473,7 @@ class Fake:
             kind=kind, pid=pid, version=version, started=now - 3600, client=client, protocol=protocol, first=now - 3000,
             last=now - last, calls=calls, listed=now - 2900 if tools is not None else None, tools=tools, revision=revision,
             state=state)
-        return dict(kit=kit, program="0.9.7", now=now, servers=[
+        return dict(kit=kit, kit_state="running", kit_addon=dict(there=True, version="0.4.0"), program="0.9.7", now=now, servers=[
             row("stdio", 35852, "0.9.7", {"name": "claude-code", "version": "2.1.293"}, "2026-07-28", 12, kit["tools"],
                 "7a1c03e5", "current", 41),
             row("stdio", 51324, "0.9.6", {"name": "claude-code", "version": "2.1.293"}, "2026-07-28", 900, None, None, "stale"),
@@ -481,6 +486,9 @@ class Fake:
         if e is None:
             raise KeyError(f"{ext_id!r} is not in the extension catalog")
         if action == "install":
+            need = self.ext_row(e)["missing"]
+            if need:
+                raise LookupError(f"{ext_id} needs {', '.join(need)} in the game first")
             was = self.ext_installed.get(ext_id)
             self.ext_installed[ext_id] = e["version"]
             result = dict(id=ext_id, folder=e["folder"], version=e["version"], was=was, kept=7 if was else None,
@@ -926,10 +934,15 @@ def create_app(fake=None, ticker=True):
                                      unresolved={}, libraries=0, live=dict(checked=1)))
         return JSONResponse(dict(target=name, addon=name, files=3, ok=False, libraries=1, unresolved={}, live=dict(checked=2),
             errors=[f("Frames.lua", 41, "syntax", "unexpected symbol near '/'", "Lua 5.1 has no integer division (//): use math.floor(a / b)"),
-                    f("Bar.lua", 88, "undefined", "GetSpellInfo is nil in the running game", "a typo, or defined nowhere")],
+                    f("Bar.lua", 88, "undefined", "GetSpellInfo is nil in the running game", "a typo, or defined nowhere"),
+                    f("Bar.lua", 64, "args-missing", "C_Map.GetPlayerMapPosition needs unitToken (argument 2): the call passes 1",
+                      "C_Map.GetPlayerMapPosition(uiMapID, unitToken)")],
             warnings=[f("Bar.lua", 12, "global-write", "writes the global counter", "forgot local? Globals are shared by every addon (and taint the Blizzard UI when it reads them)"),
-                      f("Bar.lua", 30, "typo", "UnitHelth is neither the client's nor this addon's", "did you mean UnitHealth?")],
-            notes=[]))
+                      f("Bar.lua", 30, "typo", "UnitHelth is neither the client's nor this addon's", "did you mean UnitHealth?"),
+                      f("Bar.lua", 52, "secret", "UnitHealth returns secret values: comparing it fails in addon code",
+                        "check issecretvalue(x) first, or show it with string.format / SetFormattedText")],
+            notes=[f("Bar.lua", 0, "secret-maybe", "3 results are secret only in restricted states (SecretWhen...): plain out of combat",
+                     "test them with issecretvalue before arithmetic")]))
 
     async def agent_access(request):
         return JSONResponse(fake.agent_access())
@@ -944,6 +957,8 @@ def create_app(fake=None, ticker=True):
             return JSONResponse(fake.extension(body["action"], body.get("id")))
         except KeyError as e:
             return error("no_such_extension", str(e.args[0]), 404)
+        except LookupError as e:
+            return error("needs_addons", str(e), 409)
         except ValueError as e:
             return error("bad_request", str(e), 400)
 

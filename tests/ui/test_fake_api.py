@@ -185,12 +185,26 @@ class Endpoints(unittest.TestCase):
         self.assertEqual((r["result"]["removed"], r["addon"]["state"]), (True, "available"))
         self.assertEqual(self.client.post("/api/extensions", json={"action": "install", "id": "nope"}, headers=AUTH).status_code, 404)
         self.assertEqual(self.client.post("/api/extensions", json={"action": "zap", "id": "x"}, headers=AUTH).status_code, 400)
+        r = self.client.post("/api/extensions", json={"action": "remove", "id": "wuxiankit"}, headers=AUTH).json()
+        rows = {a["id"]: a for a in self.client.get("/api/extensions", headers=AUTH).json()["addons"]}
+        self.assertEqual(rows["wuxiankit-eui"]["missing"], ["WuxianKit"])            # its parent went: as the service says
+        r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit-eui"}, headers=AUTH)
+        self.assertEqual((r.status_code, r.json()["error"]["code"]), (409, "needs_addons"))
+
+    def test_agent_access_shape(self):
+        """Service.agent_access's fields, which the 扩展 page reads: the kit's state and folder, a custom extension"""
+        d = self.client.get("/api/agent_access", headers=AUTH).json()
+        self.assertEqual(set(d), {"kit", "kit_state", "kit_addon", "servers", "program", "now"})
+        self.assertEqual((d["kit_state"], set(d["kit_addon"])), ("running", {"there", "version"}))
+        custom = [e for e in d["kit"]["extensions"] if not e["builtin"]]
+        self.assertEqual([(e["id"], e["addon"]) for e in custom], [("eui", "WuxianKit_EllesmereUI")])
 
     def test_check(self):
         """agent/lint.py's shape, which the 插件 page's 检查 reads"""
         d = self.client.post("/api/check", json={"target": "Bar", "live": True}, headers=AUTH).json()
         self.assertEqual((d["ok"], d["files"], d["live"]), (False, 3, {"checked": 2}))
-        self.assertEqual({f["code"] for f in d["errors"]}, {"syntax", "undefined"})
+        self.assertEqual({f["code"] for f in d["errors"]}, {"syntax", "undefined", "args-missing"})
+        self.assertEqual([f["code"] for f in d["notes"]], ["secret-maybe"])
         self.assertTrue(all({"file", "line", "code", "message", "hint"} <= set(f) for f in d["errors"] + d["warnings"]))
         self.assertTrue(self.client.post("/api/check", json={"target": "WoWBridge"}, headers=AUTH).json()["ok"])
 

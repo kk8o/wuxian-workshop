@@ -696,11 +696,12 @@
         <div class="xp-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
         <div class="xp-note" x-show="ext.note">
           <span x-text="ext.note"></span>
-          <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(); ext.reload = false">重载界面</button>
+          <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
         </div>
         <div class="loader" x-show="ext.list === null"><svg class="inf"><use href="#inf-line"/></svg>读取扩展目录…</div>
         <p class="muted pad" x-show="ext.list && !ext.list.length && !ext.error">扩展目录暂无内容。</p>
 
+        <div class="xp-run" :class="kitRun.cls" x-show="ext.list !== null && !extTop.some(a => a.id === 'wuxiankit') && access.data && (access.data.kit || access.data.kit_state === 'stopped')"><span class="xp-dot"></span><span x-text="kitRun.text"></span></div>
         <template x-for="a in extTop" :key="a.id">
           <article class="panel xp-pack" x-t>
             <div class="xp-pack-head">
@@ -712,10 +713,11 @@
               <span class="pill" :class="extPill(a)" x-text="extState(a)"></span>
             </div>
             <p class="xp-summary" x-text="loc(a.summary)"></p>
+            <p class="xp-sub-need" x-show="(a.missing || []).length" x-text="t('需要先安装：{list}', { list: (a.missing || []).join(t('、')) })"></p>
             <div class="xp-run" :class="kitRun.cls" x-show="a.id === 'wuxiankit' && a.there"><span class="xp-dot"></span><span x-text="kitRun.text"></span></div>
             <div class="xp-acts">
-              <button class="btn primary" x-show="a.state === 'available'" :disabled="ext.busy !== ''" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('安装中…') : t('安装')"></button>
-              <button class="btn primary" x-show="a.state === 'update' || a.state === 'installed'" :disabled="ext.busy !== ''" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('更新中…') : t('更新到 {v}', { v: a.version })"></button>
+              <button class="btn primary" x-show="a.state === 'available'" :disabled="ext.busy !== '' || (a.missing || []).length > 0" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('安装中…') : t('安装')"></button>
+              <button class="btn primary" x-show="a.state === 'update' || a.state === 'installed'" :disabled="ext.busy !== '' || (a.missing || []).length > 0" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('更新中…') : t('更新到 {v}', { v: a.version })"></button>
               <button class="btn" x-show="a.there && ext.confirm !== a.id" :disabled="ext.busy !== ''" @click="extAct(a, 'remove')">卸载</button>
               <span class="xp-confirm" x-show="ext.confirm === a.id">
                 <span class="muted">卸载将删除插件文件夹，并先保留一份历史版本。</span>
@@ -738,7 +740,7 @@
                     <span class="pill tiny" :class="extPill(c)" x-text="extState(c)"></span>
                   </div>
                   <p class="xp-sub-sum" x-text="loc(c.summary)"></p>
-                  <p class="xp-sub-need" x-show="(c.missing || []).length && !c.there" x-text="t('需要先安装：{list}', { list: (c.missing || []).join('、') })"></p>
+                  <p class="xp-sub-need" x-show="(c.missing || []).length" x-text="t('需要先安装：{list}', { list: (c.missing || []).join(t('、')) })"></p>
                   <div class="xp-acts">
                     <button class="btn primary small" x-show="c.state === 'available'" :disabled="ext.busy !== '' || (c.missing || []).length > 0" @click="extAct(c, 'install')" x-text="ext.busy === c.id ? t('安装中…') : t('安装')"></button>
                     <button class="btn primary small" x-show="c.state === 'update' || c.state === 'installed'" :disabled="ext.busy !== '' || (c.missing || []).length > 0" @click="extAct(c, 'install')" x-text="ext.busy === c.id ? t('更新中…') : t('更新到 {v}', { v: c.version })"></button>
@@ -819,7 +821,7 @@
           </header>
           <div class="panel xp-tools" x-show="xp.sessions && access.data && access.data.servers.length">
             <table class="table">
-              <tr x-t><th>Agent</th><th>连接</th><th>协议</th><th>工具</th><th>最近活动</th><th>状态</th></tr>
+              <tr x-t><th>Agent</th><th>连接</th><th>协议</th><th>wk_ 工具</th><th>最近活动</th><th>状态</th></tr>
               <template x-for="s in (access.data ? access.data.servers : [])" :key="s.kind + ':' + s.pid + ':' + (s.first || 0)">
                 <tr>
                   <td x-text="agentName(s)"></td>

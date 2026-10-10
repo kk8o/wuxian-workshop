@@ -123,7 +123,7 @@ class Catalog:
             self.error = (tr("网站上还没有扩展目录。", "The website has no extension catalog yet.") if self.missing else
                           tr(f"扩展目录读取失败：网站返回 {code}", f"The extension catalog could not be read: the website answered {code}"))
         except urllib.error.URLError:
-            self.error = tr("连不上无限工坊网站，稍后点「刷新目录」再试。",
+            self.error = tr("连不上无限工坊网站，稍后点「刷新」再试。",
                             "Cannot reach the Wuxian Workshop website; try Refresh again later.")
         except Exception as e:
             why = str(e).splitlines()[0][:200] if str(e) else type(e).__name__

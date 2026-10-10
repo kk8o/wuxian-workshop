@@ -96,7 +96,7 @@ const WHY = {                                  // the documentation fields that 
   ProtectedMethod: '受保护的方法：插件在自己的框体上随时可以调用；对受保护的安全框体（动作条、单位框体等），战斗中会被拦截。',
   HasRestrictions: '有使用限制：某些情况下调用会失败或被拦截。',
   HasRestrictionsEvent: '受限事件：插件注册它会被客户端禁止（ADDON_ACTION_FORBIDDEN），游戏里会弹出「插件导致界面行为失效」。',
-  SecretReturns: '返回值可能是机密值：在战斗、首领战等受限状态下读不到明文，不能比较、运算、拼接或存表。',
+  SecretReturns: '返回值是机密值：插件读不到明文；可以拼接、交给 string.format 显示或存进表，运算、比较、取长度、当表的键会报错。',
   SecretReturnsForAspect: '相关的方面受限时返回机密值。',
   CallbackEvent: '回调事件：由客户端的回调分发，插件不一定能用 RegisterEvent 收到。',
   SecretPayloads: '载荷可能是机密值。',
@@ -535,11 +535,11 @@ function appState() {
         this.snap.busy = false;
       }
     },
-    async requestReload() {
+    async requestReload(reason) {              // the reason shows in the game's dialog (0.9.9 addons)
       this.reload.busy = true;
       this.reload.error = null;
       try {
-        const r = await this.api('/api/reload', { body: { reason: 'ui' } });
+        const r = await this.api('/api/reload', { body: { reason: reason || t('在 App 里点了「重载界面」') } });
         this.reload.nonce = r.nonce;
         if (this.status) this.status.reload_pending = true;
         this.say(t('已请求重载，去游戏里点「立即重载」'));
@@ -743,6 +743,7 @@ function appState() {
           this.ext.reload = true;
         }
         if (d.addon) this.ext.list = (this.ext.list || []).map((x) => (x.id === d.addon.id ? d.addon : x));
+        await this.loadExtensions();             // the other rows too: what a custom extension misses changes with it
       } catch (e) {
         this.ext.note = t('操作失败：') + e.message;
       } finally {
@@ -877,7 +878,7 @@ function appState() {
         this.chk.busy = false;
       }
     },
-    checkText(code) { return CHECK_TEXT[code] || code; },
+    checkText(code) { return CHECK_TEXT[code] ? t(CHECK_TEXT[code]) : code; },
     get checkRows() {                          // errors, then warnings, then notes, each with its level
       const d = this.chk.data;
       if (!d) return [];
@@ -1223,6 +1224,7 @@ function appState() {
     },
     callText(e) {                              // what an addon may do with an entry, as a heading
       if (!e || !e.call || e.kind === 'table' || e.kind === 'usage') return '';
+      if (e.absent) return t('这个客户端里没有');
       const ev = e.kind === 'event';
       return t({ ok: ev ? '插件可以注册' : '插件可以调用', limited: ev ? '插件可以注册，但有限制' : '插件可以调用，但有限制',
                  protected: ev ? '受限事件：插件不能注册' : '受保护：插件不能调用' }[e.call] || '');
@@ -1230,7 +1232,7 @@ function appState() {
     whyText(code, kind) {                      // one documentation field that limits it, for people
       if (code === 'HasRestrictions') return t(kind === 'event' ? WHY.HasRestrictionsEvent : WHY.HasRestrictions);
       if (WHY[code]) return t(WHY[code]);
-      if (SECRET_WHEN[code]) return t('{when}返回机密值：读不到明文，不能比较、运算或存表。', { when: t(SECRET_WHEN[code]) });
+      if (SECRET_WHEN[code]) return t('{when}返回机密值：读不到明文，运算、比较、取长度或当表的键会报错。', { when: t(SECRET_WHEN[code]) });
       if (/^Secret/.test(code)) return t('在某些受限状态下返回机密值。');
       if (/^Require/.test(code)) return t('有前提条件，条件不满足时调用不起作用。');
       return '';
