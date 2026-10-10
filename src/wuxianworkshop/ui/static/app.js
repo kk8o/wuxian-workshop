@@ -186,6 +186,7 @@ function appState() {
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
     ext: { list: null, catalog: null, dir: null, busy: '', note: '', error: '', missing: false, confirm: '', reload: false },   // 扩展
+    access: { data: null, busy: false, error: '' },   // 扩展 · Agent 接入: WuxianKit's wk_ tools and the agents using them
     showToken: false,
     CALL_FILTERS, BROWSE_TABS,
     docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, busy: false, sel: null, topic: null,
@@ -225,6 +226,7 @@ function appState() {
         this.timers = true;
         setInterval(() => { this.now = Date.now(); }, 1000);
         setInterval(() => { if (this.sseState !== 'open') this.refreshStatus(); }, 5000);
+        setInterval(() => { if (this.page === 'extensions' && !document.hidden && !this.access.busy) this.loadAccess(); }, 20000);
       }
       try {
         await this.session();
@@ -261,6 +263,7 @@ function appState() {
       if (id === 'doctor' && !this.doctor.checks.length) this.runDoctor();
       if (id === 'addons' && this.addons.list === null) this.loadAddons();
       if (id === 'extensions' && this.ext.list === null) this.loadExtensions();
+      if (id === 'extensions') this.loadAccess();
       if (id === 'dev') this.scrollLogs(true);
       if (id === 'api') this.docsInit();
       if (id === 'start') this.startInit();
@@ -570,6 +573,64 @@ function appState() {
         this.ext.busy = '';
       }
     },
+    // ---- 扩展 · Agent 接入 (/api/agent_access): the game's WuxianKit as wk_ tools, and the MCP servers serving agents
+    async loadAccess(refresh) {
+      this.access.busy = true;
+      try {
+        this.access.data = await this.api('/api/agent_access' + (refresh ? '?refresh=1' : ''));
+        this.access.error = '';
+      } catch (e) {
+        this.access.error = t('读取 Agent 接入情况失败：') + e.message;
+      } finally {
+        this.access.busy = false;
+      }
+    },
+    get accessLine() {
+      const d = this.access.data;
+      if (!d) return '';
+      const k = d.kit;
+      if (!k) return t('游戏里没有扩展框架');
+      const from = k.source === 'game' ? t('游戏里实时读取') : t('游戏未连接：本机缓存');
+      return t('扩展框架 {v} · {n} 个 wk_ 工具 · {from}', { v: k.version || '?', n: k.tools, from });
+    },
+    get accessExts() {
+      const k = this.access.data && this.access.data.kit;
+      return k ? (k.extensions || []).filter((e) => e.tools.length || e.state !== 'on') : [];
+    },
+    kindName(tool) {                           // the tool's kind as the 扩展 page and WuxianKit's window name it
+      return { Read: t('读取'), Store: t('存储'), Guide: t('指引'), Send: t('发送'), Change: t('更改'), Proposal: t('提案') }[tool.label]
+        || tool.label;
+    },
+    kindPill(tool) {
+      return { Send: 'warn', Change: 'warn', Proposal: 'warn' }[tool.label] || 'off';
+    },
+    toolTitle(tool) {                          // a capability's title is the game's; the three tools of no capability, ours
+      if (tool.cap) return tool.title;
+      return { wk_docs: t('扩展框架说明'), wk_wait: t('等待提案结果'), wk_propose: t('多步提案') }[tool.name] || tool.title;
+    },
+    agentName(s) {                             // a client's name as agents call themselves at initialize, made readable
+      const c = s.client;
+      if (!c || !c.name) return t('未知 Agent');
+      const n = c.name.toLowerCase();
+      const known = [['claude-code', 'Claude Code'], ['claude', 'Claude'], ['codex', 'Codex'], ['cursor', 'Cursor'],
+        ['trae', 'Trae'], ['workbuddy', 'WorkBuddy']].find(([k]) => n.includes(k));
+      return (known ? known[1] : c.name) + (c.version ? ' ' + c.version : '');
+    },
+    serverWhere(s) {
+      return s.kind === 'http' ? t('App 内置（HTTP）') : t('进程 {pid} · {v}', { pid: s.pid, v: s.version || '?' });
+    },
+    accessState(s) {
+      return { current: t('最新'), behind: t('工具待刷新'), stale: t('过时：请重启会话'), no_kit: t('没有扩展框架工具') }[s.state] || s.state;
+    },
+    accessTip(s) {
+      if (s.state === 'stale') return t('这个 MCP 进程跑的是旧代码。在 Agent 里重启会话（终端版 Claude Code 可用 /mcp 重连）后会换成新进程。');
+      if (s.state === 'behind') return t('它的工具来自另一版扩展清单；支持列表变化通知的 Agent 会自动刷新，否则重启会话。');
+      if (s.state === 'no_kit') return t('游戏里有扩展框架，但这个 Agent 拿到的工具里没有 wk_ 工具：等它刷新，或重启会话。');
+      return t('工具与游戏里的扩展框架一致。');
+    },
+    accessPill(s) {
+      return { current: 'ok', behind: 'warn', no_kit: 'warn', stale: 'bad' }[s.state] || '';
+    },
     loc(o) {                                   // a catalog's {zh, en} text in the language in force
       if (!o) return '';
       if (typeof o === 'string') return o;
@@ -620,6 +681,7 @@ function appState() {
         this.ext.note = t('操作失败：') + e.message;
       } finally {
         this.ext.busy = '';
+        this.loadAccess();
       }
     },
     openOut(url) {                             // a page of 无限工坊's site, in the user's browser

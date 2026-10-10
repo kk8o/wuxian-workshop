@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +28,7 @@ from mcp_types import ToolAnnotations
 from .. import __version__, apidocs
 from . import kit as kit_tools
 from .changes import ListChanges, advertise
+from .presence import Presence
 from ..daemon.api import ApiError
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -228,10 +230,10 @@ def freshness(program_version):
 def build_server(backend, name="wuxian"):
     """the MCPServer with the tools, over a Service or an HttpBackend. Its ListChanges (a middleware) tells the clients
     that the tool, resource and prompt lists changed, in both eras of the protocol (mcp/changes.py)"""
-    changes = ListChanges()
-    mcp = MCPServer(name, instructions=INSTRUCTIONS, version=__version__, log_level="WARNING", middleware=[changes])
+    changes, presence = ListChanges(), Presence(single=isinstance(backend, HttpBackend))     # HttpBackend: on stdio
+    mcp = MCPServer(name, instructions=INSTRUCTIONS, version=__version__, log_level="WARNING", middleware=[changes, presence])
     advertise(mcp)
-    mcp.list_changes = changes
+    mcp.list_changes, mcp.presence = changes, presence
 
     async def call(coro):
         try:
@@ -531,8 +533,49 @@ def build_server(backend, name="wuxian"):
         return found if isinstance(found, dict) else dict(topics=found, about=ix.about())
 
     # WuxianKit's tools, when the game runs it; over HTTP its watch asks now and then instead of waiting in a thread
-    kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300, changes=changes)
+    mcp.kit_tools = presence.kit = kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300,
+                                                    changes=changes)
     return mcp
+
+
+def report(mcp):
+    """what this stdio process is and serves, for the daemon's Agent 接入 (POST /api/mcp/report): its version, start and
+    whether its source changed since (the daemon compares the version with its own), its agent (Presence: a list of at
+    most one), and its WuxianKit tools now: how many and the manifest revision they come from (None before it has looked)"""
+    kit = getattr(mcp, "kit_tools", None)
+    manifest = (kit.manifest if kit is not None else None) or {}
+    return dict(pid=os.getpid(), version=__version__, started=round(STARTED),
+                source_changed=LOADED is not None and code_stamp() != LOADED, agents=mcp.presence.view(),
+                kit=None if kit is None or not kit.loaded else dict(tools=len(kit.tools), revision=manifest.get("revision"),
+                                                                     protocol=manifest.get("protocol")))
+
+
+class Reporter(threading.Thread):
+    """reports this stdio process to the daemon every EVERY seconds (the first soon after its start); a daemon away or an
+    older one without the endpoint only means no report. After a failed one it looks for the daemon that runs now (an
+    updated App restarts it on another port, with another token), never starting one: the next report goes there"""
+    FIRST, EVERY = 3, 20
+
+    def __init__(self, backend, mcp):
+        super().__init__(name="wuxian-mcp-report", daemon=True)
+        self.backend, self.mcp, self.stopped = backend, mcp, threading.Event()
+
+    def run(self):
+        wait = self.FIRST
+        while not self.stopped.wait(wait):
+            wait = self.EVERY
+            try:
+                self.backend.client.post("/api/mcp/report", timeout=5, **report(self.mcp))
+            except Exception:                          # the daemon away, restarted or older: no report this time
+                self.rejoin()
+
+    def rejoin(self):
+        if self.backend.reconnect is None:
+            return
+        try:
+            self.backend.client = self.backend.reconnect(False)
+        except Exception:                              # no daemon runs now
+            pass
 
 
 def main(argv=None):
@@ -554,7 +597,9 @@ def main(argv=None):
         return 2
     logger.info(f"serving the tools on stdio for the daemon at {client.base}")
     backend = HttpBackend(client, reconnect=lambda start=True: connect(start=start and not args.no_start, log=logger.info))
-    build_server(backend).run()                       # stdio
+    mcp = build_server(backend)
+    Reporter(backend, mcp).start()                    # the App's 扩展 page shows who serves which tools
+    mcp.run()                                         # stdio
     return 0
 
 

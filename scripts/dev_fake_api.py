@@ -432,6 +432,39 @@ class Fake:
                                  checked=time.time(), error=""),
                     addons=[self.ext_row(e) for e in self.EXT_CATALOG], addons_dir=GAME_DIR + "\\Interface\\AddOns", app="0.9.7")
 
+    KIT_TOOLS = {   # the 扩展 page's Agent 接入: a few tools of each extension, as Service.agent_access lists them
+        "kit": ("核心", [("history", "see", "Read", "执行记录"), ("undo", "do", "Change", "撤销")]),
+        "tune": ("调校", [("cvar.get", "see", "Read", "客户端设置"), ("cvar.set", "do", "Change", "客户端设置"),
+                         ("layout.import", "do", "Change", "导入布局"), ("profile.apply", "point", "Proposal", "应用配置档")]),
+        "sense": ("角色信息", [("character", "see", "Read", "角色"), ("bags", "see", "Read", "背包")]),
+        "data": ("数据", [("put", "keep", "Store", "保存数据"), ("get", "keep", "Store", "读取数据")]),
+        "guide": ("指引", [("highlight", "point", "Guide", "高亮界面元素"), ("tour", "point", "Guide", "分步指引")]),
+        "chat": ("聊天", [("send", "say", "Send", "发送消息")]),
+    }
+
+    def agent_access(self):
+        now = time.time()
+        exts = [dict(id=i, title=title, version="0.4.0", addon="WuxianKit", builtin=True, state="on",
+                     tools=[dict(name=f"wk_{i}_{c.replace('.', '_')}", cap=f"{i}.{c}", kind=k, label=lab, title=t)
+                            for c, k, lab, t in tools]) for i, (title, tools) in self.KIT_TOOLS.items()]
+        exts.append(dict(id="gate", title="远程", version="0.4.0", addon="WuxianKit", builtin=True, state="off", tools=[]))
+        exts[0]["tools"] += [dict(name=n, cap=None, kind=None, label=lab, title=t) for n, lab, t in (
+            ("wk_docs", "Read", "WuxianKit docs"), ("wk_wait", "Read", "Wait for a proposal"),
+            ("wk_propose", "Proposal", "One proposal of several steps"))]
+        kit = dict(version="0.4.0", protocol=1, revision="7a1c03e5", language="zhCN", source="game", newer=False,
+                   tools=sum(len(e["tools"]) for e in exts), extensions=exts)
+        row = lambda kind, pid, version, client, protocol, last, tools, revision, state, calls=0: dict(
+            kind=kind, pid=pid, version=version, started=now - 3600, client=client, protocol=protocol, first=now - 3000,
+            last=now - last, calls=calls, listed=now - 2900 if tools is not None else None, tools=tools, revision=revision,
+            state=state)
+        return dict(kit=kit, program="0.9.7", now=now, servers=[
+            row("stdio", 35852, "0.9.7", {"name": "claude-code", "version": "2.1.293"}, "2026-07-28", 12, kit["tools"],
+                "7a1c03e5", "current", 41),
+            row("stdio", 51324, "0.9.6", {"name": "claude-code", "version": "2.1.293"}, "2026-07-28", 900, None, None, "stale"),
+            row("stdio", 61190, "0.9.7", {"name": "Trae CN", "version": "1.9"}, "2025-11-25", 95, 61, "2b9e4410", "behind", 3),
+            row("http", 57332, "0.9.7", {"name": "Cursor", "version": "1.7"}, "2025-06-18", 300, kit["tools"], "7a1c03e5",
+                "current")])
+
     def extension(self, action, ext_id):
         e = next((x for x in self.EXT_CATALOG if x["id"] == ext_id), None)
         if e is None:
@@ -887,6 +920,9 @@ def create_app(fake=None, ticker=True):
                       f("Bar.lua", 30, "typo", "UnitHelth is neither the client's nor this addon's", "did you mean UnitHealth?")],
             notes=[]))
 
+    async def agent_access(request):
+        return JSONResponse(fake.agent_access())
+
     async def extensions_(request):
         try:
             if request.method == "GET":
@@ -966,6 +1002,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/agents", agents_, methods=["GET", "POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
         Route("/api/extensions", extensions_, methods=["GET", "POST"]),
+        Route("/api/agent_access", agent_access, methods=["GET"]),
         Route("/api/check", check, methods=["POST"]),
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]

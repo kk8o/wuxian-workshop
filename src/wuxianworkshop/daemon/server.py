@@ -449,6 +449,14 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         return await service.extension(b.get("action"), b.get("id"))
 
     @api
+    async def agent_access(request):
+        return await service.agent_access(request.query_params.get("refresh") in ("1", "true"))
+
+    @api
+    async def mcp_report(request):
+        return service.mcp_report(await body_of(request))
+
+    @api
     async def history_(request):
         if request.method != "POST":
             p = request.query_params
@@ -496,6 +504,8 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         Route("/api/respond", respond, methods=["POST"]),
         Route("/api/history", history_, methods=["GET", "POST"]),
         Route("/api/extensions", extensions_, methods=["GET", "POST"]),
+        Route("/api/agent_access", agent_access, methods=["GET"]),
+        Route("/api/mcp/report", mcp_report, methods=["POST"]),
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),
     ]
@@ -572,6 +582,7 @@ class DaemonHandle:
         if off:
             self.service.journal.add("INFO", off)
         self.service.url, self.service.mcp_url = self.url, self.mcp_url
+        self.service.local_mcp = self.mcp                  # its connections and tools count in the 扩展 page's Agent 接入
         app = make_app(self.service, self.access, self, mcp=self.mcp, mcp_endpoint=route)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_config=None, log_level="warning", access_log=False,
                                 lifespan="on", loop="asyncio", timeout_graceful_shutdown=3)
