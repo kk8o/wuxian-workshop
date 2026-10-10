@@ -414,6 +414,15 @@ class Fake:
          "notes": {"zh": "0.3.0：新增远程、数据、指引三个扩展；界面用语改写，支持中英文切换。",
                    "en": "0.3.0: Remote, Data and Guide extensions; plainer wording with a Chinese/English switch."},
          "released": "2026-10-10", "homepage": "https://wuxianwow.com/workshop/extensions"},
+        {"id": "wuxiankit-eui", "folder": "WuxianKit_EllesmereUI", "version": "0.3.1", "parent": "wuxiankit",
+         "requires": ["WuxianKit", "EllesmereUI"], "title": {"zh": "扩展框架 · EllesmereUI", "en": "WuxianKit · EllesmereUI"},
+         "summary": {"zh": "让 AI Agent 经扩展框架读取和调整 EllesmereUI 的设置、配置档、界面布局与缩放。每次更改都由玩家确认，可以撤销。"
+                           "需要另装 EllesmereUI；由无限工坊制作，非 EllesmereUI 作者出品。",
+                     "en": "Lets an AI agent read and adjust EllesmereUI's settings, profiles, layout and scale through WuxianKit."},
+         "file": "WuxianKit_EllesmereUI-0.3.1.zip", "size": 37620, "sha256": "d" * 64, "min_app": "0.9.7", "protocol": 1,
+         "extensions": [{"id": "eui", "title": {"zh": "EllesmereUI", "en": "EllesmereUI"}, "tools": 20, "events": 0}],
+         "skills": [], "notes": {"zh": "0.3.1：布局撤销按原位置还原；导入配置档只导入配置档本身。", "en": ""},
+         "released": "2026-10-11", "homepage": "https://wuxianwow.com/workshop/extensions#wuxiankit-eui"},
         {"id": "raidnotes", "folder": "RaidNotes", "version": "1.1.0", "title": {"zh": "团队笔记", "en": "Raid Notes"},
          "summary": {"zh": "团长的 Agent 给全团发战术提示，每人在自己的客户端里确认。",
                      "en": "The raid leader's agent sends tactics to the raid; each member confirms them."},
@@ -425,7 +434,9 @@ class Fake:
     def ext_row(self, e):
         mine = self.ext_installed.get(e["id"])
         state = "available" if mine is None else "update" if mine != e["version"] else "current"
-        return dict(e, there=mine is not None, installed=mine, state=state)
+        there = {"EllesmereUI"} | {x["folder"] for x in self.EXT_CATALOG if self.ext_installed.get(x["id"])}
+        return dict(e, there=mine is not None, installed=mine, state=state,
+                    missing=[f for f in e.get("requires", []) if f not in there])
 
     def extensions(self):
         return dict(catalog=dict(url="https://wuxianwow.com/workshop/data/extensions.json", updated="2026-10-10T08:00:00+00:00",

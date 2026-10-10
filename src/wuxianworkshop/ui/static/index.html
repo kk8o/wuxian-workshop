@@ -701,7 +701,7 @@
         <div class="loader" x-show="ext.list === null"><svg class="inf"><use href="#inf-line"/></svg>读取扩展目录…</div>
         <p class="muted pad" x-show="ext.list && !ext.list.length && !ext.error">扩展目录暂无内容。</p>
 
-        <template x-for="a in (ext.list || [])" :key="a.id">
+        <template x-for="a in extTop" :key="a.id">
           <article class="panel xp-pack" x-t>
             <div class="xp-pack-head">
               <div class="xp-mark"><svg class="ico"><use href="#i-puzzle"/></svg></div>
@@ -727,6 +727,34 @@
               <button class="btn" x-show="a.homepage" @click="openOut(a.homepage)"><svg class="ico"><use href="#i-globe"/></svg>介绍</button>
             </div>
             <p class="xp-notes" x-show="ext.notes === a.id" x-text="loc(a.notes)"></p>
+            <div class="xp-subs" x-show="extChildren(a.id).length">
+              <div class="xp-subs-head"><span class="xp-tag custom">自定义扩展</span><span class="muted">由其他插件提供，按需安装</span></div>
+              <template x-for="c in extChildren(a.id)" :key="c.id">
+                <div class="xp-sub" x-t>
+                  <div class="xp-sub-head">
+                    <b x-text="loc(c.title) || c.folder"></b>
+                    <span class="mono muted" x-text="c.folder + ' ' + c.version"></span>
+                    <div class="spacer"></div>
+                    <span class="pill tiny" :class="extPill(c)" x-text="extState(c)"></span>
+                  </div>
+                  <p class="xp-sub-sum" x-text="loc(c.summary)"></p>
+                  <p class="xp-sub-need" x-show="(c.missing || []).length && !c.there" x-text="t('需要先安装：{list}', { list: (c.missing || []).join('、') })"></p>
+                  <div class="xp-acts">
+                    <button class="btn primary small" x-show="c.state === 'available'" :disabled="ext.busy !== '' || (c.missing || []).length > 0" @click="extAct(c, 'install')" x-text="ext.busy === c.id ? t('安装中…') : t('安装')"></button>
+                    <button class="btn primary small" x-show="c.state === 'update' || c.state === 'installed'" :disabled="ext.busy !== '' || (c.missing || []).length > 0" @click="extAct(c, 'install')" x-text="ext.busy === c.id ? t('更新中…') : t('更新到 {v}', { v: c.version })"></button>
+                    <button class="btn small" x-show="c.there && ext.confirm !== c.id" :disabled="ext.busy !== ''" @click="extAct(c, 'remove')">卸载</button>
+                    <span class="xp-confirm" x-show="ext.confirm === c.id">
+                      <span class="muted">卸载将删除插件文件夹，并先保留一份历史版本。</span>
+                      <button class="btn confirm small" :disabled="ext.busy !== ''" @click="extAct(c, 'remove')">确认卸载</button>
+                      <button class="btn small" @click="ext.confirm = ''">取消</button>
+                    </span>
+                    <div class="spacer"></div>
+                    <button class="btn small" x-show="loc(c.notes)" :class="{ on: ext.notes === c.id }" @click="ext.notes = ext.notes === c.id ? '' : c.id">更新内容</button>
+                  </div>
+                  <p class="xp-notes" x-show="ext.notes === c.id" x-text="loc(c.notes)"></p>
+                </div>
+              </template>
+            </div>
           </article>
         </template>
 

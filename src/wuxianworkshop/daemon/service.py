@@ -904,7 +904,8 @@ class Service:
 
     async def extensions(self, refresh=False):
         """the extension catalog's addons and what the game folder holds of each: {catalog: {url, updated, checked,
-        error}, addons: [the catalog's entry with there, installed (its .toc's version) and state], addons_dir, app}"""
+        error}, addons: [the catalog's entry with there, installed (its .toc's version), state and missing (the folders
+        it needs that are not there)], addons_dir, app}"""
         cat = self.ext_catalog
         if refresh or cat.checked is None or time.time() - cat.checked > self.CATALOG_AGE:
             await asyncio.to_thread(cat.refresh)
@@ -917,7 +918,8 @@ class Service:
             out = []
             for e in cat.addons:
                 there, version = extensions.installed(addons, e["folder"]) if addons else (False, None)
-                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version)))
+                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version),
+                                missing=extensions.missing(addons, e) if addons else []))
             return out
         return dict(catalog=cat.status(), addons=await asyncio.to_thread(look), addons_dir=str(addons) if addons else None,
                     app=extensions.app_version())
@@ -940,6 +942,9 @@ class Service:
         if action == "install":
             if extensions.state_of(entry, False, None) == "needs_app":
                 raise ApiError(409, "needs_app", f"{entry['id']} {entry['version']} needs 无限工坊 {entry['min_app']} or later")
+            need = extensions.missing(addons, entry)
+            if need:
+                raise ApiError(409, "needs_addons", f"{entry['id']} needs {', '.join(need)} in the game first")
             try:
                 raw = await asyncio.to_thread(cat.download, entry)
             except (OSError, ValueError, extensions.CatalogError) as e:

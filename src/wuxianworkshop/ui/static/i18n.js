@@ -634,6 +634,8 @@ const EN = {
   '扩展': 'Extensions',
   '系统扩展': 'Built-in',
   '自定义扩展': 'Custom',
+  '由其他插件提供，按需安装': 'From other addons; install the ones you need',
+  '需要先安装：{list}': 'Needs these installed first: {list}',
   '随扩展框架提供': 'come with WuxianKit',
   '由其他插件提供': 'from other addons',
   '{n} 个': '{n}',

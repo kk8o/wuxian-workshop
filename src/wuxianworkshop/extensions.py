@@ -7,6 +7,9 @@ own, not the program's.
       "sha256": "...", "min_app": "0.9.7", "protocol": 1, "extensions": [{"id", "title": {"zh", "en"}, "tools", "events"}],
       "skills": [{"name", "extension", "description"}], "notes": {"zh", "en"}, "released": "2026-10-10", "homepage": ...}]}
 
+An addon that extends another (a custom extension of WuxianKit's) names that one "parent" (the page shows it under it)
+and the addon folders it needs "requires" (["WuxianKit", "EllesmereUI"]): while one of them is missing it is not installed.
+
 The files sit beside the catalog (a versioned name is never given other contents). An install downloads the zip (its size
 and SHA-256 those of the catalog), checks every member (inside the addon's folder, no "..", only the kinds of file an
 addon has, MAX_UNPACKED bytes at most) and that its .toc is of the catalog's version, keeps the folder as it was (a version
@@ -85,6 +88,11 @@ def entries(data):
                 and ".." not in e["file"].replace("\\", "/").split("/")
                 and isinstance(e.get("size"), int) and 0 < e["size"] <= MAX_ZIP
                 and isinstance(e.get("sha256"), str) and SHA.match(e["sha256"].lower())):
+            if "parent" in e and not (isinstance(e["parent"], str) and ID.match(e["parent"])):
+                del e["parent"]
+            if "requires" in e:
+                needs = e["requires"]
+                e["requires"] = [f for f in needs if isinstance(f, str) and FOLDER.match(f)] if isinstance(needs, list) else []
             out.append(e)
     return out
 
@@ -163,6 +171,11 @@ def installed(addons, folder):
         return False, None
     toc = find_toc(path)
     return True, ((read_toc(toc) or {}).get("Version") or None) if toc else None
+
+
+def missing(addons, entry):
+    """the addon folders the entry needs ("requires") that the game folder does not hold"""
+    return [f for f in entry.get("requires") or [] if not installed(addons, f)[0]]
 
 
 def state_of(entry, there, version):

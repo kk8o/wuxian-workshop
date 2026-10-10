@@ -108,6 +108,26 @@ class Catalog(unittest.TestCase):
         with self.assertRaisesRegex(X.CatalogError, "not a zip"):
             X.unpack(b"PK nothing", "Demo")
 
+    def test_a_custom_extension(self):
+        """an addon that extends another names it (parent) and the folders it needs (requires): a parent that is no id
+        and a folder that is no folder are dropped; missing lists the needed folders the game folder lacks"""
+        raw = make_zip("Child")
+        name = "Child-1.0.0.zip"
+        (self.dir / name).write_bytes(raw)
+        base = {"folder": "Child", "version": "1.0.0", "file": name, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+        (self.dir / "extensions.json").write_text(json.dumps({"format": 1, "addons": [
+            dict(base, id="child", parent="wuxiankit", requires=["WuxianKit", "EllesmereUI", "../up", 7]),
+            dict(base, id="odd", parent="No Id", requires="WuxianKit")]}), encoding="utf-8")
+        cat = X.Catalog(url=str(self.dir / "extensions.json")).refresh()
+        child, odd = cat.get("child"), cat.get("odd")
+        self.assertEqual((child["parent"], child["requires"]), ("wuxiankit", ["WuxianKit", "EllesmereUI"]))
+        self.assertEqual(("parent" in odd, odd["requires"]), (False, []))
+        addons = self.dir / "AddOns"
+        (addons / "WuxianKit").mkdir(parents=True)
+        self.assertEqual(X.missing(addons, child), ["EllesmereUI"])
+        (addons / "EllesmereUI").mkdir()
+        self.assertEqual((X.missing(addons, child), X.missing(addons, odd)), ([], []))
+
     def test_states(self):
         entry = {"id": "demo", "folder": "Demo", "version": "1.2.0", "min_app": "0.1.0"}
         self.assertEqual([X.state_of(entry, *s) for s in ((False, None), (True, None), (True, "1.1.9"), (True, "1.2.0"),

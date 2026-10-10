@@ -699,6 +699,14 @@ function appState() {
       if (a.state === 'newer') return t('本机版本较新 · {mine}', { mine: a.installed });
       return t('已安装');
     },
+    get extTop() {                             // the catalog's packages: one that names another as its parent shows under it
+      const list = this.ext.list || [];
+      const ids = new Set(list.map((a) => a.id));
+      return list.filter((a) => !a.parent || !ids.has(a.parent));
+    },
+    extChildren(id) {                          // the custom extensions of a package
+      return (this.ext.list || []).filter((a) => a.parent === id);
+    },
     extPill(a) {
       return { available: 'off', update: 'warn', installed: 'warn', current: 'ok', needs_app: 'bad' }[a.state] || '';
     },
