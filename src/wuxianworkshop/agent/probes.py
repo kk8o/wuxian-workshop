@@ -215,7 +215,7 @@ if #cuts > 1 then
 	for k, a in pairs(kept) do
 		if GetTime() - a.at > 300 then kept[k] = nil end   -- left by a daemon that never asked for the rest
 	end
-	kept[KEY] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime() }
+	kept[KEY] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
 end
 return "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
 """
@@ -224,8 +224,9 @@ PIECE_BODY = r"""
 local kept = _G.WuxianWorkshopAnswers
 local a = kept and kept[KEY]
 if not a then error("the rest of this answer is no longer kept in the game (the UI reloaded?)", 0) end
-a.left = a.left - 1
-if a.left <= 0 then kept[KEY] = nil end
+a.served = a.served or {}
+if not a.served[I] then a.served[I], a.left = true, a.left - 1 end
+if a.left <= 0 then a.at = math.min(a.at, GetTime() - 240) end  -- every piece went: a minute more, for one asked again
 return I .. "/" .. #a.cuts .. "\n" .. a.s:sub(a.cuts[I - 1] + 1, a.cuts[I])
 """
 

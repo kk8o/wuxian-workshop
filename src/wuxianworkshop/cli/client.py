@@ -22,6 +22,10 @@ from ..paths import logs_dir
 START_TIMEOUT = 30.0         # the desktop program takes longer than `serve` to come up (WebView2, the tray)
 
 
+AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
+                    # (service.PIECE_WAIT), and a piece may wait out its timeout before that
+
+
 class DaemonGone(ConnectionError):
     """the connection was refused: no daemon listens there (any more), so the request did nothing"""
 
@@ -94,10 +98,11 @@ class DaemonClient:
         return self.post("/api/snap", region=region, max_width=max_width)
 
     def trace(self, seconds=10, events=None, max_events=200, args=6):
-        return self.post("/api/trace", seconds=seconds, events=events, max_events=max_events, args=args, timeout=seconds + 120)
+        return self.post("/api/trace", seconds=seconds, events=events, max_events=max_events, args=args,
+                         timeout=seconds + 120 + AGAIN)
 
     def inspect(self, target=None, mouse=False, depth=1, snap=False):
-        return self.post("/api/inspect", target=target, mouse=mouse, depth=depth, snap=snap, timeout=60)
+        return self.post("/api/inspect", target=target, mouse=mouse, depth=depth, snap=snap, timeout=60 + AGAIN)
 
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return self.post("/api/addon_events", addon=addon, topic=topic, since=since, limit=limit, wait=wait,
@@ -106,14 +111,14 @@ class DaemonClient:
     def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False):
         # shared: an ask of WuxianKit's view (daemon/kitcache.py), said only then (a daemon before it reads no such field)
         return self.post("/api/call", addon=addon, name=name, args=args, timeout_ms=timeout_ms,
-                         timeout=timeout_ms / 1000 + 30, **({"shared": True} if shared else {}))
+                         timeout=timeout_ms / 1000 + 30 + AGAIN, **({"shared": True} if shared else {}))
 
     def respond(self, request, data=None, timeout_ms=10000):
         return self.post("/api/respond", request=request, data=data, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)
 
     def addon_api(self, addon=None, brief=False, shared=False):
         # shared: an ask of WuxianKit's view (daemon/kitcache.py), said only then (a daemon before it reads no such field)
-        return self.post("/api/addon_api", addon=addon, timeout=60, **({"brief": True} if brief else {}),
+        return self.post("/api/addon_api", addon=addon, timeout=60 + AGAIN, **({"brief": True} if brief else {}),
                          **({"shared": True} if shared else {}))
 
     def history(self, addon=None, vid=None, against="now"):

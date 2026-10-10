@@ -122,8 +122,9 @@ class Probes(unittest.TestCase):
     def test_a_long_answer_comes_in_pieces(self):
         """answer_chunk keeps an answer longer than PIECE in the game and returns its first piece, piece_chunk each of
         the others: each fits a RUN result (WoWBridge cuts one at 4000 bytes) with its line "<i>/<pieces>", ends
-        between two UTF-8 characters, and together they are the answer. It is let go after its last piece (or 5
-        minutes on, when the rest was never asked for); an answer over MOST bytes is an error"""
+        between two UTF-8 characters, and together they are the answer. A piece may be asked for again (the link lost
+        it); the answer is let go a minute after its last piece went (or 5 minutes on, when the rest was never asked
+        for); an answer over MOST bytes is an error"""
         lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)    # bytes: a cut character would show
         lua.execute(STUB.encode())
 
@@ -143,7 +144,10 @@ class Probes(unittest.TestCase):
         self.assertTrue(all(len(p) <= P.PIECE for p in pieces))
         self.assertLess(len(pieces[0]), P.PIECE)                       # P.PIECE would end inside a character
         self.assertEqual(b"".join(pieces), answer)
-        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k1"))        # every piece asked for: let go
+        self.assertEqual(run(P.piece_chunk("k1", 2)).partition(b"\n")[2], pieces[1])   # asked again: still there
+        run("__now = __now + 61")
+        run(P.answer_chunk(chunk, "k6"))                                 # the next long answer lets the old ones go
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k1"))        # a minute after every piece went
         with self.assertRaises(lupa.LuaError) as cm:
             run(P.piece_chunk("k1", 2))
         self.assertIn("no longer kept", str(cm.exception))

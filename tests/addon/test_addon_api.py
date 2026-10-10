@@ -4,6 +4,7 @@ under Lua 5.1; the journal's EVENT entries; `events` filtering and waiting; the 
 import asyncio
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -271,6 +272,33 @@ class EndToEnd(unittest.TestCase):
         s.run(4)
         asyncio.run(look())
         self.assertEqual(asked[5:], ["describe", "kit.manifest"])         # the event said r2
+
+    def test_a_piece_asked_for_again(self):
+        """WoWBridge keeps a long answer for the daemon to ask for a piece again (the link lost it): a piece asked twice
+        counts once, and the answer stays a minute past its last piece, then goes with the next long answer's sweep"""
+        s, comp = self.s, self.comp
+        s.lua.execute(b'FooWB:Expose("long", function(a) return string.rep(a.s, a.n) end)')
+
+        def result(verb, payload):
+            job = comp.data_call(verb, payload)
+            t0 = s.now()
+            while s.now() - t0 < 20:
+                s.run(0.5)
+                got = [t for k, t in self.got if k == "RUN" and t.startswith(f"{job} ")]
+                if got:
+                    return job, got[0]
+            self.fail(f"no result for {verb}")
+        job, first = result("call", {"a": "Foo", "n": "long", "d": {"s": "无限", "n": 3000}})
+        n = int(re.search(r'"1/(\d+)\n', first)[1])                 # the first piece: "1/<pieces>" and a line
+        self.assertGreaterEqual(n, 4)
+        pieces = {i: result("piece", {"k": str(job), "i": i})[1] for i in (2, 2, 3)}       # 2 twice
+        self.assertTrue(all(" ok =piece " in t for t in pieces.values()))
+        for i in range(4, n + 1):
+            self.assertIn(" ok =piece ", result("piece", {"k": str(job), "i": i})[1])
+        self.assertIn(" ok =piece ", result("piece", {"k": str(job), "i": 2})[1])   # every piece went: still kept
+        s.run(61)
+        result("call", {"a": "Foo", "n": "long", "d": {"s": "又", "n": 3000}})       # its sweep lets the old one go
+        self.assertIn("no longer kept", result("piece", {"k": str(job), "i": 2})[1])
 
     def test_a_data_call_the_game_cannot_read(self):
         """what WoWBridge says of a CALL record it cannot do: not JSON, an unknown verb, a piece no longer kept"""

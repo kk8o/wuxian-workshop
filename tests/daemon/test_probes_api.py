@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import unittest
+from types import SimpleNamespace
 
 from wuxianworkshop.agent import probes
 from wuxianworkshop.daemon.api import ApiError, parse_run
@@ -148,6 +149,79 @@ class Probes(unittest.IsolatedAsyncioTestCase):
             await self.svc.inspect("WoWBridgeConsole", depth=2)
         self.assertEqual((cm.exception.status, cm.exception.code), (502, "lua_error"))
         self.assertIn("no longer kept", cm.exception.message)
+
+
+class PiecesAgain(unittest.IsolatedAsyncioTestCase):
+    """a piece of a long answer the link lost is asked for again (Service.piece_again): after a timeout, or once the
+    link is back when it was down (a minimized window); never after another error, after a reload, or past PIECE_TRIES"""
+
+    def setUp(self):
+        self.svc = Service(lambda on_debug, log: Worker(), journal=Journal())
+        self.svc.worker.comp = self.comp = SimpleNamespace(link_up=True, current=5)
+        text = json.dumps(dict(screen=[1, 2], frames=[dict(name=f"Frame{i}") for i in range(300)]))
+        self.pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
+        self.asked, self.trouble = [], {}
+
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+            m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
+            i = int(m[2]) if m else 1
+            self.asked.append(i)
+            what = self.trouble.get(i)
+            if what:
+                return what(i)
+            return dict(ok=True, values=[f"{i}/{len(self.pieces)}\n{self.pieces[i - 1]}"])
+        self.svc.run = run
+
+    def once(self, i, error, then=None):
+        def fail(_):
+            del self.trouble[i]
+            if then:
+                then()
+            raise error
+        self.trouble[i] = fail
+
+    def notes(self):
+        return [e["text"] for e in self.svc.journal.since(0, 100, None)[0] if "asked for again" in e["text"]]
+
+    async def test_a_timeout_and_the_link_down(self):
+        self.assertGreaterEqual(len(self.pieces), 5)
+        self.once(3, ApiError(504, "timeout", "no result for job 7 within 10000 ms"))
+
+        def minimized():
+            self.comp.link_up = False                       # back a moment later
+            asyncio.get_running_loop().call_later(0.4, setattr, self.comp, "link_up", True)
+        self.once(4, ApiError(409, "link_down", "run: no frames come from the game"), minimized)
+        t0 = asyncio.get_running_loop().time()
+        res = await self.svc.inspect("Somewhere", depth=2)
+        self.assertEqual(len(res["frames"]), 300)
+        self.assertGreaterEqual(asyncio.get_running_loop().time() - t0, 0.4)    # it waited for the link
+        self.assertEqual(sorted(self.asked), sorted([1, 2, 3, 3, 4, 4] + list(range(5, len(self.pieces) + 1))))
+        self.assertEqual(self.notes(), ["piece 3 of a long answer asked for again (timeout)",
+                                        "piece 4 of a long answer asked for again (link_down)"])
+
+    async def test_what_is_not_asked_for_again(self):
+        def gone(i):                                        # a reload took the answer: a Lua error, said at once
+            return dict(ok=False, error="the rest of this answer is no longer kept in the game (the UI reloaded?)",
+                        stack="")
+        self.trouble[2] = gone
+        with self.assertRaises(ApiError) as cm:
+            await self.svc.inspect("Somewhere", depth=2)
+        self.assertEqual(cm.exception.code, "lua_error")
+        self.assertEqual(self.asked.count(2), 1)
+        self.asked.clear()
+        self.trouble[2] = lambda i: (_ for _ in ()).throw(ApiError(504, "timeout", "no result"))   # never comes
+        with self.assertRaises(ApiError) as cm:
+            await self.svc.inspect("Somewhere", depth=2)
+        self.assertEqual((cm.exception.code, self.asked.count(2)), ("timeout", 3))      # PIECE_TRIES
+        self.asked.clear()
+
+        def reloaded():
+            self.comp.link_up, self.comp.current = False, 6  # another UI session: the answer went with the old one
+        self.once(2, ApiError(409, "link_down", "run: no frames come from the game"), reloaded)
+        with self.assertRaises(ApiError) as cm:
+            await self.svc.inspect("Somewhere", depth=2)
+        self.assertEqual((cm.exception.code, self.asked.count(2)), ("link_down", 1))
+        self.assertEqual(self.notes(), ["piece 2 of a long answer asked for again (timeout)"] * 2)
 
 
 if __name__ == "__main__":

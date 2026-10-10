@@ -37,6 +37,9 @@ from .kitcache import KIT, SHARED, KitCache
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
+PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
+PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
+PIECE_KEPT = 280.0           # seconds after its first piece that the game still keeps an answer (it keeps 300)
 
 
 def resolve_target(addons, spec):
@@ -457,12 +460,15 @@ class Service:
 
     async def pieces(self, first, more):
         """the JSON answer that first() (a RUN result: piece 1 of n) and more(i) (piece i) bring, more asked for
-        probes.BATCH at a time"""
+        probes.BATCH at a time. A piece the link lost (piece_again) is asked for again; first() never is: it is the
+        call itself, and a call may change something"""
         n, text = self.piece(await first(), 1)
+        until, session = time.monotonic() + PIECE_KEPT, self.ui_session()
         texts = [text]
         for start in range(2, n + 1, probes.BATCH):
             numbers = range(start, min(start + probes.BATCH, n + 1))
-            got = await asyncio.gather(*(more(i) for i in numbers), return_exceptions=True)
+            got = await asyncio.gather(*(self.piece_again(more, i, until, session) for i in numbers),
+                                       return_exceptions=True)
             for i, g in zip(numbers, got):
                 if isinstance(g, BaseException):
                     raise g
@@ -471,6 +477,31 @@ class Service:
             return probes.parse(["".join(texts)])
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
+
+    async def piece_again(self, more, i, until, session):
+        """more(i); when it times out or finds the link down (a minimized window, a loading screen), asked for again once
+        the link is back, PIECE_TRIES times in all, while the game still keeps the answer (until) in the same UI session
+        (a reload takes the answer with it). Another error is the answer's"""
+        for attempt in range(1, PIECE_TRIES + 1):
+            try:
+                return await more(i)
+            except ApiError as e:
+                if e.code not in ("timeout", "link_down") or attempt == PIECE_TRIES or not await self.link_back(until,
+                                                                                                                session):
+                    raise
+                self.journal.add("INFO", f"piece {i} of a long answer asked for again ({e.code})")
+
+    async def link_back(self, until, session):
+        """whether the link is up in UI session `session`, waiting for it PIECE_WAIT seconds at most and not past until"""
+        stop = min(until, time.monotonic() + PIECE_WAIT)
+        while True:
+            if self.ui_session() != session:
+                return False
+            if getattr(getattr(self.worker, "comp", None), "link_up", False):
+                return True
+            if time.monotonic() >= stop:
+                return False
+            await asyncio.sleep(0.25)
 
     @staticmethod
     def piece(res, i):

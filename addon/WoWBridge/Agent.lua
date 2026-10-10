@@ -333,10 +333,11 @@ end
 -- the names only} says what addons expose, "piece" {"k": job, "i": n} brings piece n of a long answer. WoWBridge reads
 -- them itself and compiles nothing: they work with hot loading off, and the addon's function runs as any addon code
 -- does, without the taint the client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
--- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds.
-local PIECE, ANSWER_MOST, ANSWER_KEPT = 3900, 256 * 1024, 300
+-- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds, or
+-- ANSWER_AGAIN more once every piece went (the daemon asks for a piece again when the link lost it).
+local PIECE, ANSWER_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 300, 60
 local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece" }
-local answers = {}                    -- job id -> { s, cuts, left, at }: answers longer than a piece
+local answers = {}                    -- job id -> { s, cuts, left, at, served }: answers longer than a piece
 
 -- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece)
 local function Pieces(s)
@@ -370,8 +371,8 @@ local function Answer(verb, req)
 	if not a or not i or i < 2 or not a.cuts[i] then
 		return nil, "the rest of this answer is no longer kept in the game (the UI reloaded?)"
 	end
-	a.left = a.left - 1
-	if a.left <= 0 then answers[key] = nil end
+	if not a.served[i] then a.served[i], a.left = true, a.left - 1 end     -- a piece asked again counts once
+	if a.left <= 0 then a.at = math.min(a.at, GetTime() - ANSWER_KEPT + ANSWER_AGAIN) end
 	return ("%d/%d\n%s"):format(i, #a.cuts, a.s:sub(a.cuts[i - 1] + 1, a.cuts[i]))
 end
 
@@ -401,7 +402,7 @@ local function RunCall(id, job)
 			for k, kept in pairs(answers) do
 				if GetTime() - kept.at > ANSWER_KEPT then answers[k] = nil end   -- left by a daemon that never asked
 			end
-			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime() }
+			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
 		end
 		text = "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
 	end
