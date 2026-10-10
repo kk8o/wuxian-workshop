@@ -116,6 +116,9 @@ local function Draw(kind, W, H, ftype, msg, payload, mode, part, parts)
 	stats.draws, stats.drawSum = stats.draws + 1, stats.drawSum + ms
 	if ms > stats.drawMax then stats.drawMax = ms end
 	frame = { kind = kind, since = GetTime() }
+	-- the next one as soon as this one's time is up: at the 0.05 s ticks alone, the tick due with it often came a game
+	-- frame early, and 0.15 s frames stayed 0.2 s (measured 2026-10-11: 35 parts in 6.8 s)
+	C_Timer.After(P.show, L.Step)
 end
 
 -- a HELLO in mode 1, which every companion reads; a heartbeat or PONG in mode 3 when the WELCOME said so
@@ -196,7 +199,7 @@ local function Pick(now)
 	end
 end
 
--- what goes on the bus next; runs every 0.05 s
+-- what goes on the bus next; runs every 0.05 s, and when a frame's display time is up (Draw)
 function L.Step()
 	if state == "off" then return end
 	local now = GetTime()
@@ -205,8 +208,8 @@ function L.Step()
 		frame = nil
 		return
 	end
-	if frame and now - frame.since < P.show then return end
-	if pong then                          -- answered before any data: it measures the round trip
+	if frame and now - frame.since < P.show - 0.005 then return end   -- GetTime counts whole ms: Draw's timer may see 0.149
+	if pong then                         -- answered before any data: it measures the round trip
 		Control("pong", ("PONG;id=%s;k=%d;f=%d"):format(pong, Mailbox.Next(), L.FEATURES))
 		pong = nil
 		return

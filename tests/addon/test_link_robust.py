@@ -93,11 +93,11 @@ class Link(unittest.TestCase):
         self.assertGreaterEqual(s.comp.stats["batches"], 1)
 
     def test_a_run_result_goes_first(self):
-        """a run while 20 errors wait: its result goes up before them; the companion knows when every message from
-        before it is in too (try waits for that: covered)"""
+        """a run while 20 errors wait (Debug.lua's most), each a big frame of its own (about 3 s of them): its result goes
+        up before them; the companion knows when every message from before it is in too (try waits for that: covered)"""
         s = self.start()
         for i in range(20):
-            self.error(s, f"Interface/AddOns/Foo/Foo.lua:{i}: queued {i} " + "x" * 300)   # too big to share many frames
+            self.error(s, f"Interface/AddOns/Foo/Foo.lua:{i}: queued {i} " + "x" * 1100)   # no two share a frame
         job = s.comp.code(b"return 1", "=run")
         took = self.until(s, lambda: any(t.startswith(f"{job} ok") for t in self.texts("RUN")), 10)
         self.assertLess(took, 2.5)
