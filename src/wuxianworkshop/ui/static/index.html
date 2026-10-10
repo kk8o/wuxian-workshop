@@ -742,7 +742,7 @@
               </tr>
             </template>
           </table>
-          <p class="muted access-foot" x-show="access.data">仅列出本次更新后启动的 Agent 会话；更早的会话可能仍在用旧工具，开新会话即可。</p>
+          <p class="muted access-foot" x-show="access.data">列出最近 30 分钟内用过无限工坊的 Agent 会话。用 0.9.8 以前的版本启动的会话不会列出，可能仍在用旧工具，重启会话即可。</p>
         </div>
         <div class="ext-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
         <div class="ext-note" x-show="ext.note">

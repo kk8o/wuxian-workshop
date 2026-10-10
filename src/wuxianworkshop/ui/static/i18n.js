@@ -649,7 +649,7 @@ const EN = {
   '协议': 'Protocol',
   'wk_ 工具': 'wk_ tools',
   '最近活动': 'Last active',
-  '仅列出本次更新后启动的 Agent 会话；更早的会话可能仍在用旧工具，开新会话即可。': 'Only agent sessions started after this update are listed; earlier ones may still use old tools: start a new session.',
+  '列出最近 30 分钟内用过无限工坊的 Agent 会话。用 0.9.8 以前的版本启动的会话不会列出，可能仍在用旧工具，重启会话即可。': 'Agent sessions that used Wuxian Workshop in the last 30 minutes. Sessions started with a version before 0.9.8 are not listed and may still use old tools: restart them.',
   '读取 Agent 接入情况失败：': 'Could not read the agent access: ',
   '游戏里没有扩展框架': 'The game has no WuxianKit',
   '扩展框架未运行': 'WuxianKit not running',
