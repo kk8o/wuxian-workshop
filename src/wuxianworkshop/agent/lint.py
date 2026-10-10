@@ -34,6 +34,14 @@ writes, with its line:
     only read, not called
   - "xml" (error): an XML file that is not well-formed; "toc-missing" (error): a .toc line naming a missing file;
     "toc-interface" (warning): an Interface number that is not the client's; "encoding" (warning): not UTF-8
+  - "args-missing" (error): a call of a manual function that leaves out a required argument (not nilable, no default:
+    the client raises "bad argument"); more arguments than it takes are fine there
+  - "secret" (error): the result of a function the manual says always returns secret values (SecretReturns) used where
+    this client refuses one in addon code (SECRET_DOES, CONVERTS: arithmetic, < >, == against its own type, #, indexing
+    a string, a table key, testing a boolean, a numeric for, math / string functions); "secret-arg" (error): passed to a
+    function that takes no secret values from addon code (SecretArguments AllowedWhenUntainted or NotAllowed). A result
+    passed to canaccessvalue / issecretvalue (or to an addon's own test named like isSecret) is not reported; those
+    secret only in a restricted state (SecretWhen…, SecretIn…: plain out of combat) are one note ("secret-maybe")
 A name this client does not have (missing-lib, lua52, nil in the running game) is an error where nil surely fails:
 called, indexed or computed with where the function always gets (the main chunk: when the file loads), or passed to a
 function there; it is a warning where the read keeps it (local X = X, in a table) and nothing so uses it, only tests it
@@ -144,7 +152,45 @@ OP = {name: i for i, name in enumerate(OP_NAMES)}
 NO_TARGET = {OP[n] for n in ("SETGLOBAL", "SETUPVAL", "SETTABLE", "EQ", "LT", "LE", "TEST", "JMP", "RETURN", "SETLIST",
                              "CLOSE", "TAILCALL")}            # instructions that do not write R(A)
 FAILS_ON_NIL = {OP[n] for n in ("ADD", "SUB", "MUL", "DIV", "MOD", "POW", "LT", "LE")}   # nil as RK(B) or RK(C)
+ARITH = {OP[n] for n in ("ADD", "SUB", "MUL", "DIV", "MOD", "POW")}
 REGISTERS = ("RegisterEvent", "RegisterUnitEvent")
+GUARDS = {"canaccessvalue", "canaccessallvalues", "issecretvalue", "hasanysecretvalues", "canaccesstable",
+          "issecrettable"}              # a value passed to one of these is tested before it is used: no secret findings
+GUARD_NAME = re.compile(r"secret|access", re.I)     # an addon's own test (local isSecret = issecretvalue or …, IsSecret)
+# what this client refuses to do with a secret value in addon code (tried in 1.60.1.70338), by the value's Lua type; ".."
+# string.format, tostring, tonumber, type, storing it in a table and testing a secret number or string are fine
+SECRET_DOES = {
+    "arith": ("arithmetic on it", {"number", "string", "curve"}),
+    "order": ("comparing it with < or >", {"number", "string", "curve"}),
+    "eq": ("comparing it with == or ~= to a value of its type", {"number", "string", "boolean", "curve"}),
+    "len": ("taking its length (#)", {"string"}),
+    "index": ("indexing it (s:upper(), s.x)", {"string"}),
+    "key": ("using it as a table key", {"number", "string", "boolean"}),
+    "test": ("testing it (if, and, or, not)", {"boolean"}),
+    "for": ("a numeric for over it", {"number", "curve"}),
+}
+INPUT_SECRECY = {"SecretWhenCurveSecret", "SecretWhenLuaTableHasSecretKeys", "SecretWhenNumericFormatterSecret",
+                 "SecretWhenAnchoringSecret"}      # secret only when what it is given is: says nothing of the game's state
+LUA_TYPES = {"number": "number", "luaIndex": "number", "fileID": "number", "bool": "boolean", "string": "string",
+             "cstring": "string", "WOWGUID": "string",
+             "LuaCurveEvaluatedResult": "curve"}  # a number, or with a color curve a color table (not secret itself)
+_MATH = ("abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "cosh", "deg", "exp", "floor", "fmod", "frexp", "ldexp",
+         "log", "log10", "max", "min", "mod", "modf", "pow", "rad", "random", "randomseed", "sin", "sinh", "sqrt", "tan",
+         "tanh")
+_STRING = ("byte", "char", "find", "gfind", "gmatch", "gsub", "len", "lower", "match", "rep", "reverse", "sub", "upper",
+           "split")
+CONVERTS = {    # Lua functions that turn their arguments into numbers or strings: a secret one fails there (not
+                # string.format, strjoin, tostring: they take it); -> what they do
+    **{f"math.{n}": "a number conversion" for n in _MATH}, **{f"bit.{n}": "a number conversion" for n in LIBS["bit"]},
+    **{n: "a number conversion" for n in ("abs", "acos", "asin", "atan", "atan2", "ceil", "cos", "deg", "exp", "floor",
+                                          "frexp", "ldexp", "log", "log10", "max", "min", "mod", "rad", "random",
+                                          "fastrandom", "sin", "sqrt", "tan", "select")},
+    **{f"string.{n}": "a string conversion" for n in _STRING},
+    **{n: "a string conversion" for n in ("strbyte", "strchar", "strfind", "gmatch", "gsub", "strlen", "strlower",
+                                          "strmatch", "strrep", "strrev", "strsub", "strupper", "strsplit")},
+}
+CONVERT_ARGS = {"select": {0}}  # only these arguments (from 0) are converted: select(n, ...) passes the rest on
+TAKES_SECRETS = GUARDS | {"scrub", "secretwrap"}    # the manual says AllowedWhenUntainted, the client takes them anyway
 SYNTAX_HINTS = (    # (a part of 5.1's error, the source text near it) -> hint
     ("'/'", "//", "Lua 5.1 has no integer division (//): use math.floor(a / b)"),
     ("'goto'", "goto", "Lua 5.1 has no goto: use a flag, break, or an early return (a 'continue' can be an if around the "
@@ -415,11 +461,17 @@ def _upvalues_set(p, memo):
 
 
 def _merge(states):
-    """where ways join: a register keeps what every way agrees it may hold"""
+    """where ways join: a register keeps what every way agrees it may hold; a call's result on one way and anything
+    else on another keep only the call's result (which the reads of globals do not see: as if it were not known)"""
     if len(states) == 1:
         return dict(states[0])
     keys = set(states[0]).intersection(*states[1:])
-    return {r: frozenset().union(*(s[r] for s in states)) for r in keys}
+    out = {}
+    for r in keys:
+        v = frozenset().union(*(s[r] for s in states))
+        calls = frozenset(o for o in v if o[0] == "c")
+        out[r] = calls if calls else v
+    return out
 
 
 def _flow(main):
@@ -427,18 +479,46 @@ def _flow(main):
     reads where a nil value does not surely fail (see below), called: {(name, line)}: reads whose value is called (in
     that function, or in one the local it is kept in is an upvalue of), defines: global names it sets (also through
     local _G = _G, and _G[NAME] with NAME a local constant), fdefines: {(global, field)} it sets (string.utf8sub = ...),
-    env: the keys it puts in a table named like a function environment (_ENV, Env: setfenv's tables)}.
+    env: the keys it puts in a table named like a function environment (_ENV, Env: setfenv's tables), calls: [(the name
+    of the global or global.field called or None, line, the number of arguments or None when it ends in ... or a call)],
+    uses: [(kind, call, result, line, extra)]: a call's result (index from 0) where the client refuses a secret value
+    (SECRET_DOES's kinds; "eq": extra = the other side: ("k", Lua type) or ("c", ((call, result), ...)) or None; "arg":
+    extra = (the called name or None, the argument's index)), checked: the calls whose results go to a test of secrecy
+    (GUARDS, or a function named like one: GUARD_NAME, local isSecret = issecretvalue or …)}.
     A read of nil surely fails when its value is called, indexed, computed with or used as a key where the function
     always gets (no condition, loop or early return before it; the main chunk: when the file loads), directly or from a
     local of that function; or when the read always runs and its value is passed to a function or returned without
     being kept. Kept in a local (local X = X), a table or a global, only tested (if X then, X and X.y) or behind a
     condition: guarded.
     A register holds a set of origins: ("s", read) a value read in this function, ("u", read) one through an upvalue,
-    ("k", text) a string constant, ("t", key) a table built here, ("e",) a table named like an environment"""
+    ("k", text) a string constant, ("t", key) a table built here, ("e",) a table named like an environment, ("c", call,
+    result) a call's result"""
     sites = []                   # per read: [name, line, base read, kept, fails, called, always runs, goes on]
     ctor = {}                    # a table built by NEWTABLE -> the keys set on it
-    out = dict(defines=set(), fdefines=set(), env=set())
+    out = dict(defines=set(), fdefines=set(), env=set(), calls=[], uses=[], checked=set())
     memo = {}
+
+    def name_of(v):
+        """the global (or global.field) a called value is, or None"""
+        if not v or any(o[0] not in ("s", "u") for o in v):
+            return None
+        names = {sites[o[1]][0] for o in v}
+        return names.pop() if len(names) == 1 else None
+
+    def touch(kind, v, line, extra=None):
+        """v is used where the client refuses a secret value: noted for the calls it may be the result of"""
+        for o in v or ():
+            if o[0] == "c":
+                out["uses"].append((kind, o[1], o[2], line, extra))
+
+    def side(st, x, K):
+        """an operand of EQ as the other side of a comparison: ("k", Lua type), ("c", results) or None"""
+        if x & RK:
+            k = K[x & 0xFF]
+            return ("k", "nil" if k is None else "boolean" if isinstance(k, bool) else
+                    "string" if isinstance(k, str) else "number")
+        got = tuple((o[1], o[2]) for o in st.get(x, ()) if o[0] == "c")
+        return ("c", got) if got else None
 
     def site(name, line, sure, base=None):
         sites.append([name, line, base, False, False, False, sure, False])
@@ -508,6 +588,10 @@ def _flow(main):
         start_value = {}                         # a stable local -> what it holds (from where it starts)
         incoming = {}                            # pc -> the states jumps bring there
         state, falls = {}, True
+        label = {}                               # register -> the name of the global, upvalue or local it was read from
+        local_names = {}                         # register -> [(startpc, endpc, name)] of the locals kept in it
+        for name, s, e, r in locs:
+            local_names.setdefault(r, []).append((s, e, name))
 
         def put(st, r, v):
             if v:
@@ -561,6 +645,9 @@ def _flow(main):
                 put(st, a, frozenset([("s", site(K[bx], line, sure))]))
             elif op == OP["GETTABLE"]:
                 use(st.get(b), sure)
+                touch("index", st.get(b), line)
+                if not c & RK:
+                    touch("key", st.get(c), line)
                 key = K[c & 0xFF] if c & RK else None
                 put(st, a, field(st.get(b), key, line, sure) if isinstance(key, str) else None)
             elif op in (OP["SETGLOBAL"], OP["SETUPVAL"]):
@@ -570,8 +657,10 @@ def _flow(main):
             elif op == OP["SETTABLE"]:
                 v = st.get(a) or frozenset()
                 use(v, sure)
+                touch("index", v, line)
                 if not b & RK:
                     use(st.get(b), sure)         # t[nil] = x fails
+                    touch("key", st.get(b), line)
                 if not c & RK:
                     kept_in(st.get(c))
                 key = K[b & 0xFF] if b & RK else None
@@ -595,16 +684,34 @@ def _flow(main):
             elif op == OP["SELF"]:
                 v = st.get(b)
                 use(v, sure)
+                touch("index", v, line)
+                if not c & RK:
+                    touch("key", st.get(c), line)
                 st.pop(a, None)
                 put(st, a + 1, v)
             elif op in (OP["CALL"], OP["TAILCALL"]):
                 fn = st.get(a)
                 use(fn, sure, call=True)
-                for v in ([st.get(r) for r in range(a + 1, a + b)] if b else from_up(st, a + 1)):
+                # B = 0: the arguments go up to the top, set by a call or ... in the last place (nothing above is kept)
+                args = ([(r - a - 1, st.get(r)) for r in range(a + 1, a + b)] if b else
+                        [(r - a - 1, st[r]) for r in sorted(st) if r > a])
+                for _, v in args:
                     goes_on(v)
+                callee = name_of(fn)
+                call = len(out["calls"])
+                out["calls"].append((callee, line, b - 1 if b else None))
+                guard = callee in GUARDS or bool(GUARD_NAME.search(callee or label.get(a) or ""))
+                for i, v in args:
+                    if guard:
+                        out["checked"].update(o[1] for o in v or () if o[0] == "c")
+                    else:
+                        touch("arg", v, line, (callee, i))
                 first = st.get(a + 1) if b != 1 else None
                 for r in [r for r in st if r >= a]:
                     del st[r]
+                if op == OP["CALL"]:             # its results: R(A) ... R(A + C - 2); C = 0: from R(A) to the top
+                    for i in range(c - 1 if c else 1):
+                        put(st, a + i, frozenset([("c", call, i)]))
                 if fn and {sites[o[1]][0] for o in fn if o[0] in ("s", "u")} == {"setmetatable"} and c != 1:
                     put(st, a, first)            # setmetatable(t, mt) gives t back
             elif op == OP["RETURN"]:
@@ -617,10 +724,16 @@ def _flow(main):
                 for x in (b, c):
                     if not x & RK:
                         use(st.get(x), sure)
+                        touch("arith" if op in ARITH else "order", st.get(x), line)
                 if op not in NO_TARGET:
                     st.pop(a, None)
+            elif op == OP["EQ"]:
+                for x, y in ((b, c), (c, b)):
+                    if not x & RK:
+                        touch("eq", st.get(x), line, side(st, y, K))
             elif op in (OP["UNM"], OP["LEN"]):
                 use(st.get(b), sure)
+                touch("arith" if op == OP["UNM"] else "len", st.get(b), line)
                 st.pop(a, None)
             elif op == OP["CONCAT"]:
                 for r in range(b, c + 1):
@@ -629,6 +742,7 @@ def _flow(main):
             elif op == OP["FORPREP"]:
                 for r in (a, a + 1, a + 2):
                     use(st.get(r), sure)
+                    touch("for", st.get(r), line)
                 st.pop(a, None)
             elif op == OP["TFORLOOP"]:
                 use(st.get(a), sure, call=True)
@@ -657,10 +771,26 @@ def _flow(main):
                 st.pop(a, None)
                 st.pop(a + 3, None)
             elif op == OP["TESTSET"]:            # R(A) := R(B) on the way that does not skip the next instruction
+                touch("test", st.get(b), line)
                 incoming.setdefault(pc + 2, []).append(dict(st))
                 put(st, a, st.get(b))
+            elif op == OP["TEST"]:
+                touch("test", st.get(a), line)
             elif op not in NO_TARGET:            # LOADBOOL, NOT
+                if op == OP["NOT"]:
+                    touch("test", st.get(b), line)
                 st.pop(a, None)
+            if op == OP["MOVE"]:                 # the names a called function was read by (an addon's own test)
+                label[a] = next((nm for s, e, nm in local_names.get(b, ()) if s <= pc < e), None) or label.get(b)
+            elif op == OP["GETUPVAL"]:
+                label[a] = f["upnames"][b] if b < len(f["upnames"]) else None
+            elif op == OP["GETGLOBAL"]:
+                label[a] = K[bx]
+            elif op in (OP["CALL"], OP["TAILCALL"]):
+                for r in [r for r in label if r >= a]:
+                    del label[r]
+            elif op not in NO_TARGET:
+                label.pop(a, None)
             for t in nxt[pc]:
                 if pc < t < n and t != follow and op != OP["TESTSET"]:
                     incoming.setdefault(t, []).append(dict(st))
@@ -775,10 +905,14 @@ class Known:
         self.ns = {}                          # namespace -> its function names (Enum, Constants: their tables)
         self.events, self.restricted = set(), set()
         self.protected = set()
+        self.functions = {}                   # a global or namespaced function (not an object's method) -> its entry
+        self.enums = {n for n, t in getattr(ix, "tables", {}).items() if t.get("type") == "Enumeration"}   # lower case
         for e in ix.entries:
             ns, short, item = e.get("ns") or "", e.get("short") or e.get("name"), e.get("item") or {}
             raw = item.get("raw") or {}
             if e["kind"] == "function":
+                if not e.get("obj"):
+                    self.functions[e["name"]] = item
                 if ns:
                     self.ns.setdefault(ns, set()).add(short)
                     self.globals.add(ns)
@@ -828,6 +962,43 @@ class Known:
 
     def near_field(self, ns, field):
         return typo_of(field, sorted(self.ns.get(ns, ())), loose=True)
+
+    def secrecy(self, name):
+        """when a function's results are secret values in addon code: "SecretReturns" always, its SecretWhen… /
+        SecretIn… field in a restricted state (combat, an encounter …), None never"""
+        raw = (self.functions.get(name) or {}).get("raw") or {}
+        if raw.get("SecretReturns"):
+            return "SecretReturns"
+        when = sorted(k for k, v in raw.items()
+                      if v and k.startswith(("SecretWhen", "SecretIn")) and k not in INPUT_SECRECY)
+        return when[0] if when else None
+
+    def result_type(self, name, i):
+        """the Lua type (LUA_TYPES's) of a function's i-th result (from 0), "number" for an enumeration; None for a
+        table, a structure or what the manual does not say"""
+        rets = (self.functions.get(name) or {}).get("rets") or []
+        if not 0 <= i < len(rets):
+            return None
+        t = rets[i].get("t")
+        return LUA_TYPES.get(t) or ("number" if str(t).lower() in self.enums else None)
+
+    def refuses_secrets(self, name):
+        """a function's SecretArguments when it takes no secret values from addon code (AllowedWhenUntainted: only
+        Blizzard's untainted code may pass them; NotAllowed), else None"""
+        tag = ((self.functions.get(name) or {}).get("raw") or {}).get("SecretArguments")
+        return tag if tag in ("AllowedWhenUntainted", "NotAllowed") else None
+
+    def missing(self, name, nargs):
+        """the first argument a call passing nargs leaves out that the function requires (not nilable, no default):
+        (index from 0, its name) or None"""
+        for i, a in enumerate((self.functions.get(name) or {}).get("args") or []):
+            if i >= nargs and not a.get("nil") and a.get("def") in (None, ""):
+                return i, a.get("n")
+        return None
+
+    def signature(self, name):
+        from ..apidocs import param
+        return f"{name}({', '.join(param(a) for a in (self.functions.get(name) or {}).get('args') or [])})"
 
 
 def edits(a, b):
@@ -1057,6 +1228,64 @@ def client_number(addons):
         return INTERFACE
 
 
+SECRET_HINT = ("test it first: if canaccessvalue(v) then … end (or issecretvalue(v)); to show it, hand it as it is to "
+               "FontString:SetText or SetFormattedText, which take secret values")
+
+
+def _calls_and_secrets(s, rel, k, add, own):
+    """one file's calls against the API manual: required arguments left out ("args-missing", an error), and results the
+    manual says are always secret values (SecretReturns) used where the client refuses them ("secret", "secret-arg":
+    errors; SECRET_DOES, CONVERTS). Those it says are secret only in a restricted state (SecretWhen… / SecretIn…) are
+    mostly plain (this client's own values out of combat): they come back as [(api, "file:line")] for a note.
+    own(name): the addon (or one it depends on) defines that global or global.field, so it is not the client's"""
+    calls = s.get("calls", [])
+    for name, line, nargs in calls:
+        if name and nargs is not None and name in k.functions and not own(name):
+            gap = k.missing(name, nargs)
+            if gap:
+                add(rel, line, "args-missing", f"{name} needs {gap[1]} (argument {gap[0] + 1}): the call passes "
+                    f"{nargs or 'none'}", k.signature(name), "errors")
+    checked = s.get("checked", set())
+    maybe = []
+    for kind, call, i, line, extra in s.get("uses", []):
+        api = calls[call][0] if call < len(calls) else None
+        if call in checked or not api or api not in k.functions or own(api):
+            continue
+        secret = k.secrecy(api)
+        t = k.result_type(api, i) if secret else None
+        if not t:
+            continue
+        found = None                                 # (code, what the client refuses)
+        if kind == "arg":
+            callee, n = extra
+            if not callee or own(callee) or callee in TAKES_SECRETS:
+                continue
+            if callee in CONVERTS and n in CONVERT_ARGS.get(callee, (n,)):
+                found = ("secret", f"passing it to {callee} ({CONVERTS[callee]}) fails in addon code")
+            elif callee in k.functions and k.refuses_secrets(callee):
+                found = ("secret-arg", f"{callee} takes no secret values from addon code ({k.refuses_secrets(callee)})")
+        else:
+            words, types = SECRET_DOES[kind]
+            if t in types:
+                if kind == "eq":                     # == and ~= fail only against a value of the same type
+                    other = (set() if extra is None else {extra[1]} if extra[0] == "k" else
+                             {k.result_type(calls[c][0], j) for c, j in extra[1] if c < len(calls) and calls[c][0]})
+                    if {t, "number" if t == "curve" else t} & other:
+                        found = ("secret", f"{words} fails in addon code")
+                else:
+                    found = ("secret", f"{words} fails in addon code")
+        if not found:
+            continue
+        if secret != "SecretReturns":
+            maybe.append((api, f"{rel}:{line}"))
+            continue
+        hint = (SECRET_HINT if found[0] == "secret" else
+                "test it first with canaccessvalue(v); api_get shows which functions take secret values "
+                "(SecretArguments: AllowedWhenTainted)")
+        add(rel, line, found[0], f"{api}() returns a secret value (SecretReturns): {found[1]}", hint, "errors")
+    return maybe
+
+
 def check(path, addons=None, ix=None):
     """the report on a file or an addon folder (see the module docstring)"""
     path = Path(path)
@@ -1134,6 +1363,7 @@ def check(path, addons=None, ix=None):
     fields_defined = own["fields"] | deps["fields"]
     env_names = own["env"] | deps["env"] if own["setfenv"] or deps["setfenv"] else set()
     env_read = {}
+    maybe_secret = []
 
     if lupa_missing:
         note("no-lua", "Lua 5.1 (lupa) is not available here: the Lua files were not checked")
@@ -1210,6 +1440,8 @@ def check(path, addons=None, ix=None):
             elif k.events and event not in k.events:
                 add(rel, line, "event-unknown", f"{what}(\"{event}\"): not an event of this client (an error in the game)",
                     "api_search the event's name", "errors")
+        maybe_secret += _calls_and_secrets(s, rel, k, add,
+                                           lambda name: name in defined or tuple(name.split(".", 1)) in fields_defined)
 
     # an addon that talks with the agent through WoWBridge (WoWBridge.Bind) loads after it only when its .toc says so:
     # addons load in name order, and one before WoWBridge finds no WoWBridge (its handle stays the template's stub)
@@ -1257,6 +1489,17 @@ def check(path, addons=None, ix=None):
     if env_read:
         note("setfenv", f"{len(env_read)} names are read from a function environment set with setfenv, not from the "
                         f"globals: {', '.join(sorted(env_read)[:20])}", "not checked")
+    if maybe_secret:
+        first, count = {}, {}
+        for api, where in maybe_secret:
+            first.setdefault(api, where)
+            count[api] = count.get(api, 0) + 1
+        apis = sorted(count, key=lambda a: (-count[a], a))
+        n = len(maybe_secret)
+        note("secret-maybe", f"{n} {'place uses' if n == 1 else 'places use'} results the API manual says are secret "
+             f"values in a restricted state (combat, an encounter, a PvP match …) where the client refuses them: "
+             + ", ".join(f"{a} ×{count[a]} ({first[a]})" for a in apis[:8]) + (", …" if len(apis) > 8 else ""),
+             "plain out of those states; code that runs in them tests the value first: canaccessvalue(v)")
 
     seen = set()
     for level, f in findings:

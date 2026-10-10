@@ -131,6 +131,7 @@ const CHECK_TEXT = {                           // agent/lint.py's codes, for peo
   'toc-missing': 'toc 里的文件不存在', xml: 'XML 格式错误', undefined: '游戏里是 nil', read: '读不了',
   typo: '疑似拼错', moved: '已改到命名空间', 'api-unknown': '手册里没有', 'global-write': '写了全局变量', protected: '受保护函数',
   'event-restricted': '受限事件', encoding: '不是 UTF-8', 'toc-interface': 'Interface 号不对',
+  'args-missing': '缺少参数', secret: '机密值误用', 'secret-arg': '不收机密值', 'secret-maybe': '受限时是机密值',
 };
 const MAX_LOGS = 2000;
 const RECONNECT_MS = 2000;
@@ -150,7 +151,7 @@ const CLI_HELP = [                             // `wuxian` and what each command
   ['wuxian doctor', '自检'],
   ['wuxian addons', '已装插件（版本、Interface、启用、报错数）'],
   ['wuxian errors [插件]', '平台插件收集到的报错（截至上次登出或重载）'],
-  ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量'],
+  ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量、缺少的参数、机密值误用'],
   ['wuxian history [插件] [编号]', '插件的历史版本；带编号是那一版和现在的差异'],
   ['wuxian checkpoint <插件> [说明]', '给插件存一份'],
   ['wuxian restore <插件> <编号>', '把插件的文件回退到那一版'],

@@ -356,9 +356,9 @@ own API manual before you fix and try again.
 2. Change `{name}.lua` (a new file goes into `{name}.toc` too).
 3. `check`, target `{name}`: finds what would fail without the game: Lua 5.1 syntax (the client is 5.1: no `//`, `goto`,
    bitwise operators), libraries and functions this client lacks (`os`, `io`, `utf8`, `require`, `table.unpack`…),
-   misspelled globals and APIs, globals missing a `local`, protected functions, restricted events, the .toc and XML;
-   names the manual does not know are asked of the game while it is online. Fix the `errors` first, then read the
-   `warnings` one by one.
+   misspelled globals and APIs, globals missing a `local`, protected functions, restricted events, required arguments
+   left out, secret values used where the client refuses them, the .toc and XML; names the manual does not know are
+   asked of the game while it is online. Fix the `errors` first, then read the `warnings` one by one.
 4. `load`, target `{name}`: hot-loads all of the addon's Lua into the game in .toc order and returns each file's result.
    `load` and `watch` check the syntax themselves: a file with a syntax error is not sent (`check_failed` with the file
    and the line).
