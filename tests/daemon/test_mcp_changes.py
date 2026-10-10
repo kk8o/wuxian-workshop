@@ -130,6 +130,28 @@ class ListChanged(unittest.TestCase):
         self.assertEqual(sorted(heard), ["notifications/prompts/list_changed", "notifications/resources/list_changed",
                                          "notifications/tools/list_changed"])
 
+    def test_a_closed_connection_is_forgotten(self):
+        """a handshake-era connection that closed leaves no session behind (the session holds its connection: weak keys
+        alone would keep it for the life of the daemon)"""
+        from mcp import Client
+        from mcp_types import Implementation
+
+        class Backend:
+            def __getattr__(self, name):
+                async def method(*args):
+                    return {}
+                return method
+
+        mcp = server.build_server(Backend())
+        seen = {}
+
+        async def main():
+            async with Client(mcp, mode="legacy", client_info=Implementation(name="old", version="1"), cache=None) as c:
+                await c.list_tools()
+                seen["open"] = len(mcp.list_changes.sessions)
+        asyncio.run(main())
+        self.assertEqual((seen["open"], len(mcp.list_changes.sessions)), (1, 0))
+
     def test_nobody_to_tell(self):
         mcp = server.build_server(server.HttpBackend(Daemon(server.__version__)))
         asyncio.run(mcp.list_changes.tell(mcp))                                 # no session, no listener: nothing breaks

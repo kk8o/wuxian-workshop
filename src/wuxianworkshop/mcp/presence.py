@@ -51,6 +51,7 @@ class Presence:
         with self.lock:
             record = self.records.get(key)
             if record is None:
+                self.prune(now)                            # a new agent: the idle ones go first (HTTP: one per client)
                 record = self.records[key] = {"client": None, "first": now, "calls": 0, "listed": None, "tools": None,
                                               "revision": None}
             if client is not None:
@@ -68,13 +69,16 @@ class Presence:
                 record["revision"], record["listed"] = manifest.get("revision"), time.time()
         return result
 
+    def prune(self, now):
+        """(under the lock) an HTTP client idle IDLE seconds is no longer listed; a stdio process's one agent stays"""
+        if not self.single:
+            for key in [k for k, r in self.records.items() if now - r["last"] > self.IDLE]:
+                del self.records[key]
+
     def view(self):
         """the agents, earliest first: {client {name, version} or None, protocol, first, last, calls, listed (when it
         last listed the tools, None: not seen), tools (the wk_ tools it got), revision (of the manifest they came from)}"""
-        now = time.time()
         with self.lock:
-            if not self.single:
-                for key in [k for k, r in self.records.items() if now - r["last"] > self.IDLE]:
-                    del self.records[key]
+            self.prune(time.time())
             records = [dict(r) for r in self.records.values()]
         return sorted(records, key=lambda r: r["first"])

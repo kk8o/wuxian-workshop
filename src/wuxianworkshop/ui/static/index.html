@@ -704,7 +704,9 @@
           </header>
           <div class="ext-note bad" x-show="access.error" x-text="access.error"></div>
           <div class="loader" x-show="!access.data && !access.error"><svg class="inf"><use href="#inf-line"/></svg>读取中…</div>
-          <p class="muted" x-show="access.data && !access.data.kit">游戏里没有扩展框架，Agent 没有 wk_ 工具。安装后完整重启游戏，再回来看。</p>
+          <p class="muted" x-show="access.data && access.data.kit_state === 'absent'">游戏里没有扩展框架，Agent 没有 wk_ 工具。安装后完整重启游戏，再回来看。</p>
+          <p class="muted" x-show="access.data && access.data.kit_state === 'stopped'">扩展框架已安装但未运行：新装的需完整重启游戏，停用的在插件列表中启用后重载界面。</p>
+          <p class="muted" x-show="access.data && access.data.kit_state === 'unknown'">游戏未连接，读不到扩展框架；连上后这里会更新。</p>
           <p class="ext-note" x-show="access.data && access.data.kit && access.data.kit.newer">游戏里的扩展框架比这个版本的无限工坊新：Agent 只拿到 wk_docs。请更新无限工坊。</p>
           <div class="access-exts" x-show="accessExts.length">
             <template x-for="e in accessExts" :key="e.id">
@@ -725,7 +727,7 @@
               </details>
             </template>
           </div>
-          <h3 class="access-h">正在使用的 Agent</h3>
+          <h3 class="access-h" x-show="access.data">正在使用的 Agent</h3>
           <p class="muted" x-show="access.data && !access.data.servers.length">现在没有 Agent 连着无限工坊。</p>
           <table class="table access-servers" x-show="access.data && access.data.servers.length">
             <tr><th>Agent</th><th>MCP 服务器</th><th>协议</th><th>wk_ 工具</th><th>最近活动</th><th>状态</th></tr>
@@ -740,7 +742,7 @@
               </tr>
             </template>
           </table>
-          <p class="muted access-foot">仅列出本次更新后启动的 Agent 会话；更早的会话可能仍在用旧工具，开新会话即可。</p>
+          <p class="muted access-foot" x-show="access.data">仅列出本次更新后启动的 Agent 会话；更早的会话可能仍在用旧工具，开新会话即可。</p>
         </div>
         <div class="ext-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
         <div class="ext-note" x-show="ext.note">

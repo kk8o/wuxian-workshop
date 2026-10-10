@@ -5,6 +5,7 @@ connection of its own), with what its last tool list gave it; a stdio server rep
 (/api/agent_access)."""
 import asyncio
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -41,7 +42,8 @@ def manifest(revision="r1"):
 
 
 def answer(game, name):
-    """the game's answer to a call of WuxianKit, as Service.call_exposed gives it"""
+    """the game's answer to a call of WuxianKit, as Service.call_exposed gives it (every call kept in game.asked)"""
+    game.asked.append(name)
     if name == "kit.revision":
         if game.manifest is None:
             raise ApiError(400, "call_failed", "WuxianKit.kit.revision is not exposed")
@@ -58,7 +60,7 @@ class Game:
     """the daemon's Service as KitTools calls it (the daemon's own /mcp)"""
 
     def __init__(self, manifest=None):
-        self.manifest, self.calls = manifest, []
+        self.manifest, self.calls, self.asked = manifest, [], []
 
     async def status(self):
         return {"addons_dir": None}
@@ -68,6 +70,17 @@ class Game:
 
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return {"events": [], "next": 1}
+
+    async def addon_api(self, addon=None):
+        return described(self)
+
+
+def described(game):
+    """what WoWBridge's addon_api says of WuxianKit: what it exposed, or unbound when it is not running"""
+    if game.manifest is None:
+        return {"addon": "WuxianKit", "exposed": [], "topics": {}, "unbound": True}
+    return {"addon": "WuxianKit", "exposed": [{"name": n} for n in ("kit.revision", "kit.manifest", "tune.cvar.get")],
+            "topics": {}}
 
 
 class Daemon(Game):
@@ -85,6 +98,9 @@ class Daemon(Game):
 
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return {"events": [], "next": 1}
+
+    def addon_api(self, addon=None):
+        return described(self)
 
     def post(self, path, timeout=None, **body):
         self.posted.append((path, timeout, body))
@@ -261,6 +277,27 @@ class Report(Home):
             reporter.stopped.set()
             reporter.join(5)
 
+    def test_an_older_daemon(self):
+        """a daemon from before the reports (404 / 405): asked again only every OLDER seconds, and no other is looked for"""
+        class Older(Daemon):
+            def post(self, path, timeout=None, **body):
+                self.posted.append(path)
+                raise ApiError(405, "http_error", "405 Method Not Allowed")
+        client, starts = Older(manifest()), []
+        backend = server.HttpBackend(client, reconnect=lambda start=True: starts.append(start))
+        mcp = server.build_server(backend)
+        with mock.patch.object(server.Reporter, "FIRST", 0.01), mock.patch.object(server.Reporter, "EVERY", 0.01), \
+                mock.patch.object(server.Reporter, "OLDER", 30):
+            reporter = server.Reporter(backend, mcp)
+            reporter.start()
+            deadline = time.time() + 5
+            while not client.posted and time.time() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.2)
+            reporter.stopped.set()
+            reporter.join(5)
+        self.assertEqual((len(client.posted), starts), (1, []))
+
     def test_a_daemon_restarted(self):
         """a report that failed looks for the daemon that runs now (another port and token after an update; never
         starting one), and the next goes there"""
@@ -297,6 +334,10 @@ class AgentAccessApi(unittest.TestCase):
                                   mutex_name=MUTEX + "A")
         cls.game = Game(manifest())
         cls.handle.service.call_exposed = cls.game.call_exposed            # WuxianKit in the game, for both KitTools
+        cls.handle.service.addon_api = cls.game.addon_api
+        cls.kit = cls.addons / "WuxianKit"                                  # and in the AddOns folder
+        cls.kit.mkdir()
+        (cls.kit / "WuxianKit.toc").write_text("## Interface: 16001\n## Version: 0.4.0\n", encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls):
@@ -347,11 +388,48 @@ class AgentAccessApi(unittest.TestCase):
         self.report(107, agents=[self.agent(listed=False)], kit={"tools": len(WK), "revision": "r0"})
         rows = self.stdio_rows()
         self.assertEqual({pid: r["state"] for pid, r in rows.items()},
-                         {101: "stale", 102: "current", 103: "no_kit", 104: "behind", 105: "stale", 106: "current",
-                          107: "behind"})
+                         {101: "stale", 102: "current", 103: "no_kit", 104: "behind", 105: "stale", 106: "unlisted",
+                          107: "unlisted"})
         self.assertEqual((rows[102]["client"], rows[102]["calls"], rows[102]["tools"], rows[102]["protocol"]),
                          ({"name": "claude-code", "version": "2.1.293"}, 2, len(WK), "2026-07-28"))
-        self.assertEqual((rows[106]["client"], rows[106]["tools"], rows[106]["last"]), (None, len(WK), None))
+        self.assertEqual((rows[106]["client"], rows[106]["tools"], rows[106]["last"]), (None, None, None))
+
+    def test_without_wuxiankit(self):
+        """the game runs no WuxianKit: installed but not running (stopped: no call fails, the folder is there) or not in
+        the AddOns folder at all (absent: the game is not asked); an agent still holding wk_ tools is behind, one
+        without them current"""
+        self.game.manifest = None
+        try:
+            access = request(self.handle, "GET", "/api/agent_access?refresh=1")
+            self.assertEqual((access["kit"], access["kit_state"], access["kit_addon"]),
+                             (None, "stopped", {"there": True, "version": "0.4.0"}))
+            self.report(301, agents=[self.agent()])
+            self.report(302, agents=[self.agent(tools=0, revision=None)])
+            self.assertEqual({pid: r["state"] for pid, r in self.stdio_rows().items()}, {301: "behind", 302: "current"})
+            shutil.rmtree(self.kit)
+            asked = len(self.game.asked)
+            access = request(self.handle, "GET", "/api/agent_access?refresh=1")
+            self.assertEqual((access["kit"], access["kit_state"], access["kit_addon"]),
+                             (None, "absent", {"there": False, "version": None}))
+            self.assertEqual(len(self.game.asked), asked)                  # nothing asked of the game
+        finally:
+            self.kit.mkdir(exist_ok=True)
+            (self.kit / "WuxianKit.toc").write_text("## Interface: 16001\n## Version: 0.4.0\n", encoding="utf-8")
+            self.game.manifest = manifest()
+            request(self.handle, "GET", "/api/agent_access?refresh=1")
+
+    def test_a_report_of_another_shape(self):
+        """what is not of a report's shape is left out, and never breaks the page"""
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            request(self.handle, "POST", "/api/mcp/report", {"pid": 401, "agents": 5})
+        cm.exception.close()
+        self.assertEqual(cm.exception.code, 400)
+        request(self.handle, "POST", "/api/mcp/report", {"pid": 402, "version": 7, "agents": [
+            {"client": {"name": 3}, "last": "soon", "calls": "x", "tools": "many", "listed": 1.0, "revision": ["r1"]},
+            "not an agent"]})
+        row = self.stdio_rows()[402]
+        self.assertEqual((row["client"], row["last"], row["calls"], row["tools"], row["revision"], row["version"]),
+                         (None, None, 0, None, None, None))
 
     def test_a_report_silent_too_long_goes(self):
         self.report(201, agents=[self.agent()])

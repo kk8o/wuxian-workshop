@@ -22,8 +22,9 @@ logger = logging.getLogger("wuxian.mcp")
 class ListChanges:
     """MCPServer(middleware=[ListChanges()]): one session per handshake-era connection, the latest request's. Sent without a
     request id, its notifications ride the connection's own channel (stdio's pipe, streamable HTTP's GET stream), so they
-    reach the client after that request has ended. The connection is the SDK's (a private attribute of the session, made
-    per request); a connection that closed drops out (weak keys) or is dropped on its first failed send."""
+    reach the client after that request has ended. The connection is the SDK's (a private attribute of the session); it
+    is forgotten when it closes (its exit stack unwinds; the session holds the connection, so weak keys alone would keep
+    it), or on its first failed send."""
 
     def __init__(self):
         self.sessions = weakref.WeakKeyDictionary()
@@ -32,6 +33,10 @@ class ListChanges:
         if ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS:
             connection = getattr(ctx.session, "_connection", None)
             if connection is not None:
+                if connection not in self.sessions:
+                    stack = getattr(connection, "exit_stack", None)
+                    if stack is not None:
+                        stack.callback(self.sessions.pop, connection, None)
                 self.sessions[connection] = ctx.session
         return await call_next(ctx)
 

@@ -575,6 +575,7 @@ function appState() {
     },
     // ---- 扩展 · Agent 接入 (/api/agent_access): the game's WuxianKit as wk_ tools, and the MCP servers serving agents
     async loadAccess(refresh) {
+      if (this.access.busy) return;              // one at a time: an older answer never overwrites a newer one
       this.access.busy = true;
       try {
         this.access.data = await this.api('/api/agent_access' + (refresh ? '?refresh=1' : ''));
@@ -589,7 +590,7 @@ function appState() {
       const d = this.access.data;
       if (!d) return '';
       const k = d.kit;
-      if (!k) return t('游戏里没有扩展框架');
+      if (!k) return { stopped: t('扩展框架未运行'), unknown: t('游戏未连接') }[d.kit_state] || t('游戏里没有扩展框架');
       const from = k.source === 'game' ? t('游戏里实时读取') : t('游戏未连接：本机缓存');
       return t('扩展框架 {v} · {n} 个 wk_ 工具 · {from}', { v: k.version || '?', n: k.tools, from });
     },
@@ -620,16 +621,20 @@ function appState() {
       return s.kind === 'http' ? t('App 内置（HTTP）') : t('进程 {pid} · {v}', { pid: s.pid, v: s.version || '?' });
     },
     accessState(s) {
-      return { current: t('最新'), behind: t('工具待刷新'), stale: t('过时：请重启会话'), no_kit: t('没有扩展框架工具') }[s.state] || s.state;
+      return { current: t('最新'), behind: t('工具待刷新'), stale: t('过时：请重启会话'), no_kit: t('没有扩展框架工具'),
+        unlisted: t('尚未列出工具') }[s.state] || s.state;
     },
     accessTip(s) {
       if (s.state === 'stale') return t('这个 MCP 进程跑的是旧代码。在 Agent 里重启会话（终端版 Claude Code 可用 /mcp 重连）后会换成新进程。');
+      if (s.state === 'behind' && this.access.data && !this.access.data.kit) return t('游戏里已没有运行扩展框架，它的 wk_ 工具已失效；支持列表变化通知的 Agent 会自动刷新，否则重启会话。');
       if (s.state === 'behind') return t('它的工具来自另一版扩展清单；支持列表变化通知的 Agent 会自动刷新，否则重启会话。');
       if (s.state === 'no_kit') return t('游戏里有扩展框架，但这个 Agent 拿到的工具里没有 wk_ 工具：等它刷新，或重启会话。');
+      if (s.state === 'unlisted') return t('这个 Agent 会话还没向无限工坊要过工具列表。');
+      if (!this.access.data || !this.access.data.kit) return t('游戏里没有运行扩展框架，这个 Agent 也没有 wk_ 工具。');
       return t('工具与游戏里的扩展框架一致。');
     },
     accessPill(s) {
-      return { current: 'ok', behind: 'warn', no_kit: 'warn', stale: 'bad' }[s.state] || '';
+      return { current: 'ok', behind: 'warn', no_kit: 'warn', stale: 'bad', unlisted: 'off' }[s.state] || '';
     },
     loc(o) {                                   // a catalog's {zh, en} text in the language in force
       if (!o) return '';

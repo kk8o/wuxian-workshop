@@ -18,7 +18,8 @@
 -- that loads before WoWBridge finds no WoWBridge to bind to.
 -- A call reaches WoWBridge.Call(addon, name, args) as data (a CALL record that Agent.lua reads, from 0.9.7) or, for a
 -- WoWBridge before that, as a chunk the daemon sends (agent/probes.py, call_chunk); its answer is JSON either way, and
--- WoWBridge.Describe(addon) is what `addon_api` shows. Only data crosses: the agent calls what an addon exposed and nothing
+-- WoWBridge.Describe(addon) is what `addon_api` shows; WoWBridge.Online() says whether 无限工坊 is linked now (for an addon
+-- that tells the player, from 0.9.8). Only data crosses: the agent calls what an addon exposed and nothing
 -- else. A data call compiles nothing: it works with hot loading off, and the addon's function runs as any addon code does,
 -- without the taint this client gives code loaded at run time (ForceTaint_Strong); a chunk is code the agent sent, which
 -- this client taints (as `respond` was before 0.9.7, too). An
@@ -221,6 +222,12 @@ local function Describe(name, e)
 		if p.addon == name then waiting_for = waiting_for + 1 end
 	end
 	return { addon = name, exposed = exposed, topics = e.topics, requests = waiting_for }
+end
+
+-- whether 无限工坊 is linked now (the link online): for an addon that tells the player (WuxianKit's window), so it
+-- never reads WoWBridge's insides
+function WB.Online()
+	return Online()
 end
 
 -- `addon_api`: what an addon exposed (in the order it did) and the topics of the events it sent, as JSON; without an

@@ -611,7 +611,8 @@ class Service:
                 events, next_id, truncated = pick()
         finally:
             stop()
-        return dict(events=events, next=next_id, truncated=truncated)
+        comp = getattr(self.worker, "comp", None)          # the UI session: another one may run another WuxianKit
+        return dict(events=events, next=next_id, truncated=truncated, session=getattr(comp, "current", None))
 
     async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
         """call a function an addon exposed with WoWBridge's Expose: args (JSON) go to it as a Lua table, its first
@@ -883,6 +884,8 @@ class Service:
         if action == "remove" and result.get("removed") and entry["folder"] == "WuxianKit":
             from ..mcp.kit import forget_cached
             forget_cached()                        # its tools go with it, in every agent's session
+        if entry["folder"] == "WuxianKit":
+            self.kit_changed()
         self.journal.add("INFO", f"extension {entry['id']}: {action} {entry['version'] if action == 'install' else ''}"
                                  f" ({entry['folder']}, kept #{result.get('kept')})")
         listing = await self.extensions()
@@ -892,84 +895,142 @@ class Service:
 
     MCP_GONE = 75                             # seconds without a report before a stdio server counts as gone (it reports every 20)
 
+    @staticmethod
+    def number(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    @staticmethod
+    def word(v):
+        return v if isinstance(v, str) else None
+
+    def report_agent(self, a):
+        """one agent of a report, as far as it is what Presence makes (anything else left out)"""
+        c = a.get("client") if isinstance(a.get("client"), dict) else None
+        client = {"name": c["name"], "version": self.word(c.get("version"))} if c and self.word(c.get("name")) else None
+        calls, tools = self.number(a.get("calls")), self.number(a.get("tools"))
+        return dict(client=client, protocol=self.word(a.get("protocol")), first=self.number(a.get("first")),
+                    last=self.number(a.get("last")), listed=self.number(a.get("listed")), calls=int(calls or 0),
+                    tools=int(tools) if tools is not None else None, revision=self.word(a.get("revision")))
+
     def mcp_report(self, body):
-        """a stdio MCP server's report (mcp.server.report): kept by its pid until it has been silent MCP_GONE seconds"""
-        if not isinstance(body, dict) or not isinstance(body.get("pid"), int):
+        """a stdio MCP server's report (mcp.server.report): kept by its pid until it has been silent MCP_GONE seconds;
+        what is not of the report's shape is left out"""
+        if not isinstance(body, dict) or not isinstance(body.get("pid"), int) or isinstance(body.get("pid"), bool):
             raise ApiError(400, "bad_request", "pid: the MCP server's process id")
-        record = {k: body.get(k) for k in ("pid", "version", "started", "source_changed", "agents", "kit")}
-        record["agents"] = [a for a in record["agents"] or [] if isinstance(a, dict)]
-        record["seen"] = time.time()
-        self.mcp_reports[body["pid"]] = record
+        agents = body.get("agents")
+        if agents is not None and not isinstance(agents, list):
+            raise ApiError(400, "bad_request", "agents: a list")
+        kit = body.get("kit") if isinstance(body.get("kit"), dict) else None
+        tools = self.number((kit or {}).get("tools"))
+        record = dict(pid=body["pid"], version=self.word(body.get("version")), started=self.number(body.get("started")),
+                      source_changed=body.get("source_changed") is True,
+                      agents=[self.report_agent(a) for a in agents or [] if isinstance(a, dict)][:20],
+                      kit=None if kit is None else dict(tools=int(tools or 0), revision=self.word(kit.get("revision"))),
+                      seen=time.time())
+        self.mcp_reports[record["pid"]] = record
+        self.forget_silent()
         return dict(ok=True)
 
+    def forget_silent(self):
+        now = time.time()
+        for pid, record in list(self.mcp_reports.items()):
+            if now - record["seen"] > self.MCP_GONE:
+                self.mcp_reports.pop(pid, None)
+
+    def kit_views(self):
+        """the views of the game's WuxianKit the daemon keeps: its own /mcp's (shared with the 扩展 page)"""
+        kit = getattr(self.local_mcp, "kit_tools", None)
+        return [k for k in (kit, self.kit_view) if k is not None]
+
+    def kit_changed(self):
+        """(any thread) WuxianKit may be another now (a new UI session, an install or a removal): the views ask the
+        game again at their next look"""
+        for kit in self.kit_views():
+            kit.stale = True
+
     async def agent_access(self, refresh=False):
-        """{kit: the game's WuxianKit as the agents' tools come from it (None: no WuxianKit, or never seen), servers: the
-        MCP servers that serve agents now, a row per agent, each with its state against this program and that kit}.
-        The kit is the page's own KitTools: read from the game when it is online, else the manifest kept on disk. An
-        extension's tools are its capabilities'; wk_docs, wk_wait and wk_propose go with WuxianKit's own (kit)"""
+        """{kit: the game's WuxianKit as the agents' tools come from it (None: none, or never seen), kit_state (running;
+        cached: the game away, the last one kept; absent: not in the AddOns folder; stopped: installed but not running;
+        unknown: the game away and none seen), kit_addon: what the game folder holds of it ({there, version}; None: no game
+        folder), servers: the MCP servers that serve agents now, a row per agent, each with its state against this program
+        and that kit}. The kit is /mcp's own view of it (the page's own when there is no /mcp): read from the game when it
+        is online, else the manifest kept on disk. An extension's tools are its capabilities'; wk_docs, wk_wait and
+        wk_propose go with WuxianKit's own (kit)"""
         from ..mcp import kit as kit_tools
-        if self.kit_view is None:
-            self.kit_view = kit_tools.KitTools(self)
-        view = self.kit_view
+        view = getattr(self.local_mcp, "kit_tools", None)
+        if view is None:
+            if self.kit_view is None:
+                self.kit_view = kit_tools.KitTools(self)
+            view = self.kit_view
         if refresh:
             view.stale = True
-        await view.current()
-        manifest = view.manifest
-        kit = None
+        await view.current(wait=True)
+        try:
+            addons = self.addons_dir()
+        except ApiError:
+            addons = None
+        kit_addon = None
+        if addons is not None:                               # installed but not running: disabled, or a restart away
+            there, version = await asyncio.to_thread(extensions.installed, addons, kit_tools.ADDON)
+            kit_addon = dict(there=there, version=version)
+        manifest, kit = view.manifest, None
         if manifest:
-            exts = []
-            for ext in manifest.get("extensions") or []:
-                caps = [c for c in ext.get("capabilities") or [] if c.get("id") in view.ids.values()]
-                exts.append(dict(id=ext.get("id"), title=ext.get("title"), version=ext.get("version"), addon=ext.get("addon"),
-                                 builtin=bool(ext.get("builtin")), state=ext.get("state"),
+            exts, names = [], set(view.ids.values())
+            for eid, ext in view.exts.items():               # the view's: what it could read of the manifest
+                caps = [c for c in ext.get("capabilities") or [] if isinstance(c, dict) and c.get("id") in names]
+                exts.append(dict(id=eid, title=kit_tools.text(ext.get("title")) or None, version=self.word(ext.get("version")),
+                                 addon=self.word(ext.get("addon")), builtin=bool(ext.get("builtin")),
+                                 state=self.word(ext.get("state")),
                                  tools=[dict(name=kit_tools.tool_name(c["id"]), cap=c["id"], kind=c.get("kind"),
-                                             label=kit_tools.kind_label(c)[0], title=c.get("title")) for c in caps]))
+                                             label=kit_tools.kind_label(c)[0], title=kit_tools.text(c.get("title")) or None)
+                                        for c in caps]))
             general = [dict(name=t.name, cap=None, kind=None, label="Proposal" if t.name == kit_tools.PROPOSE.name else "Read",
                             title=t.title) for t in view.tools if t.name not in view.ids]
             own = next((e for e in exts if e["id"] == "kit"), None)
             if own is None:
-                own = dict(id="kit", title=None, version=manifest.get("kit"), addon=None, builtin=True, state="on", tools=[])
+                own = dict(id="kit", title=None, version=self.word(manifest.get("kit")), addon=None, builtin=True,
+                           state="on", tools=[])
                 exts.insert(0, own)
             own["tools"] += general
-            kit = dict(version=manifest.get("kit"), protocol=manifest.get("protocol"), revision=manifest.get("revision"),
-                       language=manifest.get("language"), tools=len(view.tools), extensions=exts,
-                       source="cache" if view.away or view.checked is None else "game",
+            kit = dict(version=self.word(manifest.get("kit")), protocol=manifest.get("protocol"),
+                       revision=self.word(manifest.get("revision")), language=self.word(manifest.get("language")),
+                       tools=len(view.tools), extensions=exts, source="cache" if view.away or view.checked is None else "game",
                        newer=bool(kit_tools.newer(manifest)))
-        now, rows = time.time(), []
-        for pid, record in list(self.mcp_reports.items()):
-            if now - record["seen"] > self.MCP_GONE:
-                del self.mcp_reports[pid]
-                continue
-            for agent in record["agents"] or [None]:                   # a process no agent has talked to yet: one row
+        if kit is not None:
+            kit_state = "cached" if kit["source"] == "cache" else "running"
+        elif view.away:
+            kit_state = "unknown"
+        else:
+            kit_state = "stopped" if kit_addon and kit_addon["there"] else "absent"
+        self.forget_silent()
+        rows = []
+        for record in list(self.mcp_reports.values()):
+            for agent in record["agents"] or [None]:          # a process no agent has talked to yet: one row
                 rows.append(self.access_row("stdio", record, agent, kit))
         local = self.local_mcp
         if local is not None and getattr(local, "presence", None) is not None:
-            served = getattr(local, "kit_tools", None)
-            record = dict(pid=os.getpid(), version=self.version, started=round(self.started), source_changed=False,
-                          kit=None if served is None or not served.loaded else dict(
-                              tools=len(served.tools), revision=(served.manifest or {}).get("revision")))
+            record = dict(pid=os.getpid(), version=self.version, started=round(self.started), source_changed=False)
             for agent in local.presence.view():
                 rows.append(self.access_row("http", record, agent, kit))
         rows.sort(key=lambda r: -(r["last"] or 0))
-        return dict(kit=kit, servers=rows, program=self.version, now=now)
+        return dict(kit=kit, kit_state=kit_state, kit_addon=kit_addon, servers=rows, program=self.version, now=time.time())
 
     def access_row(self, kind, record, agent, kit):
         """one agent of an MCP server (a Presence record; None: a server no agent has talked to yet), and its state: stale
-        (the server runs older code than this program: restart the agent's session), no_kit (the tools it got have no
-        wk_ ones though the game has WuxianKit), behind (they came from another manifest: an agent that hears of list
-        changes lists them again on its own, others need a restart), current. What it got is its last tool list; one not
-        seen asking for it counts as getting what its server serves now"""
+        (the server runs older code than this program: restart the agent's session), unlisted (it has not asked for the
+        tools yet), no_kit (the tools it got have no wk_ ones though the game has WuxianKit), behind (they came from
+        another manifest, or the game runs no WuxianKit any more: an agent that hears of list changes lists them again on
+        its own, others need a restart), current. What it got is its last tool list"""
         from ..mcp.server import version_key
         agent = agent or {}
-        if agent.get("listed"):
-            got = dict(tools=agent.get("tools"), revision=agent.get("revision"))
-        else:
-            got = record.get("kit") if isinstance(record.get("kit"), dict) else None
+        got = dict(tools=agent.get("tools"), revision=agent.get("revision")) if agent.get("listed") else None
         if version_key(record.get("version")) < version_key(self.version) or record.get("source_changed"):
             state = "stale"
-        elif kit is not None and not kit["newer"] and (got is None or not got.get("tools")):
+        elif got is None:
+            state = "unlisted"
+        elif kit is not None and not kit["newer"] and not got.get("tools"):
             state = "no_kit"
-        elif kit is not None and got is not None and got.get("revision") != kit["revision"]:
+        elif got.get("revision") != kit["revision"] if kit is not None else got.get("tools"):
             state = "behind"
         else:
             state = "current"
@@ -1148,7 +1209,9 @@ class Service:
 
     def session_started(self, sid, last_job):
         """(worker thread) a new UI session's HELLO: the jobs up to the newest one it says ran (last_job) ran in the
-        session before, whose results went with it; whoever waits for one hears so now rather than at its timeout"""
+        session before, whose results went with it; whoever waits for one hears so now rather than at its timeout. The
+        new session may run another WuxianKit, or none: the views of it ask again"""
+        self.kit_changed()
         if not last_job:
             return
         for job in [j for j in list(self.pending) if j <= last_job]:      # a copy: the asyncio side pops too

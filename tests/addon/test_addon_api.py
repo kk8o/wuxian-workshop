@@ -80,6 +80,11 @@ class EndToEnd(unittest.TestCase):
     def events(self, **kw):
         return asyncio.run(self.svc.addon_events(**kw))["events"]
 
+    def test_online_for_other_addons(self):
+        """WoWBridge.Online(): whether 无限工坊 is linked now, for an addon that tells the player (WuxianKit's window)
+        without reading WoWBridge's insides"""
+        self.assertIs(self.s.lua.eval(b"WoWBridge.Online()"), True)
+
     def test_events_reach_the_journal_whatever_the_link_did(self):
         s = self.s
         s.lua.execute(b'FooWB:Emit("hello", { a = 1, b = "\xe4\xb8\xa4 |cffff0000x|r", nested = { ok = true }, list = { 1, 2, 3 } })')
@@ -375,7 +380,7 @@ class McpTools(unittest.TestCase):
         self.assertFalse(tools["respond"].annotations.read_only_hint)
         watch = ("addon_events", ("WuxianKit", "kit.*", -1, 100, 300))       # WuxianKit's watch, whenever it runs
         self.assertEqual([c for c in backend.calls if c != watch],
-                         [("call_exposed", ("WuxianKit", "kit.revision", None, 15000)),   # none: no wk_ tools
+                         [("status", ()), ("addon_api", ("WuxianKit",)),       # not running: no call of it, no wk_ tools
                           ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                           ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                           ("respond", ("12.3", {"text": "x"}, 10000))])
@@ -488,26 +493,34 @@ class KitTools(unittest.TestCase):
         self.assertEqual(backend.calls, [("kit.revision", None), ("kit.manifest", None),
                                          ("tune.cvar.set", {"name": "x", "value": 1, "_title": "t"})])
 
+    def settled(self, tools):
+        """the tool names once the ask a list started (in the background) is done"""
+        async def go():
+            await tools.current(wait=True)
+            return {t.name for t in await tools.list()}
+        return asyncio.run(go())
+
     def test_the_manifest_is_kept_and_read_again_for_another_revision(self):
         from wuxianworkshop.mcp import kit
 
         backend = self.backend(self.manifest("r1"))
         first = kit.KitTools(backend)
-        asyncio.run(first.list())
+        asyncio.run(first.list())                                       # nothing known yet: it waits for the game
         asyncio.run(first.list())                                       # within RECHECK: the game is not asked
         self.assertEqual([c[0] for c in backend.calls], ["kit.revision", "kit.manifest"])
         backend.calls.clear()
         again = kit.KitTools(backend)                                   # another process: the kept one, if still so
-        self.assertIn("wk_chat_send", {t.name for t in asyncio.run(again.list())})
+        self.assertIn("wk_chat_send", self.settled(again))
         self.assertEqual([c[0] for c in backend.calls], ["kit.revision"])
         backend.manifest = self.manifest("r2", chat_on=False)           # chat turned off in the game
         self.assertFalse(again.heard([{"topic": "kit.changed", "data": {"revision": "r1"}}]))
         self.assertTrue(again.heard([{"topic": "kit.changed", "data": {"revision": "r2"}}]))
         again.stale = True
-        self.assertNotIn("wk_chat_send", {t.name for t in asyncio.run(again.list())})
+        self.assertIn("wk_chat_send", {t.name for t in asyncio.run(again.list())})   # at once: what was known
+        self.assertNotIn("wk_chat_send", self.settled(again))           # then the ask's
         backend.away = True                                              # the game away: the last list stands
         third = kit.KitTools(backend)
-        names = {t.name for t in asyncio.run(third.list())}
+        names = self.settled(third)
         self.assertEqual(("wk_tune_cvar_set" in names, "wk_chat_send" in names), (True, False))
         with self.assertRaises(ToolError):
             asyncio.run(third.call("wk_tune_cvar_set", {"name": "x", "value": 1}))
@@ -618,6 +631,7 @@ class KitTools(unittest.TestCase):
                          [("kit-extension", "Write an extension")])                  # its title, where it has one
         manifest["protocol"] = 2
         mcp = build_server(self.backend(dict(manifest, revision="r2"), addons=addons))
+        asyncio.run(mcp.kit_tools.current(wait=True))                   # the kept r1 first, then the game's r2
         tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
         self.assertEqual([n for n in tools if n.startswith("wk_")], ["wk_docs"])
         self.assertIn("speaks protocol 2, newer than this 无限工坊 knows (1)", tools["wk_docs"].description)
@@ -635,7 +649,7 @@ class KitTools(unittest.TestCase):
         from wuxianworkshop.mcp import kit
 
         backend = self.backend(self.manifest())
-        names = lambda tools: {t.name for t in asyncio.run(tools.list())}
+        names = self.settled
         first = kit.KitTools(backend)
         self.assertIn("wk_chat_send", names(first))
         self.assertTrue(kit.cache_path().is_file())
@@ -651,6 +665,137 @@ class KitTools(unittest.TestCase):
         self.assertEqual(names(first), set())
         self.assertFalse(kit.cache_path().exists())
         self.assertEqual(names(kit.KitTools(backend)), set())
+
+    def test_wuxiankit_never_breaks_the_apps_own_lists(self):
+        """WuxianKit is optional: an answer this module cannot read (a revision that is no object, a capability whose
+        fields are of another shape) or a backend that raises leaves the App's own tools, resources and prompts listed;
+        a capability it cannot read is left out, not the others; {zh, en} titles read as text"""
+        from wuxianworkshop.mcp.server import build_server
+
+        manifest = self.manifest()
+        caps = manifest["extensions"][1]["capabilities"]
+        caps.append({"id": "tune.odd.one", "kind": "see", "title": {"zh": "奇怪的", "en": "Odd"}, "doc": {"en": "odd"},
+                     "args": ["not", "a", "table"]})
+        caps.append({"id": "tune.titled", "kind": "see", "title": {"zh": "有标题", "en": "Titled"}, "doc": "fine", "args": {}})
+        mcp = build_server(self.backend(manifest))
+        tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+        self.assertIn("status", tools)
+        self.assertNotIn("wk_tune_odd_one", tools)                       # left out alone
+        self.assertEqual(tools["wk_tune_titled"].title, "有标题")
+        self.assertIn("wk_tune_cvar_get", tools)
+        broken = self.backend(manifest)
+
+        async def revision_of_another_shape(addon, name, args=None, timeout_ms=10000):
+            if name == "kit.revision":
+                return {"ok": True, "result": "r9"}
+            raise RuntimeError("the game said something odd")
+        broken.call_exposed = revision_of_another_shape
+        from wuxianworkshop.mcp import kit
+        kit.forget_cached()                                              # nothing kept: nothing to fall back on
+        mcp = build_server(broken)
+        names = [t.name for t in asyncio.run(mcp.list_tools())]
+        self.assertIn("status", names)
+        self.assertEqual([n for n in names if n.startswith("wk_")], [])
+        self.assertTrue(mcp.kit_tools.away)                               # as the game away: asked again later
+        self.assertFalse(mcp.kit_tools.due())                             # not at every list (the backoff)
+        self.assertIsInstance(asyncio.run(mcp.list_resources()), list)
+        self.assertIsInstance(asyncio.run(mcp.list_prompts()), list)
+
+    def test_the_game_is_asked_only_when_wuxiankit_may_run(self):
+        """no WuxianKit in the AddOns folder: the game is not asked at all; installed but not running (addon_api: no
+        handle): no call of it, so none fails in the log; running: its revision, its manifest; one ask at a time"""
+        from wuxianworkshop.mcp import kit
+
+        addons = Path(self.home.name) / "AddOns"
+        addons.mkdir()
+        backend = self.backend(self.manifest(), addons=addons)
+        exposed = {"names": None}
+
+        async def addon_api(addon=None):
+            backend.calls.append(("addon_api", addon))
+            if exposed["names"] is None:
+                return {"addon": addon, "exposed": [], "topics": {}, "unbound": True}
+            return {"addon": addon, "exposed": [{"name": n} for n in exposed["names"]], "topics": {}}
+        backend.addon_api = addon_api
+        tools = kit.KitTools(backend, store=False)
+        self.assertEqual(self.settled(tools), set())
+        self.assertEqual(backend.calls, [])                               # not even addon_api
+        (addons / "WuxianKit").mkdir()
+        tools.stale = True
+        self.assertEqual(self.settled(tools), set())
+        self.assertEqual(backend.calls, [("addon_api", "WuxianKit")])     # installed, not running: no call failed
+        exposed["names"], tools.stale = ["kit.revision", "kit.manifest"], True
+        backend.calls.clear()
+
+        async def many():
+            return await asyncio.gather(*(tools.current(wait=True) for _ in range(5)))
+        asyncio.run(many())
+        self.assertEqual(backend.calls, [("addon_api", "WuxianKit"), ("kit.revision", None), ("kit.manifest", None)])
+        self.assertIn("wk_chat_send", {t.name for t in tools.tools})
+
+    def test_a_new_ui_session_asks_again(self):
+        """the watch hears another UI session (a reload or a restart: WuxianKit may be gone) and asks again; the clients
+        hear that the lists changed"""
+        from wuxianworkshop.mcp import kit
+
+        backend = self.backend(self.manifest())
+        told = []
+
+        async def notify():
+            told.append(1)
+        tools = kit.KitTools(backend, store=False, notify=notify, wait=0)
+        sessions = iter([7, 7, 8] + [8] * 50)
+
+        async def addon_events(addon=None, topic=None, since=0, limit=100, wait=0):
+            return {"events": [], "next": 1, "session": next(sessions)}
+        backend.addon_events = addon_events
+
+        async def go():
+            await tools.current(wait=True)
+            told.clear()
+            backend.manifest = None                                      # reloaded without WuxianKit
+            with mock.patch.object(kit, "POLL", 0.01):
+                for _ in range(100):
+                    if not tools.tools:
+                        break
+                    await asyncio.sleep(0.02)
+            tools.watching.cancel()
+        asyncio.run(go())
+        self.assertEqual((tools.tools, told), ([], [1]))
+
+    def test_a_call_that_finds_wuxiankit_gone(self):
+        """a wk_ call answered with "WuxianKit has no ..." (not running any more, or that capability off): the tools are
+        read again (the clients hear of it) and the agent is told to list them again"""
+        from wuxianworkshop.mcp import kit
+
+        backend = self.backend(self.manifest())
+        tools = kit.KitTools(backend, store=False)
+        self.assertIn("wk_tune_cvar_get", self.settled(tools))
+
+        async def gone(addon, name, args=None, timeout_ms=10000):
+            raise ApiError(400, "call_failed", "WuxianKit has no WoWBridge handle: it did not call WoWBridge.Bind")
+        backend.call_exposed, backend.manifest = gone, None
+        with self.assertRaisesRegex(ToolError, "is not in the game now.*List the tools again"):
+            asyncio.run(tools.call("wk_tune_cvar_get", {"name": "x"}))
+        self.assertEqual(tools.tools, [])
+
+    def test_wait_reads_the_history_of_fifty(self):
+        """wk_wait's fallback (a proposal no longer among the open ones) reads the last 50 of the history; a WuxianKit
+        before limit refuses it, and is asked without"""
+        from wuxianworkshop.mcp import kit
+
+        backend = self.backend(self.manifest())
+        tools = kit.KitTools(backend, store=False)
+        seen = []
+
+        async def history(addon, name, args=None, timeout_ms=10000):
+            seen.append(args)
+            if args:
+                raise ApiError(400, "call_failed", "kit.history: takes no argument limit")
+            return {"ok": True, "result": [{"id": 9, "title": "t", "undone": True}]}
+        backend.call_exposed = history
+        self.assertEqual(asyncio.run(tools.ran(9))["state"], "undone")
+        self.assertEqual(seen, [{"limit": 50}, None])
 
     def test_where_another_addons_extension_comes_from(self):
         """verified when the extension catalog, as the App last read it, lists its addon; unverified when not; no

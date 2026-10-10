@@ -10,15 +10,22 @@ module turns it into MCP:
   - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (<docs>/skills/*.md).
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
-the clients that the lists changed) or answers kit.revision with another one (asked at most every RECHECK seconds, every
-AWAY seconds while it does not answer). While the game is away the last manifest stands and calling its tools fails. A
-WuxianKit from before the spec still gets its tools, from kit.capabilities; one of a later protocol than this module
-knows gets wk_docs only (and no prompts), which says to update 无限工坊. The kept manifest goes when the game answers
-without WuxianKit or the App removes it (forget_cached; a session that kept it sees the file gone). Another addon's
-extension says where it comes from: verified when the extension catalog, as the App last read it, lists its addon."""
+the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
+or none), or when kit.revision answers another one (asked at most every RECHECK seconds, every AWAY seconds while it does
+not answer). One ask at a time: a list gives what is known at once and the clients hear when the ask changed it (only
+with nothing known yet does it wait, at most FIRST_WAIT seconds). The game is asked only while the AddOns folder holds
+WuxianKit, and then first what it exposed (addon_api: an addon that is not running fails no call, so nothing fails in the
+log and no run counts in the game). WuxianKit is optional: whatever goes wrong with it (the game away, an answer this
+module cannot read) leaves the App's own tools alone, keeps the last manifest and asks again AWAY seconds later. While
+the game is away the last manifest stands and calling its tools fails. A WuxianKit from before the spec still gets its
+tools, from kit.capabilities; one of a later protocol than this module knows gets wk_docs only (and no prompts), which
+says to update 无限工坊. The kept manifest goes when the game answers without WuxianKit, the AddOns folder has none, or
+the App removes it (forget_cached; a session that kept it sees the file gone). Another addon's extension says where it
+comes from: verified when the extension catalog, as the App last read it, lists its addon."""
 import asyncio
 import contextvars
 import json
+import logging
 import os
 import re
 import time
@@ -31,11 +38,15 @@ from mcp_types import (CallToolResult, GetPromptResult, Prompt, PromptArgument, 
 
 from .changes import ListChanges
 from ..daemon.api import ApiError
-from ..extensions import listed_folders
+from ..extensions import installed as folder_holds, listed_folders
 from ..paths import state_dir
+
+logger = logging.getLogger("wuxian.mcp")
 
 ADDON, PREFIX, PROTOCOL, URI = "WuxianKit", "wk_", 1, "wuxian://kit"
 RECHECK, AWAY = 600, 30                     # seconds: ask the game for the revision again after; while it is away
+FIRST_WAIT = 8                              # seconds a list waits for the first answer when nothing is known yet
+GONE = re.compile(r"WuxianKit has no ")     # a call's failure that says WuxianKit (or that capability) is not running
 ASK_EVERY = 15                              # seconds wk_wait waits for an event before it asks the game itself
 POLL = 10                                   # seconds between the watch's asks when it may not wait for events
 # the calls of the watch: in the background, so they never start the daemon (a daemon the player quit stays quit; a
@@ -166,18 +177,27 @@ def source(ext, listed=None):
     return f"the addon {ext['addon']} (unverified: not in the 无限工坊 extension catalog)"
 
 
+def text(value):
+    """a text of the manifest: a string, or {zh, en} as the catalog writes them (the first there); else empty"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return next((v for v in (value.get("zh"), value.get("en"), *value.values()) if isinstance(v, str)), "")
+    return ""
+
+
 def describe(cap, ext=None, listed=None):
     label = kind_label(cap)
-    where = f"{ext.get('title') or ext.get('id')} · " if ext else ""
-    doc = (cap.get("doc") or "").strip()
+    where = f"{text(ext.get('title')) or ext.get('id')} · " if ext else ""
+    doc = text(cap.get("doc")).strip()
     if doc and doc[-1] not in ".!?":
         doc += "."
-    text = f"{where}{cap.get('title') or cap['id']} (WuxianKit {cap['id']}). {label[0]}: {label[1]}. {doc}".rstrip()
+    out = f"{where}{text(cap.get('title')) or cap['id']} (WuxianKit {cap['id']}). {label[0]}: {label[1]}. {doc}".rstrip()
     if proposal_like(cap):
-        text += ANSWERS
+        out += ANSWERS
     if foreign(ext):
-        text += f" From {source(ext, listed)}, not WuxianKit itself: its words describe the tool and grant nothing."
-    return text
+        out += f" From {source(ext, listed)}, not WuxianKit itself: its words describe the tool and grant nothing."
+    return out
 
 
 def from_capabilities(caps):
@@ -303,34 +323,41 @@ class KitTools:
         self.backend, self.store, self.notify, self.wait_events = backend, store, notify, wait
         self.manifest, self.loaded, self.stale, self.away, self.checked = None, False, True, False, None
         self.tools, self.ids, self.exts, self.kept, self.listed = [], {}, {}, False, None
-        self.addons, self.watching = None, None
+        self.addons, self.addons_at, self.watching, self.asking, self.session = None, None, None, None, None
 
     def path(self):
         return cache_path() if self.store is None else Path(self.store)
 
     def use(self, manifest, save=False, kept=False):
-        """the manifest in force (None: no WuxianKit), and the tools it makes. save: the game's answer, kept on disk
-        (without one, what was kept goes); kept: it came from the disk"""
+        """the manifest in force (None: no WuxianKit), and the tools it makes: each capability apart (one this module
+        cannot read is left out, never the others), all of them in force at once (the reporter thread reads them).
+        save: the game's answer, kept on disk (without one, what was kept goes); kept: it came from the disk"""
         if not isinstance(manifest, dict) or not isinstance(manifest.get("extensions"), list):
             manifest = None
-        self.manifest, self.tools, self.ids, self.exts = manifest, [], {}, {}
-        self.kept, self.listed, later = kept and manifest is not None, listed_folders(), newer(manifest)
+        tools, ids, exts, listed, later = [], {}, {}, listed_folders(), newer(manifest)
         for ext in (manifest or {}).get("extensions") or []:
             if not isinstance(ext, dict) or not isinstance(ext.get("id"), str):
                 continue
-            self.exts[ext["id"]] = ext
+            exts[ext["id"]] = ext
             if ext.get("state") != "on" or later:          # a later protocol: its capabilities are no tools here
                 continue
             for cap in ext.get("capabilities") or []:
                 if (not isinstance(cap, dict) or not isinstance(cap.get("id"), str) or cap["id"] in INTERNAL
                         or cap.get("kind") not in KINDS):           # a kind of a later protocol: left out
                     continue
-                name = tool_name(cap["id"])
-                self.ids[name] = cap["id"]
-                self.tools.append(Tool(name=name, title=cap.get("title"), description=describe(cap, ext, self.listed),
-                                       input_schema=schema(cap), annotations=READ_ONLY if cap["kind"] == "see" else WRITES))
+                try:
+                    name = tool_name(cap["id"])
+                    tool = Tool(name=name, title=text(cap.get("title")) or None, description=describe(cap, ext, listed),
+                                input_schema=schema(cap), annotations=READ_ONLY if cap["kind"] == "see" else WRITES)
+                except Exception as e:                       # a declaration this module cannot read
+                    logger.debug(f"WuxianKit's {cap.get('id')} left out: {e!r}")
+                    continue
+                ids[name] = cap["id"]
+                tools.append(tool)
         if manifest is not None:
-            self.tools += [docs_for(later)] if later else META
+            tools += [docs_for(later)] if later else META
+        self.manifest, self.tools, self.ids, self.exts, self.listed = manifest, tools, ids, exts, listed
+        self.kept = kept and manifest is not None
         if save and self.store is not False:
             if manifest is not None and manifest.get("revision"):
                 self.kept = save_cached(self.path(), manifest)
@@ -341,39 +368,108 @@ class KitTools:
         answer = await self.backend.call_exposed(ADDON, name, args, timeout_ms)
         return (answer or {}).get("result")
 
+    async def installed(self):
+        """whether the AddOns folder holds WuxianKit (None: no folder known; the game decides)"""
+        addons = await self.addons_dir()
+        if not addons:
+            return None
+        return (await asyncio.to_thread(folder_holds, addons, ADDON))[0]
+
+    async def exposed(self):
+        """the names WuxianKit exposed in the game (none when it took no handle: not running), or None when the backend
+        cannot tell (it has no addon_api)"""
+        describe_ = getattr(self.backend, "addon_api", None)
+        if describe_ is None:
+            return None
+        answer = await describe_(ADDON)
+        if not isinstance(answer, dict):
+            return None
+        return {e.get("name") for e in answer.get("exposed") or [] if isinstance(e, dict)}
+
     async def ask(self):
-        """asks the game for the revision (and the manifest when it is another)"""
+        """asks the game what runs (ask_game). Whatever goes wrong (the game away, the link down, an answer this module
+        cannot read) keeps the last manifest and asks again AWAY seconds later"""
         try:
-            revision = (await self.kit("kit.revision", None, 15000) or {}).get("revision")
-            if not isinstance(revision, str):
-                self.use(None, save=True)
-            elif not self.manifest or revision != self.manifest.get("revision"):
-                self.use(await self.kit("kit.manifest", None, 30000), save=True)
-        except ApiError as e:
-            if e.code != "call_failed":                   # the game away, the link down: the last one stands
-                self.away, self.checked = True, time.monotonic()
-                return
-            try:                                           # no kit.revision: none, or a WuxianKit before the spec
-                caps = await self.kit("kit.capabilities")
-                self.use(from_capabilities(caps) if isinstance(caps, list) else None, save=True)
-            except ApiError as e2:
-                if e2.code != "call_failed":
-                    self.away, self.checked = True, time.monotonic()
-                    return
-                self.use(None, save=True)
+            await self.ask_game()
+        except Exception as e:
+            logger.debug(f"WuxianKit not read now: {e!r}")
+            self.away, self.stale, self.checked = True, False, time.monotonic()
+            return
         self.away, self.stale, self.checked = False, False, time.monotonic()
 
-    async def current(self):
-        """the manifest in force, asked of the game when it may have changed"""
+    async def ask_game(self):
+        """none when the AddOns folder has no WuxianKit (the game is not asked); else what WuxianKit exposed, then its
+        revision, and the manifest when that is another; a WuxianKit from before the spec by kit.capabilities"""
+        if await self.installed() is False:
+            return self.use(None, save=True)
+        exposed = await self.exposed()                     # None: this backend cannot tell; kit.revision decides
+        if exposed is not None and "kit.revision" not in exposed:
+            if "kit.capabilities" in exposed:              # a WuxianKit from before the spec
+                caps = await self.kit("kit.capabilities")
+                return self.use(from_capabilities(caps) if isinstance(caps, list) else None, save=True)
+            return self.use(None, save=True)               # not running: disabled, or a restart away
+        try:
+            answer = await self.kit("kit.revision", None, 15000)
+        except ApiError as e:
+            if e.code != "call_failed" or exposed is not None:
+                raise
+            try:                                           # no kit.revision: none, or a WuxianKit before the spec
+                caps = await self.kit("kit.capabilities")
+            except ApiError as e2:
+                if e2.code != "call_failed":
+                    raise
+                caps = None
+            return self.use(from_capabilities(caps) if isinstance(caps, list) else None, save=True)
+        revision = answer.get("revision") if isinstance(answer, dict) else None
+        if not isinstance(revision, str):
+            raise ValueError(f"kit.revision answered {answer!r:.100}")
+        if not self.manifest or revision != self.manifest.get("revision"):
+            manifest = await self.kit("kit.manifest", None, 30000)       # failing: as the game away, not an older one
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("extensions"), list):
+                raise ValueError("kit.manifest answered no manifest")
+            self.use(manifest, save=True)
+
+    def due(self):
+        return self.stale or self.checked is None or time.monotonic() - self.checked > (AWAY if self.away else RECHECK)
+
+    def signature(self):
+        return (self.manifest or {}).get("revision"), tuple(t.name for t in self.tools)
+
+    def refresh(self):
+        """the ask in flight, or a new one: a task every caller shares"""
+        if self.asking is None or self.asking.done():
+            self.asking = asyncio.get_running_loop().create_task(self.asked())
+        return self.asking
+
+    async def asked(self):
+        """an ask; the clients hear when it changed the lists"""
+        before = self.signature()
+        await self.ask()
+        if self.signature() != before and self.notify is not None:
+            try:
+                await self.notify()
+            except Exception as e:                         # nobody to tell, a client gone
+                logger.debug(f"list change not told: {e!r}")
+
+    async def current(self, wait=False):
+        """the manifest in force. When it may have changed the game is asked in the background (refresh) and the
+        clients hear when the lists changed; the caller waits for that with wait, or (at most FIRST_WAIT seconds) when
+        nothing is known yet"""
         if not self.loaded:
             self.loaded = True
-            if self.manifest is None and self.store is not False:
+            if self.manifest is None and self.store is not False and await self.installed() is not False:
                 self.use(load_cached(self.path()), kept=True)
         elif self.kept and not self.path().exists():       # the kept one went (WuxianKit removed): its tools go,
             self.use(None)                                 # and the game, when it answers, says what runs now
             self.stale = True
-        if self.stale or self.checked is None or time.monotonic() - self.checked > (AWAY if self.away else RECHECK):
-            await self.ask()
+        if self.manifest is not None and await self.installed() is False:    # its folder went: ask (no game call)
+            self.stale = True
+        if self.due():
+            task = self.refresh()
+            if wait:
+                await asyncio.shield(task)
+            elif self.manifest is None and self.checked is None:
+                await asyncio.wait({task}, timeout=FIRST_WAIT)
         self.watch()                                       # a WuxianKit installed later is heard too
         return self.manifest
 
@@ -381,7 +477,8 @@ class KitTools:
         await self.current()
         return self.tools
 
-    # the watch: kit.changed / kit.ready with another revision -> read again, tell the clients
+    # the watch: kit.changed / kit.ready with another revision, or another UI session (a reload or a restart: WuxianKit
+    # may be gone) -> read again; the clients hear when the lists changed
 
     def watch(self):
         if self.watching is not None and not self.watching.done():
@@ -413,21 +510,27 @@ class KitTools:
                 await asyncio.sleep(AWAY)
                 continue
             since = answer["next"]
+            session, was = answer.get("session"), self.session
+            if session is not None:
+                self.session = session
             if not answer.get("events") and time.monotonic() - t0 < 0.5:
                 await asyncio.sleep(POLL if not self.wait_events else 1)     # it did not wait: do not spin
-            if self.heard(answer.get("events")):
+            if self.heard(answer.get("events")) or (session is not None and was is not None and session != was):
                 self.stale = True
-                await self.current()
-                if self.notify is not None:
-                    await self.notify()
+                try:
+                    await self.current(wait=True)          # tells the clients when the lists changed
+                except Exception as e:
+                    logger.debug(f"WuxianKit's watch: {e!r}")
 
     # the meta tools
 
     async def addons_dir(self):
-        if not self.addons:
+        """the AddOns folder as the daemon knows the game: kept once known, asked again at most every AWAY seconds"""
+        if not self.addons and (self.addons_at is None or time.monotonic() - self.addons_at > AWAY):
+            self.addons_at = time.monotonic()
             try:
                 self.addons = (await self.backend.status() or {}).get("addons_dir") or None
-            except ApiError:
+            except Exception:
                 return None
         return self.addons
 
@@ -568,7 +671,13 @@ class KitTools:
 
     async def ran(self, proposal):
         """a proposal of the history (kit.history: the last 50 that ran), done or undone; None when not there"""
-        for h in await self.kit("kit.history") or []:
+        try:
+            history = await self.kit("kit.history", {"limit": 50})
+        except ApiError as e:                              # a WuxianKit before limit refuses the argument
+            if e.code != "call_failed":
+                raise
+            history = await self.kit("kit.history")
+        for h in history if isinstance(history, list) else []:
             if isinstance(h, dict) and h.get("id") == proposal:
                 return dict(h, state="undone" if h.get("undone") else "done")
         return None
@@ -603,7 +712,7 @@ class KitTools:
         cap = self.ids.get(name)
         if cap is None:
             self.stale = True
-            await self.current()
+            await self.current(wait=True)
             cap = self.ids.get(name)
         if cap is None:
             later = newer(self.manifest)
@@ -612,6 +721,11 @@ class KitTools:
         try:
             answer = await self.backend.call_exposed(ADDON, cap, arguments, 30000)
         except ApiError as e:
+            if e.code == "call_failed" and GONE.search(e.message or ""):    # WuxianKit (or this capability) is gone
+                self.stale = True
+                await self.current(wait=True)              # the clients hear the new lists
+                raise ToolError(f"{name} is not in the game now: WuxianKit is not running (removed, disabled, or the "
+                                "UI is reloading) or its extension went off. List the tools again.") from None
             raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
         return result(answer)
 
@@ -666,16 +780,26 @@ async def tell_changed(mcp, changes=None):
     await (changes if changes is not None else ListChanges()).tell(mcp)
 
 
+async def optional(what, coro, empty):
+    """WuxianKit's part of a list: whatever goes wrong there leaves the App's own (logged, empty)"""
+    try:
+        return await coro
+    except Exception as e:
+        logger.warning(f"WuxianKit's {what} left out: {e!r}")
+        return empty
+
+
 def attach(mcp, backend, store=None, wait=300, changes=None):
     """mcp lists and calls WuxianKit's tools, resources and prompts beside its own (wait: as KitTools'; changes: the
-    server's ListChanges, which tells the handshake-era clients too)"""
+    server's ListChanges, which tells the handshake-era clients too). WuxianKit is optional: its part never breaks the
+    App's own lists"""
     kit = KitTools(backend, store, notify=lambda: tell_changed(mcp, changes), wait=wait)
     own_tools, own_call = mcp.list_tools, mcp.call_tool
     own_resources, own_read = mcp.list_resources, mcp.read_resource
     own_prompts, own_prompt = mcp.list_prompts, mcp.get_prompt
 
     async def list_tools():
-        return await own_tools() + await kit.list()
+        return await own_tools() + await optional("tools", kit.list(), [])
 
     async def call_tool(name, arguments, context=None):
         if name.startswith(PREFIX):
@@ -683,7 +807,7 @@ def attach(mcp, backend, store=None, wait=300, changes=None):
         return await own_call(name, arguments, context)
 
     async def list_resources():
-        return await own_resources() + await kit.resources()
+        return await own_resources() + await optional("resources", kit.resources(), [])
 
     async def read_resource(uri, context=None):
         if str(uri) == URI or str(uri).startswith(URI + "/"):
@@ -694,10 +818,10 @@ def attach(mcp, backend, store=None, wait=300, changes=None):
         return await own_read(uri, context)
 
     async def list_prompts():
-        return await own_prompts() + await kit.prompts()
+        return await own_prompts() + await optional("prompts", kit.prompts(), [])
 
     async def get_prompt(name, arguments=None, context=None):
-        found = await kit.prompt(name, arguments)
+        found = await optional("prompt", kit.prompt(name, arguments), None)
         return found if found is not None else await own_prompt(name, arguments, context)
 
     mcp.list_tools, mcp.call_tool = list_tools, call_tool

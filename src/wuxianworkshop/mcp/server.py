@@ -553,8 +553,9 @@ def report(mcp):
 class Reporter(threading.Thread):
     """reports this stdio process to the daemon every EVERY seconds (the first soon after its start); a daemon away or an
     older one without the endpoint only means no report. After a failed one it looks for the daemon that runs now (an
-    updated App restarts it on another port, with another token), never starting one: the next report goes there"""
-    FIRST, EVERY = 3, 20
+    updated App restarts it on another port, with another token), never starting one: the next report goes there. An
+    older daemon (no such endpoint: 404 / 405) is asked again only every OLDER seconds, without looking for another"""
+    FIRST, EVERY, OLDER = 3, 20, 600
 
     def __init__(self, backend, mcp):
         super().__init__(name="wuxian-mcp-report", daemon=True)
@@ -566,7 +567,12 @@ class Reporter(threading.Thread):
             wait = self.EVERY
             try:
                 self.backend.client.post("/api/mcp/report", timeout=5, **report(self.mcp))
-            except Exception:                          # the daemon away, restarted or older: no report this time
+            except ApiError as e:
+                if e.status in (404, 405):             # a daemon from before the reports
+                    wait = self.OLDER
+                else:
+                    self.rejoin()
+            except Exception:                          # the daemon away or restarted: no report this time
                 self.rejoin()
 
     def rejoin(self):
