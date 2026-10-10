@@ -141,6 +141,16 @@ def schema(cap):
     return out
 
 
+POSITION = re.compile(r"(\.lua\]?|\[string [^\]]*\]):\d+:")
+
+
+def brief_error(message):
+    """an extension's own refusal (error(msg, 0): no place in the code) without the Lua stack WoWBridge adds to every
+    failed call, which tells the agent nothing; an error with a place (a bug in the addon) keeps it"""
+    first, _, rest = str(message or "").partition("\n")
+    return message if not rest or POSITION.search(first) else first
+
+
 def foreign(ext):
     """an extension another addon brings (not one of WuxianKit's own)"""
     return bool(ext) and bool(ext.get("addon")) and ext["addon"] != ADDON
@@ -520,7 +530,7 @@ class KitTools:
                     raise
                 now = await self.ran(proposal)            # an older one: what ran is in the history
         except ApiError as e:
-            raise ToolError(f"{e.code}: {e.message}") from None
+            raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
         if not isinstance(now, dict):
             raise ToolError(f"no proposal #{proposal} in the game (not open, not among the ones kept)")
         deadline = time.monotonic() + seconds
@@ -532,7 +542,7 @@ class KitTools:
             try:
                 answer = await self.backend.addon_events(ADDON, "kit.proposal", mark, 100, min(left, ASK_EVERY)) or {}
             except ApiError as e:
-                raise ToolError(f"{e.code}: {e.message}") from None
+                raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
             mark = answer.get("next", mark)
             mine = [e.get("data") or {} for e in answer.get("events") or [] if (e.get("data") or {}).get("id") == proposal]
             if mine:
@@ -576,7 +586,7 @@ class KitTools:
         try:
             return await self.kit("kit.propose", body, 30000)
         except ApiError as e:
-            raise ToolError(f"{e.code}: {e.message}") from None
+            raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
 
     async def call(self, name, arguments):
         arguments = arguments or {}
@@ -602,7 +612,7 @@ class KitTools:
         try:
             answer = await self.backend.call_exposed(ADDON, cap, arguments, 30000)
         except ApiError as e:
-            raise ToolError(f"{e.code}: {e.message}") from None
+            raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
         return result(answer)
 
     # resources and prompts

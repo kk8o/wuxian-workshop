@@ -530,6 +530,31 @@ class KitTools(unittest.TestCase):
         self.assertIn("Change: a change in the game the player confirms. change a setting. Answers with",
                       tools["wk_tune_cvar_set"].description)
 
+    def test_a_refusal_without_the_stack(self):
+        """an extension's own refusal (error(msg, 0)) reaches the agent as its message alone, without the Lua stack
+        WoWBridge adds to a failed call; an error with a place in the code (a bug) keeps its stack"""
+        from wuxianworkshop.mcp import kit
+
+        stack = "\n[C]: in function 'error'\n[Interface/AddOns/WuxianKit/Core/Kinds.lua]:138: in function <...>"
+        backend = self.backend(self.manifest())
+        answer = backend.call_exposed
+
+        async def call_exposed(addon, name, args=None, timeout_ms=10000):
+            if name == "tune.cvar.get":
+                raise ApiError(400, "call_failed", "tune.cvar.get: no setting x (tune.cvar.find looks them up)" + stack)
+            if name == "tune.cvar.set":
+                raise ApiError(400, "call_failed", "[Interface/AddOns/WuxianKit/Extensions/Tune/Tune.lua]:66: oops" + stack)
+            return await answer(addon, name, args, timeout_ms)
+        backend.call_exposed = call_exposed
+        tools = kit.KitTools(backend, store=False)
+        asyncio.run(tools.list())
+        with self.assertRaises(ToolError) as refused:
+            asyncio.run(tools.call("wk_tune_cvar_get", {"name": "x"}))
+        self.assertEqual(str(refused.exception), "call_failed: tune.cvar.get: no setting x (tune.cvar.find looks them up)")
+        with self.assertRaises(ToolError) as bug:
+            asyncio.run(tools.call("wk_tune_cvar_set", {"name": "x", "value": 1}))
+        self.assertIn("Kinds.lua]:138", str(bug.exception))
+
     def test_before_the_spec_and_without_wuxiankit(self):
         from wuxianworkshop.mcp import kit
 
