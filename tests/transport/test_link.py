@@ -2,6 +2,7 @@
 handshake, cumulative acknowledgements, fragments, pings, reload, hot loading and the mailbox slots on disk; the v0.8
 revisions: typed messages, a skipped slot's records sent again, wrapping message ids and the reset flag."""
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -196,6 +197,22 @@ class Companion(unittest.TestCase):
         self.t += 601
         self.c.tick()
         self.assertIn("no reload 600 s after the command (the button was not clicked)", self.log)
+
+    def test_reload_reason(self):
+        """the reason goes after the nonce, on one line and at most 120 characters, to an addon that shows it (link
+        features ZIP, 0.9.9 on); an older addon would read it as part of the nonce and not ask: the nonce alone"""
+        self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.9.9;s=5;k=1;m=1;f=3")
+        self.c.command("reload", "载入新的\n链路代码  " + "x" * 200)
+        kind, data = self.c.outbox[-1]
+        nonce, reason = re.match(rb"^reload (\d+) (.*)$", data).groups()
+        reason = reason.decode()
+        self.assertEqual((kind, len(reason)), (MB.COMMAND, 120))
+        self.assertTrue(reason.startswith("载入新的 链路代码 xxx") and reason.endswith("x…"))
+        self.c.command("reload", "  ")
+        self.assertRegex(self.c.outbox[-1][1], rb"^reload \d+$")                 # nothing to say
+        self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.9.8;s=6;k=1;m=1;f=2", sid=6)   # an older addon
+        self.c.command("reload", "why")
+        self.assertRegex(self.c.outbox[-1][1], rb"^reload \d+$")
 
     def test_heartbeat_by_addon_version(self):
         """addon 0.7.0 on: a heartbeat every 15 s (it goes offline after three missed); an older one: every 5 s"""

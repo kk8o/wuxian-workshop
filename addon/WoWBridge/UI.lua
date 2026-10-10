@@ -14,8 +14,9 @@ local SLOT_WARN = { 400, 100 }
 local slotWarned, slotsGone = {}, nil
 local ask
 
--- a small window in the middle of the screen: the tile and the name, a text, and buttons in the bottom-right corner
--- { { label, width, onClick(dialog), kind }, ... }, the first rightmost (the one to press: kind "primary")
+-- a small window in the middle of the screen: the tile and the name, a text (and a quieter note under it), and buttons
+-- in the bottom-right corner { { label, width, onClick(dialog), kind }, ... }, the first rightmost (the one to press:
+-- kind "primary"); d.Say(text, note) puts other words in it
 local function Dialog(name, text, buttons)
 	local d = S.Window(name, 380, 140, "FULLSCREEN_DIALOG")
 	d:SetPoint("CENTER", UIParent, "CENTER", 0, 160)
@@ -29,8 +30,18 @@ local function Dialog(name, text, buttons)
 	local body = S.Text(d, "GameFontHighlight", C.fg)
 	body:SetPoint("TOPLEFT", tile, "BOTTOMLEFT", 0, -14)
 	body:SetWidth(344)
-	body:SetText(text)
-	d:SetHeight(16 + 22 + 14 + math.max(16, body:GetStringHeight()) + 20 + 26 + 16)
+	local note = S.Text(d, "GameFontHighlightSmall", C.muted)
+	note:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -6)
+	note:SetWidth(344)
+	d.body, d.note = body, note
+	function d.Say(words, quiet)
+		body:SetText(words)
+		note:SetText(quiet or "")
+		note:SetShown(quiet ~= nil)
+		local h = math.max(16, body:GetStringHeight()) + (quiet and 6 + note:GetStringHeight() or 0)
+		d:SetHeight(16 + 22 + 14 + h + 20 + 26 + 16)
+	end
+	d.Say(text)
 	local x = -18
 	d.buttons = {}
 	for i, b in ipairs(buttons) do
@@ -49,22 +60,25 @@ local function Alert(d)
 	pcall(PlaySound, SOUNDKIT and SOUNDKIT.READY_CHECK or 8960)
 end
 
--- the agent wants a UI reload; the answers go back typed as RELOAD messages ("asked: ...", "later: ...")
-function U.AskReload()
+-- the agent wants a UI reload, for a reason (its words, one line, nil: none given); the answers go back typed as RELOAD
+-- messages ("asked: ...", "later: ...")
+function U.AskReload(reason)
 	if not ask then
 		ask = Dialog("WoWBridgeReloadDialog", L.RELOAD_ASK, {
 			{ L.RELOAD_NOW, 120, function() ReloadUI() end, "primary" },
 			{ L.RELOAD_LATER, 90, function(d)
 				d:Hide()
 				ns.Link.Send("later: the user put the reload off", "reload")
-			ns.Console.Add("RELOAD", ns.L.CON_RELOAD_LATER)
+				ns.Console.Add("RELOAD", L.CON_RELOAD_LATER)
 			end },
 		})
 		ask.reload, ask.later = ask.buttons[1], ask.buttons[2]
 	end
+	local plain = reason and (reason:gsub("|", "||"))      -- its words as they are, no escape codes (the chat does that)
+	ask.Say(L.RELOAD_ASK, plain and L.RELOAD_REASON:format(plain))
 	Alert(ask)
-	ns.Print(L.RELOAD_CHAT)
-	ns.Console.Add("RELOAD", L.CON_RELOAD_ASKED)
+	ns.Print(reason and L.RELOAD_CHAT_REASON:format(reason) or L.RELOAD_CHAT)
+	ns.Console.Add("RELOAD", plain and L.CON_RELOAD_ASKED_REASON:format(plain) or L.CON_RELOAD_ASKED)
 	ns.Link.Send("asked: a button is up; the UI reloads when the user clicks it", "reload")
 end
 

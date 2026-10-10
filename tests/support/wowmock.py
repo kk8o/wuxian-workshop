@@ -151,7 +151,7 @@ function Region:StartMoving() self.moving = true end
 function Region:StopMovingOrSizing() self.moving = false end
 function Region:SetShown(v) self.shown = v and true or false end
 function Region:SetJustifyH() end
-function Region:SetTextColor() end
+function Region:SetTextColor(r, g, b, a) self.textColor = { r, g, b, a } end
 function Region:SetTexture(t) self.texture = t end
 function Region:SetTexCoord() end
 function Region:SetDesaturated(v) self.desaturated = v end
@@ -261,6 +261,7 @@ GameTooltip = new("GameTooltip")
 function GameTooltip:SetOwner() self.lines = {} end
 function GameTooltip:AddLine(t) self.lines = self.lines or {}; self.lines[#self.lines + 1] = t end
 function GameTooltip:SetText(t) self.lines = { t } end
+function GameTooltip:AddDoubleLine(l, r) self.lines = self.lines or {}; self.lines[#self.lines + 1] = l .. "\t" .. r end   -- two columns
 UISpecialFrames = {}
 -- the options window's addon categories (Options > AddOns)
 __categories = {}

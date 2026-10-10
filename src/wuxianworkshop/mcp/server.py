@@ -439,7 +439,7 @@ def build_server(backend, name="wuxian"):
     @mcp.tool(annotations=DESTRUCTIVE)
     async def reload(reason: str = "") -> dict[str, Any]:
         """Ask the player to reload the UI. You cannot reload it yourself: this shows a button in the game, and the UI
-        reloads only when the player clicks it. Tell the user why first.
+        reloads only when the player clicks it. reason: why, in a few words; the game's dialog shows it to the player.
         Needed for: SavedVariables written to disk, XML changes, code that runs only at login. Not needed for Lua
         changes: use `load`. Not enough for new files or .toc changes: those need a full game restart.
         status.reload_pending stays true until the click; the RELOAD entry in `logs` says done or later.

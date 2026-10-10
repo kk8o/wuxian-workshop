@@ -7,7 +7,8 @@ False from it keeps the file out of the game (the daemon checks its syntax then,
 the addon, agent/history.py).
 
 Commands: "reload" (the addon shows a button: only a click may reload the UI on this client, and the addon reports
-RELOAD "asked: ..." / "later: ..."); "run <lua>" and "load <file>" send Lua for the addon to run (CODE records, see code()),
+RELOAD "asked: ..." / "later: ..."; the agent's reason, on one line, goes with it to an addon that shows it: reasons());
+"run <lua>" and "load <file>" send Lua for the addon to run (CODE records, see code()),
 which answers RUN "<job> ok <chunk name> (<bytes> B, <ms> ms, <n> values)[: <returned values, framed>]" or "<job> error
 <chunk name>: <error>" (daemon/api.py parse_run reads them); "flush" drops what waits in the addon to go up, as
 /wb flush does (Link.lua L.Flush); "watch <file | addon>" and "unwatch" are handled here.
@@ -35,6 +36,13 @@ RESET_FLAGS = {True: " reset", "reset": " reset", "unload": " unload", "reload":
 FRAMES = re.compile(r"<(Frame|Button|CheckButton|EditBox|ScrollFrame|Slider|StatusBar|Texture|FontString)\b")
 ZIP_MIN = 512                   # bytes from which a job goes compressed to an addon that inflates ...
 ZIP_GAIN = 0.8                  # ... when deflate takes it to this share of its size or less
+REASON_MAX = 120                # characters of a reload's reason the addon shows
+
+
+def one_line(text, most=REASON_MAX):
+    """text on one line (a run of white space: a space), at most `most` characters (cut with …)"""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= most else text[:most - 1].rstrip() + "…"
 
 
 def deflate(data):
@@ -64,12 +72,16 @@ def toc_files(toc):
 class AgentCommands:
     """the agent's side of the Companion (see the module docstring for what the Companion provides)"""
 
-    def command(self, text):
+    def command(self, text, reason=""):
         """a command for the addon; "reload" gets a nonce (the addon saves it, so it asks once even if the packet is
-        read again) and is followed up: a new session = done (the user clicked), none within reload_wait seconds = not"""
+        read again) and the reason after it (one_line) when the addon shows one, and is followed up: a new session =
+        done (the user clicked), none within reload_wait seconds = not"""
         if text == "reload":
             now = self.clock()
             text = f"reload {int(now * 1000) % 100000000}"
+            reason = one_line(reason)
+            if reason and self.reasons():
+                text += " " + reason
             self.reload_sent = (now, self.current)
         elif text.startswith("run "):
             return self.code(text[4:].encode(), "=run")
@@ -83,6 +95,10 @@ class AgentCommands:
 
     def zipping(self):
         """whether jobs may go compressed (the Companion says it for the addon of the current session)"""
+        return False
+
+    def reasons(self):
+        """whether a reload's reason goes with it (the Companion says it for the addon of the current session)"""
         return False
 
     def _packed(self, data):

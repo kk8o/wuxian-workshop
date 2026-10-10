@@ -142,7 +142,7 @@ def build_parser():
     p.add_argument("addon")
     p.add_argument("id", type=int, help="the version (wuxian history <addon> lists them)")
     p = sub.add_parser("reload", help="ask the player for a UI reload (a button in the game)")
-    p.add_argument("reason", nargs="*", help="shown in the log")
+    p.add_argument("reason", nargs="*", help="shown to the player in the game, and in the log")
     p = sub.add_parser("logs", help="the daemon's log: Lua errors, print output, RUN results, notes")
     p.add_argument("--follow", "-f", action="store_true", help="keep printing new entries (Ctrl+C ends it)")
     p.add_argument("--since", type=int, default=None, help="the first entry id (default: the last 50)")

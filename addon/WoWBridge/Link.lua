@@ -77,7 +77,7 @@ local lastControl            -- when the last HELLO / HB went up
 local lastPacket, lastAck = nil, 0
 local beat, ctlId = 0, 0
 local pong                   -- a ping id to answer
-local welcomed               -- what the last WELCOME set, as the chat line says it (said once)
+local connected              -- the link was online before in this UI session: the chat says "again"
 local stats = { packets = 0, acked = 0, resent = 0, sum = 0, max = 0, draws = 0, drawSum = 0, drawMax = 0, lost = 0 }
 local burst                  -- { n, last, t0, acked, sum, max, resent0 }
 local stream                 -- { n, last, t0, acked, sum, max, resent0, ending }
@@ -245,11 +245,6 @@ function L.Welcome(text)
 	-- from a newer one in this session)
 	P.rto = n("rto") and n("rto") >= 2 and n("rto") <= 60 and n("rto") or 4
 	P.pack = f.pack == "1"
-	local said = ns.L.COMPANION:format(tostring(f.v), P.dataW, P.dataH, P.bigW, P.bigH, P.mode, P.win, P.show, P.hb)
-	if said ~= welcomed then             -- welcomed again (the companion restarted, or learned what this link does): once
-		welcomed = said
-		Print(said)
-	end
 end
 
 -- another addon handles a companion command (WoWBridge_Lab: "probe")
@@ -257,8 +252,9 @@ function L.OnCommand(name, fn)
 	handlers[name] = fn
 end
 
--- "reload <nonce>": the nonce is the companion's clock in ms (mod 1e8); one older than this many ms is from a packet that
--- waited out a game restart in the mailbox and asks nothing any more
+-- "reload <nonce> [reason]": the nonce is the companion's clock in ms (mod 1e8); one older than this many ms is from a
+-- packet that waited out a game restart in the mailbox and asks nothing any more. The reason (the agent's words, one
+-- line; a companion before 0.9.9 gives none) shows in the dialog and the chat
 local RELOAD_STALE = 600000
 
 function L.Command(text)
@@ -271,11 +267,12 @@ function L.Command(text)
 		-- "reload <nonce>": on this client only a click or key press may reload the UI (ReloadUI and ConsoleExec from a
 		-- timer: "interface action failed"), so a button asks the user. The nonce is saved first: a packet read again
 		-- cannot ask twice
-		if rest == "" or rest == db.reloadNonce then return end
-		db.reloadNonce = rest
-		local age = (time() * 1000 - (tonumber(rest) or 0)) % 1e8
+		local nonce, reason = rest:match("^(%S*)%s*(.-)$")
+		if nonce == "" or nonce == db.reloadNonce then return end
+		db.reloadNonce = nonce
+		local age = (time() * 1000 - (tonumber(nonce) or 0)) % 1e8
 		if age > RELOAD_STALE and age < 1e8 - 60000 then return end
-		ns.UI.AskReload()
+		ns.UI.AskReload(reason ~= "" and reason or nil)
 	elseif handlers[cmd] then
 		handlers[cmd](rest)
 	else
@@ -363,7 +360,8 @@ local function OnPacket(pkt)
 	stats.packets = stats.packets + 1
 	if state ~= "online" then
 		state = "online"
-		Print(ns.L.CONNECTED:format(pkt.slot))
+		Print(connected and ns.L.RECONNECTED or ns.L.CONNECTED)
+		connected = true
 		ns.Console.Add("LINK", ns.L.CON_LINK_UP)
 		for _, m in ipairs(queue) do m.again = 0 end    -- what went up while nobody read it goes again within rto
 	end
@@ -384,7 +382,7 @@ function L.Tick()
 	local now = GetTime()
 	if state == "online" and lastPacket and now - lastPacket > P.offline then
 		state = "hello"
-		Print(ns.L.OFFLINE:format(P.offline, #queue))
+		Print(ns.L.OFFLINE:format(#queue))
 		ns.Console.Add("LINK", ns.L.CON_LINK_DOWN)
 	end
 	ns.Debug.Tick(now)
@@ -574,8 +572,8 @@ end
 
 function L.Status()
 	local avg = stats.acked > 0 and stats.sum / stats.acked or 0
-	return ns.L.LINK_STATUS:format(ns.StateName(state), Mailbox.Next(), Mailbox.Phase(), L.SlotsLeft(), stats.packets, Unsent(),
-		stats.acked, avg, stats.max, stats.resent, stats.drawSum / math.max(stats.draws, 1), stats.drawMax)
+	return ns.L.LINK_STATUS:format(ns.StateName(state), L.SlotsLeft(), stats.packets, Unsent(), stats.acked, avg, stats.max,
+		stats.resent, stats.drawSum / math.max(stats.draws, 1), stats.drawMax)
 end
 
 -- what the settings panel shows: state, how many wait to go up, how many were acknowledged, the heartbeat

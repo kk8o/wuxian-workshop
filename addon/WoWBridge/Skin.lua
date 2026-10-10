@@ -185,6 +185,13 @@ function S.Orn(parent, x, y, w)
 	return row
 end
 
+-- the diamond in a line of text (a tooltip, the chat), size high, in a colour of C
+function S.InlineDot(c, size)
+	size = size or 8
+	local function byte(v) return math.floor(v * 255 + 0.5) end
+	return ("|T%s:%d:%d:0:0:32:32:0:32:0:32:%d:%d:%d|t"):format(S.STUD, size, size, byte(c[1]), byte(c[2]), byte(c[3]))
+end
+
 -- a small diamond to colour (a state)
 function S.Dot(parent, size)
 	local t = parent:CreateTexture(nil, "ARTWORK")

@@ -41,9 +41,10 @@ class Link(unittest.TestCase):
             s.login()
             s.run(8)
             chat = s.chat()
-            self.assertIn("connected to the companion (mailbox slot 1)", chat)
-            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 3, 64 in flight, 0.15 s a frame, "
-                          "a heartbeat every 5 s", chat)
+            self.assertIn("connected to the app · /wb opens the panel", chat)
+            P = s.ns[b"Link"][b"P"]                                     # what the WELCOME set
+            self.assertEqual((P[b"dataW"], P[b"dataH"], P[b"bigW"], P[b"bigH"], P[b"mode"], P[b"win"], P[b"show"], P[b"hb"]),
+                             (64, 16, 128, 32, 3, 64, 0.15, 5))
             self.assertIn("> 你好 WoWBridge", chat)
             sess = comp.sessions[comp.current]
             self.assertIsNotNone(sess.online_at, logs)
@@ -74,10 +75,9 @@ class Link(unittest.TestCase):
             self.assertEqual(comp.stats["long_ok"], 2, logs)
             self.assertRegex(sess.messages[-1][4], r"^LONG DONE id=\d+ bytes=6000 parts=8 shown_again=1 ")
             s.slash("link")
-            self.assertRegex(s.chat(), r"link online, mailbox slot (\d+) \(poll, \d+ left\), \d+ packets read; 0 waiting, "
-                                       r"15 acknowledged")
-            slot, left = map(int, re.search(r"mailbox slot (\d+) \(poll, (\d+) left\)", s.chat()).groups())
-            self.assertEqual(slot + left, 4097)
+            self.assertRegex(s.chat(), r"link online · \d+ app messages left · \d+ packets read · 0 waiting · 15 acknowledged")
+            left = int(re.search(r"link online · (\d+) app messages left", s.chat()).group(1))
+            self.assertEqual(s.ns[b"Mailbox"][b"Next"]() + left, 4097)
             slot_before = comp.slot
 
             # /reload: a new session continues with the next mailbox slot (fonts stay cached in the client)
@@ -97,7 +97,7 @@ class Link(unittest.TestCase):
             comp2.new_process("P1-100")
             s2.comp = comp2
             s2.run(12)
-            self.assertNotIn("offline", s2.chat())
+            self.assertNotIn("lost the app", s2.chat())
             s2.slash("send after the companion restart")
             s2.run(6)
             self.assertEqual(comp2.sessions[comp2.current].messages[-1][4], "after the companion restart")
@@ -115,10 +115,11 @@ class Link(unittest.TestCase):
             # an outage: no packets for 20 s, the addon goes offline, then reconnects
             s2.comp_running = False
             s2.run(20)
-            self.assertIn("no packet from the companion for 15 s: offline", s2.chat())
+            self.assertRegex(s2.chat(), r"lost the app: \d+ messages waiting")
             s2.comp_running = True
             s2.run(10)
-            self.assertEqual(s2.chat().count("connected to the companion"), 3)   # before and after /reload, then the reconnect
+            self.assertEqual(s2.chat().count("connected to the app · /wb opens the panel"), 2)   # before and after /reload
+            self.assertEqual(s2.chat().count("connected to the app again"), 1)                   # then the reconnect
         finally:
             s.close()
 
@@ -136,7 +137,7 @@ class DebugOutput(unittest.TestCase):
             g[b"print"](b"before the link")                        # kept until the link starts
             s.login()
             s.run(8)
-            self.assertIn("connected to the companion", s.chat())
+            self.assertIn("connected to the app", s.chat())
             g[b"print"](b"hello", 42)
             g[b"print"](b"|cffff0000red|r line")
             for _ in range(3):
@@ -247,6 +248,40 @@ class AgentReload(unittest.TestCase):
         finally:
             s.close()
 
+    def test_reload_reason(self):
+        """the agent's reason shows under the question, in the chat and in the debug window, as plain words (no escape
+        codes); a reload asked without one shows none"""
+        logs, got = [], []
+        s = Session(self)
+        comp = link.Companion(s.addons, clock=s.now, log=logs.append, on_debug=lambda kind, text: got.append((kind, text)))
+        s.comp = comp
+        try:
+            comp.new_process("P1-100")
+            s.login()
+            s.run(8)
+            comp.command("reload", "new link\ncode")
+            self.assertRegex(comp.outbox[-1][1], rb"^reload \d+ new link code$")   # on one line
+            s.run(6)
+            dialog = s.lua.globals()[b"WoWBridgeReloadDialog"]
+            self.assertTrue(dialog[b"shown"])
+            self.assertEqual((dialog[b"body"][b"text"], dialog[b"note"][b"text"], dialog[b"note"][b"shown"]),
+                             (b"The agent asks for a UI reload", b"Reason: new link code", True))
+            self.assertIn("the agent asks for a UI reload: new link code. Click the button in the middle of the screen", s.chat())
+            self.assertTrue(console_lines(s)[-1].endswith("reload  the agent asks for a UI reload: new link code"))
+            self.assertIn(("RELOAD", "asked: a button is up; the UI reloads when the user clicks it"), got)
+            comp.command("reload", "red |cffff0000words|r")
+            s.run(6)
+            self.assertEqual(dialog[b"note"][b"text"], b"Reason: red ||cffff0000words||r")   # shown as typed
+            self.assertIn("the agent asks for a UI reload: red |cffff0000words|r. Click", s.chat())   # escaped: seen as typed
+            comp.command("reload")
+            s.run(6)
+            self.assertFalse(dialog[b"note"][b"shown"])
+            self.assertTrue(s.chat().splitlines()[-1].endswith("the agent asks for a UI reload: click the button in the middle "
+                                                               "of the screen"))
+            self.assertEqual(s.lua.globals()[b"__reloads"], 0)
+        finally:
+            s.close()
+
     def test_dump(self):
         """returned tables come back readable: sorted keys, nesting down to 3 levels, cycles, functions, a byte limit"""
         s = Session(self)
@@ -292,7 +327,7 @@ class HotLoad(unittest.TestCase):
             self.assertIn(("OUT", "hi 2"), got)
             self.assertRegex(runs()[-1], r'^\d+ ok =run \(\d+ B, [\d.]+ ms, 3 values\): "done", "nil", "3"$')
             self.assertRegex(console_lines(s)[-1], r"agent  ran a Lua snippet · [\d.]+ ms  → done, nil, 3  \[details\]$")
-            self.assertNotIn("agent code =run (", s.chat())             # the notice says it, not the chat
+            self.assertNotIn("the agent ran", s.chat())                 # the notice says it, not the chat
 
             foo = s.addons / "Foo"
             foo.mkdir()
@@ -450,14 +485,14 @@ class DebugWindow(unittest.TestCase):
             s.slash("set toasts off")
             comp.command("run return 1")
             s.run(6)
-            self.assertIn("agent code =run (", s.chat())                # no notice: the chat says it
+            self.assertIn("the agent ran a Lua snippet: ok", s.chat())  # no notice: the chat says it
 
             stats, before = s.ns[b"Agent"][b"stats"], len(console_lines(s))
-            runs = stats[b"runs"]
+            runs, said = stats[b"runs"], s.chat().count("the agent ran")
             comp.code(b"return true", "=probe")                         # the app's own look (a try's end marker)
             s.run(6)
             self.assertEqual((len(console_lines(s)), stats[b"runs"]), (before, runs))
-            self.assertNotIn("agent code =probe", s.chat())
+            self.assertEqual(s.chat().count("the agent ran"), said)
         finally:
             s.close()
 
@@ -568,8 +603,8 @@ class EarlyAndSlots(unittest.TestCase):
             s.comp.new_process("P1-100")
             s.login()
             s.run(10)
-            self.assertRegex(s.chat(), r"信箱槽位还剩 39\d 个（空闲时约 3\.\d 小时）。用完后 App 的消息就进不来了，要完整退出游戏再启动才能恢复")
-            self.assertEqual(s.chat().count("信箱槽位还剩"), 1)
+            self.assertRegex(s.chat(), r"App 消息余量剩 39\d（空闲约 3 小时）：用完后要完整重启游戏才能恢复")
+            self.assertEqual(s.chat().count("App 消息余量剩"), 1)
             self.assertIsNone(s.lua.globals()[b"WoWBridgeSlotsDialog"])
         finally:
             s.close()
@@ -579,7 +614,7 @@ class EarlyAndSlots(unittest.TestCase):
             s.comp.new_process("P1-100")
             s.login()
             s.run(10)
-            self.assertIn("信箱槽位已用完", s.chat())
+            self.assertIn("App 消息余量已用完", s.chat())
             self.assertTrue(s.lua.globals()[b"WoWBridgeSlotsDialog"][b"shown"])
             self.assertTrue(any(t.startswith("mailbox full: all 4096 slots") for t in logs), logs)
             self.assertFalse(any("writing again" in t for t in logs), logs)   # all read is not a lost last slot
@@ -595,12 +630,13 @@ class EarlyAndSlots(unittest.TestCase):
             s.comp.new_process("P1-100")
             s.login()
             s.run(8)
-            self.assertIn("a heartbeat every 30 s", s.chat())
+            P = s.ns[b"Link"][b"P"]
+            self.assertEqual((P[b"hb"], P[b"offline"]), (30, 90))
             s.comp_running = False
             s.run(65)
-            self.assertNotIn("offline", s.chat())
+            self.assertNotIn("lost the app", s.chat())
             s.run(30)
-            self.assertIn("no packet from the companion for 90 s: offline", s.chat())
+            self.assertIn("lost the app: 0 messages waiting", s.chat())
         finally:
             s.close()
 
@@ -617,7 +653,7 @@ class ProtocolV08(unittest.TestCase):
         comp.new_process("P1-100")
         s.login()
         s.run(8)
-        self.assertIn("connected to the companion", s.chat())
+        self.assertIn("connected to the app", s.chat())
         return s, comp, logs, got
 
     def test_user_text_is_not_parsed(self):
@@ -685,7 +721,7 @@ class ProtocolV08(unittest.TestCase):
             self.assertEqual([m[1] for m in sess.messages][-10:], [65530, 65531, 65532, 65533, 65534, 65535, 1, 2, 3, 4])
             self.assertEqual(sess.ack, 4)
             s.slash("link")
-            self.assertRegex(s.chat(), r"0 waiting, 10 acknowledged")
+            self.assertRegex(s.chat(), r"0 waiting · 10 acknowledged")
             self.assertEqual(s.lua.globals()[b"WoWBridgeDB"][b"nextData"], 5)
         finally:
             s.close()
@@ -763,14 +799,14 @@ class ProtocolV08(unittest.TestCase):
             s2.run(6)
             self.assertEqual(len([t for k, t in got if k == "ERR"]), 1)
             s2.slash("set autoLink off")
-            before = s2.chat().count("connected to the companion")     # the chat log is the client's, across reloads
+            before = s2.chat().count("connected to the app")           # the chat log is the client's, across reloads
             s3 = s2.reload()
             s3.login()
             s3.run(5)
-            self.assertEqual(s3.chat().count("connected to the companion"), before)
+            self.assertEqual(s3.chat().count("connected to the app"), before)
             s3.slash("set autoLink on")                                 # starts the link right away
             s3.run(8)
-            self.assertEqual(s3.chat().count("connected to the companion"), before + 1)
+            self.assertEqual(s3.chat().count("connected to the app"), before + 1)
         finally:
             s.close()
 
@@ -792,17 +828,16 @@ class PanelAndLanguage(unittest.TestCase):
         s = self.start(locale="zhCN")
         try:
             # 无限工坊's prefix: the mark and the name in gold
-            self.assertIn(f"Media\\mark-wide:14:28|t |cffd8a85a无限工坊|r 开发组件 {link.VERSION} 已加载：/wb 打开面板", s.chat())
-            self.assertIn("已连接无限工坊 App", s.chat())
+            self.assertIn("Media\\mark-wide:14:28|t |cffd8a85a无限工坊|r 已连接 App · /wb 打开面板", s.chat())
             s.slash("lang en")
             self.assertIn("language: English", s.chat())
             s.slash("link")
-            self.assertRegex(s.chat().splitlines()[-1], r"link online, mailbox slot \d+")
+            self.assertRegex(s.chat().splitlines()[-1], r"link online · \d+ app messages left")
             self.assertEqual(s.lua.globals()[b"WoWBridgeDB"][b"settings"][b"lang"], b"enUS")
             s.slash("lang auto")                                    # back to the client's: Chinese, nothing kept
             self.assertIn("语言：跟随客户端", s.chat())
             s.slash("link")
-            self.assertRegex(s.chat().splitlines()[-1], r"链路在线，信箱槽位 \d+")    # the state in words too
+            self.assertRegex(s.chat().splitlines()[-1], r"链路在线 · App 消息余量 \d+")    # the state in words too
             self.assertIsNone(s.lua.globals()[b"WoWBridgeDB"][b"settings"][b"lang"])
             s.slash("lang klingon")
             self.assertIn("用法：/wb lang auto|zh|en", s.chat())
@@ -893,8 +928,8 @@ class PanelAndLanguage(unittest.TestCase):
             panel = g[b"WoWBridgePanel"]
             self.assertTrue(panel[b"shown"])
             self.assertFalse(panel[b"kit"][b"shown"])
-            self.assertEqual(enter()[-3:], [b"Left-click: the panel", b"Right-click: the debug output",
-                                            b"Drag: move this button"])
+            self.assertEqual(enter()[-3:], [b"Left-click\tthe panel", b"Right-click\tthe debug output",
+                                            b"Drag\tmove this button"])
             g[b"__shift"] = True
             button.Click(button, "LeftButton")                       # Shift or not: the panel, as before
             self.assertFalse(panel[b"shown"])
@@ -919,10 +954,10 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertFalse(panel[b"shown"])
             g[b"__shift"] = False
             self.assertEqual(list(g[b"__opened"].values()), [b"last", b"tune", b"last"])
-            self.assertEqual(enter()[-4:], [b"Left-click: the panel", b"Right-click: the debug output",
-                                            b"Shift-click: WuxianKit", b"Drag: move this button"])
+            self.assertEqual(enter()[-4:], [b"Left-click\tthe panel", b"Right-click\tthe debug output",
+                                            b"Shift-click\tWuxianKit", b"Drag\tmove this button"])
             s.slash("help")
-            self.assertIn("| kit [page] (WuxianKit)", s.chat().splitlines()[-1])
+            self.assertIn(" · /wb kit [page] WuxianKit", s.chat().splitlines()[-1])
             s.slash("lang zh")
             button.Click(button, "LeftButton")
             self.assertEqual(panel[b"kit"][b"text"].decode(), "扩展框架")
@@ -936,11 +971,24 @@ class PanelAndLanguage(unittest.TestCase):
             s.close()
 
     def test_panel_and_minimap_button(self):
+        """the panel as designed: 概览 with the link's state (and what to do while the app is not there), a notice when
+        something needs doing, this session's numbers and its latest lines; 设置 with the frame, the agent's switches and
+        the interface; 诊断 with the link's numbers, its tests and the diagnostics to copy; both languages. The minimap
+        button shows the state at its foot, its tooltip what the mouse does in two columns"""
         s = self.start()
         try:
             g = s.lua.globals()
+            green, red = (0x6f / 255, 0xcf / 255, 0x97 / 255), (0xf2 / 255, 0x8b / 255, 0x82 / 255)
             button = g[b"WoWBridgeMinimapButton"]
             self.assertTrue(button[b"shown"])
+            self.assertEqual(tuple(button[b"dot"][b"vertex"].values())[:3], green)
+            button[b"scripts"][b"OnEnter"](button)
+            tip = [t.decode() for t in g[b"GameTooltip"][b"lines"].values()]
+            self.assertEqual(tip[0], "Wuxian Workshop · WoWBridge")
+            self.assertEqual(tip[1], "|TInterface\\AddOns\\WoWBridge\\Media\\stud:8:8:0:0:32:32:0:32:0:32:111:207:151|t "
+                                     "Connected to the app")         # the diamond in the state's colour
+            self.assertEqual(tip[2:], [" ", "Left-click\tthe panel", "Right-click\tthe debug output", "Drag\tmove this button"])
+
             button.Click(button, "LeftButton")                       # left-click: the panel, on 概览
             panel = g[b"WoWBridgePanel"]
             self.assertTrue(panel[b"shown"])
@@ -951,53 +999,96 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual([pages[t[b"id"]][b"shown"] for t in tabs], [True, False, False])
             self.assertEqual([t[b"mark"][b"shown"] for t in tabs], [True, False, False])   # the gold bar under 概览
             self.assertEqual(panel[b"titleText"][b"text"], b"Wuxian Workshop")
-            self.assertEqual(panel[b"version"][b"text"].decode(), f"Developer addon · WoWBridge {link.VERSION}")
-            self.assertEqual(panel[b"state"][b"text"], b"Connected to the app")
-            self.assertEqual(tuple(panel[b"dot"][b"vertex"].values())[:3], (0x6f / 255, 0xcf / 255, 0x97 / 255))   # green
-            self.assertTrue(panel[b"link"][b"checked"])
-            self.assertTrue(panel[b"link"][b"checkedTexture"][b"texture"].endswith(b"Media\\stud"))   # ticked: the diamond
-            self.assertEqual(panel[b"runs"][b"text"], b"Agent code: nothing run since the last reload")
-            self.assertEqual(panel[b"errors"][b"text"], b"Lua errors: 0 \xc2\xb7 warnings: 0 \xc2\xb7 blocked: 0")
-            self.assertFalse(panel[b"act"][b"shown"])                 # nothing to do
+            self.assertEqual(panel[b"version"][b"text"].decode(), f"Developer addon {link.VERSION}")
+            card, notice = panel[b"card"], panel[b"notice"]
+            self.assertEqual(card[b"state"][b"text"], b"Connected to the app")
+            self.assertEqual(tuple(card[b"dot"][b"vertex"].values())[:3], green)
+            self.assertEqual((card[b"act"][b"shown"], card[b"hint"][b"shown"], card[b"h"]), (False, False, 54))   # nothing to do
+            self.assertFalse(notice[b"shown"])
+            tiles = list(panel[b"tiles"].values())
+            self.assertEqual([t[b"label"][b"text"] for t in tiles], [b"Agent runs", b"Failed", b"Lua errors", b"Blocked"])
+            self.assertEqual([t[b"num"][b"text"] for t in tiles], [b"0", b"0", b"0", b"0"])
+            self.assertFalse(panel[b"held"][b"shown"])
+            rows = list(panel[b"recent"].values())                   # the debug window's latest lines
+            self.assertEqual((rows[0][b"shown"], rows[0][b"tag"][b"text"], rows[0][b"text"][b"text"], rows[0][b"tab"]),
+                             (True, b"link", b"connected to the app", b"runs"))
+            self.assertFalse(rows[1][b"shown"])
+            self.assertFalse(panel[b"recentNone"][b"shown"])
+
             s.ns[b"Agent"][b"stats"][b"runs"] = 3
-            s.ns[b"Agent"][b"stats"][b"last"] = s.lua.table_from({b"name": b"=run", b"ok": False, b"at": g[b"GetTime"]() - 75})
-            s.run(1.1)
-            self.assertEqual(panel[b"runs"][b"text"], b"Agent code ran 3 times, 0 failed")
-            self.assertEqual(panel[b"last"][b"text"].decode(), "Last: a Lua snippet \xb7 |cfff28b82error|r \xb7 1 min ago")
+            s.ns[b"Agent"][b"stats"][b"failed"] = 1
+            g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value")
+            s.run(1.1)                                                # the panel's next refresh
+            self.assertEqual([t[b"num"][b"text"] for t in tiles], [b"3", b"1", b"1", b"0"])
+            self.assertEqual(tuple(tiles[1][b"num"][b"textColor"].values())[:3], red)   # failures and errors count red
+            self.assertEqual(tuple(tiles[2][b"num"][b"textColor"].values())[:3], red)
+            self.assertNotEqual(tuple(tiles[0][b"num"][b"textColor"].values())[:3], red)
+            self.assertEqual((rows[0][b"tag"][b"text"], rows[0][b"tab"]), (b"error", b"errors"))   # the newest first
+            self.assertIn(b"attempt to call a nil value", rows[0][b"text"][b"text"])
+            self.assertEqual(rows[1][b"text"][b"text"], b"connected to the app")
+            rows[0].Click(rows[0])                                    # a line opens the debug window on its kind
+            console = g[b"WoWBridgeConsole"]
+            self.assertTrue(console[b"shown"])
+            self.assertEqual(console[b"tabs"][b"selected"], b"errors")
+            console[b"close"].Click(console[b"close"])
+            self.assertEqual(panel[b"console"][b"label"][b"text"], b"Debug output \xe2\x80\xba")
+            panel[b"console"].Click(panel[b"console"])                # 调试输出 ›: the window again
+            self.assertTrue(console[b"shown"])
+            console[b"close"].Click(console[b"close"])
+
             tabs[2].Click(tabs[2])                                    # 诊断: the link's numbers
             self.assertEqual([pages[t[b"id"]][b"shown"] for t in tabs], [False, False, True])
-            self.assertRegex(panel[b"st1"][b"text"].decode(), r"^Link: \|cff6fcf97online\|r")   # the state in its colour
-            self.assertRegex(panel[b"st2"][b"text"].decode(), r"^Mailbox slots left: \d+ \(about [\d.]+ h when idle\)$")
-            self.assertRegex(panel[b"st3"][b"text"].decode(), r"^Waiting \d+ \xb7 acknowledged \d+ \xb7 heartbeat 30 s$")
+            kv = [r[b"text"].decode() for r in panel[b"kv"].values()]
+            self.assertRegex(kv[0], r"^\|cff6fcf97online\|r · session \d+$")   # the state in its colour
+            self.assertRegex(kv[1], r"^\d+ \(about \d+ h idle\)$")
+            self.assertRegex(kv[2], r"^0 / \d+$")
+            self.assertEqual(kv[3], "every 30 s")
+            self.assertRegex(kv[4], r"^mode 3 · 0\.\d\d s a frame$")
+            box = panel[b"diagBox"]
+            panel[b"copyDiag"].Click(panel[b"copyDiag"])              # the diagnostics in a box, selected, for a report
+            self.assertEqual((box[b"shown"], box[b"highlighted"], panel[b"diagNote"][b"shown"]), (True, True, False))
+            self.assertTrue(box[b"text"].decode().startswith(f"v={link.VERSION};"))
+            box[b"scripts"][b"OnEscapePressed"](box)
+            self.assertEqual((box[b"shown"], panel[b"diagNote"][b"shown"]), (False, True))
+            said = len(s.chat().splitlines())
+            panel[b"restart"].Click(panel[b"restart"])                # 重新连接: the link starts over ...
+            self.assertEqual(s.ns[b"Link"][b"State"](), b"hello")
+            s.run(8)
+            self.assertEqual([line.split("|r ", 1)[1] for line in s.chat().splitlines()[said:]],
+                             ["connected to the app again"])          # ... and the chat says only that it is back
+
             tabs[1].Click(tabs[1])                                    # 设置
             self.assertTrue(pages[b"settings"][b"shown"])
+            self.assertEqual((panel[b"position"][b"text"], panel[b"unlock"][b"text"]), (b"Position 0, 0", b"Move"))
             zh = [b for b in panel[b"langs"].values() if b[b"setting"] == b"zhCN"][0]
             auto = [b for b in panel[b"langs"].values() if b[b"setting"] == b"auto"][0]
             self.assertEqual(auto[b"text"], b"Auto")                 # the short name on the button
             self.assertTrue(auto[b"selected"])
             zh.Click(zh)                                              # the language buttons
             self.assertEqual(panel[b"titleText"][b"text"].decode(), "无限工坊")
-            self.assertEqual(panel[b"version"][b"text"].decode(), f"开发组件 · WoWBridge {link.VERSION}")
+            self.assertEqual(panel[b"version"][b"text"].decode(), f"开发组件 {link.VERSION}")
             self.assertEqual([t[b"label"][b"text"].decode() for t in tabs], ["概览", "设置", "诊断"])
-            self.assertEqual(panel[b"state"][b"text"].decode(), "已连接 App")
+            self.assertEqual(card[b"state"][b"text"].decode(), "已连接 App")
+            self.assertEqual([t[b"label"][b"text"].decode() for t in tiles], ["Agent 运行", "运行失败", "Lua 报错", "被拦截"])
             self.assertEqual(auto[b"text"].decode(), "自动")
             self.assertFalse(zh[b"enabled"])                          # the one in force: marked, not clickable
             self.assertTrue(zh[b"selected"])
             self.assertFalse(auto[b"selected"])
             s.slash("unlock")
             s.run(1.1)                                                # the panel's next refresh
-            self.assertEqual(panel[b"unlock"][b"kind"], b"primary")   # unlocked: locking is the button to press
-            self.assertTrue(panel[b"act"][b"shown"])                  # and 概览 says so, with the button that does it
-            self.assertEqual(panel[b"act"][b"text"].decode(), "锁定位置")
-            panel[b"act"].Click(panel[b"act"])
+            self.assertEqual((panel[b"unlock"][b"kind"], panel[b"unlock"][b"text"].decode()), (b"primary", "锁定"))
+            self.assertTrue(notice[b"shown"])                         # and 概览 says so, with the button that does it
+            self.assertEqual((notice[b"what"], notice[b"text"][b"text"].decode(), notice[b"act"][b"text"].decode()),
+                             (b"lock", "帧码可以拖动：放到不挡东西的地方再锁定", "锁定"))
+            notice[b"act"].Click(notice[b"act"])
             self.assertFalse(s.ns[b"Frame"][b"IsUnlocked"]())
-            self.assertIsNone(panel[b"unlock"][b"kind"])
-            self.assertFalse(panel[b"act"][b"shown"])
+            self.assertEqual((panel[b"unlock"][b"kind"], panel[b"unlock"][b"text"].decode()), (None, "移动"))
+            self.assertFalse(notice[b"shown"])
             panel[b"hot"][b"checked"] = False
             panel[b"hot"].Click(panel[b"hot"])                        # hot loading off: 概览 offers to turn it on
-            self.assertEqual((panel[b"act"][b"what"], panel[b"act"][b"text"].decode()), (b"hotload", "打开"))
-            self.assertEqual(panel[b"notice"][b"text"].decode(), "热加载已关闭：Agent 发来的代码不会运行。")
-            panel[b"act"].Click(panel[b"act"])
+            self.assertEqual((notice[b"what"], notice[b"text"][b"text"].decode(), notice[b"act"][b"text"].decode()),
+                             (b"hotload", "热加载已关闭：Agent 发来的代码不会运行", "打开"))
+            notice[b"act"].Click(notice[b"act"])
             self.assertIs(g[b"WoWBridgeDB"][b"settings"][b"hotLoad"], True)
             self.assertTrue(panel[b"hot"][b"checked"])
             panel[b"minimap"][b"checked"] = False
@@ -1007,6 +1098,16 @@ class PanelAndLanguage(unittest.TestCase):
             panel[b"link"][b"checked"] = False
             panel[b"link"].Click(panel[b"link"])                      # the link off from the panel
             self.assertEqual(s.ns[b"Link"][b"State"](), b"off")
+            self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"act"][b"text"].decode(),
+                              card[b"hint"][b"shown"]), ("未连接", True, "显示帧码", False))   # 概览 offers it back
+            self.assertTrue(panel[b"held"][b"shown"])                # the error waits in the game meanwhile
+            card[b"act"].Click(card[b"act"])
+            self.assertEqual(s.ns[b"Link"][b"State"](), b"hello")
+            self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"text"].decode(), card[b"hint"][b"shown"],
+                              card[b"h"]), ("等待 App", "重新连接", True, 90))
+            s.run(8)
+            self.assertIn("已重新连接 App", s.chat())
+            self.assertEqual(card[b"state"][b"text"].decode(), "已连接 App")
             s.slash("")                                               # /wb alone: the panel again (closes it)
             self.assertFalse(panel[b"shown"])
             s.slash("")                                               # and opens it on the tab shown last
@@ -1026,7 +1127,8 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual((box[b"shown"], panel[b"site"][b"shown"]), (False, True))
             categories = list(g[b"__categories"].values())            # Options > AddOns has its page
             self.assertEqual([c[b"name"].decode() for c in categories], ["Wuxian Workshop · WoWBridge"])
-            self.assertEqual(list(g[b"__errors"].values()), [])       # and nothing failed on the way
+            self.assertEqual(list(g[b"__errors"].values()),           # and nothing failed on the way but the error made above
+                             [b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value"])
         finally:
             s.close()
 
@@ -1184,7 +1286,7 @@ class NewGameProcess(unittest.TestCase):
             comp.say("你好")
             s.login()
             s.run(10)
-            self.assertIn("connected to the companion (mailbox slot 1)", s.chat(), logs)
+            self.assertIn("connected to the app · /wb opens the panel", s.chat(), logs)
             self.assertIn("> 你好", s.chat())
             self.assertIn("reads from slot 1 now", " ".join(logs))
         finally:

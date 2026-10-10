@@ -1444,8 +1444,9 @@ class Service:
             comp = self.worker.companion()
             self.ready(comp, "reload")
             n = len(comp.outbox)
-            comp.command("reload")                 # a nonce is appended to the command; the addon asks the user once
-            nonce = next((int(d[7:]) for k, d in comp.outbox[n:] if k == MB.COMMAND and d.startswith(b"reload ")), None)
+            comp.command("reload", reason)         # a nonce (and the reason) after it; the addon asks the user once
+            nonce = next((int(d[7:].split()[0]) for k, d in comp.outbox[n:] if k == MB.COMMAND and d.startswith(b"reload ")),
+                         None)
             self.journal.add("RELOAD", "requested" + (f": {reason}" if reason else "") +
                              " (the addon shows a button; the UI reloads when the user clicks it)")
             return dict(requested=True, nonce=nonce)

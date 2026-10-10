@@ -61,7 +61,7 @@ class Link(unittest.TestCase):
         sess = s.comp.sessions[s.comp.current]
         self.assertTrue(sess.welcomed and sess.online_at is not None, self.logs)
         self.assertEqual(len(self.texts("ERR")), 20)
-        self.assertIn("connected to the companion", s.chat())
+        self.assertIn("connected to the app", s.chat())
 
     def test_acknowledgements_are_lazy(self):
         """a print every half second for five minutes: a packet every ack_lazy seconds or so instead of every second
@@ -76,7 +76,7 @@ class Link(unittest.TestCase):
         self.assertEqual(lines, [f"tick {i}" for i in range(600)])
         self.assertLess(s.comp.slot - slot, 40)
         self.assertEqual(s.comp.stats["dups"], 0)
-        self.assertRegex(s.ns[b"Link"][b"Status"]().decode(), r"; 0 waiting, \d+ acknowledged .* 0 parts shown again")
+        self.assertRegex(s.ns[b"Link"][b"Status"]().decode(), r" · 0 waiting · \d+ acknowledged .* · 0 parts shown again")
 
     def test_small_messages_share_frames(self):
         """a burst of errors goes up a few to a frame (the WELCOME said pack=1): 20 errors in a handful of frames, in

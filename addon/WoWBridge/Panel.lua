@@ -1,9 +1,12 @@
 -- WoWBridge's panel (/wb, the minimap button, Options > AddOns) in 无限工坊's look (Skin.lua), in three tabs:
---   概览 (overview): is the app connected (and what to do when not), the switch that connects, what the agent ran and the
---        Lua errors since the last reload (调试输出 opens the debug window, Console.lua), and a notice with its button when
---        something needs doing (the frame is unlocked, hot loading is off);
---   设置 (settings): the frame's place (unlock to drag it, lock, back to the corner), the switches, the language;
---   诊断 (diagnostics): the link's numbers and tests, for finding out why it does not connect.
+--   概览 (overview): a card with the link's state (and, when the app is not there, the button that reconnects or shows
+--        the frame), a notice with its button when something needs doing (the frame unlocked, hot loading off), this
+--        session's numbers (the agent's runs and failures, Lua errors, blocked actions) with the way to the debug window,
+--        and its latest lines (Console.lua), each opening the debug window on its kind;
+--   设置 (settings): 帧码 (the link's switch, the frame's place), Agent (hot loading, what goes to the app, the notice),
+--        界面 (the minimap button, the language);
+--   诊断 (diagnostics): the link's numbers, the link tests, dropping what waits to go up, and the diagnostics in a box to
+--        copy (for a bug report).
 -- It opens on 概览, or on the tab it showed last since the last reload. Everything it changes is kept for this character
 -- in WoWBridgeDB.settings, the same as the /wb commands do; the words are Locale.lua's and change with the language.
 local _, ns = ...
@@ -13,13 +16,18 @@ local C = S.C
 local P = {}
 ns.Panel = P
 
-local WIDTH, HEIGHT, PAD = 400, 440, 20
+local WIDTH, HEIGHT, PAD = 400, 470, 20
 local INNER = WIDTH - 2 * PAD
 local TOP, BOTTOM = 106, 64             -- the pages' area: below the tabs, above the ornament and the footer
+local GAP = 12                          -- between the overview's blocks
+local ROW = 18                          -- a line of small words
 local TABS = { "overview", "settings", "diag" }
 local TAB_WORDS = { overview = "TAB_OVERVIEW", settings = "TAB_SETTINGS", diag = "TAB_DIAG" }
 local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF" }
 local WHY_WORDS = { online = "WHY_ONLINE", hello = "WHY_HELLO", off = "WHY_OFF" }
+local TILES = { "TILE_RUNS", "TILE_FAILED", "TILE_ERRORS", "TILE_BLOCKED" }
+local KV = { "KV_STATE", "KV_SLOTS", "KV_QUEUE", "KV_HEARTBEAT", "KV_FRAME" }
+local RECENT = 3                        -- the latest lines on 概览, at most
 local panel, ticker, options
 local labels = {}         -- what Refresh relabels: { object, key }
 local headings = {}       -- section headings: { words, key }
@@ -36,8 +44,8 @@ local function Page(id)
 	return page
 end
 
-local function Heading(page, y, key)
-	local fs = S.Heading(page, PAD, y, INNER)
+local function Heading(page, y, key, width)
+	local fs = S.Heading(page, PAD, y, width or INNER)
 	headings[#headings + 1] = { fs, key }
 	return fs
 end
@@ -66,61 +74,134 @@ local function Button(page, x, y, width, key, onClick, kind)
 	return b
 end
 
--- how long ago a GetTime() was, in words
-local function Ago(at)
-	local s = math.max(0, GetTime() - at)
-	if s < 60 then return L.AGO_S:format(math.floor(s)) end
-	if s < 3600 then return L.AGO_M:format(math.floor(s / 60)) end
-	return L.AGO_H:format(math.floor(s / 3600))
+-- a plain block: a fill and hairlines round it
+local function Block(parent, fill, edge)
+	local f = CreateFrame("Frame", nil, parent)
+	f.bg = f:CreateTexture(nil, "BACKGROUND")
+	f.bg:SetAllPoints()
+	S.Fill(f.bg, fill)
+	S.Edges(S.Border(f), edge)
+	return f
+end
+
+-- light gold words that act as a link, right-aligned in w ("调试输出 ›"); lighter still under the mouse
+local function TextButton(parent, w, key, onClick)
+	local b = CreateFrame("Button", nil, parent)
+	b:SetSize(w, ROW)
+	b.label = S.Text(b, "GameFontHighlightSmall", C.goldL)
+	b.label:SetPoint("RIGHT", b, "RIGHT")
+	b.label:SetJustifyH("RIGHT")
+	b:SetScript("OnEnter", function() S.Ink(b.label, C.fg) end)
+	b:SetScript("OnLeave", function() S.Ink(b.label, C.goldL) end)
+	b:SetScript("OnClick", onClick)
+	labels[#labels + 1] = { b.label, key }
+	return b
 end
 
 local function BuildOverview()
 	local page = Page("overview")
-	panel.dot = S.Dot(page, 12)
-	panel.dot:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -6)
-	panel.state = S.Text(page, "GameFontNormalLarge")
-	panel.state:SetPoint("LEFT", panel.dot, "RIGHT", 10, 0)
-	panel.why = Line(page, PAD, -28, C.muted)
-	panel.link = Check(page, -64, "OPT_LINK", function(on) WB().SetLink(on) P.Refresh() end, "OPT_LINK_TIP")
-	headings[#headings + 1] = { S.Heading(page, PAD, -102, INNER - 108), "SECTION_SESSION" }   -- its line up to the button
-	panel.console = Button(page, WIDTH - PAD - 96, -98, 96, "BTN_CONSOLE", function()
+	-- the state: what the link is doing, and what to do while the app is not there
+	local card = Block(page, C.field, C.line)
+	card:SetWidth(INNER)
+	card.dot = S.Dot(card, 9)
+	card.dot:SetPoint("TOPLEFT", card, "TOPLEFT", 14, -16)
+	card.state = S.Text(card, "GameFontNormalLarge")
+	card.state:SetPoint("TOPLEFT", card, "TOPLEFT", 35, -11)
+	card.why = S.Text(card, "GameFontHighlightSmall", C.muted)
+	card.why:SetPoint("TOPLEFT", card, "TOPLEFT", 35, -32)
+	card.why:SetWidth(INNER - 49)
+	card.act = S.Button(card, 88, 24, "primary")
+	card.act:SetPoint("TOPLEFT", card, "TOPLEFT", 35, -54)
+	card.act:SetScript("OnClick", function()
+		if ns.Link.State() == "off" then WB().SetLink(true) else WB().Reconnect() end
+		P.Refresh()
+	end)
+	card.hint = S.Text(card, "GameFontHighlightSmall", C.muted)
+	card.hint:SetPoint("LEFT", card.act, "RIGHT", 10, 0)
+	labels[#labels + 1] = { card.hint, "HELLO_HINT" }
+	panel.card = card
+	-- something to do: the words and the button that does it (Refresh decides which, if any)
+	local notice = Block(page, C.goldSoft, C.goldD)
+	notice:SetSize(INNER, 36)
+	notice.text = S.Text(notice, "GameFontHighlightSmall", C.goldL)
+	notice.text:SetPoint("LEFT", notice, "LEFT", 12, 0)
+	notice.text:SetWidth(INNER - 96)
+	notice.act = S.Button(notice, 64, 22, "primary")
+	notice.act:SetPoint("RIGHT", notice, "RIGHT", -8, 0)
+	notice.act:SetScript("OnClick", function()
+		if notice.what == "lock" then WB().Lock() else ns.Set("hotLoad", true) end
+		P.Refresh()
+	end)
+	panel.notice = notice
+	-- this session: its numbers, and the way to the debug window
+	panel.session = Heading(page, 0, "SECTION_SESSION", INNER - 100)
+	panel.console = TextButton(page, 92, "BTN_CONSOLE", function()
 		ns.Console.Show(ns.Debug.stats.errors > 0 and "errors" or nil)
 	end)
-	panel.runs = Line(page, PAD, -126)
-	panel.last = Line(page, PAD, -144, C.muted)
-	panel.errors = Line(page, PAD, -162)
-	-- something to do: the words and the button that does it (Refresh decides which, if any)
-	panel.notice = Line(page, PAD, -196, C.goldL, INNER - 108)
-	panel.act = Button(page, WIDTH - PAD - 96, -190, 96, nil, function()
-		if panel.act.what == "lock" then WB().Lock() else ns.Set("hotLoad", true) end
-		P.Refresh()
-	end, "primary")
-	panel.hint = Line(page, PAD, -236, C.muted)
-	labels[#labels + 1] = { panel.hint, "FOOTER" }
+	panel.tiles = {}
+	local w = (INNER - 3 * 8) / 4
+	for i, key in ipairs(TILES) do
+		local tile = Block(page, C.panel2, C.line)
+		tile:SetSize(w, 46)
+		tile.num = S.Text(tile, "GameFontHighlightLarge")
+		tile.num:SetPoint("TOP", tile, "TOP", 0, -7)
+		tile.num:SetJustifyH("CENTER")
+		tile.label = S.Text(tile, "GameFontHighlightSmall", C.muted)
+		tile.label:SetPoint("BOTTOM", tile, "BOTTOM", 0, 6)
+		tile.label:SetJustifyH("CENTER")
+		labels[#labels + 1] = { tile.label, key }
+		panel.tiles[i] = tile
+	end
+	panel.held = Line(page, PAD, 0, C.muted, INNER)
+	labels[#labels + 1] = { panel.held, "HELD" }
+	-- the latest lines of the debug window, newest first: a click opens it on their kind
+	panel.recentLabel = Line(page, PAD, 0, C.muted, INNER)
+	labels[#labels + 1] = { panel.recentLabel, "RECENT" }
+	panel.recentNone = Line(page, PAD, 0, C.muted, INNER)
+	labels[#labels + 1] = { panel.recentNone, "RECENT_NONE" }
+	panel.recent = {}
+	for i = 1, RECENT do
+		local row = CreateFrame("Button", nil, page)
+		row:SetSize(INNER, ROW)
+		row.time = S.Text(row, "GameFontHighlightSmall", C.muted)
+		row.time:SetPoint("LEFT", row, "LEFT")
+		row.tag = S.Text(row, "GameFontHighlightSmall")
+		row.tag:SetPoint("LEFT", row, "LEFT", 46, 0)
+		row.text = S.Text(row, "GameFontHighlightSmall")
+		row.text:SetPoint("LEFT", row, "LEFT", 92, 0)
+		row.text:SetPoint("RIGHT", row, "RIGHT")
+		row.text:SetWordWrap(false)
+		row:SetScript("OnClick", function(self) ns.Console.Show(self.tab) end)
+		row:SetScript("OnEnter", function(self) S.Ink(self.text, C.goldL) end)
+		row:SetScript("OnLeave", function(self) S.Ink(self.text, C.fg) end)
+		panel.recent[i] = row
+	end
 end
 
 local function BuildSettings()
 	local page = Page("settings")
-	Heading(page, -4, "SECTION_POSITION")
-	panel.unlock = Button(page, PAD, -26, 140, nil, function()
+	Heading(page, -4, "SECTION_FRAME")
+	panel.link = Check(page, -26, "OPT_LINK", function(on) WB().SetLink(on) P.Refresh() end, "OPT_LINK_TIP")
+	panel.position = Line(page, PAD, -58, C.muted, 150)
+	panel.reset = Button(page, WIDTH - PAD - 96, -53, 96, "BTN_RESET", function() WB().ResetPosition() P.Refresh() end)
+	panel.unlock = Button(page, WIDTH - PAD - 96 - 8 - 64, -53, 64, nil, function()
 		if ns.Frame.IsUnlocked() then WB().Lock() else WB().Unlock() end
 		P.Refresh()
 	end)
-	panel.reset = Button(page, PAD + 148, -26, 120, "BTN_RESET", function() WB().ResetPosition() P.Refresh() end)
-	panel.position = Line(page, PAD, -58, C.muted)
-	Heading(page, -90, "SECTION_OPTIONS")
-	panel.debug = Check(page, -112, "OPT_DEBUG", function(on) ns.Set("forwardDebug", on) P.Refresh() end)
-	panel.hot = Check(page, -134, "OPT_HOTLOAD", function(on) ns.Set("hotLoad", on) P.Refresh() end)
-	panel.minimap = Check(page, -156, "OPT_MINIMAP", function(on)
+	Heading(page, -92, "SECTION_AGENT")
+	panel.hot = Check(page, -114, "OPT_HOTLOAD", function(on) ns.Set("hotLoad", on) P.Refresh() end)
+	panel.debug = Check(page, -136, "OPT_DEBUG", function(on) ns.Set("forwardDebug", on) P.Refresh() end)
+	panel.toasts = Check(page, -158, "OPT_TOASTS", function(on) ns.Set("toasts", on) P.Refresh() end)
+	Heading(page, -192, "SECTION_UI")
+	panel.minimap = Check(page, -214, "OPT_MINIMAP", function(on)
 		ns.Set("minimapHide", not on)
 		if ns.MinimapButton then ns.MinimapButton.Update() end
 	end)
-	panel.toasts = Check(page, -178, "OPT_TOASTS", function(on) ns.Set("toasts", on) P.Refresh() end)
-	panel.langLabel = Line(page, PAD, -220, nil, 84)
+	panel.langLabel = Line(page, PAD, -248, nil, 100)
 	panel.langs = {}
 	for i, setting in ipairs(ns.LANGUAGES) do
-		local b = S.Button(page, 80, 24)
-		b:SetPoint("TOPLEFT", page, "TOPLEFT", PAD + 88 + (i - 1) * 86, -214)
+		local b = S.Button(page, 72, 24)
+		b:SetPoint("TOPLEFT", page, "TOPLEFT", WIDTH - PAD - 3 * 72 - 2 * 8 + (i - 1) * 80, -243)
 		b:SetScript("OnClick", function() WB().SetLanguage(setting) end)
 		b.setting = setting
 		panel.langs[i] = b
@@ -129,23 +210,37 @@ end
 
 local function BuildDiagnostics()
 	local page = Page("diag")
-	local third, half = (INNER - 16) / 3, (INNER - 8) / 2
 	Heading(page, -4, "SECTION_LINK")
-	panel.st1 = Line(page, PAD, -26)
-	panel.st2 = Line(page, PAD, -44, C.muted)
-	panel.st3 = Line(page, PAD, -62, C.muted)
-	Heading(page, -94, "SECTION_TESTS")
-	Button(page, PAD, -116, third, "BTN_SEND", function() WB().Send(L.TEST_TEXT) end)
-	Button(page, PAD + third + 8, -116, third, "BTN_BURST", function() WB().Burst(10) end)
-	Button(page, PAD + 2 * (third + 8), -116, third, "BTN_LONG", function() WB().Long(6000) end)
-	Button(page, PAD, -144, half, "BTN_RESTART", function()
-		WB().SetLink(false)
-		WB().SetLink(true)
+	panel.kv = {}
+	for i, key in ipairs(KV) do
+		local y = -26 - (i - 1) * ROW
+		local k = Line(page, PAD, y, C.muted, 96)
+		labels[#labels + 1] = { k, key }
+		panel.kv[i] = Line(page, PAD + 108, y, nil, INNER - 108)
+	end
+	Heading(page, -26 - #KV * ROW - 12, "SECTION_TESTS")
+	local third = (INNER - 16) / 3
+	local y1 = -26 - #KV * ROW - 36
+	Button(page, PAD, y1, third, "BTN_SEND", function() WB().Send(L.TEST_TEXT) end)
+	Button(page, PAD + third + 8, y1, third, "BTN_BURST", function() WB().Burst(10) end)
+	Button(page, PAD + 2 * (third + 8), y1, third, "BTN_LONG", function() WB().Long(6000) end)
+	panel.restart = Button(page, PAD, y1 - 30, third, "BTN_RESTART", function()
+		WB().Reconnect()
 		P.Refresh()
 	end)
-	Button(page, PAD + half + 8, -144, half, "BTN_STATUS", function() WB().LinkStatus() end)
-	panel.diagNote = Line(page, PAD, -184, C.muted)
+	Button(page, PAD + third + 8, y1 - 30, third, "BTN_FLUSH", function()
+		ns.Print(L.FLUSHED:format(ns.Link.Flush()))
+		P.Refresh()
+	end)
+	panel.copyDiag = Button(page, PAD + 2 * (third + 8), y1 - 30, third, "BTN_COPY_DIAG", function()
+		panel.diagNote:Hide()
+		panel.diagBox.Open(WB().Diag())
+	end)
+	panel.copyDiag.tip = function() return L.COPY_TIP end
+	panel.diagNote = Line(page, PAD, y1 - 66, C.muted, INNER)
 	labels[#labels + 1] = { panel.diagNote, "DIAG_NOTE" }
+	panel.diagBox = S.CopyBox(page, INNER, function() panel.diagNote:Show() end)
+	panel.diagBox:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, y1 - 62)
 end
 
 -- the frame is drawn above everything (the app has to see it), so a panel over its room would lose that corner:
@@ -238,6 +333,66 @@ local function Build()
 	end)
 end
 
+-- 概览's blocks one under another from the top of the page: the card, the notice, this session's numbers, the latest
+-- lines (as many as there is room for)
+local function LayOutOverview(state, todo)
+	local page, y = panel.pages.overview, 0
+	local card = panel.card
+	local acting = state ~= "online"
+	card:SetHeight(acting and 90 or 54)
+	card:ClearAllPoints()
+	card:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+	y = y + card:GetHeight() + GAP
+	panel.notice:SetShown(todo ~= nil)
+	if todo then
+		panel.notice:ClearAllPoints()
+		panel.notice:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+		y = y + 36 + GAP
+	end
+	local head = panel.session:GetParent()          -- the heading's row
+	head:ClearAllPoints()
+	head:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+	panel.console:ClearAllPoints()
+	panel.console:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAD, -y + 1)
+	y = y + 24
+	local w = (INNER - 3 * 8) / 4
+	for i, tile in ipairs(panel.tiles) do
+		tile:ClearAllPoints()
+		tile:SetPoint("TOPLEFT", page, "TOPLEFT", PAD + (i - 1) * (w + 8), -y)
+	end
+	y = y + 46 + 6
+	local held = state ~= "online" and ns.Debug.stats.errors > 0
+	panel.held:SetShown(held)
+	if held then
+		panel.held:ClearAllPoints()
+		panel.held:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+		y = y + ROW
+	end
+	y = y + 6
+	local room = math.floor((HEIGHT - TOP - BOTTOM - y - ROW - 2) / ROW)     -- lines that fit under the label
+	panel.recentLabel:SetShown(room > 0)
+	panel.recentLabel:ClearAllPoints()
+	panel.recentLabel:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+	y = y + ROW + 2
+	local lines = ns.Console.Recent(math.max(0, math.min(RECENT, room)))
+	panel.recentNone:SetShown(room > 0 and #lines == 0)
+	panel.recentNone:ClearAllPoints()
+	panel.recentNone:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
+	for i, row in ipairs(panel.recent) do
+		local e = lines[i]
+		row:SetShown(e ~= nil)
+		if e then
+			row:ClearAllPoints()
+			row:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y - (i - 1) * ROW)
+			row.time:SetText(date("%H:%M", e.t))
+			row.tag:SetText(e.tag)
+			S.Ink(row.tag, C[e.color] or C.fg)
+			row.text:SetText(e.text)
+			row.tab = e.tab
+		end
+	end
+end
+
 -- every word and every state, again: on show, every second while shown, after a change of language
 function P.Refresh()
 	if not panel then return end
@@ -254,43 +409,39 @@ function P.Refresh()
 	local n = ns.Link.Numbers()
 	local state = STATE_WORDS[n.state] and n.state or "hello"
 	local color = S.StateColor(n.state)
-	S.Tint(panel.dot, C[color])
-	panel.state:SetText(L[STATE_WORDS[state]])
-	S.Ink(panel.state, C[color == "muted" and "fg" or color])
-	panel.why:SetText(L[WHY_WORDS[state]])
-	panel.link:SetChecked(n.state ~= "off")
-	local runs = ns.Agent.stats
-	panel.last:SetShown(runs.runs > 0)
-	panel.errors:ClearAllPoints()                          -- right under the runs while there is no last one
-	panel.errors:SetPoint("TOPLEFT", panel.pages.overview, "TOPLEFT", PAD, runs.runs > 0 and -162 or -144)
-	if runs.runs == 0 then
-		panel.runs:SetText(L.RUNS_NONE)
-	else
-		panel.runs:SetText(L.RUNS:format(runs.runs, runs.failed))
-		local last = runs.last
-		local what = last.name:sub(1, 1) == "=" and L.RUN_SNIPPET or last.name:gsub("^@Interface[/\\]AddOns[/\\]", "")
-		local result = last.ok and ("|cff" .. S.HEX.ok .. L.AGENT_OK .. "|r") or ("|cff" .. S.HEX.bad .. L.AGENT_ERROR .. "|r")
-		panel.last:SetText(L.LAST_RUN:format(what, result, Ago(last.at)))
-	end
-	local errs = ns.Debug.stats
-	panel.errors:SetText(L.ERRORS:format(errs.errors, errs.warnings, errs.blocked)
-		.. (ns.Setting("forwardDebug") == false and L.NOT_SENT or ""))
+	local card = panel.card
+	S.Tint(card.dot, C[color])
+	card.state:SetText(L[STATE_WORDS[state]])
+	S.Ink(card.state, C[color == "muted" and "fg" or color])
+	card.why:SetText(L[WHY_WORDS[state]])
+	card.act:SetShown(state ~= "online")
+	card.act:SetText(state == "off" and L.BTN_SHOW_FRAME or L.BTN_RESTART)
+	card.hint:SetShown(state == "hello")
 	local unlocked = ns.Frame.IsUnlocked()
 	local todo = unlocked and "lock" or (ns.Setting("hotLoad") == false and "hotload") or nil
-	panel.notice:SetText(todo == "lock" and L.NOTICE_UNLOCKED or todo == "hotload" and L.NOTICE_HOTLOAD or "")
-	panel.act.what = todo
-	panel.act:SetText(todo == "lock" and L.BTN_LOCK or L.BTN_TURN_ON)
-	panel.act:SetShown(todo ~= nil)
+	local notice = panel.notice
+	notice.what = todo
+	notice.text:SetText(todo == "lock" and L.NOTICE_UNLOCKED or todo == "hotload" and L.NOTICE_HOTLOAD or "")
+	notice.act:SetText(todo == "lock" and L.BTN_LOCK or L.BTN_TURN_ON)
+	local runs, errs = ns.Agent.stats, ns.Debug.stats
+	local numbers = { runs.runs, runs.failed, errs.errors, errs.blocked }
+	local alarm = { false, true, true, true }          -- a count of these above 0 shows red
+	for i, tile in ipairs(panel.tiles) do
+		tile.num:SetText(tostring(numbers[i]))
+		S.Ink(tile.num, (alarm[i] and numbers[i] > 0) and C.bad or (numbers[i] > 0 and C.fg or C.muted))
+	end
+	LayOutOverview(state, todo)
 
 	-- 设置
-	panel.unlock:SetText(unlocked and L.BTN_LOCK or L.BTN_UNLOCK)
+	panel.link:SetChecked(n.state ~= "off")
+	panel.unlock:SetText(unlocked and L.BTN_LOCK or L.BTN_MOVE)
 	panel.unlock.kind = unlocked and "primary" or nil        -- unlocked: locking is the thing to do next
 	S.Paint(panel.unlock)
 	panel.position:SetText(L.POSITION:format(ns.Frame.Offset()))
-	panel.debug:SetChecked(ns.Setting("forwardDebug") ~= false)
 	panel.hot:SetChecked(ns.Setting("hotLoad") ~= false)
-	panel.minimap:SetChecked(not ns.Setting("minimapHide"))
+	panel.debug:SetChecked(ns.Setting("forwardDebug") ~= false)
 	panel.toasts:SetChecked(ns.Setting("toasts") ~= false)
+	panel.minimap:SetChecked(not ns.Setting("minimapHide"))
 	panel.langLabel:SetText(L.LANGUAGE)
 	local current = ns.Setting("lang") or "auto"
 	for _, b in ipairs(panel.langs) do
@@ -301,11 +452,14 @@ function P.Refresh()
 	end
 
 	-- 诊断
+	local P_ = ns.Link.P
 	local left, hb = ns.Link.SlotsLeft(), n.hb or 15
-	panel.st1:SetText(L.ST_LINK:format("|cff" .. S.HEX[color] .. ns.StateName(n.state) .. "|r")
-		.. (ns.session and ("  ·  " .. L.ST_SESSION:format(ns.session)) or ""))
-	panel.st2:SetText(L.ST_SLOTS:format(left, left * hb / 3600))
-	panel.st3:SetText(L.ST_QUEUE:format(n.waiting, n.acked, hb))
+	local stateWords = "|cff" .. S.HEX[color] .. ns.StateName(n.state) .. "|r"
+	panel.kv[1]:SetText(ns.session and L.KV_STATE_VALUE:format(stateWords, ns.session) or stateWords)
+	panel.kv[2]:SetText(L.KV_SLOTS_VALUE:format(left, left * hb / 3600))
+	panel.kv[3]:SetText(("%d / %d"):format(n.waiting, n.acked))
+	panel.kv[4]:SetText(L.KV_HEARTBEAT_VALUE:format(hb))
+	panel.kv[5]:SetText(L.KV_FRAME_VALUE:format(P_.mode, P_.show))
 end
 
 -- tab: the one to show ("overview", "settings", "diag"); else the one shown last

@@ -68,7 +68,8 @@ TYPE_BYTES = {bytes([t]) for t in range(7)}
 URGENT_TYPES = (TYPE_RUN, TYPE_RELOAD)   # the addon shows these before the others: a later id may come before them
 LAZY = 1                        # the link features (f=) from which the acks go lazily and PARTS ask at once (0.9.6)
 DATA = 2                        # ... from which the addon takes CALL records: data calls (0.9.7)
-ZIP = 3                         # ... from which it inflates compressed CODE and CALL jobs (0.9.9)
+ZIP = 3                         # ... from which it inflates compressed CODE and CALL jobs, and shows a reload's reason
+                                # (0.9.9)
 UNPACK_FAILED = "could not be unpacked"   # in a RUN result: a compressed job did not come out whole in the game
 STEADY = 10.0                   # seconds the link has been up (and the session online) before a frame asked for again
                                 # counts against the short display time (a covered window, a loading screen and the
@@ -934,6 +935,12 @@ class Companion(AgentCommands):
         be unpacked there"""
         s = self.sessions.get(self.current)
         return s is not None and s.features >= ZIP and not s.zip_off
+
+    def reasons(self):
+        """whether the addon of the current session shows why a reload is asked (link features ZIP, 0.9.9 on): an
+        older one would take the reason for part of the nonce, and not ask"""
+        s = self.sessions.get(self.current)
+        return s is not None and s.features >= ZIP
 
     def mark(self):
         """(the current session, the latest message id received from it), or None: try waits until every message up to

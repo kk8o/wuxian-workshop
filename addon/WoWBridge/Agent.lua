@@ -293,7 +293,8 @@ local function RunJob(id, job)
 	Count(job.name, ok)
 	pcall(ns.Console.Job, job.name, job.addon, job.flag, ok, ms, values, failure and (failure .. note) or nil)
 	if ns.Setting("toasts") == false then                 -- no notice on the screen: the chat says it, as before
-		ns.Print(ns.L.AGENT_CODE:format(short, #code, ok and ns.L.AGENT_OK or ns.L.AGENT_ERROR))
+		local what = job.name:sub(1, 1) == "=" and ns.L.RUN_SNIPPET or short
+		ns.Print(ns.L.AGENT_CODE:format(what, ok and ns.L.AGENT_OK or ns.L.AGENT_ERROR))
 	end
 end
 

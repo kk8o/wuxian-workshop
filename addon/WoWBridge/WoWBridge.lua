@@ -3,8 +3,8 @@
 -- Agent.lua, what addons hand the agent (WoWBridge.Bind: events and exposed functions) API.lua with Json.lua, dialogs
 -- UI.lua, the words Locale.lua, the settings panel Panel.lua, the minimap button Minimap.lua; the
 -- experiments (probe frame, self-test, sweep, polling and font tests) are the separate addon WoWBridge_Lab (addon/lab).
---   /wb                          the settings panel (status and commands in the chat when it is not there)
---   /wb help                     the commands
+--   /wb                          the settings panel
+--   /wb help [dev]               the commands (dev: the link tests and the experiments' switches)
 --   /wb log [errors|runs|output] the debug window (Console.lua): errors, prints and the agent's code as they happen
 --   /wb link                     the link to the companion: state, mailbox slot, message counters
 --   /wb on | off                 show the frame and connect, or stop the link and hide the frame (kept: autoLink)
@@ -18,13 +18,13 @@
 --                                defaults)
 --   /wb parent ui|world          which frame the bus hangs from (WorldFrame may stay visible with Alt+Z)
 --   /wb snap default|on|off      texture pixel snapping
---   /wb mode 0|1|2               colour mode of data frames
 --   /wb diag                     print the diagnostics
 local addonName, ns = ...
 local Frame, L = ns.Frame, ns.L
 
 local VERSION = "0.9.8"
 local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true, toasts = true }   -- /wb set <key> on|off
+local WAIT_SAY = 15       -- not connected this long after entering the world: the chat says what to do
 
 local WB = {}
 _G.WoWBridge = WB
@@ -204,6 +204,18 @@ function WB.SetLink(on)
 	end
 end
 
+-- the link started over and on (the panel's 重新连接): nothing in the chat about stopping and starting it, only the
+-- app coming back (Link.lua)
+function WB.Reconnect()
+	ns.Set("autoLink", true)
+	if not entered then return end
+	if ns.Link.State() ~= "off" then
+		ns.Link.Stop()
+		current = nil
+	end
+	ns.Link.Start(db, Print)
+end
+
 function WB.Unlock()
 	Frame.SetUnlocked(true, function(x, y)
 		ns.Set("frameX", x)
@@ -272,9 +284,13 @@ events:SetScript("OnEvent", function(_, event, arg1)
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		if not entered then
 			entered = true
-			Print(L.LOADED:format(VERSION))
 			C_Timer.NewTicker(1, Tick)
-			if cfg.autoLink ~= false then ns.Link.Start(db, Print) end
+			if cfg.autoLink ~= false then
+				ns.Link.Start(db, Print)          -- connected: the link says so in the chat
+				C_Timer.After(WAIT_SAY, function()
+					if ns.Link.State() == "hello" then Print(L.WAITING_CHAT) end
+				end)
+			end
 		end
 	else
 		Frame.Relayout()
@@ -351,9 +367,6 @@ SlashCmdList.WOWBRIDGE = function(msg)
 		Set("snap", rest)
 		Redraw()
 		Print(L.SNAP:format(rest))
-	elseif cmd == "mode" and (rest == "0" or rest == "1" or rest == "2") then
-		Set("mode", tonumber(rest))
-		Print(L.MODE:format(rest))
 	elseif cmd == "log" or cmd == "console" then
 		local which = rest:lower()
 		if which == "" or which == "all" or which == "errors" or which == "runs" or which == "output" then
@@ -366,11 +379,11 @@ SlashCmdList.WOWBRIDGE = function(msg)
 	elseif cmd == "diag" then
 		local d = WB.Diag()
 		for i = 1, #d, 200 do Print(d:sub(i, i + 199)) end
-	elseif cmd == "" and ns.Panel then
+	elseif cmd == "help" or cmd == "?" then
+		Print(rest:lower() == "dev" and L.HELP_DEV or (L.HELP .. (Kit.Present() and L.HELP_KIT or "")))
+	elseif cmd == "" then
 		ns.Panel.Toggle()
 	else
-		Print(L.STATUS:format(VERSION, session, current and L.ON_SCREEN:format(current.kind, current.msg) or L.NO_FRAME))
-		Print(ns.Link.Status())
-		Print(L.HELP .. (Kit.Present() and L.HELP_KIT or ""))
+		Print(L.UNKNOWN:format(cmd))
 	end
 end

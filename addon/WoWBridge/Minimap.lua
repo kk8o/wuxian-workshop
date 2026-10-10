@@ -3,7 +3,8 @@
 -- dragging moves the button round the minimap. Lua errors
 -- that came while the debug window was closed show as a red count on the button (M.Badge). Its place
 -- (minimapAngle, degrees) and whether it shows (minimapHide) are kept for this character. The icon is 无限工坊's mark
--- (Skin.lua), grey while the link is off; the tooltip says the link's state in its colour.
+-- (Skin.lua), grey while the link is off, with the link's state as a diamond in its colour at its foot; the tooltip says
+-- the state in words and lists what the mouse does, in two columns.
 local _, ns = ...
 local L, S = ns.L, ns.Skin
 
@@ -30,18 +31,21 @@ local function Dragging()
 	Place()
 end
 
+local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF" }
+
 local function Tooltip(owner)
 	local C, state = S.C, ns.Link.State()
 	local c = C[S.StateColor(state)]
 	GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
 	GameTooltip:AddLine(L.PANEL_TITLE, C.goldL[1], C.goldL[2], C.goldL[3])
-	GameTooltip:AddLine(L.ST_LINK:format(ns.StateName(state)), c[1], c[2], c[3])
+	GameTooltip:AddLine(S.InlineDot(c) .. " " .. L[STATE_WORDS[state] or "OV_HELLO"], c[1], c[2], c[3])
 	if ns.Console.unseen > 0 then GameTooltip:AddLine(L.MM_ERRORS:format(ns.Console.unseen), C.bad[1], C.bad[2], C.bad[3]) end
 	GameTooltip:AddLine(" ")
-	local keys = { "MM_LEFT", "MM_RIGHT", "MM_DRAG" }
-	if ns.Kit.Present() then table.insert(keys, 3, "MM_KIT") end
+	local keys = { "LEFT", "RIGHT", "DRAG" }
+	if ns.Kit.Present() then table.insert(keys, 3, "SHIFT") end
 	for _, key in ipairs(keys) do
-		GameTooltip:AddLine(L[key], C.muted[1], C.muted[2], C.muted[3])
+		GameTooltip:AddDoubleLine(L["MM_KEY_" .. key], L["MM_DO_" .. key], C.muted[1], C.muted[2], C.muted[3],
+			C.fg[1], C.fg[2], C.fg[3])
 	end
 	GameTooltip:Show()
 end
@@ -75,6 +79,16 @@ local function Build()
 	button.count:SetPoint("CENTER", button.badge, "CENTER", 0, 0)
 	button.count:SetJustifyH("CENTER")
 	M.Badge(ns.Console.unseen)
+	-- the link's state at the icon's foot: a diamond in its colour, edged dark to stand off the ring
+	local edge = button:CreateTexture(nil, "OVERLAY", nil, 4)
+	edge:SetTexture(S.STUD)
+	edge:SetSize(11, 11)
+	edge:SetPoint("CENTER", back, "BOTTOMRIGHT", -1, 1)
+	S.Tint(edge, S.C.ink)
+	button.dot = button:CreateTexture(nil, "OVERLAY", nil, 5)
+	button.dot:SetTexture(S.STUD)
+	button.dot:SetSize(7, 7)
+	button.dot:SetPoint("CENTER", edge, "CENTER")
 	button:SetScript("OnClick", function(_, which)
 		if which == "RightButton" then
 			ns.Console.Toggle()
@@ -91,7 +105,13 @@ local function Build()
 	button:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
 	button:SetScript("OnEnter", Tooltip)
 	button:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	C_Timer.NewTicker(1, function() icon:SetDesaturated(ns.Link.State() == "off") end)
+	local function Paint()
+		local state = ns.Link.State()
+		icon:SetDesaturated(state == "off")
+		S.Tint(button.dot, S.C[S.StateColor(state)])
+	end
+	Paint()
+	C_Timer.NewTicker(1, Paint)
 end
 
 -- the count of Lua errors the debug window has not shown yet (0: none, no badge)

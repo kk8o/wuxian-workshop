@@ -100,6 +100,23 @@ function K.Add(kind, text, detail, failed)
 	end
 end
 
+-- the latest n lines, newest first (the panel's 概览): the time, the kind's tag and colour (a name of Skin's C), the
+-- text's first line, the tab that keeps the kind
+function K.Recent(n)
+	local out = {}
+	for i = #entries, math.max(1, #entries - n + 1), -1 do
+		local e = entries[i]
+		local k = KIND[e.kind] or KIND.LINK
+		local tabOf = "all"
+		for id, keep in pairs(KEEP) do
+			if keep[e.kind] then tabOf = id end
+		end
+		out[#out + 1] = { t = e.t, tag = L[k[1]], color = (e.kind == "RUN" and e.failed) and "bad" or k[2],
+			text = FirstLine(e.text) .. (e.n > 1 and ("  ×%d"):format(e.n) or ""), tab = tabOf }
+	end
+	return out
+end
+
 -- the lines in view, as plain text (the copy box; tests)
 function K.Lines()
 	local out = {}
