@@ -164,7 +164,7 @@ local function PassPart(m, now)
 	if not p then return nil end
 	while p[1] and m.ok[p[1]] do table.remove(p, 1) end
 	if p[1] then return p[1] end
-	m.pending, m.passEnd, m.shown = nil, now, true
+	m.pending, m.passEnd, m.shown, m.asked = nil, now, true, nil
 	return nil
 end
 
@@ -175,6 +175,7 @@ end
 local function PassAgain(m, now)
 	if m.pending or not (m.rush or now - m.passEnd >= math.min(P.rto * 2 ^ m.again, AGAIN_MAX)) then return nil end
 	if not m.rush then m.again = m.again + 1 end
+	local asked = m.rush
 	m.rush = nil
 	local p = {}
 	for i = 1, #m.frags do
@@ -182,7 +183,7 @@ local function PassAgain(m, now)
 	end
 	m.passEnd = now
 	if #p == 0 then return nil end                     -- every part is in: the cumulative ack is on its way
-	m.pending, m.resent = p, m.resent + #p
+	m.pending, m.resent, m.asked = p, m.resent + #p, asked
 	stats.resent = stats.resent + #p
 	return p[1]
 end
@@ -192,12 +193,18 @@ end
 -- first whose parts are due again (a RUN result's also past the window). A pass nobody asked for never comes before a
 -- message's first: the companion's cumulative ack waits for that one
 local function Pick(now)
-	local fresh
+	local fresh, held
 	for n, m in ipairs(queue) do
 		if m.urgent then
 			if PassPart(m, now) or (m.rush and PassAgain(m, now)) then return m end
-		elseif n <= P.win and not fresh and not m.shown and PassPart(m, now) then
-			fresh = m
+		elseif n <= P.win and m.shown and (m.asked and PassPart(m, now) or m.rush and PassAgain(m, now)) then
+			return m                                -- the companion asked for it: before the fresh ones
+		elseif n <= P.win and not fresh and not held and not m.shown then
+			if m.squeeze then
+				held = true                         -- being squeezed: the ones after it wait for it
+			elseif PassPart(m, now) then
+				fresh = m
+			end
 		end
 	end
 	if fresh then return fresh end
@@ -457,7 +464,7 @@ end
 
 -- the frames a body of n bytes takes (as Shape cuts it)
 local function Frames(n)
-	if n <= Most(DataW(), P.dataH) then return 1 end
+	if n <= Most(BigW(), P.bigH) then return 1 end           -- one frame, small or big, as Shape cuts it
 	local cap, parts, at = Capacity(BigW(), P.bigH), 0, 0
 	while at < n do
 		at = at + PartSize(cap, parts)

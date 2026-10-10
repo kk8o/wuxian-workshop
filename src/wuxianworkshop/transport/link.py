@@ -557,7 +557,7 @@ class Companion(AgentCommands):
             else:
                 self._debug("INFO", plain(text).rstrip())
         elif mtype == TYPE_RUN:
-            if UNPACK_FAILED in text and not s.zip_off:
+            if text.split(" ", 2)[1:2] == ["error"] and UNPACK_FAILED in text and not s.zip_off:
                 s.zip_off = True
                 self.note(f"session {s.sid}: a compressed job could not be unpacked in the game; its next jobs go uncompressed")
             self._debug("RUN", plain(text).rstrip())
@@ -884,8 +884,8 @@ class Companion(AgentCommands):
         for msg in said:
             s.sacked[msg] = now
         self.stats["sacked"] += len(said)
-        if asked and s.features >= LAZY:
-            self._missed(s, now)
+        if s.features >= LAZY and s.top is not None and any(not ahead(s.top, msg) for msg, _ in asked):
+            self._missed(s, now)                    # a frame of a message that went up in whole was lost
         self.written[self.slot], self.written_at[self.slot] = records, now
         self.written_as[self.slot] = (s.sid, s.ack)
         if any(kind == MB.WELCOME for kind, _ in records):

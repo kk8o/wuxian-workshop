@@ -5,6 +5,7 @@ for the session. Long messages go up at the shorter display time (show_lazy), an
 for good once something it showed had to be asked for again, unless the link had only just come up."""
 import json
 import math
+import random
 import unittest
 
 from tests.addon.test_link_robust import lose
@@ -245,3 +246,99 @@ class Link099(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def noise(n, seed):
+    rnd = random.Random(seed)
+    return bytes(rnd.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(n))
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class Order099(unittest.TestCase):
+    """what the 0.9.9 review found (2026-10-11): the order messages go up in and what the companion makes of an ask"""
+    start, run_result = Link099.start, Link099.run_result
+
+    def test_a_result_that_says_could_not_be_unpacked(self):
+        """only the game's error turns compression off: a RUN result whose values hold the words leaves it on"""
+        s = self.start()
+        sess = s.comp.sessions[s.comp.current]
+        job = s.comp.code(b'return "could not be unpacked"', "=run")
+        self.assertIn("could not be unpacked", self.run_result(s, job))
+        self.assertFalse(sess.zip_off)
+
+    def test_a_pass_held_up_by_run_results_is_no_missed_frame(self):
+        """a long message whose first pass waits while RUN results go first is asked for, but nothing was lost: the
+        session keeps the shorter display time"""
+        s = self.start()
+        s.run(link.STEADY + 2)
+        sess = s.comp.sessions[s.comp.current]
+        send = s.ns[b"Link"][b"Send"]
+        mid, _ = send(noise(20000, 2))
+        s.run(0.6)                                                # a few of its parts up
+        for i in range(10):                                       # then RUN results, which go first
+            send(b'%d ok =run (1 B, 0.0 ms): 1 values "%s"' % (9000 + i, noise(4000, 10 + i)), b"run")
+        t0 = s.now()
+        while s.now() - t0 < 40 and not any(m[1] == mid for m in sess.messages):
+            s.run(0.05)
+        self.assertTrue(any(m[1] == mid for m in sess.messages))
+        self.assertEqual(sess.show, s.comp.show_lazy)
+        self.assertEqual([l for l in self.logs if "frames stay up" in l], [])
+
+    def test_a_message_being_squeezed_keeps_its_place(self):
+        """a body squeezed block by block (over SQUEEZE_NOW) has no frames for a while: the messages after it wait for
+        it, so ids go up in order and nothing is asked for again"""
+        s = self.start()
+        s.run(link.STEADY + 2)
+        sess = s.comp.sessions[s.comp.current]
+        send = s.ns[b"Link"][b"Send"]
+        doc = ('{"name":"tune.cvar.set","doc":"[Change: a proposal.] proposes to change a client setting (CVar) by its '
+               'name; the old value is kept, so the change can be undone"},')
+        asked, n0 = s.comp.stats["asked"], len(s.frames)
+        a, _ = send((doc * 40).encode(), b"event")
+        b, _ = send(b'{"a":"Foo","t":"small","d":1}', b"event")
+        for _ in range(400):
+            s.run(0.05)
+        order = [int(msg) for _, ftype, msg, _ in s.frames[n0:] if ftype == F.TYPE_DATA]
+        self.assertEqual(sorted(set(order), key=order.index), [a, b])
+        self.assertEqual((s.comp.stats["asked"] - asked, sess.show, s.comp.stats["squeezed"]), (0, s.comp.show_lazy, 1))
+
+    def test_a_pass_asked_for_goes_before_the_backlog(self):
+        """a part of an ordinary message lost behind a backlog of big ones: the pass the companion asks for goes up
+        before the fresh messages, long before the companion would give up on it"""
+        s = self.start()
+        send = s.ns[b"Link"][b"Send"]
+        deliver, lost, first = s.comp.on_frame, [], {}
+
+        def lossy(ftype, sid, msg, payload, part=0, parts=1):
+            if msg == first.get("id") and part == 1 and not lost:
+                lost.append(msg)                                  # one part of the first message, once
+                return
+            return deliver(ftype, sid, msg, payload, part, parts)
+        s.comp.on_frame = lossy
+        first["id"], _ = send(b"FIRST " + noise(3000, 9))
+        rnd = random.Random(9)
+        for i in range(70):                                       # big messages that do not squeeze
+            send(b"B%02d " % i + bytes(rnd.randrange(256) for _ in range(8000)))
+        sess = s.comp.sessions[s.comp.current]
+        t0 = s.now()
+        while s.now() - t0 < 30 and not any(m[1] == first["id"] for m in sess.messages):
+            s.run(0.1)
+        self.assertEqual(lost, [first["id"]])
+        self.assertTrue(any(m[1] == first["id"] for m in sess.messages))
+        self.assertLess(s.now() - t0, 10)
+        self.assertEqual(s.comp.stats["given_up"], 0)
+
+    def test_frames_counts_a_body_as_shape_cuts_it(self):
+        """a body up to BREATH_HIGH of a big frame goes in one frame, so it is not squeezed for nothing; one that
+        squeezes into one big frame goes squeezed"""
+        s = self.start()
+        send = s.ns[b"Link"][b"Send"]
+        cap = F.capacity(128, 32, 3)
+        _, parts = send(noise(1250, 3))                            # between 70 % and 90 % of the room: one frame
+        self.assertTrue(cap * 0.7 < 1251 <= cap * 0.9)
+        self.assertEqual(parts, 1)
+        _, parts = send(noise(1100, 5) + noise(60, 5) * 7)         # 1520 bytes, about 1100 squeezed
+        self.assertEqual(parts, 1)
+        s.run(10)
+        self.assertEqual(s.comp.stats["squeezed"], 1)
+
