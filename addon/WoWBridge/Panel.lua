@@ -84,7 +84,7 @@ local function Block(parent, fill, edge)
 	return f
 end
 
--- light gold words that act as a link, right-aligned in w ("调试输出 ›"); lighter still under the mouse
+-- light gold words that act as a link, right-aligned in w ("调试输出 →"); lighter still under the mouse
 local function TextButton(parent, w, key, onClick)
 	local b = CreateFrame("Button", nil, parent)
 	b:SetSize(w, ROW)

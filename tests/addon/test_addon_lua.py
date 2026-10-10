@@ -6,7 +6,7 @@ import asyncio
 import re
 import unittest
 
-from tests.support.wowmock import Session, lupa
+from tests.support.wowmock import ADDON, Session, lupa
 from wuxianworkshop.core import fontpack, mailbox
 from wuxianworkshop.core.game import atomic_write
 from wuxianworkshop.daemon.api import parse_run
@@ -914,6 +914,21 @@ class PanelAndLanguage(unittest.TestCase):
 
     FITS = b"WoWBridgePanel.kit:GetWidth() >= WoWBridgePanel.kit.label:GetStringWidth() + 16"
 
+    # what the client's fonts draw besides ASCII and Chinese (checked in the zhCN client, 2026-10-10): › » ▸ ▶ are not
+    # in them and show as boxes
+    GLYPHS = set("·×…→") | {chr(c) for c in range(0x3000, 0x3040)} | {chr(c) for c in range(0xFF00, 0xFFF0)}
+
+    def test_words_have_glyphs(self):
+        """every character in the addon's strings is one the client's fonts have"""
+        missing = {}
+        for path in sorted((ADDON / "WoWBridge").glob("*.lua")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                for literal in re.findall(r'"((?:[^"\\\n]|\\.)*)"', line):
+                    for ch in literal:
+                        if ord(ch) >= 128 and not 0x4E00 <= ord(ch) <= 0x9FFF and ch not in self.GLYPHS:
+                            missing.setdefault(ch, f"{path.name}:{n}")
+        self.assertEqual(missing, {})
+
     def test_wuxiankit_while_the_game_runs_it(self):
         """WuxianKit (the extension framework, an optional addon of its own): without it nothing changes (no button in the
         panel's head, the minimap button's tooltip and /wb's help as they were, /wb kit says it is not there); with it the
@@ -1031,7 +1046,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertTrue(console[b"shown"])
             self.assertEqual(console[b"tabs"][b"selected"], b"errors")
             console[b"close"].Click(console[b"close"])
-            self.assertEqual(panel[b"console"][b"label"][b"text"], b"Debug output \xe2\x80\xba")
+            self.assertEqual(panel[b"console"][b"label"][b"text"].decode(), "Debug output →")
             panel[b"console"].Click(panel[b"console"])                # 调试输出 ›: the window again
             self.assertTrue(console[b"shown"])
             console[b"close"].Click(console[b"close"])
