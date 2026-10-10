@@ -25,7 +25,7 @@ local band, floor, char = bit.band, math.floor, string.char
 
 local L = {}
 ns.Link = L
-L.VERSION = "0.9.7"
+L.VERSION = "0.9.8"
 L.FEATURES = 2     -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
                    -- 2 (0.9.7): also takes CALL records (data calls, Agent.lua)
 

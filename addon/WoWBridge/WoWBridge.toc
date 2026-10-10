@@ -4,7 +4,7 @@
 ## Notes: Wuxian Workshop (make WoW addons with AI) in the game: runs the Lua the AI agent sends (hot loading) and hands errors, prints and screenshots to the app. /wb opens the panel.
 ## Notes-zhCN: 无限工坊（用 AI 写魔兽插件）在游戏里的部分：执行 AI Agent 发来的 Lua（热加载），把报错、print 输出和截图交给 App。/wb 打开面板。
 ## Group: !WuxianWorkshop
-## Version: 0.9.7
+## Version: 0.9.8
 ## X-Website: https://wuxianwow.com/workshop
 ## IconTexture: Interface\AddOns\WoWBridge\Media\logo-small
 ## SavedVariables: WoWBridgeDB
