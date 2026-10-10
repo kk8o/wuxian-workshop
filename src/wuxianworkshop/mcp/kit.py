@@ -13,7 +13,9 @@ It is read again when the game tells of another revision (kit.changed, kit.ready
 the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
 or none), or when kit.revision answers another one (asked at most every RECHECK seconds, every AWAY seconds while it does
 not answer). One ask at a time: a list gives what is known at once and the clients hear when the ask changed it (only
-with nothing known yet does it wait, at most FIRST_WAIT seconds). The game is asked only while the AddOns folder holds
+with nothing known yet does it wait, at most FIRST_WAIT seconds). Every view asks the same after a reload (the daemon's
+own and each stdio server's), so its asks are SHARED: the daemon asks the game once for all (daemon/kitcache.py), and
+answers the others with what that UI session told it. The game is asked only while the AddOns folder holds
 WuxianKit, and then first what it exposed (addon_api: an addon that is not running fails no call, so nothing fails in the
 log and no run counts in the game). WuxianKit is optional: whatever goes wrong with it (the game away, an answer this
 module cannot read) leaves the App's own tools alone, keeps the last manifest and asks again AWAY seconds later. While
@@ -38,6 +40,7 @@ from mcp_types import (CallToolResult, GetPromptResult, Prompt, PromptArgument, 
 
 from .changes import ListChanges
 from ..daemon.api import ApiError
+from ..daemon.kitcache import SHARED  # noqa: F401  (backends read it as kit.SHARED)
 from ..extensions import installed as folder_holds, listed_folders
 from ..paths import state_dir
 
@@ -426,13 +429,17 @@ class KitTools:
 
     async def ask(self):
         """asks the game what runs (ask_game). Whatever goes wrong (the game away, the link down, an answer this module
-        cannot read) keeps the last manifest and asks again AWAY seconds later"""
+        cannot read) keeps the last manifest and asks again AWAY seconds later. Its asks are SHARED: every view (the
+        daemon's own, each stdio server's) asks the same after a reload, and the daemon asks the game once for all"""
+        shared = SHARED.set(True)
         try:
             await self.ask_game()
         except Exception as e:
             logger.debug(f"WuxianKit not read now: {e!r}")
             self.away, self.stale, self.checked = True, False, time.monotonic()
             return
+        finally:
+            SHARED.reset(shared)
         self.away, self.stale, self.checked = False, False, time.monotonic()
 
     async def ask_game(self):

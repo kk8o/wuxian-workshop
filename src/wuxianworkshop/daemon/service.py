@@ -33,6 +33,7 @@ from ..paths import settings_file
 from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
 from .journal import REQUEST_ID
+from .kitcache import KIT, SHARED, KitCache
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
@@ -83,6 +84,7 @@ class Service:
         self.mcp_reports = {}        # pid -> what a stdio MCP server last reported (mcp_report): the 扩展 page's Agent 接入
         self.local_mcp = None        # the daemon's own /mcp server (set by the server): its connections, its WuxianKit tools
         self.kit_view = None         # mcp.kit.KitTools of the page, made when it first looks
+        self.kit_cache = KitCache(self.ui_session)   # what every view of WuxianKit asks, asked of the game once
         self.started = time.time()
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.describing = {}         # (UI session, addon, brief) -> the addon_api answer on its way: callers share it
@@ -130,10 +132,13 @@ class Service:
         self.pending.clear()
 
     def on_debug(self, kind, text):
-        """the Companion's debug output (worker thread): journaled; a RUN result wakes the request waiting for its job"""
+        """the Companion's debug output (worker thread): journaled; a RUN result wakes the request waiting for its job;
+        WuxianKit's events tell what is known of it (kitcache)"""
         entry = self.journal.add(kind, text)
         if self.tells is not None:
             self.tells.append((kind, text))
+        if kind == "EVENT" and entry.get("addon") == KIT:
+            self.kit_cache.heard(entry.get("topic"), entry.get("data"))
         if kind == "RUN" and entry["job"] is not None:
             waiter = self.pending.pop(entry["job"], None)
             if waiter is not None:
@@ -146,6 +151,10 @@ class Service:
     def on_log(self, text):
         """the Companion's and the loop's notes (worker thread)"""
         self.journal.add("INFO", text)
+
+    def ui_session(self):
+        """the game's UI session now (the session of the latest frame), or None"""
+        return getattr(getattr(self.worker, "comp", None), "current", None)
 
     def tracked(self, fn, *args):
         """(fn(*args), what the Companion told meanwhile); runs on the worker thread"""
@@ -615,10 +624,11 @@ class Service:
         comp = getattr(self.worker, "comp", None)          # the UI session: another one may run another WuxianKit
         return dict(events=events, next=next_id, truncated=truncated, session=getattr(comp, "current", None))
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
         """call a function an addon exposed with WoWBridge's Expose: args (JSON) go to it as a Lua table, its first
         return value comes back as `result`. A function that is not there, or that raised, is an ApiError call_failed
-        with the message (and the stack)"""
+        with the message (and the stack). shared: an ask of WuxianKit's views (kitcache.SHARED; shared over HTTP), for
+        which what the daemon knows of WuxianKit answers kit.revision and kit.manifest (daemon/kitcache.py)"""
         if not isinstance(addon, str) or not self.ADDON_NAME.match(addon):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
         if not isinstance(name, str) or not self.CALL_NAME.match(name):
@@ -627,6 +637,13 @@ class Service:
             code = probes.call_chunk(addon, name, args)       # also what checks args (JSON a Lua table can hold)
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
+        if (addon == KIT and name in ("kit.revision", "kit.manifest") and args is None
+                and (SHARED.get() if shared is None else shared)):
+            return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code))
+        return await self.call_game(addon, name, args, timeout_ms, code)
+
+    async def call_game(self, addon, name, args, timeout_ms, code):
+        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7"""
         t0 = time.time()
         try:
             if self.data_calls():
@@ -669,14 +686,22 @@ class Service:
                                  + (f", its callback raised: {str(failed)[:200]}" if failed else ""), addon=addon)
         return dict(request=request, ok=True, addon=addon, topic=topic, **({"callback_error": failed} if failed else {}))
 
-    async def addon_api(self, addon=None, brief=False):
+    async def addon_api(self, addon=None, brief=False, shared=None):
         """what an addon exposed with WoWBridge's Expose (name and doc, in the order it did) and the topics it emitted
         (with how often); without addon, every addon that took a handle. brief: the names without the docs (WuxianKit's
-        tools ask so what runs: its docs come to tens of KB; a WoWBridge before 0.9.9 sends them all the same). The same
-        question asked while it is on its way, in the same UI session, shares its answer: after a reload every agent's
-        WuxianKit tools ask at once, and each answer goes up the game's link"""
+        tools ask so what runs: its docs come to tens of KB; a WoWBridge before 0.9.9 sends them all the same). shared:
+        an ask of WuxianKit's views (kitcache.SHARED; shared over HTTP): WuxianKit's answer is then the one this UI
+        session gave already, if any"""
         if addon is not None and (not isinstance(addon, str) or not self.ADDON_NAME.match(addon)):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
+        if addon == KIT and (SHARED.get() if shared is None else shared):
+            return await self.kit_cache.describe(lambda: self.describe_once(addon, brief), bool(brief))
+        return await self.describe_once(addon, brief)
+
+    async def describe_once(self, addon, brief):
+        """addon_api's answer from the game. The same question asked while it is on its way, in the same UI session,
+        shares its answer: after a reload every agent's WuxianKit tools ask at once, and each answer goes up the game's
+        link"""
         key = (getattr(getattr(self.worker, "comp", None), "current", None), addon, bool(brief))
         task = self.describing.get(key)
         if task is None:
@@ -1229,6 +1254,7 @@ class Service:
         """(worker thread) a new UI session's HELLO: the jobs up to the newest one it says ran (last_job) ran in the
         session before, whose results went with it; whoever waits for one hears so now rather than at its timeout. The
         new session may run another WuxianKit, or none: the views of it ask again"""
+        self.kit_cache.forget()
         self.kit_changed()
         if not last_job:
             return

@@ -411,7 +411,8 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
     @api
     async def call_(request):
         b = await body_of(request)
-        return await service.call_exposed(b.get("addon"), b.get("name"), b.get("args"), b.get("timeout_ms", 10000))
+        return await service.call_exposed(b.get("addon"), b.get("name"), b.get("args"), b.get("timeout_ms", 10000),
+                                          shared=b.get("shared") is True)
 
     @api
     async def respond(request):
@@ -421,7 +422,7 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
     @api
     async def addon_api(request):
         b = await body_of(request)
-        return await service.addon_api(b.get("addon"), b.get("brief") is True)
+        return await service.addon_api(b.get("addon"), b.get("brief") is True, shared=b.get("shared") is True)
 
     @api
     async def agents_(request):

@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -24,6 +25,14 @@ FooWB = WoWBridge.Bind("Foo")
 FooWB:Expose("double", function(a) return { n = a.n * 2, s = a.s } end, "doubles n")
 FooWB:Expose("boom", function() error("broken on purpose") end)
 FooWB:Emit("early", { when = "before the link" })
+"""
+KIT_ADDON = b"""
+KitWB = WoWBridge.Bind("WuxianKit")
+KitM = { protocol = 1, kit = "0.4.1", language = "enUS", revision = "r1", extensions = {
+	{ id = "kit", title = "Core", version = "0.4.1", addon = "WuxianKit", state = "on", events = {},
+	  capabilities = { { id = "kit.undo", kind = "do", title = "Undo", doc = "undo", args = { id = "number" } } } } } }
+KitWB:Expose("kit.revision", function() return { revision = KitM.revision } end, "the revision")
+KitWB:Expose("kit.manifest", function() return KitM end, "the manifest")
 """
 
 
@@ -230,6 +239,38 @@ class EndToEnd(unittest.TestCase):
         comp.outbox.append(record)
         s.run(6)
         self.assertEqual(len([t for k, t in self.got if k == "RUN" and t.startswith(f"{job} ")]), 1)
+
+    def test_wuxiankit_is_asked_once_for_every_view(self):
+        """every view of WuxianKit (the daemon's own /mcp, each stdio server) asks what runs after a reload: the game is
+        asked once (daemon/kitcache.py), the others get that UI session's describe, its revision and the manifest of
+        that revision from the daemon. A reload asks again; a kit.changed event says the next revision itself"""
+        from wuxianworkshop.mcp import kit
+        s, svc, comp = self.s, self.svc, self.comp
+        s.lua.execute(KIT_ADDON)
+        svc.worker = SimpleNamespace(comp=comp)                          # the UI session the daemon keeps to
+        comp.on_debug = lambda kind, text: (self.got.append((kind, text)), svc.on_debug(kind, text))
+        asked, data = [], svc.data
+
+        async def counted(verb, payload, timeout_ms=10000, what="call"):
+            asked.append(payload.get("n") or verb)
+            return await data(verb, payload, timeout_ms, what)
+        svc.data = counted
+        views = [kit.KitTools(svc, store=False) for _ in range(4)]
+
+        async def look():
+            for v in views:
+                v.stale = True
+                await v.current(wait=True)
+            return [{t.name for t in await v.list()} for v in views]
+        self.assertTrue(all("wk_kit_undo" in names for names in asyncio.run(look())))
+        self.assertEqual(asked, ["describe", "kit.revision", "kit.manifest"])
+        svc.session_started(9, None)                                     # a reload
+        asyncio.run(look())
+        self.assertEqual(asked[3:], ["describe", "kit.revision"])        # the same revision: no manifest
+        s.lua.execute(b'KitM.revision = "r2" KitWB:Emit("kit.changed", { revision = "r2" })')
+        s.run(4)
+        asyncio.run(look())
+        self.assertEqual(asked[5:], ["describe", "kit.manifest"])         # the event said r2
 
     def test_a_data_call_the_game_cannot_read(self):
         """what WoWBridge says of a CALL record it cannot do: not JSON, an unknown verb, a piece no longer kept"""
@@ -537,6 +578,23 @@ class KitTools(unittest.TestCase):
         self.assertEqual(("wk_tune_cvar_set" in names, "wk_chat_send" in names), (True, False))
         with self.assertRaises(ToolError):
             asyncio.run(third.call("wk_tune_cvar_set", {"name": "x", "value": 1}))
+
+    def test_its_asks_are_shared(self):
+        """what runs is asked SHARED (every view asks the same after a reload: the daemon asks the game once for all,
+        daemon/kitcache.py); a tool's call is the agent's own"""
+        from wuxianworkshop.mcp import kit
+
+        backend = self.backend(self.manifest())
+        seen, real = [], backend.call_exposed
+
+        async def call_exposed(addon, name, args=None, timeout_ms=10000):
+            seen.append((name, kit.SHARED.get()))
+            return await real(addon, name, args, timeout_ms)
+        backend.call_exposed = call_exposed
+        tools = kit.KitTools(backend, store=False)
+        asyncio.run(tools.list())
+        asyncio.run(tools.call("wk_tune_cvar_get", {"name": "x"}))
+        self.assertEqual(seen, [("kit.revision", True), ("kit.manifest", True), ("tune.cvar.get", False)])
 
     def test_a_capability_that_proposes(self):
         """one that runs at once and answers with a proposal of other steps (proposes, as tune.profile.apply) is no

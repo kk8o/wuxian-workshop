@@ -57,7 +57,8 @@ class HttpBackend:
     restart while this server runs, on a new port with a new token: a request that found nobody listening, or that
     was turned away for its token, did nothing, so it is sent once more to the daemon that runs now (reconnect(start):
     cli.client.connect, which also starts one, unless the call is a passive one: kit.PASSIVE, the watch of WuxianKit's
-    tools). Other failures are reported, never repeated (a run may have run)."""
+    tools). Other failures are reported, never repeated (a run may have run). The asks of WuxianKit's view of what runs
+    (kit.SHARED) say so (shared): the daemon answers them once for all its clients (daemon/kitcache.py)."""
 
     def __init__(self, client, reconnect=None):
         self.client, self.reconnect = client, reconnect
@@ -116,10 +117,10 @@ class HttpBackend:
         return await self._call("addon_events", addon, topic, since, limit, wait)
 
     async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
-        return await self._call("call_exposed", addon, name, args, timeout_ms)
+        return await self._call("call_exposed", addon, name, args, timeout_ms, kit_tools.SHARED.get())
 
     async def addon_api(self, addon=None, brief=False):
-        return await self._call("addon_api", addon, brief)
+        return await self._call("addon_api", addon, brief, kit_tools.SHARED.get())
 
     async def respond(self, request, data=None, timeout_ms=10000):
         return await self._call("respond", request, data, timeout_ms)

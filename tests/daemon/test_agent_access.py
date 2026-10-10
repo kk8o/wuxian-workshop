@@ -93,13 +93,13 @@ class Daemon(Game):
     def status(self):
         return {"addons_dir": None}
 
-    def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False):
         return answer(self, name)
 
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return {"events": [], "next": 1}
 
-    def addon_api(self, addon=None, brief=False):
+    def addon_api(self, addon=None, brief=False, shared=False):
         return described(self)
 
     def post(self, path, timeout=None, **body):
