@@ -99,6 +99,7 @@ const EN = {
   '{t} 启动': 'started {t}',
   '开发组件': 'Developer addons',
   '未连接': 'Not connected',
+  '已连接': 'Connected',
   '插件版本': 'Addon version',
   '与程序一致': 'Same as the program',
   '重载': 'Reload',

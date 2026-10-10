@@ -10,7 +10,7 @@ Control frames (frame type 2) carry "KIND;key=value;...":
           ...;gv=<the client's version, GetBuildInfo>;i=<its ## Interface> (addon 0.9.3 on: on_client() keeps them)
           ...;f=<link features>;j=<the newest agent job it ran> (0.9.6 on)
     HB;n=<counter>;k=..;m=..;l=<the id up to which every message has gone up at least once (0.9.6 on)>;q=<waiting>
-    PONG;id=<ping id>;k=..;f=..
+    PONG;id=<ping id>;k=..;f=..;v=<addon version> (v: 0.9.9 on; it names the addon of a session seen without its HELLO)
 HELLO and HB may add bad=<slot>[,<slot>..]: slots the addon skipped because their packet kept failing its checks; the
 texts, commands and code written into them go out again. A data message is one frame or several (the frame header's
 part / parts); it counts as received when every part is in. Message ids run 1..65535 and wrap; a session remembers the
@@ -427,6 +427,8 @@ class Companion(AgentCommands):
         if shown is not None and s.base is not None and 0 < (shown - s.ack) % WRAP <= NACK_SPAN:
             s.top = newer(s.top, shown)
         features = _int(f, "f") or 0
+        if kind == "PONG" and s.version_text is None and f.get("v"):
+            s.version_text = f["v"]                 # which addon, for status only (a session seen without its HELLO)
         if kind == "HELLO" and s.hello_at is None:
             s.hello_at = now
             s.version = _version(f.get("v", ""))

@@ -282,8 +282,8 @@
         <section class="ov-card">
           <header>
             <svg class="ico"><use href="#i-addons"/></svg><h2 x-t>开发组件</h2>
-            <span class="pill mono" :class="status && status.link.addon_version ? 'ok' : 'off'"
-                  x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : t('未连接')"></span>
+            <span class="pill mono" :class="status && (status.link.addon_version || linkOnline) ? 'ok' : 'off'"
+                  x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : linkOnline ? t('已连接') : t('未连接')"></span>
           </header>
           <dl class="spec">
             <div><dt x-t>插件版本</dt><dd :class="addonsUpdateText ? 'warn-text' : ''" :title="addonsUpdateText" x-text="addonsUpdateShort || t('与程序一致')"></dd></div>

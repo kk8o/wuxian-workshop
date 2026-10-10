@@ -223,6 +223,9 @@ class Lazy(unittest.TestCase):
         self.frame(F.TYPE_CONTROL, 2, b"PONG;id=1;k=2;f=1", sid=8)
         self.assertIn(b";rto=15;pack=1", self.c.outbox[0][1])
         self.assertEqual((self.c.sessions[8].features, self.c.sessions[8].hb), (1, 30.0))
+        self.assertIsNone(self.c.sessions[8].version_text)                   # an addon before 0.9.9 says no v=
+        self.frame(F.TYPE_CONTROL, 3, b"PONG;id=2;k=2;f=3;v=0.9.9", sid=8)
+        self.assertEqual((self.c.sessions[8].version_text, self.c.sessions[8].version), ("0.9.9", None))   # status only
 
     def test_memory_is_bounded(self):
         for sid in range(20):

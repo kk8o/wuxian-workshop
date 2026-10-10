@@ -230,7 +230,7 @@ function L.Step()
 	end
 	if frame and now - frame.since < P.show - 0.005 then return end   -- GetTime counts whole ms: Draw's timer may see 0.149
 	if pong then                         -- answered before any data: it measures the round trip
-		Control("pong", ("PONG;id=%s;k=%d;f=%d"):format(pong, Mailbox.Next(), L.FEATURES))
+		Control("pong", ("PONG;id=%s;k=%d;f=%d;v=%s"):format(pong, Mailbox.Next(), L.FEATURES, L.VERSION))
 		pong = nil
 		return
 	end

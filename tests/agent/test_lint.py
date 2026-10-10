@@ -359,6 +359,20 @@ class Addons(unittest.TestCase):
         self.assertEqual(r["warnings"], [])                                    # UnitHelth exists there after all
         self.assertEqual((r["unresolved"], r["live"], r["ok"]), ({}, {"checked": 4}, False))
 
+    def test_a_misspelled_call_behind_a_condition_keeps_the_right_name(self):
+        """a near name the client has stays the hint when the game says nil behind a condition (only a warning there)"""
+        self.write("Foo.toc", "## Interface: 16001\nA.lua\n")
+        self.write("A.lua", "local function Where()\n"
+                            "  local map = C_Map.GetBestMapForUnit(\"player\")\n"
+                            "  if not map then return end\n"
+                            "  return C_Map.GetPlayerMapPositon(map, \"player\")\n"
+                            "end\nreturn Where\n")
+        r = lint.check(self.folder)
+        lint.apply_live(r, {name: "nil" for name in lint.live_names(r)})
+        f = next(f for f in r["warnings"] if f["line"] == 4)
+        self.assertEqual((f["code"], f["message"]), ("undefined", "C_Map.GetPlayerMapPositon is nil in the running game"))
+        self.assertEqual(f["hint"], f"did you mean C_Map.GetPlayerMapPosition? ({lint.GUARDED_TYPO})")
+
     def addon(self, name, files):
         """another addon next to Foo"""
         for rel, text in files.items():

@@ -146,6 +146,7 @@ CONDITIONS = re.compile(r"\s*((?:\[\s*(?:Allow|Exclude)Load\w*[^\[\]]*\]\s*)+)$"
 CONDITION = re.compile(r"\[\s*((?:Allow|Exclude)Load\w*)\s*([^\[\]]*)\]", re.I)
 DEPENDENCIES = {"dependencies", "requireddeps", "optionaldeps"}      # and any other ## Dep... (the client's rule)
 ENV_NAME = re.compile(r"env(ironment)?$", re.I)     # a table functions get as their globals: _ENV, Env, env, configEnv
+GUARDED_TYPO = "a warning only because it is behind a condition here"   # a guarded name the client has a near one of
 GUARDED_HINT = ("kept in a local (local X = X), tested or behind a condition here: nothing uses it unconditionally; "
                 "fine if only the code for other game versions needs it")
 UNCONFIRMED_HINT = ("an exe Usage string names it, but the game has no such global: look for it in a C_ namespace "
@@ -1613,8 +1614,9 @@ def apply_live(report, types):
         if f["code"] in ("typo", "api-unknown", "moved") and name in types:
             if settled(name):
                 continue                                   # the game has it: the manual or our lists did not
-            if f"{f['file']}:{f['line']}" in guarded.get(name, ()):
-                keep.append(dict(f, code="undefined", message=f"{name} is nil in the running game", hint=GUARDED_HINT))
+            if f"{f['file']}:{f['line']}" in guarded.get(name, ()):     # a near name the client has stays the hint
+                hint = f"{f['hint']} ({GUARDED_TYPO})" if f.get("hint", "").startswith("did you mean") else GUARDED_HINT
+                keep.append(dict(f, code="undefined", message=f"{name} is nil in the running game", hint=hint))
             else:
                 report["errors"].append(dict(f, code="undefined", message=f"{name} is nil in the running game"))
             continue
