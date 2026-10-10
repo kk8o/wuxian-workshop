@@ -288,7 +288,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 			if cfg.autoLink ~= false then
 				ns.Link.Start(db, Print)          -- connected: the link says so in the chat
 				C_Timer.After(WAIT_SAY, function()
-					if ns.Link.State() == "hello" then Print(L.WAITING_CHAT) end
+					if ns.Link.State() == "hello" and ns.Link.SlotsLeft() > 0 then Print(L.WAITING_CHAT) end   -- 0: UI.lua says why
 				end)
 			end
 		end

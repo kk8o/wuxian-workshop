@@ -361,7 +361,7 @@ local function LayOutOverview(state, todo)
 		tile:SetPoint("TOPLEFT", page, "TOPLEFT", PAD + (i - 1) * (w + 8), -y)
 	end
 	y = y + 46 + 6
-	local held = state ~= "online" and ns.Debug.stats.errors > 0
+	local held = state ~= "online" and ns.Setting("forwardDebug") ~= false and ns.Debug.Waiting() > 0
 	panel.held:SetShown(held)
 	if held then
 		panel.held:ClearAllPoints()
@@ -416,7 +416,7 @@ function P.Refresh()
 	card.why:SetText(L[WHY_WORDS[state]])
 	card.act:SetShown(state ~= "online")
 	card.act:SetText(state == "off" and L.BTN_SHOW_FRAME or L.BTN_RESTART)
-	card.hint:SetShown(state == "hello")
+	card.hint:SetShown(state == "hello" and ns.Link.SlotsLeft() > 0)   -- none left: the dialog says what to do
 	local unlocked = ns.Frame.IsUnlocked()
 	local todo = unlocked and "lock" or (ns.Setting("hotLoad") == false and "hotload") or nil
 	local notice = panel.notice

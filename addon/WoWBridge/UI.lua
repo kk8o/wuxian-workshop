@@ -33,7 +33,7 @@ local function Dialog(name, text, buttons)
 	local note = S.Text(d, "GameFontHighlightSmall", C.muted)
 	note:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -6)
 	note:SetWidth(344)
-	d.body, d.note = body, note
+	d.title, d.body, d.note = title, body, note
 	function d.Say(words, quiet)
 		body:SetText(words)
 		note:SetText(quiet or "")
@@ -74,6 +74,9 @@ function U.AskReload(reason)
 		})
 		ask.reload, ask.later = ask.buttons[1], ask.buttons[2]
 	end
+	ask.title:SetText(L.BRAND)
+	ask.reload:SetText(L.RELOAD_NOW)
+	ask.later:SetText(L.RELOAD_LATER)
 	local plain = reason and (reason:gsub("|", "||"))      -- its words as they are, no escape codes (the chat does that)
 	ask.Say(L.RELOAD_ASK, plain and L.RELOAD_REASON:format(plain))
 	Alert(ask)
@@ -85,7 +88,7 @@ end
 -- runs every 0.5 s (Link.Tick)
 function U.CheckSlots()
 	local Mailbox, Link = ns.Mailbox, ns.Link
-	if Mailbox.Phase() == "full" then
+	if Mailbox.Phase() == "full" or Link.SlotsLeft() == 0 then
 		if not slotsGone then
 			ns.Print(L.SLOTS_GONE_CHAT)
 			slotsGone = Dialog("WoWBridgeSlotsDialog", L.SLOTS_GONE_DIALOG, { { L.GOT_IT, 100, function(d) d:Hide() end, "primary" } })

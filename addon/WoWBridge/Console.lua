@@ -176,8 +176,15 @@ function K.Job(name, addon, flag, ok, ms, values, failure)
 		K.Add("RUN", ok and L.CON_LOADED:format(short, ms) or L.CON_LOAD_FAILED:format(short, FirstLine(failure)), failure, not ok)
 	else
 		local got = values and values ~= "" and ("  → " .. Cut(FirstLine(values), 120)) or ""
-		K.Add("RUN", ok and L.CON_RAN:format(ms, got) or L.CON_RUN_FAILED:format(FirstLine(failure)),
-			ok and values ~= "" and values or failure, not ok)
+		local line
+		if name == "=call" then                     -- a data call: an addon's exposed function (addon is "Addon.name")
+			line = ok and L.CON_CALLED:format(addon, ms, got) or L.CON_CALL_FAILED:format(addon, FirstLine(failure))
+		elseif name == "=reply" then                -- the answer to an addon's request
+			line = ok and L.CON_REPLIED:format(ms, got) or L.CON_REPLY_FAILED:format(FirstLine(failure))
+		else
+			line = ok and L.CON_RAN:format(ms, got) or L.CON_RUN_FAILED:format(FirstLine(failure))
+		end
+		K.Add("RUN", line, ok and values ~= "" and values or failure, not ok)
 		if not ok then Toast(L.TOAST_RUN_FAILED:format(Cut(FirstLine(failure))), true) end
 		return
 	end

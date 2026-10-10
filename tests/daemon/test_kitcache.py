@@ -157,15 +157,16 @@ class Views(unittest.IsolatedAsyncioTestCase):
         self.comp.new_process("P1-1")
         self.comp.on_frame(F.TYPE_CONTROL, 5, 1, b"HELLO;v=0.9.8;s=5;k=1;m=1;p=P1-1;f=2;j=0")
         self.svc = Service(lambda **kw: Worker(self.comp), journal=Journal())
-        self.asked = []
+        self.asked, self.own = [], []
 
         async def describe(addon, brief):
             self.asked.append(("describe", addon))
             await asyncio.sleep(0.01)
             return {"addon": addon, "exposed": [{"name": "kit.revision"}], "topics": {}}
 
-        async def call_game(addon, name, args, timeout_ms, code):
+        async def call_game(addon, name, args, timeout_ms, code, own=False):
             self.asked.append((name, addon))
+            self.own.append(own)
             await asyncio.sleep(0.01)
             return dict(addon=addon, name=name, ok=True, result={"revision": "r1"})
         self.svc.describe, self.svc.call_game = describe, call_game
@@ -188,6 +189,7 @@ class Views(unittest.IsolatedAsyncioTestCase):
         await view(self.svc.addon_api, "Foo")                             # another addon
         await view(self.svc.call_exposed, "WuxianKit", "kit.history")     # another call
         self.assertEqual(len(self.asked), 6)
+        self.assertEqual(self.own, [True, False, False])                  # only the views' own reads go quiet in the game
         await view(self.svc.addon_api, "WuxianKit")
         self.assertEqual(len(self.asked), 6)
 

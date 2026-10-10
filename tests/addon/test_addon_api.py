@@ -241,6 +241,31 @@ class EndToEnd(unittest.TestCase):
         s.run(6)
         self.assertEqual(len([t for k, t in self.got if k == "RUN" and t.startswith(f"{job} ")]), 1)
 
+    def test_the_debug_output_names_a_data_call(self):
+        """a data call in the game's debug output: the function it called and its answer, without the piece header; one
+        that raised counts as failed; the companion's own reads (q) are neither listed nor counted"""
+        s, svc, comp = self.s, self.svc, self.comp
+        stats = s.ns[b"Agent"][b"stats"]
+        runs, failed = stats[b"runs"], stats[b"failed"]
+        asyncio.run(svc.call_exposed("Foo", "double", {"n": 2, "s": ""}))
+        with self.assertRaises(ApiError):
+            asyncio.run(svc.call_exposed("Foo", "boom"))
+        lines = [t[i].decode("utf-8") for t in [s.ns[b"Console"][b"Lines"]()] for i in range(1, len(t) + 1)]
+        called = [x for x in lines if "Foo.double" in x]
+        self.assertEqual(len(called), 1, lines)
+        self.assertIn('{"', called[0])
+        self.assertNotIn("1/1", called[0])
+        self.assertTrue(any("Foo.boom" in x and "broken on purpose" in x for x in lines), lines)
+        self.assertEqual((stats[b"runs"] - runs, stats[b"failed"] - failed), (2, 1))
+        job = comp.data_call("call", {"a": "Foo", "n": "double", "d": {"n": 1, "s": ""}, "q": True})
+        for _ in range(40):
+            s.run(0.25)
+            if any(k == "RUN" and t.startswith(f"{job} ok") for k, t in self.got):
+                break
+        else:
+            self.fail("no RUN result for the quiet call")
+        self.assertEqual((stats[b"runs"] - runs, len(s.ns[b"Console"][b"Lines"]())), (2, len(lines)))
+
     def test_wuxiankit_is_asked_once_for_every_view(self):
         """every view of WuxianKit (the daemon's own /mcp, each stdio server) asks what runs after a reload: the game is
         asked once (daemon/kitcache.py), the others get that UI session's describe, its revision and the manifest of
@@ -252,8 +277,11 @@ class EndToEnd(unittest.TestCase):
         comp.on_debug = lambda kind, text: (self.got.append((kind, text)), svc.on_debug(kind, text))
         asked, data = [], svc.data
 
+        quiet = []
+
         async def counted(verb, payload, timeout_ms=10000, what="call"):
             asked.append(payload.get("n") or verb)
+            quiet.append(bool(payload.get("q")))
             return await data(verb, payload, timeout_ms, what)
         svc.data = counted
         views = [kit.KitTools(svc, store=False) for _ in range(4)]
@@ -265,6 +293,7 @@ class EndToEnd(unittest.TestCase):
             return [{t.name for t in await v.list()} for v in views]
         self.assertTrue(all("wk_kit_undo" in names for names in asyncio.run(look())))
         self.assertEqual(asked, ["describe", "kit.revision", "kit.manifest"])
+        self.assertEqual(quiet, [False, True, True])                     # the views' own reads: the game does not list them
         svc.session_started(9, None)                                     # a reload
         asyncio.run(look())
         self.assertEqual(asked[3:], ["describe", "kit.revision"])        # the same revision: no manifest

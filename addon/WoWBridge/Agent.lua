@@ -239,16 +239,20 @@ local function RunJob(id, job)
 	jobs[id] = nil
 	MarkDone(id)
 	local code, short = table.concat(job.parts), job.name:gsub("^@Interface[/\\]AddOns[/\\]", "")
-	if ns.Setting("hotLoad") == false then
-		Result(("%s error %s: hot loading is off (/wb set hotLoad on)"):format(id, job.name))
+	local function Refused(why)                     -- not run: the report, and the line in the debug output
+		Result(("%s error %s: %s"):format(id, job.name, why))
+		if job.name == "=probe" then return end
 		Count(job.name, false)
+		pcall(ns.Console.Job, job.name, job.addon, job.flag, false, 0, "", why)
+	end
+	if ns.Setting("hotLoad") == false then
+		Refused("hot loading is off (/wb set hotLoad on)")
 		return
 	end
 	if job.zip then
 		local text, why = Unpack(code, job.zip, "code")
 		if not text then
-			Result(("%s error %s: %s"):format(id, job.name, why))
-			Count(job.name, false)
+			Refused(why)
 			return
 		end
 		code = text
@@ -413,9 +417,15 @@ local function RunCall(id, job)
 		Result(("%s ok %s (%d B, %.1f ms, 1 value): %s"):format(id, chunk, #body, ms, Quote(text)))
 	end
 	if job.verb ~= "call" and job.verb ~= "reply" then return end      -- the app's own looks, as probes are
-	local addon = type(req) == "table" and (job.verb == "call" and req.a or "-") or "-"
+	if type(req) == "table" and req.q then return end                  -- the app's own reads of an addon (0.9.9)
+	local answer = text and text:gsub("^%d+/%d+\n", "", 1) or ""       -- without the piece header the companion reads
+	if failure == nil and answer:sub(1, 1) == "{" and #answer < 4000 then
+		local said = ns.Json.Decode(answer)
+		if type(said) == "table" and said.ok == false then failure = tostring(said.error or "failed") end
+	end
+	local who = type(req) == "table" and job.verb == "call" and (tostring(req.a) .. "." .. tostring(req.n)) or "-"
 	Count(chunk, failure == nil)
-	pcall(ns.Console.Job, chunk, tostring(addon), nil, failure == nil, ms, text or "", failure)
+	pcall(ns.Console.Job, chunk, who, nil, failure == nil, ms, answer, failure)
 end
 
 -- a CALL record (Link.lua hands them over); its parts gather in the same table as CODE jobs' (the ids never meet)

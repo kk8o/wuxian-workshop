@@ -26,6 +26,12 @@ local function Enabled()
 	return v ~= false
 end
 
+-- debug messages that wait to go to the companion: here (the link off or not started) and in the link's queue
+function D.Waiting()
+	local link = ns.Link
+	return #buffer + (link and link.Waiting("debug") or 0)
+end
+
 -- queue a debug message for the companion; kept here until the link starts
 function D.Queue(text)
 	local link = ns.Link

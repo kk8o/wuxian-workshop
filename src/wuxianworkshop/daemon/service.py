@@ -35,6 +35,8 @@ from .api import ApiError, chunk_file, parse_run
 from .journal import REQUEST_ID
 from .kitcache import KIT, SHARED, KitCache
 
+OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities")   # what WuxianKit's views read of it for themselves
+
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
@@ -682,17 +684,19 @@ class Service:
             code = probes.call_chunk(addon, name, args)       # also what checks args (JSON a Lua table can hold)
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
-        if (addon == KIT and name in ("kit.revision", "kit.manifest") and args is None
-                and (SHARED.get() if shared is None else shared)):
-            return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code))
-        return await self.call_game(addon, name, args, timeout_ms, code)
+        own = addon == KIT and name in OWN_READS and args is None and (SHARED.get() if shared is None else shared)
+        if own and name in ("kit.revision", "kit.manifest"):
+            return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code, own))
+        return await self.call_game(addon, name, args, timeout_ms, code, own)
 
-    async def call_game(self, addon, name, args, timeout_ms, code):
-        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7"""
+    async def call_game(self, addon, name, args, timeout_ms, code, own=False):
+        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7.
+        own: a read of WuxianKit's views, not the agent's call: the game neither counts it nor lists it (q; 0.9.9)"""
         t0 = time.time()
         try:
             if self.data_calls():
-                data = await self.data_probe("call", {"a": addon, "n": name, "d": args}, timeout_ms, "call")
+                req = {"a": addon, "n": name, "d": args, **({"q": True} if own else {})}
+                data = await self.data_probe("call", req, timeout_ms, "call")
             else:
                 data = await self.probe(code, timeout_ms, chunk="=call")
         except ApiError as e:

@@ -278,6 +278,12 @@ class AgentReload(unittest.TestCase):
             self.assertFalse(dialog[b"note"][b"shown"])
             self.assertTrue(s.chat().splitlines()[-1].endswith("the agent asks for a UI reload: click the button in the middle "
                                                                "of the screen"))
+            s.slash("lang zh")                                        # the dialog, made in English, speaks the language of now
+            comp.command("reload", "装了新文件")
+            s.run(6)
+            self.assertEqual((dialog[b"title"][b"text"].decode(), dialog[b"reload"][b"text"].decode(),
+                              dialog[b"later"][b"text"].decode(), dialog[b"note"][b"text"].decode()),
+                             ("无限工坊", "立即重载", "稍后", "原因：装了新文件"))
             self.assertEqual(s.lua.globals()[b"__reloads"], 0)
         finally:
             s.close()
@@ -1115,7 +1121,10 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual(s.ns[b"Link"][b"State"](), b"off")
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"act"][b"text"].decode(),
                               card[b"hint"][b"shown"]), ("未连接", True, "显示帧码", False))   # 概览 offers it back
-            self.assertTrue(panel[b"held"][b"shown"])                # the error waits in the game meanwhile
+            self.assertFalse(panel[b"held"][b"shown"])               # the error before went up: nothing waits
+            g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:30: attempt to index a nil value")
+            s.run(1.1)
+            self.assertTrue(panel[b"held"][b"shown"])                # this one waits in the game meanwhile
             card[b"act"].Click(card[b"act"])
             self.assertEqual(s.ns[b"Link"][b"State"](), b"hello")
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"text"].decode(), card[b"hint"][b"shown"],
@@ -1142,8 +1151,9 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual((box[b"shown"], panel[b"site"][b"shown"]), (False, True))
             categories = list(g[b"__categories"].values())            # Options > AddOns has its page
             self.assertEqual([c[b"name"].decode() for c in categories], ["Wuxian Workshop · WoWBridge"])
-            self.assertEqual(list(g[b"__errors"].values()),           # and nothing failed on the way but the error made above
-                             [b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value"])
+            self.assertEqual(list(g[b"__errors"].values()),           # and nothing failed on the way but the errors made above
+                             [b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value",
+                              b"Interface/AddOns/Foo/Foo.lua:30: attempt to index a nil value"])
         finally:
             s.close()
 
