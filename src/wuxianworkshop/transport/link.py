@@ -304,6 +304,7 @@ class Companion(AgentCommands):
                           dropped_records=0)
         self.full = False
         self.reload_sent = None       # (when, session) of the last "reload" command, until a new session shows up
+        self.reload_later = False     # the player put it off (稍后): no button waits, a reload of their own is still told
         self.last_job = 0             # the AgentCommands state: the last code() job id ...
         self.slots_warned = set()
         self.watched, self.watch_pending, self.watch_checked = {}, {}, 0.0   # ... and path -> (mtime, addon); see watch()
@@ -330,7 +331,7 @@ class Companion(AgentCommands):
         self.outbox = [r for r in self.outbox if r[0] not in (MB.CODE, MB.CALL, MB.COMMAND, MB.WELCOME)]
         self.slot, self.addon_slot, self.sessions, self.current, self.full = None, None, {}, None, False
         self.written, self.written_at, self.written_as, self.slots_warned = {}, {}, {}, set()
-        self.pings, self.reload_sent, self.watch_jobs = {}, None, {}
+        self.pings, self.reload_sent, self.reload_later, self.watch_jobs = {}, None, False, {}
         return len([r for r in stale if r[0] != MB.WELCOME])
 
     def new_process(self, stamp):
@@ -442,8 +443,9 @@ class Companion(AgentCommands):
             if self.reload_sent and s.sid != self.reload_sent[1]:
                 self.stats["reloads"] += 1
                 self._reload_note(f"reload done: session {self.reload_sent[1]} -> {s.sid}, "
-                                  f"{now - self.reload_sent[0]:.1f} s after the command")
-                self.reload_sent = None
+                                  f"{now - self.reload_sent[0]:.1f} s after the command"
+                                  + (" (it had been put off)" if self.reload_later else ""))
+                self.reload_sent, self.reload_later = None, False
             if self.on_session is not None:
                 try:
                     self.on_session(s.sid, _int(f, "j"))
@@ -556,6 +558,8 @@ class Companion(AgentCommands):
                 self.note(f"session {s.sid}: a compressed job could not be unpacked in the game; its next jobs go uncompressed")
             self._debug("RUN", plain(text).rstrip())
         elif mtype == TYPE_RELOAD:
+            if text.startswith("later:") and self.reload_sent:
+                self.reload_later = True
             self._debug("RELOAD", plain(text).rstrip())
         elif mtype == TYPE_TEST:
             s.ack_soon = True
@@ -782,8 +786,9 @@ class Companion(AgentCommands):
     def tick(self):
         now = self.clock()
         if self.reload_sent and now - self.reload_sent[0] > self.reload_wait:
-            self._reload_note(f"no reload {self.reload_wait:.0f} s after the command (the button was not clicked)")
-            self.reload_sent = None
+            if not self.reload_later:                   # put off: the player answered, and the log says so
+                self._reload_note(f"no reload {self.reload_wait:.0f} s after the command (the button was not clicked)")
+            self.reload_sent, self.reload_later = None, False
         if self.link_up and now - self.last_frame > self.down_after:
             self.link_up = False
             self.note(f"link down: no frame for {self.down_after:.0f} s (covered, minimized, a loading screen, or the addon is off)")
@@ -935,6 +940,10 @@ class Companion(AgentCommands):
         be unpacked there"""
         s = self.sessions.get(self.current)
         return s is not None and s.features >= ZIP and not s.zip_off
+
+    def reload_pending(self):
+        """whether a reload button waits for the player: asked for, neither done nor put off, and not given up on"""
+        return self.reload_sent is not None and not self.reload_later
 
     def reasons(self):
         """whether the addon of the current session shows why a reload is asked (link features ZIP, 0.9.9 on): an

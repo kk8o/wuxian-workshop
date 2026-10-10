@@ -442,7 +442,8 @@ def build_server(backend, name="wuxian"):
         reloads only when the player clicks it. reason: why, in a few words; the game's dialog shows it to the player.
         Needed for: SavedVariables written to disk, XML changes, code that runs only at login. Not needed for Lua
         changes: use `load`. Not enough for new files or .toc changes: those need a full game restart.
-        status.reload_pending stays true until the click; the RELOAD entry in `logs` says done or later.
+        status.reload_pending stays true until the player clicks either button; the RELOAD entry in `logs` says done
+        or later.
         A reload also clears the taint `run` leaves, and drops WuxianKit proposals that have not run."""
         return await call(backend.reload(reason))
 

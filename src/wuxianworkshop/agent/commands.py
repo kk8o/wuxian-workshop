@@ -82,7 +82,7 @@ class AgentCommands:
             reason = one_line(reason)
             if reason and self.reasons():
                 text += " " + reason
-            self.reload_sent = (now, self.current)
+            self.reload_sent, self.reload_later = (now, self.current), False
         elif text.startswith("run "):
             return self.code(text[4:].encode(), "=run")
         elif text.startswith("load "):

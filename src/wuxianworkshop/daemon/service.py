@@ -355,7 +355,7 @@ class Service:
                         addon_version=s.version_text if s else None,
                         slot_rate=round(comp.slot_rate(time.time(), s) * 60, 2) if comp.slot is not None else None)
             watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
-            reload_pending = comp.reload_sent is not None
+            reload_pending = comp.reload_pending()
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
                                 mode=self.mode, started=round(self.started, 3), url=self.url,

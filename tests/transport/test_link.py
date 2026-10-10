@@ -214,6 +214,26 @@ class Companion(unittest.TestCase):
         self.c.command("reload", "why")
         self.assertRegex(self.c.outbox[-1][1], rb"^reload \d+$")
 
+    def test_reload_put_off(self):
+        """稍后: no button waits any more (status.reload_pending), and the 600 s give-up does not say it was not clicked;
+        a reload of the player's own is still told, and a new request waits again"""
+        self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.9.9;s=5;k=1;m=1;f=3")
+        self.c.command("reload")
+        self.assertTrue(self.c.reload_pending())
+        self.frame(F.TYPE_DATA, 1, bytes([link.TYPE_RELOAD]) + b"later: the user put the reload off")
+        self.assertFalse(self.c.reload_pending())
+        self.t += 30
+        self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.9.9;s=6;k=2;m=2;f=3", sid=6)   # the player reloads later on
+        self.assertIn("reload done: session 5 -> 6, 30.0 s after the command (it had been put off)", self.log)
+        self.c.command("reload")
+        self.assertTrue(self.c.reload_pending())
+        self.frame(F.TYPE_DATA, 2, bytes([link.TYPE_RELOAD]) + b"later: the user put the reload off", sid=6)
+        self.t += 601
+        self.c.tick()
+        self.assertIsNone(self.c.reload_sent)
+        self.assertFalse(self.c.reload_pending())
+        self.assertFalse(any("not clicked" in t for t in self.log), self.log)
+
     def test_heartbeat_by_addon_version(self):
         """addon 0.7.0 on: a heartbeat every 15 s (it goes offline after three missed); an older one: every 5 s"""
         self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.7.0;s=5;k=1;m=1")
