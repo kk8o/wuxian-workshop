@@ -160,7 +160,7 @@ class Link099(unittest.TestCase):
         return [sizes[i] for i in range(len(sizes))]
 
     def test_a_long_message_breathes(self):
-        """mode 3: a long message's parts go from 45 % of a big frame's room up to 70 % and back, a cosine over 12 parts
+        """mode 3: a long message's parts go from 70 % of a big frame's room up to 90 % and back, a cosine over 12 parts
         (its ∞ swells and shrinks as it goes up, never a blob); it is read whole"""
         s = self.start()
         cap = F.capacity(128, 32, 3)
@@ -170,10 +170,10 @@ class Link099(unittest.TestCase):
             s.run(0.05)
         self.assertEqual((s.comp.stats["long_ok"], s.comp.stats["long_bad"]), (1, 0))
         sizes = self.part_sizes(s, b"LONG n=12000")
-        want = [int(cap * (0.45 + 0.25 * (1 - math.cos(2 * math.pi * i / 12)) / 2)) for i in range(len(sizes) - 1)]
+        want = [int(cap * (0.70 + 0.20 * (1 - math.cos(2 * math.pi * i / 12)) / 2)) for i in range(len(sizes) - 1)]
         self.assertEqual(sizes[:-1], want)
-        self.assertEqual((min(want), max(want)), (int(cap * 0.45), int(cap * 0.70)))
-        self.assertLessEqual(sizes[-1], int(cap * 0.70))
+        self.assertEqual((min(want), max(want)), (int(cap * 0.70), int(cap * 0.90)))
+        self.assertLessEqual(sizes[-1], int(cap * 0.90))
         self.assertEqual(sum(sizes), 12000 + 1)                          # the type byte too
 
     def test_an_older_companion_gets_full_parts(self):

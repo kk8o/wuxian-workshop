@@ -67,13 +67,13 @@ class Link(unittest.TestCase):
             s.run(15)
             self.assertEqual(comp.stats["long_ok"], 1, logs)
             done = sess.messages[-1][4]
-            self.assertRegex(done, r"^LONG DONE id=\d+ bytes=6000 parts=8 shown_again=0 time=\S+ draw=\S+$")
+            self.assertRegex(done, r"^LONG DONE id=\d+ bytes=6000 parts=6 shown_again=0 time=\S+ draw=\S+$")
             # one part lost on its way: the companion reports the parts it has, the addon shows only the missing one
             s.drop_part = 2
             s.slash("long 6000")
             s.run(20)
             self.assertEqual(comp.stats["long_ok"], 2, logs)
-            self.assertRegex(sess.messages[-1][4], r"^LONG DONE id=\d+ bytes=6000 parts=8 shown_again=1 ")
+            self.assertRegex(sess.messages[-1][4], r"^LONG DONE id=\d+ bytes=6000 parts=6 shown_again=1 ")
             s.slash("link")
             self.assertRegex(s.chat(), r"link online · \d+ app messages left · \d+ packets read · 0 waiting · 15 acknowledged")
             left = int(re.search(r"link online · (\d+) app messages left", s.chat()).group(1))

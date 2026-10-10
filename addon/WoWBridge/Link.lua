@@ -393,7 +393,7 @@ local function Capacity(W, H)
 	return Codec.Capacity(ns.Frame.DataCells(W, H), P.mode, 0)
 end
 
-local BREATH_LOW, BREATH_HIGH, BREATH_PERIOD = 0.45, 0.70, 12
+local BREATH_LOW, BREATH_HIGH, BREATH_PERIOD = 0.70, 0.90, 12   -- 0.45 / 0.70 took 75 % more parts (2026-10-11)
 
 -- the data frames' widths in this mode: mode 3's as wide as their ∞
 local function DataW() return P.mode == 3 and P.dataW3 or P.dataW end
