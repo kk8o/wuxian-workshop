@@ -1,7 +1,14 @@
-"""The API manual's index (wuxianworkshop/apidocs.py) over a small made-up pack, and over the pack the program carries."""
+"""The API manual's index (wuxianworkshop/apidocs.py) over a small made-up pack, and over the pack the program carries;
+the game scan in it (scripts/build_api_pack.py)."""
+import importlib.util
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from wuxianworkshop import apidocs, content
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def arg(n, t, nil=False, default=None):
@@ -179,6 +186,128 @@ class Browse(unittest.TestCase):
         self.assertEqual([r["name"] for r in self.ix.find("", kind="table")["results"]], ["SomeConstants", "SpellInfo"])
 
 
+# an enum a namespace's file documents and a file of constants, beside the made-up pack
+RULES = dict(PACK, namespaces=PACK["namespaces"] + [
+    {"ns": "C_GameRules", "name": "GameRules", "functions": [], "events": [],
+     "tables": [{"name": "ForeverExperiencePreset", "type": "Enumeration",
+                 "fields": [{"n": "Classic", "t": "ForeverExperiencePreset", "v": 0, "nil": False},
+                            {"n": "Modern", "t": "ForeverExperiencePreset", "v": 1, "nil": False}]}]},
+    {"ns": "", "name": "LegacyConstants", "functions": [], "events": [],
+     "tables": [{"name": "LegacyConsts", "type": "Constants", "fields": []}]}])
+
+
+class GameNames(unittest.TestCase):
+    def test_an_enum_and_constants_by_the_names_the_game_gives_them(self):
+        """Enum.X and Constants.X, wherever the documentation has them"""
+        ix = apidocs.ApiIndex(RULES)
+        e = ix.get("Enum.ForeverExperiencePreset")
+        self.assertEqual((e["kind"], e["name"], e["type"]), ("table", "ForeverExperiencePreset", "Enumeration"))
+        self.assertEqual([(f["n"], f["v"]) for f in e["fields"]], [("Classic", 0), ("Modern", 1)])
+        self.assertEqual(ix.get("enum.foreverexperiencepreset")["name"], "ForeverExperiencePreset")
+        self.assertEqual(ix.get("ForeverExperiencePreset")["name"], "ForeverExperiencePreset")    # as before
+        self.assertEqual(ix.get("Constants.LegacyConsts")["type"], "Constants")
+        self.assertIsNone(ix.get("Enum.LegacyConsts"))                       # constants, not an enum
+        self.assertIsNone(ix.get("Constants.ForeverExperiencePreset"))
+        self.assertIsNone(ix.get("Enum.SpellInfo"))                          # a structure is neither
+
+
+# the made-up pack with a scan of the running game (scripts/build_api_pack.py runtime): C_Spell has a function the
+# documentation leaves out (its Usage string names it without the namespace), C_Garrison is not documented at all, C_Other
+# and the global TargetUnit are not in the game, GameRule and LegacyConsts are tables the documentation does not have
+SCANNED = dict(PACK, usage=PACK["usage"] + ["Usage: GetSpellBookInfo(index)"], namespaces=PACK["namespaces"] + [
+    {"ns": "C_GameRules", "name": "GameRules", "events": [], "tables": [],
+     "functions": [{"name": "IsGameRuleActive", "args": [arg("gameRule", "GameRule")], "rets": [arg("isActive", "bool")],
+                    "doc": "", "raw": {}}]}],
+    runtime=dict(client="1.60.1.70338", scanned="2026-10-11", globals=["CastSpellByName", "UnitHealth"],
+                 namespaces={"C_Spell": ["GetSpellBookInfo", "GetSpellCooldown", "GetSpellInfo"],
+                             "C_Garrison": ["GetGarrisonInfo"], "C_GameRules": ["IsGameRuleActive"]},
+                 enums=["GameRule"], constants=["LegacyConsts"],
+                 fields={"Enum.GameRule": {"MacrosDisabled": 2, "UserAddonsDisabled": 1},
+                         "Constants.LegacyConsts": {"LEGACY_TREE_PROFESSIONS_ID": 1187}}))
+
+
+class Scanned(unittest.TestCase):
+    """what the game scan adds: the functions and tables the documentation leaves out (undocumented), the documented ones
+    the game lacks marked (absent)"""
+
+    def setUp(self):
+        self.ix = apidocs.ApiIndex(SCANNED)
+
+    def test_what_the_documentation_leaves_out(self):
+        e = self.ix.get("C_Spell.GetSpellBookInfo")
+        self.assertEqual((e["sig"], e["call"], e["why"], e["undocumented"]),
+                         ("C_Spell.GetSpellBookInfo()", "limited", ["Undocumented"], True))
+        self.assertEqual(e["flags"][0], "文档里没有：游戏里有（1.60.1.70338 实测），没有参数与返回值的说明")
+        self.assertEqual(e["usage"], ["Usage: GetSpellBookInfo(index)"])          # named without its namespace
+        self.assertIn("GetSpellBookInfo", self.ix.get("C_Spell.GetSpellInfo")["siblings"])
+        self.assertEqual(self.ix.system("C_Garrison")["functions"][0]["name"], "C_Garrison.GetGarrisonInfo")
+        rule = self.ix.get("Enum.GameRule")
+        self.assertEqual((rule["type"], [(f["n"], f["v"]) for f in rule["fields"]]),
+                         ("Enumeration", [("UserAddonsDisabled", 1), ("MacrosDisabled", 2)]))   # by value
+        self.assertEqual(rule["flags"], ["文档里没有：游戏里有（1.60.1.70338 实测），取值是游戏里读到的"])
+        self.assertEqual(self.ix.get("C_GameRules.IsGameRuleActive")["types"]["GameRule"]["fields"][0]["n"],
+                         "UserAddonsDisabled")                                   # an argument's type, from the scan
+        self.assertEqual(self.ix.get("Constants.LegacyConsts")["fields"][0]["v"], 1187)
+        self.assertEqual([r["name"] for r in self.ix.search("GameRule", kind="table")], ["GameRule"])
+
+    def test_what_the_game_lacks(self):
+        other = self.ix.get("C_Other.GetSpellInfo")
+        self.assertEqual((other["absent"], other["call"], other["why"]), (True, "limited", ["NotInClient"]))
+        self.assertEqual(other["flags"][0], "这个客户端里没有（1.60.1.70338 实测）")
+        target = self.ix.get("TargetUnit")                                      # protected stays protected
+        self.assertEqual((target["absent"], target["call"], target["why"]), (True, "protected", ["NotInClient", "ProtectedGlobal"]))
+        for name in ("UnitHealth", "C_Spell.GetSpellInfo", "SpellInfo", "SPELL_UPDATE_COOLDOWN"):
+            self.assertNotIn("absent", self.ix.get(name), name)
+        self.assertEqual(self.ix.about()["scan"], {"client": "1.60.1.70338", "scanned": "2026-10-11", "undocumented": 4,
+                                                   "absent": 2})
+        self.assertIsNone(apidocs.ApiIndex(PACK).about()["scan"])               # a pack without a scan
+
+
+def build_script():
+    spec = importlib.util.spec_from_file_location("build_api_pack", ROOT / "scripts" / "build_api_pack.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Build(unittest.TestCase):
+    """scripts/build_api_pack.py: the game scan beside the documentation, as the pack's runtime"""
+
+    def test_the_scan_and_the_documentation(self):
+        """the scan's names; a documented one an addon had set in the scanned game counts (the client's all the same),
+        an addon's own does not; the fields of the tables the documentation does not have"""
+        docs = {"namespaces": [
+            {"ns": "C_Spell", "name": "Spell", "functions": [{"name": "GetSpellInfo"}, {"name": "Hooked"}], "events": [],
+             "tables": [{"name": "Doc", "type": "Enumeration", "fields": []}]},
+            {"ns": "", "name": "Unit", "functions": [{"name": "UnitHealth"}, {"name": "Replaced"}], "events": [], "tables": []},
+            {"ns": "", "name": "SimpleFrameAPI", "functions": [{"name": "Hide"}], "events": [], "tables": []},
+            {"ns": "", "name": "", "functions": [], "events": [],
+             "tables": [{"name": "LegacyConsts", "type": "Constants", "fields": []}]}]}
+        scan = dict(client="1.60.1.70338", scanned="2026-10-11", namespaces={"C_Spell": ["Extra", "GetSpellInfo"]},
+                    globals=["UnitHealth"], enums=["Doc", "New"], constants=[],
+                    fields={"Enum.Doc": {"A": 1}, "Enum.New": {"B": 2}},
+                    replaced={"C_Spell.Hooked": "X", "Replaced": "X", "Hide": "X", "Constants.LegacyConsts": "X",
+                              "AddonOwn": "X"})
+        got = build_script().runtime(scan, docs)
+        self.assertEqual(got, dict(client="1.60.1.70338", scanned="2026-10-11", globals=["Replaced", "UnitHealth"],
+                                   namespaces={"C_Spell": ["Extra", "GetSpellInfo", "Hooked"]}, enums=["Doc", "New"],
+                                   constants=["LegacyConsts"], fields={"Enum.New": {"B": 2}}))
+
+    def test_a_scan_of_the_documentations_build_only(self):
+        script = build_script()
+        with tempfile.TemporaryDirectory() as tmp:
+            codex = Path(tmp)
+            (codex / "api").mkdir()
+            with self.assertRaises(SystemExit) as cm:
+                script.game_scan(codex, "1.60.1.70338")
+            self.assertIn("no game scan", str(cm.exception))
+            (codex / "api" / script.SCAN).write_text(json.dumps({"client": "1.60.1.70245"}), encoding="utf-8")
+            with self.assertRaises(SystemExit) as cm:
+                script.game_scan(codex, "1.60.1.70338")
+            self.assertIn("a scan of 1.60.1.70245, the documentation is of 1.60.1.70338", str(cm.exception))
+            self.assertEqual(script.game_scan(codex, "1.60.1.70245"), {"client": "1.60.1.70245"})
+
+
 class Carried(unittest.TestCase):
     """the pack in src/wuxianworkshop/data (scripts/build_api_pack.py)"""
 
@@ -191,6 +320,11 @@ class Carried(unittest.TestCase):
         for topic in ("runtime", "taint", "secret", "toc", "protected", "forever-api"):
             self.assertTrue(ix.manual(topic)["md"], topic)
         self.assertNotIn("__", ix.manual("protected")["md"])                       # every placeholder filled in
+        preset = ix.get("Enum.ForeverExperiencePreset")                            # in C_GameRules' file (forever-api)
+        self.assertEqual([f["n"] for f in preset["fields"]], ["Classic", "Modern"])
+        self.assertEqual(ix.about()["scan"]["client"], ix.about()["client"])       # a game scan of the same build
+        self.assertTrue(ix.get("C_Garrison.GetGarrisonInfo")["undocumented"])     # the documentation leaves it out
+        self.assertEqual(ix.get("Constants.LegacyConsts")["fields"][2]["n"], "LEGACY_TREE_PROFESSIONS_ID")
 
 
 if __name__ == "__main__":

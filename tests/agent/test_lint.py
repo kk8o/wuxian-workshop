@@ -6,10 +6,19 @@ import time
 import unittest
 from pathlib import Path
 
-from wuxianworkshop import scaffold
+from wuxianworkshop import apidocs, scaffold
 from wuxianworkshop.agent import lint, probes
 
 ROOT = Path(__file__).resolve().parents[2]
+# a namespace's file that documents an enum and constants, beside a file of constants alone (the game has all three as
+# Enum.X / Constants.X)
+RULES = {"namespaces": [
+    {"ns": "C_GameRules", "name": "GameRules", "events": [],
+     "functions": [{"name": "GetForeverExperiencePreset", "args": [], "rets": [], "doc": "", "raw": {}}],
+     "tables": [{"name": "ForeverExperiencePreset", "type": "Enumeration", "fields": []},
+                {"name": "GameRulesConsts", "type": "Constants", "fields": []}]},
+    {"ns": "", "name": "LegacyConstants", "functions": [], "events": [],
+     "tables": [{"name": "LegacyConsts", "type": "Constants", "fields": []}]}]}
 
 
 def scan_of(src):
@@ -200,6 +209,68 @@ class Addons(unittest.TestCase):
         t = time.time_ns() + 10 ** 9
         os.utime(p, ns=(t, t))
         self.assertEqual(lint.syntax(p)["line"], 1)
+
+    def test_enums_and_constants_a_namespace_documents(self):
+        """an enum is Enum.X and constants are Constants.X also when a namespace's file documents them (C_GameRules:
+        ForeverExperiencePreset)"""
+        self.write("Foo.toc", "## Interface: 16001\nCore.lua\n")
+        self.write("Core.lua", "local preset = C_GameRules.GetForeverExperiencePreset()\n"   # 1
+                               "local classic = Enum.ForeverExperiencePreset.Classic\n"       # 2 C_GameRules' file
+                               "local rules = Constants.GameRulesConsts\n"                    # 3 C_GameRules' file
+                               "local legacy = Constants.LegacyConsts\n"                      # 4 a file of its own
+                               "local typo = Enum.ForeverExperiencePerset\n")                 # 5
+        r = lint.check(self.folder, ix=apidocs.ApiIndex(RULES))
+        self.assertEqual([(f["code"], f["line"], f["hint"]) for f in r["warnings"]],
+                         [("api-unknown", 5, "did you mean Enum.ForeverExperiencePreset?")])
+        self.assertEqual((r["errors"], r["unresolved"]), ([], {}))
+        # the pack the program carries: enums of C_GameRules' and C_AuctionHouse's files, constants of C_GamepadUI's
+        self.write("Core.lua", "local classic = Enum.ForeverExperiencePreset.Classic\n"
+                               "local sold = Enum.AuctionStatus.Sold\n"
+                               "local pad = Constants.GamepadActionBarConstants\n")
+        r = lint.check(self.folder)
+        self.assertEqual((r["errors"], r["warnings"], r["unresolved"]), ([], [], {}))
+
+    def test_a_global_only_the_usage_strings_name_is_asked_of_the_game(self):
+        """the exe's Usage strings name some functions without their namespace (GetGarrisonInfo is
+        C_Garrison.GetGarrisonInfo in the game) and the login screen's: no finding without the game; the running game
+        settles them"""
+        ix = apidocs.ApiIndex(dict(RULES, usage=["Usage: GetGarrisonInfo(garrisonType)", "Usage: UpgradeGarrison(type)",
+                                                 "Usage: local ok = C_Login.IsLauncherLogin()"]))
+        self.write("Foo.toc", "## Interface: 16001\nCore.lua\n")
+        self.write("Core.lua", "local level = GetGarrisonInfo(2)\n"                        # 1 when the file loads
+                               "local up = UpgradeGarrison\n"                             # 2 kept
+                               "if C_Login then C_Login.IsLauncherLogin() end\n"          # 3 tested
+                               "local preset = C_GameRules.GetForeverExperiencePreset()\n")   # 4 documented
+        r = lint.check(self.folder, ix=ix)
+        self.assertEqual((r["errors"], r["warnings"], r["notes"], r["unresolved"]), ([], [], [], {}))
+        self.assertEqual(r["unconfirmed"], {"GetGarrisonInfo": ["Core.lua:1"], "UpgradeGarrison": ["Core.lua:2"],
+                                            "C_Login": ["Core.lua:3"]})
+        self.assertEqual(lint.live_names(r), ["C_Login", "GetGarrisonInfo", "UpgradeGarrison"])
+        lint.apply_live(r, {"GetGarrisonInfo": "nil", "UpgradeGarrison": "function", "C_Login": "nil"})
+        self.assertEqual([(f["code"], f["line"], f["hint"]) for f in r["errors"]],
+                         [("undefined", 1, lint.UNCONFIRMED_HINT)])
+        self.assertEqual([(f["code"], f["line"], f["hint"]) for f in r["warnings"]],
+                         [("undefined", 3, lint.GUARDED_HINT)])                   # only tested there
+        self.assertEqual((r["unconfirmed"], r["guarded"], r["ok"]), ({}, {}, False))
+
+    def test_the_game_scan_is_what_exists(self):
+        """a pack with a scan of the running game: what the documentation leaves out exists (C_Garrison.GetGarrisonInfo,
+        Enum.GameRule), what it lists and the game lacks does not, and the Usage strings vouch for nothing more: a function
+        they name without its namespace is the namespace's"""
+        game = dict(client="1.60.1.70338", scanned="2026-10-11", globals=[], fields={},
+                    namespaces={"C_GameRules": ["GetForeverExperiencePreset"], "C_Garrison": ["GetGarrisonInfo"]},
+                    enums=["ForeverExperiencePreset", "GameRule"], constants=["LegacyConsts"])
+        ix = apidocs.ApiIndex(dict(RULES, usage=["Usage: GetGarrisonInfo(garrisonType)"], runtime=game))
+        self.write("Foo.toc", "## Interface: 16001\nCore.lua\n")
+        self.write("Core.lua", "local a = C_Garrison.GetGarrisonInfo(2)\n"                 # 1 left out of the documentation
+                               "local b = Enum.GameRule.UserAddonsDisabled\n"             # 2 likewise
+                               "local c = GetGarrisonInfo(2)\n"                           # 3 the Usage string's name
+                               "local d = Constants.GameRulesConsts\n"                    # 4 documented, not in the game
+                               "local e = C_GameRules.GetForeverExperiencePreset()\n")    # 5
+        r = lint.check(self.folder, ix=ix)
+        self.assertEqual([(f["code"], f["line"]) for f in r["warnings"]], [("moved", 3), ("api-unknown", 4)])
+        self.assertEqual(r["warnings"][0]["hint"], "use C_Garrison.GetGarrisonInfo")
+        self.assertEqual((r["errors"], r["unconfirmed"], r["unresolved"]), ([], {}, {}))
 
     def test_the_game_settles_what_the_manual_does_not(self):
         self.write("Foo.toc", "## Interface: 16001\nA.lua\n")

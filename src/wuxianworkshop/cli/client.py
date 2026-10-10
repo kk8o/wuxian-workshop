@@ -104,6 +104,9 @@ class DaemonClient:
     def inspect(self, target=None, mouse=False, depth=1, snap=False):
         return self.post("/api/inspect", target=target, mouse=mouse, depth=depth, snap=snap, timeout=60 + AGAIN)
 
+    def api_scan(self, part, names=None):
+        return self.post("/api/api_scan", part=part, names=names, timeout=180 + AGAIN)
+
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return self.post("/api/addon_events", addon=addon, topic=topic, since=since, limit=limit, wait=wait,
                          timeout=wait + 30)

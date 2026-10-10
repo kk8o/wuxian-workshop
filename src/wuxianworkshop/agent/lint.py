@@ -4,7 +4,7 @@ with the file and the line, together with what may be wrong.
     check(path, addons=None) -> report        a file or an addon folder (the files its .toc loads on this client)
     syntax(path) -> None or the first syntax error ({file, line, code, message, hint})
     report = {target, addon, files, ok, errors: [finding], warnings: [...], notes: [...], unresolved: {name: [where]},
-              guarded: {name: [where]}, libraries}
+              unconfirmed: {name: [where]}, guarded: {name: [where]}, libraries}
     finding = {file, line, code, message, hint}   (file relative to the addon folder; hint: what to do, may be "")
 
 The files are the ones the client loads: the .toc's lines for this client's game type (camelot: a line's
@@ -19,15 +19,16 @@ writes, with its line:
   - "lua52" (error): a library function newer than 5.1 (table.unpack, table.pack, table.move, math.tointeger, ...)
   - "event-unknown" (error): RegisterEvent / RegisterUnitEvent with a constant name the API manual does not know (the
     client raises an error); "event-restricted" (error): one the client blocks addons from (HasRestrictions)
-  - "typo" (warning): a global read that neither the client (Lua and WoW's libraries, the API manual, the exe's Usage
-    strings, the common Blizzard UI globals in UI_GLOBALS) nor the addon has, close to a name the client has; the
-    others are notes ("unresolved"), which the daemon can ask the running game about. The addon's names: its global
-    writes, SavedVariables, frame names from CreateFrame and XML, the .toc's X-oUF (an embedded oUF's global), and the
-    same of the addons its ## Dependencies / RequiredDeps / OptionalDeps name when they are next to it in AddOns, with
-    the library fields they set (string.utf8sub = ...)
+  - "typo" (warning): a global read that neither the client (Lua and WoW's libraries, the API manual's scan of the
+    running game, or without one the manual and the exe's Usage strings, the common Blizzard UI globals in UI_GLOBALS)
+    nor the addon has, close to a name the client has; the others are notes ("unresolved"), which the daemon can ask the
+    running game about. The addon's names: its global writes, SavedVariables, frame names from CreateFrame and XML, the
+    .toc's X-oUF (an embedded oUF's global), and the same of the addons its ## Dependencies / RequiredDeps /
+    OptionalDeps name when they are next to it in AddOns, with the library fields they set (string.utf8sub = ...)
   - "moved" (warning): a global this client does not have whose name a C_ namespace has (GetSpellInfo: use
     C_Spell.GetSpellInfo; the old globals went in 11.0)
-  - "api-unknown" (warning): C_Namespace.Name that the manual does not list for that namespace
+  - "api-unknown" (warning): C_Namespace.Name (Enum.X, Constants.X) that the game scan, or without one the manual, does
+    not have
   - "global-write" (warning): a global the addon writes that is not a SavedVariable, a SLASH_ / BINDING_ name, a frame
     name, a name starting with the addon's own (MyAddon, MyAddonDB, MyAddon_Config) or WoWBridgeNS ("forgot local?")
   - "protected" (error): a call of a protected function (the manual's list): blocked for addons; a warning where it is
@@ -39,6 +40,10 @@ called, indexed or computed with where the function always gets (the main chunk:
 function there; it is a warning where the read keeps it (local X = X, in a table) and nothing so uses it, only tests it
 (if X then, X and X.y) or is behind a condition: addons for several game versions keep globals at the top and branch by
 version (_flow). report["guarded"] has those places for the names the running game may answer (apply_live).
+Without a game scan in the pack, a global only the exe's Usage strings vouch for is no finding, but report["unconfirmed"]
+lists where it is read, for the running game to settle: a Usage string names some functions without their namespace
+(GetGarrisonInfo is C_Garrison.GetGarrisonInfo in the game) and the login screen's too; 385 of their 866 such names are
+nil in 1.60.1.70338.
 Names read from a table the addon (or one it depends on) gives functions as their globals with setfenv (oUF's tags:
 _TAGS, Hex, _COLORS) are not globals: a note ("setfenv") lists them.
 Files in a library folder (Libs, Lib, Libraries) are compiled and give their definitions, but only their syntax errors
@@ -135,6 +140,8 @@ DEPENDENCIES = {"dependencies", "requireddeps", "optionaldeps"}      # and any o
 ENV_NAME = re.compile(r"env(ironment)?$", re.I)     # a table functions get as their globals: _ENV, Env, env, configEnv
 GUARDED_HINT = ("kept in a local (local X = X), tested or behind a condition here: nothing uses it unconditionally; "
                 "fine if only the code for other game versions needs it")
+UNCONFIRMED_HINT = ("an exe Usage string names it, but the game has no such global: look for it in a C_ namespace "
+                    "(api_search it), or it is the login screen's")
 RK = 0x100                      # an instruction's B or C operand from 256 up is a constant
 OP_NAMES = ("MOVE", "LOADK", "LOADBOOL", "LOADNIL", "GETUPVAL", "GETGLOBAL", "GETTABLE", "SETGLOBAL", "SETUPVAL",
             "SETTABLE", "NEWTABLE", "SELF", "ADD", "SUB", "MUL", "DIV", "MOD", "POW", "UNM", "NOT", "LEN", "CONCAT",
@@ -765,7 +772,8 @@ def syntax(path, rel=None):
 # --- what the client has ---------------------------------------------------------------------------------------------
 
 class Known:
-    """the names the client has, from the API manual (apidocs.py) and the lists above"""
+    """the names the client has, from the API manual (apidocs.py) and the lists above; what exists, from the pack's scan
+    of the running game when it has one"""
 
     def __init__(self, ix=None):
         if ix is None:
@@ -791,20 +799,35 @@ class Known:
             elif e["kind"] == "table":
                 if ns:
                     self.globals.add(ns)
-                elif item.get("type") == "Enumeration":
+                # an enum is Enum.X and constants are Constants.X in the game also when a namespace's file documents
+                # them (C_GameRules: ForeverExperiencePreset)
+                if item.get("type") == "Enumeration":
                     self.ns.setdefault("Enum", set()).add(short)
                 elif item.get("type") == "Constants":
                     self.ns.setdefault("Constants", set()).add(short)
+        usage = set()
         for u in ix.pack.get("usage", []):
             m = re.match(r"Usage: (?:local [\w, ]+ = )?([A-Za-z_]\w*)\s*[(.:]", u)
             if m:
-                self.globals.add(m[1])
+                usage.add(m[1])
         for topic in ("protected",):
             found = ix.manual(topic)
             if isinstance(found, dict):
                 self.protected |= set(re.findall(r"`([A-Za-z_]\w*)`", found.get("md", "")))
         self.protected -= {"IsProtectedFunction"}
-        self.globals |= self.protected
+        game = getattr(ix, "runtime", None)
+        if game:
+            # the game's own names (a scan of it: apidocs.py), where the documentation leaves some out
+            # (C_Garrison.GetGarrisonInfo, Enum.GameRule) and lists others the game lacks (the login screen's); the exe's
+            # Usage strings, which name some functions without their namespace, add nothing then
+            self.globals = (set(BASE) | set(UI_GLOBALS) | set(LIBS) | set(game.get("globals", []))
+                            | set(game.get("namespaces", {})))
+            self.ns = {ns: names for ns, names in self.ns.items() if not ns.startswith("C_") and ns not in ("Enum", "Constants")}
+            self.ns.update({ns: set(names) for ns, names in game.get("namespaces", {}).items()},
+                           Enum=set(game.get("enums", [])), Constants=set(game.get("constants", [])))
+            usage = set()
+        self.unconfirmed = usage - self.globals - self.protected     # only the exe's Usage strings vouch for these
+        self.globals |= usage | self.protected
         for lib, names in LIBS.items():
             self.ns.setdefault(lib, set()).update(names)
         self.moved = {}                       # a function name -> the C_ namespaces that have it ("C_Spell.GetSpellInfo")
@@ -1074,7 +1097,7 @@ def check(path, addons=None, ix=None):
     if folder is None:
         folder = path.parent if path.parent.glob("*.toc") and any(path.parent.glob("*.toc")) else None
     report = dict(target=str(path), addon=folder.name if folder else None, files=0, errors=[], warnings=[], notes=[],
-                  unresolved={}, guarded={}, libraries=0, ok=True)
+                  unresolved={}, unconfirmed={}, guarded={}, libraries=0, ok=True)
     findings = []
 
     def add(rel, line, code, message, hint="", level="warnings"):
@@ -1159,6 +1182,10 @@ def check(path, addons=None, ix=None):
                 add(rel, line, "missing-lib", f"{name} does not exist in this client", f"use {MISSING[name]}",
                     severity(name, line))
             elif name in defined or k.has(name):
+                where = f"{rel}:{line}"
+                if name in k.unconfirmed and name not in defined and where not in report["unconfirmed"].get(name, ()):
+                    report["unconfirmed"].setdefault(name, []).append(where)    # no finding: for the running game
+                    guarded(name, line)
                 continue
             elif name in env_names:                  # from a setfenv table, not from the globals
                 env_read.setdefault(name, []).append(f"{rel}:{line}")
@@ -1280,8 +1307,9 @@ def check(path, addons=None, ix=None):
 # --- asking the running game ----------------------------------------------------------------------------------------
 
 def live_names(report):
-    """the names the running game can settle: unresolved globals, the typos' and the unknown API names (dotted)"""
-    names = set(report["unresolved"])
+    """the names the running game can settle: unresolved globals, the typos' and the unknown API names (dotted), the
+    globals only the exe's Usage strings vouch for"""
+    names = set(report["unresolved"]) | set(report.get("unconfirmed", ()))
     for f in report["warnings"]:
         if f["code"] in ("typo", "api-unknown", "moved"):
             names.add(f["message"].split(" ", 1)[0])
@@ -1299,26 +1327,33 @@ def live_chunk(names, json_lua, lua_str):
 
 def apply_live(report, types):
     """the report with the game's answers ({name: type}): a name the game has is no finding; one it does not have is
-    an error ("undefined": nil when the line runs), a warning where a nil value is guarded there (report["guarded"])"""
+    an error ("undefined": nil when the line runs), a warning where a nil value is guarded there (report["guarded"]);
+    for the unresolved names and the ones only the exe's Usage strings vouch for (report["unconfirmed"]) alike"""
     def settled(name):
         return types.get(name) not in (None, "nil")
     guarded = report.get("guarded", {})
-    left, nil_guarded = {}, []
-    for name, where_all in report["unresolved"].items():
-        if name not in types:                              # not in the answer: still unresolved
-            left[name] = where_all
-            continue
-        if settled(name):
-            continue
-        for where in where_all:
-            file, _, line = where.rpartition(":")
-            f = dict(file=file, line=int(line or 0), code="undefined", message=f"{name} is nil in the running game",
-                     hint="a typo, or defined nowhere")
-            if where in guarded.get(name, ()):
-                nil_guarded.append(dict(f, hint=GUARDED_HINT))
-            else:
-                report["errors"].append(f)
-    report["unresolved"] = left
+    nil_guarded = []
+
+    def undefined(names, hint):
+        """the names the answer does not have (still to settle); a finding where one the game has as nil is read"""
+        left = {}
+        for name, where_all in names.items():
+            if name not in types:
+                left[name] = where_all
+                continue
+            if settled(name):
+                continue
+            for where in where_all:
+                file, _, line = where.rpartition(":")
+                f = dict(file=file, line=int(line or 0), code="undefined", message=f"{name} is nil in the running game",
+                         hint=hint)
+                if where in guarded.get(name, ()):
+                    nil_guarded.append(dict(f, hint=GUARDED_HINT))
+                else:
+                    report["errors"].append(f)
+        return left
+    left = report["unresolved"] = undefined(report["unresolved"], "a typo, or defined nowhere")
+    report["unconfirmed"] = undefined(report.get("unconfirmed", {}), UNCONFIRMED_HINT)
     keep = []
     for f in report["warnings"]:
         name = f["message"].split(" ", 1)[0]

@@ -512,7 +512,8 @@ def build_server(backend, name="wuxian"):
         Object:Method, e.g. Frame:Hide), events and tables (enums, structures), by name or by words of their
         description, exact names first. Each result has its signature, flags and `call`: ok (use it); limited (read
         `why`: secret values in restricted states, a precondition, a protected method that is fine on the addon's own
-        frames ...); protected (secure code only: never use it). call="usable" leaves the protected ones out.
+        frames, Undocumented: the game has it but nothing describes it (try it first), NotInClient: this client lacks
+        it (do not use it) ...); protected (secure code only: never use it). call="usable" leaves the protected ones out.
         `api_get` gives one entry in full, `api_manual` the rules (taint, secret values, the .toc, protected functions,
         GameRules, the 无限-only API). To be sure in the running game, `run` `return type(C_X.Y)`."""
         ix = await asyncio.to_thread(apidocs.index)

@@ -8,7 +8,8 @@ protected functions, GameRules, the 无限-only API; in Chinese and English); sc
     index().search("UnitHealth") -> [{kind, name, ns, sig, flags, call, why, since, doc}]   ranked: exact, prefix, substring, text
     index().find("spell", call="ok") -> {results, counts: {ok, limited, protected}, total}    the API 手册 page's search
     index().get("C_Spell.GetSpellInfo") -> the entry in full, with the tables its types name, its namespace's functions and
-                                           the exe's Usage strings for it (or {"candidates": [...]} for an ambiguous short name)
+                                           the exe's Usage strings for it (or {"candidates": [...]} for an ambiguous short name);
+                                           an enum or a constants table also as Enum.X / Constants.X
     index().manual() -> [{id, title}];  index().manual("taint", lang="en") -> {id, title, md}
     index().systems() -> [{key, title, group, counts, calls}]      the API 手册 page's browser: namespaces (C_…), the global
                                                                    function groups (Unit, Build …), the objects (Frame …)
@@ -27,6 +28,11 @@ What an addon may do with an entry (`call`, with `why`: the documentation fields
                registering it is forbidden, ADDON_ACTION_FORBIDDEN)
 An object's method marked IsProtectedFunction (Frame:Hide, Button:Enable …) is limited (why ProtectedMethod): an addon calls it
 on its own frames at any time; on a protected (secure) frame it is blocked in combat.
+
+A pack with a game scan (its runtime: scripts/build_api_pack.py, from `wuxian api-scan` in the running game) has entries the
+documentation leaves out (undocumented: the C_ functions, limited with why Undocumented and no arguments or returns; the Enum
+and Constants tables, with their values as the game has them) and marks the documented ones the game does not have (absent:
+why NotInClient; the login screen's, other game types'); the lint (agent/lint.py) takes the scan for what exists.
 """
 import re
 
@@ -143,16 +149,11 @@ class ApiIndex:
                     full = f"{ns}.{short}" if kind == "function" and ns else f"{obj}:{short}" if method else short
                     call, why = callability(kind, item.get("raw"), kind == "function" and not ns and not method
                                             and short in self.protected_globals, method)
-                    e = dict(kind=kind, name=full, short=short, ns=ns, item=item, low=full.lower(),
-                             text=(item.get("doc") or "").lower(), call=call, why=why, obj=obj if method else None, group=gkey)
-                    self.entries.append(e)
-                    if gkey:
-                        row["entries"].append(e)
-                    self.by_name.setdefault(full.lower(), []).append(e)
-                    if kind == "function":
-                        self.by_short.setdefault(short.lower(), []).append(e)
-                    elif kind == "table":
-                        self.tables.setdefault(short.lower(), item)
+                    self._add(dict(kind=kind, name=full, short=short, ns=ns, item=item, call=call, why=why,
+                                   obj=obj if method else None, group=gkey), row if gkey else None)
+        self.runtime = self.pack.get("runtime") or None     # what the game has, scanned (scripts/build_api_pack.py)
+        if self.runtime:
+            self._scanned(self.runtime)
         # what the newest client build in the pack changed: {name: {build, what: added | changed, note}}
         self.since = {}
         changes = self.pack.get("changes") or []
@@ -163,6 +164,58 @@ class ApiIndex:
                     self.since[x["name"]] = dict(build=c.get("to"), what=what, note=x.get("note") or "",
                                                  note_en=x.get("note_en") or x.get("note") or "")
 
+    def _add(self, e, row=None):
+        """an entry, found by its name (an enum or constants table also as the game names it: Enum.X, Constants.X)"""
+        e.update(low=e["name"].lower(), text=(e["item"].get("doc") or "").lower())
+        self.entries.append(e)
+        if row is not None:
+            row["entries"].append(e)
+        self.by_name.setdefault(e["low"], []).append(e)
+        if e["kind"] == "function":
+            self.by_short.setdefault(e["short"].lower(), []).append(e)
+        elif e["kind"] == "table":
+            self.tables.setdefault(e["short"].lower(), e["item"])
+            game = {"Enumeration": "enum.", "Constants": "constants."}.get(e["item"].get("type"))
+            if game:
+                self.by_name.setdefault(game + e["short"].lower(), []).append(e)
+
+    def _scanned(self, game):
+        """the game scan (pack["runtime"]): the C_ functions and the Enum and Constants tables the documentation leaves
+        out become entries (undocumented: no arguments, returns or description; a table's values as the game has them),
+        and the documented ones the game does not have are marked absent"""
+        have = {(ns, f) for ns, names in game.get("namespaces", {}).items() for f in names}
+        documented = {(e["ns"], e["short"]) for e in self.entries if e["kind"] == "function" and e["ns"]}
+        for ns, short in sorted(have - documented):
+            row = self.groups.setdefault(ns, dict(key=ns, title=ns, group="namespace", entries=[]))
+            self._add(dict(kind="function", name=f"{ns}.{short}", short=short, ns=ns, call="limited", why=["Undocumented"],
+                           obj=None, group=ns, undocumented=True, item=dict(name=short, args=[], rets=[], doc="", raw={})),
+                      row)
+        tables = {(e["item"].get("type"), e["short"]) for e in self.entries if e["kind"] == "table"}
+        fields = game.get("fields") or {}
+        for base, key, kind in (("Enum", "enums", "Enumeration"), ("Constants", "constants", "Constants")):
+            for short in game.get(key, []):
+                if (kind, short) in tables:
+                    continue
+                values = fields.get(f"{base}.{short}") or {}       # an enum by its values, as the documentation lists them
+                order = sorted(values, key=lambda n: (not isinstance(values[n], (int, float)),
+                                                      values[n] if isinstance(values[n], (int, float)) else 0, n))
+                self._add(dict(kind="table", name=short, short=short, ns="", call="ok", why=[], obj=None, group=None,
+                               undocumented=True, item=dict(name=short, type=kind, fields=[
+                                   dict(n=n, t=short, v=values[n], nil=False) for n in order])))
+        found = set(game.get("globals", []))
+        enums, consts = set(game.get("enums", [])), set(game.get("constants", []))
+        for e in self.entries:
+            kind = e["item"].get("type")
+            if e.get("undocumented") or e.get("obj"):
+                continue
+            if e["kind"] == "function":
+                gone = (e["ns"], e["short"]) not in have if e["ns"].startswith("C_") else not e["ns"] and e["short"] not in found
+            else:
+                gone = e["kind"] == "table" and kind in ("Enumeration", "Constants") \
+                    and e["short"] not in (enums if kind == "Enumeration" else consts)
+            if gone:
+                e.update(absent=True, why=["NotInClient"] + e["why"], call="limited" if e["call"] == "ok" else e["call"])
+
     # --- what the pack is ------------------------------------------------------------------------------------------
 
     def about(self):
@@ -171,8 +224,12 @@ class ApiIndex:
         calls = {c: sum(1 for e in self.entries if e["kind"] != "table" and e["call"] == c) for c in CALLS}
         changes = p.get("changes") or []
         latest = changes[0] if changes else None
+        game = self.runtime
+        scan = dict(client=game.get("client"), scanned=game.get("scanned"),
+                    undocumented=sum(1 for e in self.entries if e.get("undocumented")),
+                    absent=sum(1 for e in self.entries if e.get("absent"))) if game else None
         return dict(version=p.get("version"), client=p.get("client"), interface=p.get("interface"), built=p.get("built"),
-                    source=p.get("source"), counts=counts, calls=calls,
+                    source=p.get("source"), counts=counts, calls=calls, scan=scan,
                     changes=dict(frm=latest.get("from"), to=latest.get("to"), added=len(latest.get("added", [])),
                                  changed=len(latest.get("changed", [])), removed=len(latest.get("removed", []))) if latest else None,
                     manual=[dict(id=m["id"], title=m["title"], title_en=m.get("title_en") or m["title"]) for m in p.get("manual", [])])
@@ -194,7 +251,18 @@ class ApiIndex:
             n = len(item.get("fields", []))
             sig = tr(f"{e['name']}（{item.get('type')}，{n} 项）", f"{e['name']} ({item.get('type')}, {n} entries)")
             flags = []
+        client = (self.runtime or {}).get("client")
+        if e.get("undocumented"):
+            flags.insert(0, tr(f"文档里没有：游戏里有（{client} 实测），没有参数与返回值的说明", f"not in the documentation: the game "
+                               f"has it (scanned on {client}); no arguments or returns described") if kind == "function" else
+                         tr(f"文档里没有：游戏里有（{client} 实测），取值是游戏里读到的", f"not in the documentation: the game has it "
+                            f"(scanned on {client}); its values as the game has them"))
+        elif e.get("absent"):
+            flags.insert(0, tr(f"这个客户端里没有（{client} 实测）", f"not in this client (scanned on {client})"))
         out = dict(kind=kind, name=e["name"], ns=e["ns"], sig=sig, flags=flags, call=e["call"], why=e["why"], doc=item.get("doc") or "")
+        for mark in ("undocumented", "absent"):
+            if e.get(mark):
+                out[mark] = True
         if e.get("obj"):
             out["obj"] = e["obj"]
         if kind == "table":
@@ -230,6 +298,9 @@ class ApiIndex:
         if e["kind"] == "function":                # its own: TargetUnit( and not SpellTargetUnit(
             needle = re.compile(r"(?<![\w.])" + re.escape(e["name"]) + r"\(")
             out["usage"] = [u for u in self.pack.get("usage", []) if needle.search(u)][:3]
+            if not out["usage"] and e.get("undocumented"):   # a Usage string may name it without its namespace
+                needle = re.compile(r"(?<![\w.:])" + re.escape(e["short"]) + r"\(")
+                out["usage"] = [u for u in self.pack.get("usage", []) if needle.search(u)][:3]
         out["raw"] = item.get("raw") or {}
         return out
 

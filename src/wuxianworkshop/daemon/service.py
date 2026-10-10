@@ -596,6 +596,20 @@ class Service:
                 result["snap"] = await self.snap([x, y, w, h], None)
         return result
 
+    async def api_scan(self, part, names=None):
+        """one part of what the running game has, for the API manual (wuxian api-scan; probes.api_scan): its C_
+        namespaces' functions, its global functions, its Enum and Constants tables, the fields of the tables named"""
+        if names is not None and not (isinstance(names, list) and len(names) <= 1000):
+            raise ApiError(400, "bad_request", "names: a list of at most 1000 tables (Enum.X, Constants.X)")
+        try:
+            code = probes.api_scan(part, names)
+        except ValueError as e:
+            raise ApiError(400, "bad_request", str(e)) from None
+        data = await self.probe(code, 30000)
+        if not isinstance(data, dict):
+            raise ApiError(400, "probe_failed", f"the game's answer was not understood: {str(data)[:80]}")
+        return data
+
     # an addon's API (WoWBridge API.lua): the events it emits, the functions it exposes. A name is passed to the game
     # quoted (probes.lua_str), so any text without control characters will do
     ADDON_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
@@ -1153,7 +1167,8 @@ class Service:
         if live and names:
             comp = self.worker.comp
             if comp is None or not comp.link_up:
-                report["live"] = dict(error="the game is not online: the unresolved names were not asked")
+                if set(names) - set(report["unconfirmed"]):   # the Usage strings' names alone: nothing to say offline
+                    report["live"] = dict(error="the game is not online: the unresolved names were not asked")
             else:
                 try:
                     types = await self.probe(lint.live_chunk(names, probes.LUA_JSON, probes.lua_str), 15000)

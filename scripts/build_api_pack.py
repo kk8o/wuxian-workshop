@@ -5,8 +5,12 @@ documentation it extracted from the client (apidocs.json, with the client it cam
 the page lists, and the manual text of its page (source/build_page.py: the 运行时 and 插件加载与限制 tabs, with the name
 lists filled in, and MANUAL_EN, the same in English; read with ast, never run). Writes the program's own copy (src\wuxianworkshop\data\api.json.gz) and the copy for the website
 (dist\content\api-<version>.json.gz with manifest.json beside it, for wuxianwow.com/workshop/data/).
+The pack's `runtime` is what the game has, from the scan `wuxian api-scan --out <that repository>\api\game_scan.json` made
+in the running game of the documentation's build (runtime()): the documentation leaves functions out (C_Garrison has 227
+in 1.60.1.70338, 40 documented) and lists some the game lacks (the login screen's); a pack without it (--no-scan) is read
+as before.
 
-    .venv\Scripts\python.exe scripts\build_api_pack.py --codex <that repository> [--version 2026.10.06.1]
+    .venv\Scripts\python.exe scripts\build_api_pack.py --codex <that repository> [--version 2026.10.06.1] [--no-scan]
 """
 import argparse
 import ast
@@ -25,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BUNDLED = ROOT / "src" / "wuxianworkshop" / "data" / "api.json.gz"
 OUT = ROOT / "dist" / "content"
 SOURCE = "Blizzard_APIDocumentationGenerated（从客户端提取）、exe 里的 Usage 字符串、无限图鉴整理的手册"
+SCAN = "game_scan.json"         # beside apidocs.json: what the game has (wuxian api-scan)
 TOPIC_IDS = {"运行时": "runtime", "可用的标准库": "stdlib", "WoW 扩展的全局函数": "globals", "安全与污染（taint）": "taint",
              "机密值（secret values）": "secret", "资源配额": "quotas", "相关 CVar": "cvars", "TOC 文件": "toc",
              "加载开关": "load-switches", "受保护的全局函数": "protected", "安全模板": "secure-templates",
@@ -143,7 +148,32 @@ def note_en(note):
     return re.sub(r"(?<![\w\u4e00-\u9fff])无(?![\w\u4e00-\u9fff])", "none", note)
 
 
-def build(codex, version):
+def runtime(scan, docs):
+    """what the pack says the game has (apidocs.py shows what the documentation leaves out or the game lacks, lint.py
+    takes it for the truth): the scan's names, with the documented ones an addon had set in the game it was scanned in
+    (the scan leaves those out: the client's all the same), and the fields of the Enum and Constants tables the
+    documentation does not have"""
+    replaced = set(scan.get("replaced") or {})
+    namespaces = {ns: set(names) for ns, names in scan["namespaces"].items()}
+    found = set(scan["globals"])
+    for n in docs["namespaces"]:
+        for f in n["functions"]:
+            if n["ns"].startswith("C_") and {n["ns"], f"{n['ns']}.{f['name']}"} & replaced:
+                namespaces.setdefault(n["ns"], set()).add(f["name"])
+            elif not n["ns"] and not object_of(n["name"]) and f["name"] in replaced:
+                found.add(f["name"])
+    kinds = {"Enumeration": ("Enum", "enums"), "Constants": ("Constants", "constants")}
+    tables = {(t["type"], t["name"]) for n in docs["namespaces"] for t in n["tables"] if t["type"] in kinds}
+    out = dict(client=scan["client"], scanned=scan["scanned"], globals=sorted(found),
+               namespaces={ns: sorted(names) for ns, names in sorted(namespaces.items())})
+    for kind, (base, key) in kinds.items():
+        out[key] = sorted(set(scan[key]) | {name for k, name in tables if k == kind and f"{base}.{name}" in replaced})
+    out["fields"] = {full: values for full, values in sorted((scan.get("fields") or {}).items())
+                     if ("Enumeration" if full.startswith("Enum.") else "Constants", full.partition(".")[2]) not in tables}
+    return out
+
+
+def build(codex, version, scan=True):
     docs = json.loads((codex / "api" / "apidocs.json").read_text(encoding="utf-8"))
     usage = [line.strip() for line in (codex / "api" / "api_usage.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     man, client, protected = manual(codex, docs)
@@ -153,9 +183,25 @@ def build(codex, version):
         for item in record.get("added", []) + record.get("changed", []):
             if item.get("note"):
                 item["note_en"] = note_en(item["note"])
-    return dict(pack="api", version=version, client=client, interface=16001, built=time.strftime("%Y-%m-%d"),
+    pack = dict(pack="api", version=version, client=client, interface=16001, built=time.strftime("%Y-%m-%d"),
                 source=SOURCE, namespaces=docs["namespaces"], usage=usage, manual=man, changes=changes,
                 protected_globals=protected)
+    if scan:
+        pack["runtime"] = runtime(game_scan(codex, client), docs)
+    return pack
+
+
+def game_scan(codex, client):
+    """the game scan beside the documentation (api/game_scan.json); SystemExit when there is none, or it is of another
+    client build than the documentation"""
+    spath = codex / "api" / SCAN
+    if not spath.is_file():
+        raise SystemExit(f"{spath}: no game scan; in the game of {client}: wuxian api-scan --out {spath} (or --no-scan)")
+    game = json.loads(spath.read_text(encoding="utf-8"))
+    if game.get("client") != client:
+        raise SystemExit(f"{spath} is a scan of {game.get('client')}, the documentation is of {client}: scan the game "
+                         f"again (wuxian api-scan --out {spath}), or --no-scan")
+    return game
 
 
 def main():
@@ -163,8 +209,9 @@ def main():
     ap.add_argument("--codex", default=os.environ.get("WUXIAN_CODEX"), required=not os.environ.get("WUXIAN_CODEX"),
                     help="the checkout of the wuxianwow.com data repository (or WUXIAN_CODEX)")
     ap.add_argument("--version", default=time.strftime("%Y.%m.%d") + ".1", help="the pack's version (default: today.1)")
+    ap.add_argument("--no-scan", action="store_true", help=f"without the game scan (api/{SCAN}): the documentation alone")
     args = ap.parse_args()
-    pack = build(Path(args.codex), args.version)
+    pack = build(Path(args.codex), args.version, scan=not args.no_scan)
     raw = gzip.compress(json.dumps(pack, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9, mtime=0)
     BUNDLED.parent.mkdir(parents=True, exist_ok=True)
     BUNDLED.write_bytes(raw)
@@ -180,6 +227,14 @@ def main():
     print(f"api {args.version}: {len(pack['namespaces'])} namespaces, {fns} functions, {len(pack['usage'])} usage strings, "
           f"{len(pack['manual'])} manual topics ({sum(1 for m in pack['manual'] if m.get('md_en'))} in English), "
           f"{len(pack['changes'])} change records, client {pack['client']}; {len(raw) / 1024:.0f} KB -> {BUNDLED} and {OUT / name}")
+    game = pack.get("runtime")
+    if game:
+        documented = {(n["ns"], f["name"]) for n in pack["namespaces"] if n["ns"].startswith("C_") for f in n["functions"]}
+        scanned = {(ns, f) for ns, names in game["namespaces"].items() for f in names}
+        print(f"game scan of {game['client']} ({game['scanned']}): {len(scanned - documented)} C_ functions the "
+              f"documentation leaves out, {len(documented - scanned)} documented ones the game lacks; "
+              f"{len(game['globals'])} global functions, {len(game['enums'])} Enum and {len(game['constants'])} Constants "
+              f"tables ({len(game['fields'])} with fields from the game)")
 
 
 if __name__ == "__main__":

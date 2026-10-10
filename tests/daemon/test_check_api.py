@@ -10,12 +10,17 @@ import time
 import unittest
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests.daemon.test_server import MUTEX, FakeGame, request
+from wuxianworkshop import apidocs
+from wuxianworkshop.agent import lint
 from wuxianworkshop.cli import main as cli
 from wuxianworkshop.core import mailbox as MB
 from wuxianworkshop.daemon import server
+from wuxianworkshop.daemon.journal import Journal
+from wuxianworkshop.daemon.service import Service
 
 TOC = "## Interface: 16001\n## SavedVariables: ChkDB\nCore.lua\n"
 
@@ -131,6 +136,45 @@ class Checks(unittest.TestCase):
         self.assertIn("warning Core.lua:1: UnitHelth is neither the client's nor this addon's (did you mean UnitHealth?)",
                       out.getvalue())
         self.assertIn("ChkM: 1 files, 0 errors, 1 warnings", out.getvalue())
+
+
+class UsageNames(unittest.IsolatedAsyncioTestCase):
+    """a global only the exe's Usage strings vouch for (GetGarrisonInfo: C_Garrison.GetGarrisonInfo in the game) is no
+    finding; the check asks the running game about it when the link is up, and says nothing of it when it is not"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        addons = Path(self.tmp.name) / "AddOns"
+        (addons / "ChkU").mkdir(parents=True)
+        (addons / "ChkU" / "ChkU.toc").write_text("## Interface: 16001\nCore.lua\n", encoding="utf-8")
+        (addons / "ChkU" / "Core.lua").write_text("local level = GetGarrisonInfo(2)\n", encoding="utf-8")
+        self.svc = Service(lambda on_debug, log: SimpleNamespace(addons=str(addons), comp=None), journal=Journal())
+        self.asked = []
+
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+            self.asked.append(code)
+            return dict(ok=True, values=['1/1\n{"GetGarrisonInfo":"nil"}'])
+        self.svc.run = run
+        pack = dict(namespaces=[], usage=["Usage: GetGarrisonInfo(garrisonType)"])
+        self.known = mock.patch.object(lint, "known", return_value=lint.Known(apidocs.ApiIndex(pack)))
+        self.known.start()
+
+    def tearDown(self):
+        self.known.stop()
+        self.tmp.cleanup()
+
+    async def test_offline_and_online(self):
+        self.svc.worker.comp = SimpleNamespace(link_up=False, current=5)
+        r = await self.svc.check("ChkU")
+        self.assertEqual((r["errors"], r["warnings"], r["unconfirmed"]), ([], [], {"GetGarrisonInfo": ["Core.lua:1"]}))
+        self.assertNotIn("live", r)                                        # nothing to say of it without the game
+        self.assertEqual(self.asked, [])
+        self.svc.worker.comp = SimpleNamespace(link_up=True, current=5)
+        r = await self.svc.check("ChkU")
+        self.assertIn('"GetGarrisonInfo"', self.asked[0])
+        self.assertEqual([(f["code"], f["line"], f["hint"]) for f in r["errors"]],
+                         [("undefined", 1, lint.UNCONFIRMED_HINT)])
+        self.assertEqual((r["unconfirmed"], r["live"], r["ok"]), ({}, {"checked": 1}, False))
 
 
 if __name__ == "__main__":

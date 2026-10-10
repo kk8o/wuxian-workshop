@@ -336,6 +336,49 @@ class Probes(unittest.TestCase):
             self.lua.execute(P.slash_call("/bht"))
         self.assertIn("no slash command /bht", str(cm.exception))
 
+    def test_what_the_game_has(self):
+        """api_scan, a part at a time: the C_ namespaces with their functions (and the loaded addons), the global
+        functions, the Enum and Constants tables, the fields of the tables asked for; what an addon set (not secure)
+        apart, with that addon"""
+        self.lua.execute(r"""
+			local theirs = {}
+			function issecurevariable(t, k)
+				local by = theirs[t] and theirs[t][k]
+				if by then return false, by end
+				return true
+			end
+			function GetBuildInfo() return "1.60.1", "70338", "Oct  9 2026", 16001 end
+			C_AddOns = { GetNumAddOns = function() return 2 end, IsAddOnLoaded = function(i) return i == 1 end,
+				GetAddOnInfo = function(i) return ({ "WoWBridge", "Other" })[i], "title" end }
+			C_Garrison = { GetGarrisonInfo = function() end, GetFollowers = function() end, MAX = 3,
+				Hooked = function() end }
+			C_Shim, C_Empty = { Thing = function() end }, {}
+			function ShimGlobal() end
+			Enum = { GameRule = { UserAddonsDisabled = 1, MacrosDisabled = 2 }, Theirs = { A = 1 } }
+			Constants = { LegacyConsts = { LEGACY_TREE_PROFESSIONS_ID = 1187, NAME = "x", T = {} } }
+			theirs[_G] = { C_Shim = "Shims", ShimGlobal = "Shims" }
+			theirs[C_Garrison] = { Hooked = "Hooks" }
+			theirs[Enum] = { Theirs = "Enums" }
+		""")
+        ns = self.run_chunk(P.api_scan("namespaces"))
+        self.assertEqual((ns["client"], ns["addons"]), ("1.60.1.70338", ["WoWBridge"]))
+        self.assertEqual((ns["namespaces"]["C_Garrison"], ns["namespaces"]["C_Empty"]), (["GetFollowers", "GetGarrisonInfo"], []))
+        self.assertNotIn("C_Shim", ns["namespaces"])
+        self.assertEqual(ns["replaced"], {"C_Shim": "Shims", "C_Garrison.Hooked": "Hooks"})
+        found = self.run_chunk(P.api_scan("globals"))
+        self.assertTrue({"GetBuildInfo", "issecurevariable", "print"} <= set(found["globals"]))
+        self.assertEqual((found["globals"], found["replaced"]["ShimGlobal"]), (sorted(found["globals"]), "Shims"))
+        self.assertNotIn("ShimGlobal", found["globals"])
+        tables = self.run_chunk(P.api_scan("tables"))
+        self.assertEqual((tables["enums"], tables["constants"], tables["replaced"]),
+                         (["GameRule"], ["LegacyConsts"], {"Enum.Theirs": "Enums"}))
+        fields = self.run_chunk(P.api_scan("fields", ["Enum.GameRule", "Constants.LegacyConsts", "Enum.Missing"]))
+        self.assertEqual(fields["fields"], {"Enum.GameRule": {"UserAddonsDisabled": 1, "MacrosDisabled": 2},
+                                            "Constants.LegacyConsts": {"LEGACY_TREE_PROFESSIONS_ID": 1187, "NAME": "x"}})
+        for part, names in (("everything", None), ("fields", None), ("fields", ["os.exit"]), ("fields", ["Enum.A B"])):
+            with self.assertRaises(ValueError):
+                P.api_scan(part, names)
+
 
 if __name__ == "__main__":
     unittest.main()

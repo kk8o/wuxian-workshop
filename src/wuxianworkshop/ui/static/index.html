@@ -922,6 +922,7 @@
                   </ul>
                 </div>
                 <pre class="code sigline" x-html="sigHtml(docs.sel)" @click="onTypeClick($event)"></pre>
+                <p class="small warn-text" x-show="scanNote(docs.sel)" x-text="scanNote(docs.sel)"></p>
                 <p class="small" x-show="docs.check" :class="docs.check && docs.check.ok ? 'ok-text' : 'warn-text'" x-text="docs.check && docs.check.text"></p>
                 <p x-show="docs.sel.doc" x-text="docs.sel.doc"></p>
                 <div class="usage" x-show="docs.sel.usage && docs.sel.usage.length">

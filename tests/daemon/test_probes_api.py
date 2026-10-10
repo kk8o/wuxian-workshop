@@ -81,6 +81,21 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         res = await self.svc.inspect("Bar", snap=True)                 # a secret place: no picture, no error
         self.assertEqual((res["frames"][0]["rect"], "snap" in res, len(self.snaps)), ("<secret>", False, 1))
 
+    async def test_what_the_game_has(self):
+        """api_scan: one part of the game scan (wuxian api-scan) as a probe, the tables' names checked before anything
+        is sent"""
+        self.answer["inspect"] = whole('{"client":"1.60.1.70338","replaced":[],"fields":{"Enum.GameRule":{"A":1}}}')
+        res = await self.svc.api_scan("fields", ["Enum.GameRule"])
+        self.assertEqual(res["fields"], {"Enum.GameRule": {"A": 1}})
+        self.assertIn('local PART, NAMES = "fields", {"Enum.GameRule"}', self.sent[-1])
+        self.assertEqual(self.chunks[-1], "=probe")
+        for part, names in (("everything", None), ("fields", None), ("fields", "Enum.GameRule"), ("fields", ["os.exit"]),
+                            ("fields", ["Enum.X"] * 1001)):
+            with self.assertRaises(ApiError) as cm:
+                await self.svc.api_scan(part, names)
+            self.assertEqual(cm.exception.status, 400, (part, names))
+        self.assertEqual(len(self.sent), 1)                     # the refused ones sent nothing
+
     async def test_errors_from_the_game(self):
         self.answer["inspect"] = whole('{"error":"target: the expression gave nil (no such frame)"}')
         with self.assertRaises(ApiError) as cm:

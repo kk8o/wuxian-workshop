@@ -222,5 +222,48 @@ class McpConfig(unittest.TestCase):
             self.assertIn("not running", out.getvalue())
 
 
+class ApiScan(unittest.TestCase):
+    """`wuxian api-scan`: the game scan a part at a time, the fields only of the tables the API manual does not
+    document, written for scripts/build_api_pack.py"""
+
+    class Game:
+        def __init__(self, client="1.60.1.70338"):
+            self.client, self.asked = client, []
+
+        def api_scan(self, part, names=None):
+            self.asked.append((part, names))
+            parts = dict(namespaces=dict(namespaces={"C_Garrison": ["GetGarrisonInfo"], "C_Empty": []}, addons=["WoWBridge"],
+                                         replaced={"C_Shim": "Shims"}),
+                         globals=dict(globals=["print"], replaced={"ShimGlobal": "Shims"}),
+                         tables=dict(enums=["Documented", "GameRule"], constants=["LegacyConsts"], replaced=[]),
+                         fields=dict(fields={n: {"A": 1} if n == "Enum.GameRule" else [] for n in names or ()}))
+            client = self.client if part != "globals" else "1.60.1.70338"
+            return dict(parts[part], client=client)
+
+    def test_the_file_it_writes(self):
+        from wuxianworkshop import apidocs
+        pack = {"namespaces": [{"ns": "", "name": "", "functions": [], "events": [],
+                                "tables": [{"name": "Documented", "type": "Enumeration", "fields": []}]}]}
+        game = self.Game()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(apidocs, "index", return_value=apidocs.ApiIndex(pack)):
+            out, path = io.StringIO(), os.path.join(tmp, "game_scan.json")
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.cmd_api_scan(game, mock.Mock(out=path)), 0)
+            with open(path, encoding="utf-8") as f:
+                scan = json.load(f)
+            self.assertEqual(game.asked[-1], ("fields", ["Enum.GameRule", "Constants.LegacyConsts"]))   # not Documented
+            self.assertEqual((scan["client"], scan["namespaces"], scan["globals"], scan["enums"], scan["addons"]),
+                             ("1.60.1.70338", {"C_Garrison": ["GetGarrisonInfo"], "C_Empty": []}, ["print"],
+                              ["Documented", "GameRule"], ["WoWBridge"]))
+            self.assertEqual(scan["fields"], {"Enum.GameRule": {"A": 1}, "Constants.LegacyConsts": {}})
+            self.assertEqual(scan["replaced"], {"C_Shim": "Shims", "ShimGlobal": "Shims"})
+            self.assertIn("1.60.1.70338: 2 C_ namespaces (1 functions), 1 global functions", out.getvalue())
+            self.assertIn("left out, set by addons: 2 names (Shims 2)", out.getvalue())
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):     # the game restarted
+                self.assertEqual(cli.cmd_api_scan(self.Game("1.60.1.70400"), mock.Mock(out=path)), 1)
+            self.assertIn("the game changed during the scan", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

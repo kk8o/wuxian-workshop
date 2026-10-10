@@ -12,6 +12,7 @@
     wuxian snap [--region x y w h]            a PNG of the game window
     wuxian trace [seconds] [--events BAG_*]   the events the game fires meanwhile (names, arguments, counts)
     wuxian inspect <lua expr> | --mouse       a frame of the running UI (place, size, anchors, children)
+    wuxian api-scan --out FILE                what the running game has, for the API manual's content pack
     wuxian events [--addon A] [--topic T] [--follow]   what addons sent with WoWBridge's Emit (their events)
     wuxian call <addon> <name> [json args]    call a function an addon exposed with WoWBridge's Expose
     wuxian addon-api [addon]                  what addons expose (functions) and emit (event topics)
@@ -112,6 +113,9 @@ def build_parser():
     p.add_argument("--depth", type=int, default=1, help="levels of children (0-3, default 1)")
     p.add_argument("--snap", action="store_true", help="also a picture of the first frame")
     p.add_argument("--json", action="store_true", help="print JSON")
+    p = sub.add_parser("api-scan", help="what the running game has, for the API manual's content pack "
+                                        "(scripts/build_api_pack.py reads the file)")
+    p.add_argument("--out", required=True, help="the file to write (the data repository's api/game_scan.json)")
     p = sub.add_parser("events", help="the events addons sent with WoWBridge's Emit")
     p.add_argument("--addon", help="only this addon's (a name or a glob)")
     p.add_argument("--topic", help="only these topics (a name or a glob: scan.*)")
@@ -630,6 +634,50 @@ def cmd_api(args):
     return 0
 
 
+FIELDS_AT_ONCE = 300            # tables whose fields one api_scan call brings (an answer stays far under probes.MOST)
+
+
+def cmd_api_scan(client, args):
+    """what the running game has (its C_ namespaces' functions, its global functions, its Enum and Constants tables, the
+    fields of the ones the API manual does not document), written for scripts/build_api_pack.py"""
+    from .. import apidocs
+    scan = dict(scanner=f"wuxian api-scan {__version__}", scanned=time.strftime("%Y-%m-%d"), replaced={})
+    for part in ("namespaces", "globals", "tables"):
+        print(f"{part} ...", file=sys.stderr, flush=True)
+        got = client.api_scan(part)
+        if scan.setdefault("client", got["client"]) != got["client"]:
+            say_error(f"the game changed during the scan ({scan['client']}, then {got['client']}): run it again")
+            return 1
+        scan["replaced"].update(got.get("replaced") or {})          # {} comes back as [] (J: an empty table)
+        for key in ("namespaces", "addons", "globals", "enums", "constants"):
+            if key in got:
+                scan[key] = got[key] or ({} if key == "namespaces" else [])
+    kinds = {"Enumeration": "Enum", "Constants": "Constants"}
+    documented = {f"{kinds[e['item'].get('type')]}.{e['short']}" for e in apidocs.index().entries
+                  if e["kind"] == "table" and e["item"].get("type") in kinds and not e.get("undocumented")}
+    wanted = [n for n in [f"Enum.{x}" for x in scan["enums"]] + [f"Constants.{x}" for x in scan["constants"]]
+              if n not in documented]
+    scan["fields"] = {}
+    for i in range(0, len(wanted), FIELDS_AT_ONCE):
+        print(f"fields {i + 1}-{min(i + FIELDS_AT_ONCE, len(wanted))} of {len(wanted)} ...", file=sys.stderr, flush=True)
+        got = client.api_scan("fields", wanted[i:i + FIELDS_AT_ONCE])
+        scan["fields"].update({k: v or {} for k, v in (got.get("fields") or {}).items()})
+    with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(scan, f, ensure_ascii=False, indent=1, sort_keys=True)
+        f.write("\n")
+    by = {}
+    for addon in scan["replaced"].values():
+        by[addon] = by.get(addon, 0) + 1
+    print(f"{scan['client']}: {len(scan['namespaces'])} C_ namespaces ({sum(map(len, scan['namespaces'].values()))} "
+          f"functions), {len(scan['globals'])} global functions, {len(scan['enums'])} Enum and {len(scan['constants'])} "
+          f"Constants tables (the fields of {len(scan['fields'])} the manual does not document) -> {args.out}")
+    if by:
+        print(f"left out, set by addons: {len(scan['replaced'])} names ("
+              + ", ".join(f"{a} {n}" for a, n in sorted(by.items(), key=lambda kv: -kv[1])[:8])
+              + "); a scan with only WoWBridge loaded leaves none out")
+    return 0
+
+
 def cmd_logs(client, args):
     since = args.since
     if since is None:                                   # the tail: the last 50 entries (of these kinds), page by page
@@ -761,7 +809,7 @@ def cmd_mcp_config(args):
 
 CLIENT_COMMANDS = dict(status=cmd_status, run=cmd_run, load=cmd_load, watch=cmd_watch, snap=cmd_snap, reload=cmd_reload,
                        trace=cmd_trace, inspect=cmd_inspect, check=cmd_check, history=cmd_history, checkpoint=cmd_checkpoint,
-                       **{"try": cmd_try},
+                       **{"try": cmd_try, "api-scan": cmd_api_scan},
                        restore=cmd_restore,
                        logs=cmd_logs, say=cmd_say, doctor=cmd_doctor, addons=cmd_addons, errors=cmd_errors,
                        install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, call=cmd_call, respond=cmd_respond,

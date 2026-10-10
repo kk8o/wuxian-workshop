@@ -104,6 +104,8 @@ const WHY = {                                  // the documentation fields that 
   RequiresClubsInitialized: '要先初始化社区（Clubs）才能用。',
   RequiresFriendList: '要先加载好友列表才能用。',
   RequiresActiveCommentator: '只有观战解说员能用。',
+  Undocumented: '文档里没有：在游戏里实测有这个函数，但参数、返回值和限制都没有说明；先在游戏里试一下再用。',
+  NotInClient: '这个客户端里没有：在游戏里实测是 nil，调用会报错（文档也收录了登录界面和别的游戏版本才有的接口）。',
 };
 const SECRET_WHEN = {                          // SecretWhen… / SecretIn…: the state that turns the values secret
   SecretWhenInCombat: '战斗中', SecretWhenEncounterEvent: '首领战中', SecretInChatMessagingLockdown: '聊天锁定时',
@@ -1223,6 +1225,11 @@ function appState() {
       if (/^Secret/.test(code)) return t('在某些受限状态下返回机密值。');
       if (/^Require/.test(code)) return t('有前提条件，条件不满足时调用不起作用。');
       return '';
+    },
+    scanNote(e) {                              // a table the game scan found and the documentation lacks, or the other way round
+      if (!e || e.kind !== 'table') return '';                 // a function's: its callbox (why Undocumented / NotInClient)
+      if (e.undocumented) return t('文档里没有：在游戏里实测有这张表，取值是游戏里读到的。');
+      return e.absent ? t('这个客户端里没有：在游戏里实测是 nil（文档也收录了登录界面和别的游戏版本才有的）。') : '';
     },
     kindTag(e) {                               // an entry's tag: Function, Method, Event, Enum, Structure
       const p = KIND_ONE[e.kind === 'table' ? e.type : e.obj ? 'method' : e.kind];

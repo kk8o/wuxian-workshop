@@ -1,8 +1,9 @@
 r"""What the agent learns from the running game through `run` alone, so that any WoWBridge 0.9 serves it (no addon update,
 no reload): `trace` records the events the game fires for a while (names, arguments, how often each fired); `inspect`
 describes frames — place, size, anchors, visibility, strata and level, scripts, children and regions — named by a Lua
-expression, or the ones under the mouse. Each is a Lua chunk sent with `run`; the game answers with JSON made by the
-small encoder J below (secret values come back as "<secret>"), parsed here.
+expression, or the ones under the mouse; `api_scan` lists what the game has for the API manual (its C_ namespaces'
+functions, its global functions, its Enum and Constants tables). Each is a Lua chunk sent with `run`; the game answers
+with JSON made by the small encoder J below (secret values come back as "<secret>"), parsed here.
 
 A RUN result brings back at most 4000 bytes of what the code returned (WoWBridge's Agent.lua cuts it there), so the
 answer comes in pieces (answer_chunk): the chunk keeps it in the game and returns the first piece and how many there are,
@@ -417,6 +418,98 @@ def reply_chunk(request, data=None):
     """the chunk that hands the answer to an addon's request (WoWBridge.Reply) to its callback, and says whether it was
     still waiting"""
     return REPLY_GUARD + f"return WoWBridge.Reply({lua_str(request)}, {lua_value(data)})"
+
+
+# what the game has, for the API manual (wuxian api-scan; scripts/build_api_pack.py): its C_ namespaces with their
+# functions, its global functions, its Enum and Constants tables, the fields of the tables asked for. A name an addon set
+# (not secure: issecurevariable names the addon) is listed apart in `replaced`: it is that addon's own, or the client's
+# replaced
+SCAN_PARTS = ("namespaces", "globals", "tables", "fields")
+SCAN_BODY = r"""
+local secure = issecurevariable
+local version, build = GetBuildInfo()
+local out = { client = version .. "." .. build, replaced = {} }
+local function own(t, k)                       -- set by the client or Blizzard's code; else the addon that set it
+	local ok, by = secure(t, k)
+	if ok then return true end
+	return false, by or "?"
+end
+local function sorted(t) table.sort(t) return t end
+if PART == "namespaces" then
+	local ns, addons = {}, {}
+	for k, v in pairs(_G) do
+		if type(k) == "string" and k:find("^C_") and type(v) == "table" then
+			local ok, by = own(_G, k)
+			if ok then
+				local fns = {}
+				for f, fv in pairs(v) do
+					if type(f) == "string" and type(fv) == "function" then
+						local fok, fby = own(v, f)
+						if fok then fns[#fns + 1] = f else out.replaced[k .. "." .. f] = fby end
+					end
+				end
+				ns[k] = sorted(fns)
+			else
+				out.replaced[k] = by
+			end
+		end
+	end
+	for i = 1, C_AddOns.GetNumAddOns() do
+		if C_AddOns.IsAddOnLoaded(i) then addons[#addons + 1] = (C_AddOns.GetAddOnInfo(i)) end
+	end
+	out.namespaces, out.addons = ns, sorted(addons)
+elseif PART == "globals" then
+	local fns = {}
+	for k, v in pairs(_G) do
+		if type(k) == "string" and type(v) == "function" then
+			local ok, by = own(_G, k)
+			if ok then fns[#fns + 1] = k else out.replaced[k] = by end
+		end
+	end
+	out.globals = sorted(fns)
+elseif PART == "tables" then
+	for _, base in ipairs({ "Enum", "Constants" }) do
+		local names, t = {}, _G[base]
+		for k, v in pairs(type(t) == "table" and t or {}) do
+			if type(k) == "string" and type(v) == "table" then
+				local ok, by = own(t, k)
+				if ok then names[#names + 1] = k else out.replaced[base .. "." .. k] = by end
+			end
+		end
+		out[base == "Enum" and "enums" or "constants"] = sorted(names)
+	end
+else
+	local fields = {}
+	for _, n in ipairs(NAMES) do
+		local base, key = n:match("^(%a+)%.(.+)$")
+		local t = type(_G[base]) == "table" and _G[base][key]
+		if type(t) == "table" then
+			local f = {}
+			for k, v in pairs(t) do
+				local vt = type(v)
+				if type(k) == "string" and (vt == "number" or vt == "string" or vt == "boolean") then f[k] = v end
+			end
+			fields[n] = f
+		end
+	end
+	out.fields = fields
+end
+return J(out)
+"""
+
+
+def api_scan(part, names=None):
+    """the chunk that answers one part of what the game has (SCAN_PARTS): {client: "1.60.1.70338", replaced: {name: the
+    addon that set it}, namespaces: {C_X: [functions]} and addons: [the loaded ones] | globals: [functions] | enums,
+    constants: [table names] | fields: {"Enum.X": {field: value}} for names, the Enum.X / Constants.X tables asked for}"""
+    if part not in SCAN_PARTS:
+        raise ValueError(f"part: one of {', '.join(SCAN_PARTS)}")
+    names = list(names or ()) if part == "fields" else []
+    if part == "fields" and not (names and all(isinstance(n, str) and re.fullmatch(r"(Enum|Constants)\.\w+", n)
+                                               for n in names)):
+        raise ValueError("names: the tables whose fields to bring, as Enum.X or Constants.X")
+    head = f"local PART, NAMES = {lua_str(part)}, {{{', '.join(lua_str(n) for n in names)}}}\n"
+    return LUA_JSON + head + SCAN_BODY
 
 
 def answer_chunk(chunk, key):
