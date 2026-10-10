@@ -29,6 +29,10 @@
 -- message joins the last one of its kind not shown yet, as a batch (TYPE_BATCH: type, length (2 bytes), text, ...), so
 -- that a burst of small messages takes a few frames instead of one each. HB says up to which id every message has been
 -- shown (l=), so that the companion knows what it misses also when nothing comes after it.
+-- A WELCOME that says z=1 (0.9.9) has a message that takes two frames or more go squeezed when that takes fewer
+-- (TYPE_ZIP: blocks of its type byte and text, each a 2-byte length (high bit: stored as it is) and its bytes,
+-- Codec.Squeeze); a short body is squeezed in Send, a longer one a block a Step (each about 1 ms), and the link tests
+-- go as they are, so that they still measure the link.
 local _, ns = ...
 local Codec, Mailbox = ns.Codec, ns.Mailbox
 local band, floor, char = bit.band, math.floor, string.char
@@ -44,6 +48,7 @@ L.FEATURES = ns.Inflate and 3 or 2
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT, L.TYPE_BATCH = 0, 1, 2, 3, 4, 5, 6
+L.TYPE_ZIP = 7                                   -- a squeezed message (0.9.9): the companion unpacks it, then reads it
 local TYPE_OF = { debug = L.TYPE_DEBUG, run = L.TYPE_RUN, reload = L.TYPE_RELOAD, event = L.TYPE_EVENT,
 	burst = L.TYPE_TEST, long = L.TYPE_TEST, stream = L.TYPE_TEST, test = L.TYPE_TEST }
 local URGENT = { run = true, reload = true }     -- shown before everything else, never packed
@@ -60,6 +65,7 @@ local P = {
 	rto = 4,         -- unconfirmed parts are shown again this long after a message's last part was shown
 	win = 16,        -- messages in flight
 	pack = false,    -- small messages of a kind join into one (WELCOME pack=1)
+	zip = false,     -- long messages go squeezed (WELCOME z=1: the companion unpacks them)
 	offline = 15,    -- no mailbox packet for this long: back to HELLO (3 heartbeats, at least 15 s; see L.Welcome)
 	hb = 5,          -- the companion's heartbeat, as its WELCOME says
 	beat = 2,        -- the heartbeat frame changes this often; in HELLO a HELLO goes up this often also while messages wait
@@ -71,6 +77,7 @@ L.P = P
 local db, Print
 local state = "off"          -- off | hello | online
 local queue = {}             -- messages not acknowledged yet (see Send)
+local Squeeze                -- a block of a long message into its squeeze (defined with Shape)
 local nextId                 -- the id the next message gets (1..65535, kept across /reload)
 local frame                  -- what the link has on the bus: { kind, since }
 local lastControl            -- when the last HELLO / HB went up
@@ -202,6 +209,12 @@ end
 -- what goes on the bus next; runs every 0.05 s, and when a frame's display time is up (Draw)
 function L.Step()
 	if state == "off" then return end
+	for _, m in ipairs(queue) do               -- a block of the first long message being squeezed
+		if m.squeeze then
+			Squeeze(m)
+			break
+		end
+	end
 	local now = GetTime()
 	local cur = ns.CurrentFrame()
 	if cur and cur.kind == "probe" then   -- an experiment has the bus
@@ -248,6 +261,7 @@ function L.Welcome(text)
 	-- from a newer one in this session)
 	P.rto = n("rto") and n("rto") >= 2 and n("rto") <= 60 and n("rto") or 4
 	P.pack = f.pack == "1"
+	P.zip = f.z == "1"
 end
 
 -- another addon handles a companion command (WoWBridge_Lab: "probe")
@@ -290,12 +304,17 @@ local function Parts(text)
 	id = tonumber(id)
 	for _, m in ipairs(queue) do
 		if m.id == id then
+			-- what the companion has of it now, in place of what was known: a companion that started over (a restart in
+			-- the middle of the message) has none of the parts the one before it had, and they have to go again (adding
+			-- to the old marks, the message never came whole and was given up)
+			local ok = {}
 			for i = 0, #hex / 2 - 1 do
 				local byte = tonumber(hex:sub(2 * i + 1, 2 * i + 2), 16)
 				for b = 0, 7 do
-					if band(byte, 2 ^ b) ~= 0 then m.ok[8 * i + b + 1] = true end
+					if band(byte, 2 ^ b) ~= 0 then ok[8 * i + b + 1] = true end
 				end
 			end
+			m.ok = ok
 			if m.shown and not m.pending then m.rush = true end
 			return
 		end
@@ -436,6 +455,43 @@ local function Shape(m, body)
 	m.W, m.H, m.frags, m.pending, m.bytes, m.size = W, H, frags, pending, #body, #body - 1
 end
 
+-- the frames a body of n bytes takes (as Shape cuts it)
+local function Frames(n)
+	if n <= Most(DataW(), P.dataH) then return 1 end
+	local cap, parts, at = Capacity(BigW(), P.bigH), 0, 0
+	while at < n do
+		at = at + PartSize(cap, parts)
+		parts = parts + 1
+	end
+	return parts
+end
+
+local SQUEEZE_NOW = 5000     -- bytes squeezed at once in Send (about 1.3 ms); a longer body goes a block a Step
+
+-- the next block of message m's body into its squeeze; after the last, its frames: the squeezed body if that takes
+-- fewer, else the body as it is
+function Squeeze(m)
+	local z = m.squeeze
+	local block = z.body:sub(z.at, z.at + Codec.SQUEEZE_BLOCK - 1)
+	local packed = Codec.Squeeze(block)
+	if #packed < #block then
+		z.out[#z.out + 1] = char(floor(#packed / 256), #packed % 256) .. packed
+	else                                      -- nothing to gain: stored
+		z.out[#z.out + 1] = char(128 + floor(#block / 256), #block % 256) .. block
+	end
+	z.at = z.at + #block
+	if z.at <= #z.body then return end
+	m.squeeze = nil
+	local squeezed = table.concat(z.out)
+	if Frames(#squeezed) < Frames(#z.body) then
+		m.zipped = true
+		Shape(m, squeezed)
+		m.bytes = #z.body                     -- Waiting counts what was sent (API.lua's and Debug.lua's caps)
+	else
+		Shape(m, z.body)
+	end
+end
+
 -- a batch: TYPE_BATCH, then each message as its type, its length (2 bytes) and its text
 local function Batch(m)
 	local out = { char(L.TYPE_BATCH) }
@@ -446,12 +502,14 @@ local function Batch(m)
 end
 
 -- queue a message of a kind (nil = user text, "debug", "run", "reload", "event" (API.lua), or a link test: "burst",
--- "long", "stream", "test"); returns its id and its number of parts. With pack on, a message joins the last one of its
--- kind while that one has not gone up and the two still fit one frame (they share the id then)
+-- "long", "stream", "test"); returns its id and its number of parts (0 while a long body is being squeezed). With pack
+-- on, a message joins the last one of its kind while that one has not gone up and the two still fit one frame (they
+-- share the id then)
 function L.Send(text, kind)
 	local t = TYPE_OF[kind] or L.TYPE_TEXT
 	local last = queue[#queue]
-	if P.pack and not URGENT[kind] and last and last.kind == kind and not last.firstShown and #last.frags == 1 then
+	if P.pack and not URGENT[kind] and last and last.kind == kind and not last.firstShown and #last.frags == 1
+		and not last.zipped then
 		local size = (#last.items == 1 and 4 + #last.items[1] or last.bytes) + 3 + #text
 		if size <= Most(BigW(), P.bigH) then
 			last.items[#last.items + 1] = text
@@ -464,7 +522,16 @@ function L.Send(text, kind)
 	db.nextData = nextId
 	local m = { id = id, type = t, items = { text }, kind = kind, urgent = URGENT[kind], ok = {}, passEnd = 0, resent = 0,
 		again = 0 }
-	Shape(m, char(t) .. text)
+	local body = char(t) .. text
+	if P.zip and t ~= L.TYPE_TEST and Frames(#body) > 1 then
+		m.squeeze = { body = body, at = 1, out = { char(L.TYPE_ZIP) } }
+		m.frags, m.bytes, m.size = {}, #body, #body - 1    -- no frames yet: Pick passes it by
+		if #body <= SQUEEZE_NOW then
+			while m.squeeze do Squeeze(m) end
+		end
+	else
+		Shape(m, body)
+	end
 	queue[#queue + 1] = m
 	while #queue > P.keep do            -- nobody acknowledges them: the companion learns of the gap from HB m=
 		table.remove(queue, 1)

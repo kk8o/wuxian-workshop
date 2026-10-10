@@ -8,6 +8,7 @@ addon never shows a part again on its timer before a message that has not gone u
 each time; the companion tells the addon which messages past the gap came in whole (it then shows them no more, also an
 addon before 0.9.9); a message the companion asked for many times with nothing more of it coming is given up; and
 /wb flush (or the companion's "flush") drops what waits to go up."""
+import random
 import re
 import unittest
 
@@ -40,7 +41,8 @@ def as_098(source):
     start = source.index(b"local function Pick(now)")
     end = source.index(b"\nend\n", start) + 5
     assert source.count(NEW_WAIT) == 1
-    return (source[:start] + OLD_PICK + source[end:]).replace(NEW_WAIT, b"P.rto").replace(b'n("mode") <= 3', b'n("mode") <= 2')
+    return ((source[:start] + OLD_PICK + source[end:]).replace(NEW_WAIT, b"P.rto").replace(b'n("mode") <= 3', b'n("mode") <= 2')
+            .replace(b'P.zip = f.z == "1"', b"P.zip = false"))
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
@@ -65,13 +67,41 @@ class Stuck(unittest.TestCase):
             s.run(0.05)
         return s.now() - t0
 
+    def test_a_companion_restarted_in_the_middle_of_a_long_message(self):
+        """a part never reaches the first companion, which asks for it: the addon then holds the other parts as in. A new
+        companion (a restart of the app in the same game process) has none of them: they go again, and the message
+        comes whole (the addon took the old marks as true for good, so it never did and was given up)"""
+        s = self.start(squeeze=False)
+        rnd = random.Random(2)
+        text = bytes(rnd.choice(b"abcdefghijklmnopqrstuvwxyz") for _ in range(20000))
+        first, seen = s.comp, s.comp.on_frame
+
+        def lossy(ftype, sid, msg, payload, part=0, parts=1):
+            if parts < 4 or part != 2:
+                return seen(ftype, sid, msg, payload, part, parts)
+        first.on_frame = lossy
+        mid, parts = s.ns[b"Link"][b"Send"](text)
+        self.assertGreater(parts, 10)
+        self.until(s, lambda: first.stats["asked"] >= 2, 60)                       # asked, and the answer read
+        second = link.Companion(s.addons, clock=s.now, log=self.logs.append, squeeze=False)
+        second.new_process("P1-100")
+        s.comp = second
+        took = self.until(s, lambda: any(m[1] == mid for m in second.sessions.get(second.current).messages)
+                          if second.current in second.sessions else False, 120)
+        self.assertLess(took, 60, self.logs[-10:])
+        got = next(m for m in second.sessions[second.current].messages if m[1] == mid)
+        self.assertEqual(got[4].encode(), text)
+        self.assertEqual(second.stats["given_up"], 0)
+
     def burst(self, s, n=10):
-        """a print queued, and right after it n RUN results (three big frames each), which go up before it: the print
-        is the gap the cumulative ack waits at (WuxianKit's answers after a reload)"""
+        """a print queued, and right after it n RUN results (three big frames each: text that does not squeeze), which go
+        up before it: the print is the gap the cumulative ack waits at (WuxianKit's answers after a reload)"""
         send = s.ns[b"Link"][b"Send"]
         send(b"OUT held up", b"debug")
+        rnd = random.Random(7)
         for i in range(n):
-            send(b'%d ok =run (1 B, 0.0 ms): 1 values "%s"' % (9000 + i, b"x" * 4000), b"run")
+            text = bytes(rnd.choice(b"abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(4000))
+            send(b'%d ok =run (1 B, 0.0 ms): 1 values "%s"' % (9000 + i, text), b"run")
 
     def data_frames(self, s, since):
         return [f for f in s.frames if f[0] >= since and f[1] == F.TYPE_DATA]

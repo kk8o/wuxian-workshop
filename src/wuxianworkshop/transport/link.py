@@ -48,6 +48,8 @@ TYPE_EVENT (an addon's event, WoWBridge API.lua: {"a": addon, "t": topic, "d": d
 and RELOAD texts go to on_debug(kind, text) without WoW's colour and link escapes, kind being the debug word, "RUN" or
 "RELOAD"; an event goes to on_debug("EVENT", <its JSON as it came>). Addons before 0.8 send the same texts untyped, with
 the kind as a text prefix ("ERR ...", "RUN ...").
+From 0.9.9, when the WELCOME says z=1 (squeeze), a message that takes two frames or more may come as TYPE_ZIP: blocks of
+the message as the addon had it, its type byte first, mostly squeezed (core/squeeze.py); _split unpacks it.
 """
 import re
 import time
@@ -57,14 +59,15 @@ from collections import deque
 from ..agent.commands import AgentCommands, CODE_CHUNK  # noqa: F401  (CODE_CHUNK stays importable from here)
 from ..core import frame as F
 from ..core import mailbox as MB
+from ..core import squeeze
 
 VERSION = "0.9.8"
 LEGACY_HB = 5.0                 # heartbeat for addons before 0.7.0: they go offline after 15 s without a packet
 SLOT_WARN = (400, 100)          # mailbox slots left: tell the agent (debug.log) and the log
 WRAP = 65535                    # message ids run 1..WRAP, then start over at 1
 RECEIVED_MAX = 32768            # message ids a session remembers (half the ring: no id can come back that soon)
-TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT, TYPE_BATCH = range(7)
-TYPE_BYTES = {bytes([t]) for t in range(7)}
+TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT, TYPE_BATCH, TYPE_ZIP = range(8)
+TYPE_BYTES = {bytes([t]) for t in range(8)}
 URGENT_TYPES = (TYPE_RUN, TYPE_RELOAD)   # the addon shows these before the others: a later id may come before them
 LAZY = 1                        # the link features (f=) from which the acks go lazily and PARTS ask at once (0.9.6)
 DATA = 2                        # ... from which the addon takes CALL records: data calls (0.9.7)
@@ -264,9 +267,10 @@ class Companion(AgentCommands):
     def __init__(self, addons, clock=time.time, log=print, hb_every=15.0, ack_every=1.0, send_every=0.5,
                  ping_every=10.0, down_after=6.0, parts_after=1.5, stuck_after=3.0, welcome=None, on_debug=None,
                  reload_wait=600.0, echo_debug=True, hb_lazy=30.0, ack_lazy=10.0, rto_lazy=15, win_lazy=64, show_lazy=0.15,
-                 show_safe=0.2):
+                 show_safe=0.2, squeeze=True):
         self.addons, self.clock, self.log, self.on_debug = addons, clock, log, on_debug
         self.echo_debug = echo_debug  # False: what goes to on_debug is not also written to log (the daemon journals it once)
+        self.squeeze = squeeze        # the WELCOME says z=1: long messages may come squeezed (TYPE_ZIP)
         self.hb_every, self.ack_every, self.send_every = hb_every, ack_every, send_every
         self.ping_every, self.down_after, self.parts_after, self.stuck_after = ping_every, down_after, parts_after, stuck_after
         # what a LAZY addon is told: measured in the game (1.60.1.70245, 30 fps in the background) frames shown for 0.25,
@@ -301,7 +305,7 @@ class Companion(AgentCommands):
                           first_slot=None, last_slot=None, records={name: 0 for name in MB.NAMES.values()},
                           debug=dict(err=0, out=0, warn=0, blocked=0, dropped=0, repeats=0, run=0, reload=0, info=0), events=0,
                           reloads=0, skipped=0, batches=0, asked=0, sacked=0, given_up=0, bad_parts=0,
-                          dropped_records=0)
+                          dropped_records=0, squeezed=0, squeezed_from=0, squeezed_to=0)
         self.full = False
         self.reload_sent = None       # (when, session) of the last "reload" command, until a new session shows up
         self.reload_later = False     # the player put it off (稍后): no button waits, a reload of their own is still told
@@ -484,7 +488,7 @@ class Companion(AgentCommands):
         if s.features >= LAZY:
             if s.show is None:
                 s.show = self.show_lazy
-            params.update(win=self.win_lazy, show=s.show, rto=self.rto_lazy, pack=1)
+            params.update(win=self.win_lazy, show=s.show, rto=self.rto_lazy, pack=1, **({"z": 1} if self.squeeze else {}))
         text = f"v={VERSION};s={s.sid};" + ";".join(f"{a}={b}" for a, b in params.items())
         self.outbox = [r for r in self.outbox if r[0] != MB.WELCOME]
         self.outbox.insert(0, (MB.WELCOME, text.encode()))
@@ -574,8 +578,19 @@ class Companion(AgentCommands):
 
     def _split(self, s, data):
         """(type, body) of a message: addon 0.8 on puts the type in the first byte, older ones send text (None); for a
-        session whose HELLO this companion did not see, a leading control byte decides"""
+        session whose HELLO this companion did not see, a leading control byte decides. A squeezed one (TYPE_ZIP) is
+        unpacked first: the message inside has its own type byte; one that does not unpack comes as a warning"""
         typed = s.typed if s.typed is not None else data[:1] in TYPE_BYTES
+        if typed and data[:1] == bytes([TYPE_ZIP]):
+            try:
+                inner = squeeze.unsqueeze(data[1:])
+            except ValueError as e:
+                self.note(f"session {s.sid}: a squeezed message of {len(data)} B did not unpack ({e})")
+                return TYPE_DEBUG, f"WARN a squeezed message from the game did not unpack: {e}".encode()
+            self.stats["squeezed"] += 1
+            self.stats["squeezed_from"] += len(inner)
+            self.stats["squeezed_to"] += len(data)
+            data = inner
         if typed and data:
             return data[0], data[1:]
         return None, data
