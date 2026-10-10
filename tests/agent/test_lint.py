@@ -87,6 +87,34 @@ class Bytecode(unittest.TestCase):
                       "local function later(p) env._FRAME = p end\n")
         self.assertEqual(env["env"], {"Paint", "_CACHE", "Shade", "_FRAME"})
 
+    def test_the_calls_and_where_their_results_go(self):
+        """the name called and how many arguments it gets; a call's result where the client refuses a secret value;
+        the results a test of secrecy gets (issecretvalue, canaccessvalue, an addon's own isSecret)"""
+        s = scan_of("local UnitHealth = UnitHealth\n"                                      # 1
+                    "local hp = UnitHealth(\"player\")\n"                                  # 2
+                    "local x = hp + 1\n"                                                   # 3 arithmetic
+                    "local t = { [UnitName(\"target\")] = 1 }\n"                            # 4 a table key
+                    "if UnitIsAFK(\"target\") then end\n"                                   # 5 tested
+                    "local n = math.floor(UnitHealth(\"target\"))\n"                        # 6 the last argument
+                    "C_Timer.After(1)\n"                                                   # 7
+                    "local name = UnitName(\"target\")\n"                                   # 8
+                    "if name == \"x\" or name == nil then end\n"                            # 9
+                    "local guarded = UnitHealth(\"target\")\n"                              # 10
+                    "if canaccessvalue(guarded) then end\n"                                # 11
+                    "local isSecret = issecretvalue or function() return false end\n"     # 12 an addon's own test
+                    "local function f() local p = UnitPower(\"p\") if isSecret(p) then return end end\n")   # 13
+        calls = s["calls"]
+        self.assertIn(("UnitHealth", 2, 1), calls)                                       # through the local
+        self.assertIn(("C_Timer.After", 7, 1), calls)
+        self.assertIn(("math.floor", 6, None), calls)                                    # ends in a call: not counted
+        uses = {(kind, calls[c][0], line, extra) for kind, c, _i, line, extra in s["uses"]}
+        for use in [("arith", "UnitHealth", 3, None), ("key", "UnitName", 4, None), ("test", "UnitIsAFK", 5, None),
+                    ("arg", "UnitHealth", 6, ("math.floor", 0)), ("eq", "UnitName", 9, ("k", "string")),
+                    ("eq", "UnitName", 9, ("k", "nil"))]:
+            self.assertIn(use, uses)
+        tested = {(calls[c][0], calls[c][1]) for c in s["checked"]}
+        self.assertEqual(tested, {("UnitHealth", 10), ("UnitPower", 13)})
+
     def test_syntax_errors_with_the_5_1_way(self):
         cases = {
             "local x = 7 // 2\n": ("integer division", 1),
@@ -174,6 +202,46 @@ class Addons(unittest.TestCase):
         self.assertIn("time()", hints["missing-lib"])
         self.assertEqual(r["unresolved"], {})
         self.assertEqual((r["libraries"], r["ok"], r["addon"], r["files"]), (1, False, "Foo", 3))
+
+    def test_secret_values_and_left_out_arguments(self):
+        """what this client refuses (tried in 1.60.1.70338): a result the manual says is always a secret value
+        (SecretReturns) computed with, tested as a boolean, passed to a function that converts it or takes no secret
+        values from addon code; a required argument left out. Results secret only in a restricted state: one note"""
+        self.write("Foo.toc", "## Interface: 16001\nCore.lua\n")
+        self.write("Core.lua", "local hp = UnitHealth(\"player\")\n"                        # 1
+                               "local pct = hp / UnitHealthMax(\"player\") * 100\n"         # 2 arithmetic
+                               "if UnitInRange(\"party1\") then end\n"                      # 3 a secret boolean tested
+                               "local s = string.format(\"%d\", hp) .. \"%\"\n"              # 4 fine: these take it
+                               "local f = CreateFrame(\"Frame\")\n"                          # 5
+                               "f.text = f:CreateFontString()\n"                             # 6
+                               "f.text:SetText(hp)\n"                                        # 7 fine: a widget takes it
+                               "C_Timer.After(UnitHealth(\"target\"), print)\n"              # 8 takes no secret values
+                               "local up = strupper(UnitSpellTargetName(\"target\"))\n"      # 9 a string conversion
+                               "local guarded = UnitHealth(\"target\")\n"                    # 10
+                               "if canaccessvalue(guarded) then print(guarded + 1) end\n"    # 11 fine: tested first
+                               "UnitHealth()\n"                                              # 12 the unit left out
+                               "C_Spell.GetSpellInfo(133, true)\n"                           # 13 fine: one too many
+                               "UnitExists()\n"                                              # 14 fine: nilable
+                               "local _, class = UnitClass(\"target\")\n"                    # 15
+                               "local color = RAID_CLASS_COLORS[class]\n")                   # 16 secret in combat …
+        r = lint.check(self.folder)
+        self.assertEqual(self.codes(r, "errors"), {
+            ("secret", "Core.lua", 2), ("secret", "Core.lua", 3), ("secret-arg", "Core.lua", 8),
+            ("secret", "Core.lua", 9), ("args-missing", "Core.lua", 12)})
+        self.assertEqual(r["warnings"], [])
+        found = {f["line"]: f for f in r["errors"]}
+        self.assertEqual(found[2]["message"], "UnitHealth() returns a secret value (SecretReturns): arithmetic on it "
+                                              "fails in addon code")
+        self.assertIn("canaccessvalue", found[2]["hint"])
+        self.assertIn("C_Timer.After takes no secret values from addon code (AllowedWhenUntainted)", found[8]["message"])
+        self.assertIn("strupper (a string conversion)", found[9]["message"])
+        self.assertEqual(found[12]["message"], "UnitHealth needs unit (argument 1): the call passes none")
+        self.assertTrue(found[12]["hint"].startswith("UnitHealth(unit: "))
+        note = next(n for n in r["notes"] if n["code"] == "secret-maybe")["message"]
+        self.assertTrue(note.startswith("2 places use results the API manual says are secret values in a restricted "
+                                        "state"), note)
+        self.assertIn("UnitClass ×1 (Core.lua:16)", note)
+        self.assertIn("UnitHealthMax ×1 (Core.lua:2)", note)
 
     def test_xml_encoding_and_a_file_of_an_addon(self):
         self.write("Foo.toc", "## Interface: 16001\nA.lua\nB.lua\nC.lua\nFoo.xml\n")

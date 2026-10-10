@@ -62,6 +62,24 @@ class ExtensionsApi(unittest.TestCase):
         self.assertEqual(self.refused({"action": "zap", "id": "demo"}), 400)
 
 
+    def test_a_custom_extension_needs_its_addons(self):
+        """an addon that needs folders the game folder lacks lists them (missing) and is not installed"""
+        site = Path(os.environ["WUXIAN_EXTENSIONS_FEED"]).parent
+        before = (site / "extensions.json").read_text(encoding="utf-8")
+        raw = make_zip("Child")
+        (site / "Child-1.0.0.zip").write_bytes(raw)
+        try:
+            (site / "extensions.json").write_text(json.dumps({"format": 1, "addons": [
+                {"id": "child", "folder": "Child", "version": "1.0.0", "parent": "demo", "requires": ["Demo", "WoWBridge"],
+                 "file": "Child-1.0.0.zip", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}]}), encoding="utf-8")
+            child = request(self.handle, "GET", "/api/extensions?refresh=1")["addons"][0]
+            self.assertEqual((child["parent"], child["missing"]), ("demo", ["Demo"]))      # WoWBridge is there
+            self.assertEqual(self.refused({"action": "install", "id": "child"}), 409)
+            self.assertFalse((self.addons / "Child").exists())
+        finally:
+            (site / "extensions.json").write_text(before, encoding="utf-8")
+            request(self.handle, "GET", "/api/extensions?refresh=1")
+
     def test_removing_wuxiankit_forgets_its_manifest(self):
         """the agents' wk_ tools go with WuxianKit: its kept manifest is forgotten when the App removes it"""
         from wuxianworkshop.mcp import kit

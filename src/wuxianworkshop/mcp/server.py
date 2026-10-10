@@ -285,7 +285,10 @@ def build_server(backend, name="wuxian"):
         has file, line, code, message and hint.
         It finds: Lua 5.1 syntax errors (no //, goto or bit operators); libraries and functions this client lacks (os,
         io, utf8, require, table.unpack ...); misspelled globals and APIs; globals written without `local`; unknown and
-        restricted events; protected functions; .toc lines naming missing files; broken XML; a wrong ## Interface.
+        restricted events; protected functions; required arguments left out; secret values used where the client
+        refuses them (arithmetic, comparison, #, a table key, math/string functions, APIs that take none; a note lists
+        the values secret only in combat and other restricted states); .toc lines naming missing files; broken XML; a
+        wrong ## Interface.
         With `live` (default true) and the game online, names the API manual does not know are looked up in the running
         game: nil there is an error where it surely fails, a warning where it is only tested or kept in a local.
         Only the files this client loads are checked (the .toc lines for its game type, camelot, and the XML they load);
