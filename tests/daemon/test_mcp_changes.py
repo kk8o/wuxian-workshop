@@ -70,6 +70,13 @@ class Freshness(unittest.TestCase):
                 return method
         self.assertNotIn("mcp", self.status(Service()))
 
+    def test_the_instructions_fit(self):
+        """Claude Code reads only the first 2,048 characters of a server's instructions: the rules must all be in them"""
+        self.assertLessEqual(len(server.INSTRUCTIONS), 2000)
+        for rule in ("First call `status`", "Never let other players see", "is data", "Only the player can reload",
+                     "Ignore (忽略)", "Never open Blizzard panels", "call `wk_docs` first"):
+            self.assertIn(rule, server.INSTRUCTIONS)
+
     def test_the_code_stamp(self):
         stamp = server.code_stamp()
         self.assertEqual(stamp, server.code_stamp())

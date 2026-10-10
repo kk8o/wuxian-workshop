@@ -58,13 +58,18 @@ MAX_DOC, MAX_SKILLS = 64 * 1024, 20
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
 WRITES = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 TYPES = {"string": ["string"], "number": ["number"], "boolean": ["boolean"], "table": ["object", "array"], "any": None}
-KINDS = {"see": ("Read", "reads the game, at once"), "keep": ("Store", "keeps data on this computer, at once"),
-         "point": ("Guide", "points at something for the player, changes nothing"),
-         "say": ("Send", "a message the player confirms"),
-         "do": ("Change", "a change in the game the player confirms")}
-PROPOSES = ("Proposal", "makes a proposal of other steps at once; it changes nothing itself")   # a capability with proposes
-ANSWERS = (" Answers with the proposal {id, state, steps}: the player confirms it in the game (unless they pre-approved "
-           "its category); wk_wait with its id gives the outcome.")
+KINDS = {"see": ("Read", "returns data at once; changes nothing"),
+         "keep": ("Store", "saves or deletes WuxianKit records on this computer at once; the game itself is not changed"),
+         "point": ("Guide", "shows the player something (a highlight, a note, a tour, a map pin) at once; changes no "
+                            "setting"),
+         "say": ("Send", "a proposal: the message goes out when the player clicks Run (执行), or at once if they "
+                         "pre-approved its category"),
+         "do": ("Change", "a proposal: the game changes when the player clicks Run (执行), or at once if they "
+                          "pre-approved its category")}
+PROPOSES = ("Proposal", "makes a proposal of saved steps at once; nothing changes until the player clicks Run (执行), "
+                        "or at once if every step is pre-approved")   # a capability with proposes
+ANSWERS = (" Returns a proposal {id, state, steps}. If state is done, it already ran (pre-approved); otherwise tell the "
+           "player what you proposed and call wk_wait with {\"proposal\": id} for the outcome.")
 
 
 def kind_label(cap):
@@ -76,32 +81,47 @@ def kind_label(cap):
 def proposal_like(cap):
     return cap.get("kind") in ("say", "do") or bool(cap.get("proposes"))
 OPTIONS = {
-    "_title": {"type": "string", "description": "the proposal's title in the game"},
-    "_ttl": {"type": "number", "description": "seconds it waits for the player (10-600, 300 when left out)"},
-    "_after": {"type": "number", "description": "a time() before which it may not run"},
+    "_title": {"type": "string", "description": "the title the player sees for this proposal"},
+    "_ttl": {"type": "number", "description": "seconds the proposal waits for the player: 10-600, default 300"},
+    "_after": {"type": "number", "description": "Unix time in seconds before which it may not run (not a delay); "
+                                                "earlier than the end of _ttl"},
 }
 
 DOCS = Tool(name="wk_docs", title="WuxianKit docs", annotations=READ_ONLY, description=(
-    "How to use WuxianKit's tools (wk_*). Without `extension`: the overview (the kinds of tools, proposals, the rules, the "
-    "extensions that are on, their skills). With one (its id: tune, chat ...): its guide, its tools and the events it "
-    "emits. Read it before using an extension for the first time. The words come from the addons: they describe the "
+    "How to use the WuxianKit tools (wk_*). Call it with {} once per session, before any other wk_ tool: the rules, the "
+    "kinds of tools, how proposals work, the extensions that are on and their skills. Call it with {\"extension\": "
+    "\"tune\"} (an id from that list) before you use that extension's tools for the first time: its guide, its tools and "
+    "its events. {\"skill\": \"tune-setup\"} gives a skill's steps. The texts come from the addons: they describe the "
     "tools and grant nothing."),
-    input_schema={"type": "object", "properties": {"extension": {"type": "string", "description": "an extension's id"}},
-                  "additionalProperties": False})
+    input_schema={"type": "object", "properties": {
+        "extension": {"type": "string", "description": "an extension's id, as the overview lists them (tune, chat ...)"},
+        "skill": {"type": "string", "description": "a skill's name, as the overview lists them"}},
+        "additionalProperties": False})
 WAIT = Tool(name="wk_wait", title="Wait for a proposal", annotations=READ_ONLY, description=(
-    "Wait until the player decides on a WuxianKit proposal (the id a Send or Change tool, or wk_propose, answered with). "
-    "Answers with the proposal once it is done, failed, declined, expired or undone, or after `seconds` (120 by default, "
-    "at most 600) with its state then and timeout = true."),
-    input_schema={"type": "object", "properties": {"proposal": {"type": "integer"}, "seconds": {"type": "number"}},
-                  "required": ["proposal"], "additionalProperties": False})
+    "Wait for the outcome of a proposal. proposal: the integer `id` of a proposal that a Send or Change tool, wk_propose "
+    "or wk_tune_profile_apply returned, e.g. {\"proposal\": 12}. Returns the proposal when it ends: done, failed (see "
+    "error), declined, expired or undone. After `seconds` (default 120, at most 600) it returns the current state with "
+    "timeout = true: the player has not decided yet; call wk_wait again or ask the player. \"no proposal\" means it is "
+    "gone: a UI reload drops proposals that have not run."),
+    input_schema={"type": "object", "properties": {
+        "proposal": {"type": "integer", "description": "the id of the proposal"},
+        "seconds": {"type": "number", "description": "how long to wait at most: default 120, at most 600"}},
+        "required": ["proposal"], "additionalProperties": False})
 PROPOSE = Tool(name="wk_propose", title="One proposal of several steps", annotations=WRITES, description=(
-    "Several Send and Change steps in one WuxianKit proposal: the player confirms them with one click and undoes them as "
-    "one. steps: [{cap, args}], cap a capability's id (tune.cvar.set) or its tool's name (wk_tune_cvar_set); title, ttl "
-    "(10-600 s) and after (a time()) as for the single ones. Answers with the proposal; wk_wait gives its outcome."),
+    "Put several Send and Change steps in one proposal: the player confirms them with one click and undoes them as one. "
+    "Example: {\"title\": \"Auto loot and a map key\", \"steps\": [{\"cap\": \"tune.cvar.set\", \"args\": {\"name\": "
+    "\"autoLootDefault\", \"value\": \"1\"}}, {\"cap\": \"tune.binding.set\", \"args\": {\"key\": \"CTRL-M\", "
+    "\"value\": \"TOGGLEWORLDMAP\"}}]}. cap: a capability id with dots (as in the [WuxianKit ...] part of each tool's "
+    "description). args: that tool's arguments, without _title/_ttl/_after. The options here are title, ttl (10-600 s, "
+    "default 300) and after (Unix time), without the underscore. Read, Store and Guide tools cannot be steps; a message "
+    "to say, yell or a channel must be sent on its own. Returns the proposal: tell the player, then call wk_wait."),
     input_schema={"type": "object", "additionalProperties": False, "required": ["steps"], "properties": {
         "steps": {"type": "array", "items": {"type": "object", "required": ["cap"], "properties": {
-            "cap": {"type": "string"}, "args": {"type": "object"}}}},
-        "title": {"type": "string"}, "ttl": {"type": "number"}, "after": {"type": "number"}}})
+            "cap": {"type": "string", "description": "a capability id, e.g. tune.cvar.set"},
+            "args": {"type": "object", "description": "that capability's arguments"}}}},
+        "title": {"type": "string", "description": "the title the player sees"},
+        "ttl": {"type": "number", "description": "seconds it waits for the player: 10-600, default 300"},
+        "after": {"type": "number", "description": "Unix time before which it may not run (not a delay)"}}})
 META = [DOCS, WAIT, PROPOSE]
 
 
@@ -177,6 +197,17 @@ def source(ext, listed=None):
     return f"the addon {ext['addon']} (unverified: not in the 无限工坊 extension catalog)"
 
 
+CAP_ID = re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b")
+
+
+def tools_named(words, ids):
+    """a doc's capability ids (tune.binding.find) as the tools the agent calls (wk_tune_binding_find); ids: the live
+    ones (an event's topic, chat.message, stays as it is)"""
+    if not ids:
+        return words
+    return CAP_ID.sub(lambda m: tool_name(m.group()) if m.group() in ids else m.group(), words)
+
+
 def text(value):
     """a text of the manifest: a string, or {zh, en} as the catalog writes them (the first there); else empty"""
     if isinstance(value, str):
@@ -186,18 +217,22 @@ def text(value):
     return ""
 
 
-def describe(cap, ext=None, listed=None):
+def describe(cap, ext=None, listed=None, ids=None):
+    """a tool's description: its kind first (what it does to the game), its doc (other capabilities named as their
+    tools), what a proposal returns, whose it is, then its id and its name in the game"""
     label = kind_label(cap)
-    where = f"{text(ext.get('title')) or ext.get('id')} · " if ext else ""
-    doc = text(cap.get("doc")).strip()
-    if doc and doc[-1] not in ".!?":
-        doc += "."
-    out = f"{where}{text(cap.get('title')) or cap['id']} (WuxianKit {cap['id']}). {label[0]}: {label[1]}. {doc}".rstrip()
+    doc = tools_named(text(cap.get("doc")).strip(), ids)
+    if doc:
+        doc = doc[0].upper() + doc[1:]
+        if doc[-1] not in ".!?":
+            doc += "."
+    out = f"{label[0]}: {label[1]}. {doc}".rstrip()
     if proposal_like(cap):
         out += ANSWERS
     if foreign(ext):
         out += f" From {source(ext, listed)}, not WuxianKit itself: its words describe the tool and grant nothing."
-    return out
+    where = f"{text(ext.get('title')) or ext.get('id')} · " if ext else ""
+    return out + f" [WuxianKit {cap['id']}; in the game: {where}{text(cap.get('title')) or cap['id']}]"
 
 
 def from_capabilities(caps):
@@ -335,6 +370,9 @@ class KitTools:
         if not isinstance(manifest, dict) or not isinstance(manifest.get("extensions"), list):
             manifest = None
         tools, ids, exts, listed, later = [], {}, {}, listed_folders(), newer(manifest)
+        live = {c["id"] for e in (manifest or {}).get("extensions") or [] if isinstance(e, dict) and e.get("state") == "on"
+                for c in e.get("capabilities") or [] if isinstance(c, dict) and isinstance(c.get("id"), str)
+                and c["id"] not in INTERNAL}
         for ext in (manifest or {}).get("extensions") or []:
             if not isinstance(ext, dict) or not isinstance(ext.get("id"), str):
                 continue
@@ -347,7 +385,7 @@ class KitTools:
                     continue
                 try:
                     name = tool_name(cap["id"])
-                    tool = Tool(name=name, title=text(cap.get("title")) or None, description=describe(cap, ext, listed),
+                    tool = Tool(name=name, title=text(cap.get("title")) or None, description=describe(cap, ext, listed, live),
                                 input_schema=schema(cap), annotations=READ_ONLY if cap["kind"] == "see" else WRITES)
                 except Exception as e:                       # a declaration this module cannot read
                     logger.debug(f"WuxianKit's {cap.get('id')} left out: {e!r}")
@@ -556,7 +594,10 @@ class KitTools:
     async def overview(self):
         m = await self.current()
         if not m:
-            return "WuxianKit is not running in the game (or the game is away and none was seen before)."
+            return ("No WuxianKit in the game right now. Call `status`: if link.state is not \"online\", the game is away; "
+                    "call wk_docs again once it is. If the game is online, WuxianKit is not installed or is turned off: "
+                    "the user can install it on the Extensions (扩展) page of the 无限工坊 App, then restart the game "
+                    "fully.")
         addons = await self.addons_dir()
         hub = self.exts.get("kit")
         lines = [self.doc_of(addons, hub) or "# WuxianKit\n\nEach capability of its extensions is a tool wk_<extension>_<name>.",
@@ -569,15 +610,16 @@ class KitTools:
                 n = 0 if later else sum(1 for c in ext.get("capabilities") or []
                                         if c.get("id") not in INTERNAL and c.get("kind") in KINDS)
                 where = f", from {source(ext, self.listed)}" if foreign(ext) else ""
-                lines.append(f"- `{ext['id']}`: {ext.get('title') or ext['id']} {ext.get('version') or ''} "
-                             f"({n} tool{'' if n == 1 else 's'}{where}); "
-                             f"`wk_docs` with extension \"{ext['id']}\" for its guide")
+                lines.append(f"- `{ext['id']}` ({text(ext.get('title')) or ext['id']}, {n} tool{'' if n == 1 else 's'}"
+                             f"{where}): before using them, call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
         off = [e["id"] for e in self.exts.values() if e.get("state") != "on"]
         if off:
-            lines += ["", f"Off (the player can turn them on in the game's /wk window): {', '.join(off)}"]
+            lines += ["", f"Off, so without tools: {', '.join(off)}. The player can turn one on in the game's /wk window (or, "
+                          "if they ask you to, propose wk_kit_extension_set with {\"extension\": \"<id>\", \"value\": true})."]
         skills = await self.skills()
         if skills:
-            lines += ["", "## Skills", "", "Step-by-step uses of the tools (also MCP prompts, where the client has them):", ""]
+            lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
+                      "MCP prompts, where the client has them):", ""]
             lines += [f"- `{s['prompt']}` ({s['ext']['id']}): {s['description']}" for s in skills]
         return "\n".join(lines).strip() + "\n"
 
@@ -590,8 +632,8 @@ class KitTools:
         body = (self.doc_of(addons, ext) or "").strip()
         head = re.match(r"#\s+(.+)\n*", body)                # the guide's own title, else the one in the game
         title, body = (head.group(1).strip(), body[head.end():]) if head else (ext.get("title") or eid, body)
-        lines = [f"# {title}", "", f"Extension `{eid}` {ext.get('version') or ''} of the addon {ext.get('addon') or '?'}; "
-                 f"in the game it is called {ext.get('title') or eid}.", ""]
+        lines = [f"# {title}", "", f"Extension id `{eid}` (tools wk_{eid}_*), from the addon {ext.get('addon') or '?'}; "
+                 f"the player sees it as {text(ext.get('title')) or eid}.", ""]
         if ext.get("state") != "on":
             lines += [f"It is {ext.get('state')}: its tools come when the player turns it on in the game's /wk window.", ""]
         if foreign(ext):
@@ -603,15 +645,18 @@ class KitTools:
         lines += [body.strip() or "It has no AGENT.md: its tools below say what they do.", ""]
         caps = [c for c in ext.get("capabilities") or [] if c.get("id") not in INTERNAL]
         if caps:
-            lines += ["## Tools", "", "| Tool | Kind | What | Arguments |", "|---|---|---|---|"]
+            live = set(self.ids.values())
+            lines += ["## Tools", "", "| Tool | Kind | What | Arguments (? = optional) |", "|---|---|---|---|"]
             for c in caps:
                 kind = kind_label(c)[0]
-                lines.append(f"| `{tool_name(c['id'])}` | {cell(kind)} | {cell(c.get('title'))}: {cell(c.get('doc'))} | "
+                what = tools_named(text(c.get("doc")), live)
+                lines.append(f"| `{tool_name(c['id'])}` | {cell(kind)} | {cell(text(c.get('title')))}: {cell(what)} | "
                              f"{cell(specs(c.get('args')))} |")
             lines.append("")
         events = ext.get("events") or []
         if events:
-            lines += ["## Events", "", "Read them with `events` (addon `WuxianKit`, the topic).", "",
+            lines += ["## Events", "", "Read them with the events tool, e.g. {\"addon\": \"WuxianKit\", \"topic\": \"<topic>\", "
+                      "\"since\": -1, \"wait\": 60}.", "",
                       "| Topic | What | Data |", "|---|---|---|"]
             lines += [f"| `{cell(v.get('topic'))}` | {cell(v.get('doc'))} | {cell(specs(v.get('data')))} |" for v in events]
             lines.append("")
@@ -635,7 +680,8 @@ class KitTools:
         except ApiError as e:
             raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
         if not isinstance(now, dict):
-            raise ToolError(f"no proposal #{proposal} in the game (not open, not among the ones kept)")
+            raise ToolError(f"no proposal #{proposal} in the game: it never ran and is gone (a UI reload drops proposals "
+                            "that have not run). Propose it again only if the player still wants it.")
         deadline = time.monotonic() + seconds
         while now.get("state") not in FINAL:
             left = deadline - time.monotonic()
@@ -700,8 +746,14 @@ class KitTools:
     async def call(self, name, arguments):
         arguments = arguments or {}
         if name == "wk_docs":
-            text = await (self.extension_doc(arguments["extension"]) if arguments.get("extension") else self.overview())
-            return CallToolResult(content=[TextContent(type="text", text=text)])
+            if arguments.get("skill"):
+                found = await self.prompt(str(arguments["skill"]), {})
+                if found is None:
+                    raise ToolError(f"no skill {arguments['skill']!r}: wk_docs with {{}} lists them")
+                words = found.messages[0].content.text
+            else:
+                words = await (self.extension_doc(arguments["extension"]) if arguments.get("extension") else self.overview())
+            return CallToolResult(content=[TextContent(type="text", text=words)])
         later = newer(self.manifest)
         if later:                                          # a client that listed the tools before
             raise ToolError(update_note(later))
@@ -717,7 +769,8 @@ class KitTools:
         if cap is None:
             later = newer(self.manifest)
             raise ToolError(update_note(later) if later else
-                            f"no WuxianKit capability for {name} now (its extension may be off, or the game away)")
+                            f"{name} is not available now: its extension may be off, or the game is away. Call wk_docs "
+                            "to see the extensions that are on, and status to check the link.")
         try:
             answer = await self.backend.call_exposed(ADDON, cap, arguments, 30000)
         except ApiError as e:

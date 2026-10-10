@@ -485,7 +485,8 @@ class KitTools(unittest.TestCase):
         send = tools["wk_chat_send"].input_schema
         self.assertEqual((send["properties"]["channel"], send["required"]),
                          ({"type": "string", "enum": ["guild", "party"]}, ["channel", "text"]))
-        self.assertIn("wk_wait with its id", tools["wk_tune_cvar_set"].description)
+        self.assertIn('call wk_wait with {"proposal": id}', tools["wk_tune_cvar_set"].description)
+        self.assertTrue(tools["wk_tune_cvar_set"].description.startswith("Change: a proposal"))      # its kind first
         self.assertIn("From the addon WxDemo", tools["wk_demo_ping"].description)            # another addon's words
         self.assertNotIn("From the addon", tools["wk_tune_cvar_get"].description)
         result = asyncio.run(mcp.call_tool("wk_tune_cvar_set", {"name": "x", "value": 1, "_title": "t"}))
@@ -536,12 +537,13 @@ class KitTools(unittest.TestCase):
              "doc": "make a proposal of a profile's steps", "args": {"name": "string"}})
         tools = {t.name: t for t in asyncio.run(kit.KitTools(self.backend(manifest), store=False).list())}
         apply = tools["wk_tune_profile_apply"]
-        self.assertIn("Proposal: makes a proposal of other steps", apply.description)
-        self.assertIn("profile's steps. Answers with the proposal", apply.description)
+        self.assertIn("Proposal: makes a proposal of saved steps", apply.description)
+        self.assertIn("Make a proposal of a profile's steps. Returns a proposal", apply.description)
         self.assertEqual(set(apply.input_schema["properties"]), {"name", "_title", "_ttl", "_after"})
-        self.assertNotIn("Answers with", tools["wk_tune_cvar_get"].description)
-        self.assertIn("Change: a change in the game the player confirms. change a setting. Answers with",
+        self.assertNotIn("Returns a proposal", tools["wk_tune_cvar_get"].description)
+        self.assertIn("pre-approved its category. Change a setting. Returns a proposal",
                       tools["wk_tune_cvar_set"].description)
+        self.assertTrue(apply.description.endswith("[WuxianKit tune.profile.apply; in the game: Tune · Apply profile]"))
 
     def test_a_refusal_without_the_stack(self):
         """an extension's own refusal (error(msg, 0)) reaches the agent as its message alone, without the Lua stack
@@ -591,12 +593,17 @@ class KitTools(unittest.TestCase):
         mcp = build_server(self.backend(self.manifest(), addons=addons))
         overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
         self.assertTrue(overview.startswith("# WuxianKit\n\nThe hub's guide."))
-        self.assertIn('- `chat`: Chat 0.3.0 (1 tool); `wk_docs` with extension "chat"', overview)
-        self.assertIn("(1 tool, from the addon WxDemo)", overview)                    # a later kind is not counted
+        self.assertIn('- `chat` (Chat, 1 tool): before using them, call wk_docs with {"extension": "chat"}', overview)
+        self.assertIn("(Demo, 1 tool, from the addon WxDemo)", overview)                    # a later kind is not counted
         self.assertIn("- `guild-qa` (chat): Answer guild questions", overview)
+        skill = asyncio.run(mcp.call_tool("wk_docs", {"skill": "guild-qa"})).content[0].text      # for clients without prompts
+        self.assertTrue(skill.endswith("Listen for (not given) hours."))
+        self.assertIn("grants nothing", skill)
+        with self.assertRaises(ToolError):
+            asyncio.run(mcp.call_tool("wk_docs", {"skill": "nope"}))
         chat = asyncio.run(mcp.call_tool("wk_docs", {"extension": "chat"})).content[0].text
-        self.assertTrue(chat.startswith("# Chat\n\nExtension `chat` 0.3.0 of the addon WuxianKit; in the game it is "
-                                        "called Chat.\n\nHears and sends."))
+        self.assertTrue(chat.startswith("# Chat\n\nExtension id `chat` (tools wk_chat_*), from the addon WuxianKit; the "
+                                        "player sees it as Chat.\n\nHears and sends."))
         self.assertIn("| `wk_chat_send` | Send | Send message: say something | channel: guild\\|party, target: string?, "
                       "text: string |", chat)
         self.assertIn("| `chat.message` | a message | channel: string, text: string |", chat)
@@ -638,7 +645,7 @@ class KitTools(unittest.TestCase):
         self.assertEqual(asyncio.run(mcp.list_prompts()), [])
         overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
         self.assertTrue(overview.startswith("> The game's WuxianKit speaks protocol 2"))
-        self.assertIn("- `chat`: Chat 0.3.0 (0 tools);", overview)
+        self.assertIn("- `chat` (Chat, 0 tools):", overview)
         for name in ("wk_tune_cvar_get", "wk_wait"):
             with self.assertRaisesRegex(ToolError, "update 无限工坊"):
                 asyncio.run(mcp.call_tool(name, {"name": "x", "proposal": 1}))
