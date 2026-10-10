@@ -682,104 +682,132 @@
       </div>
     </section>
 
-    <!-- 扩展：网站扩展目录里的插件（扩展框架和它的扩展，都是可选的），在这里安装、更新、卸载；它们的版本跟程序的分开 -->
+    <!-- 扩展：网站扩展目录里的扩展包（扩展框架及基于它的扩展，均为可选）。每个包一张卡片：说明、状态、运行情况、安装 / 更新 / 卸载、
+         更新内容；下面是扩展框架加载的扩展（点开看它给 Agent 的 wk_ 工具）、随它提供的 Agent 技能、连着无限工坊的 Agent 会话（收起）。
+         扩展的版本跟程序的分开 -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
         <span class="muted" x-show="ext.list && ext.list.length" x-text="extSummary"></span>
         <div class="spacer"></div>
-        <button class="btn" @click="loadExtensions(true)" :disabled="ext.busy !== ''"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' ? t('读取中…') : t('刷新目录')"></span></button>
+        <button class="btn" @click="loadExtensions(true); loadAccess(true)" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' || access.busy ? t('读取中…') : t('刷新')"></span></button>
       </div>
-      <div class="pagebody">
-        <p class="muted ext-intro">扩展框架（WuxianKit）及基于它的扩展，来自无限工坊网站的扩展目录。均为可选，无限工坊不依赖它们。首次安装后需完整重启游戏，更新后重载界面即可。</p>
-        <!-- Agent 接入：游戏里的扩展框架给 Agent 的 wk_ 工具（按扩展，点开看每个工具），和正在用无限工坊的 Agent（每个 MCP 连接）
-             是否拿到了这些工具（/api/agent_access：stdio 的 MCP 进程每 20 秒报到一次，App 内置的 /mcp 就地读） -->
-        <div class="panel ext-card ext-access" x-t>
-          <header>
-            <svg class="ico"><use href="#i-plug"/></svg>
-            <h2>Agent 接入</h2>
-            <span class="muted" x-text="accessLine"></span>
-            <div class="spacer"></div>
-            <button class="btn" @click="loadAccess(true)" :disabled="access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="access.busy ? t('读取中…') : t('刷新')"></span></button>
-          </header>
-          <div class="ext-note bad" x-show="access.error" x-text="access.error"></div>
-          <div class="loader" x-show="!access.data && !access.error"><svg class="inf"><use href="#inf-line"/></svg>读取中…</div>
-          <p class="muted" x-show="access.data && access.data.kit_state === 'absent'">游戏里没有扩展框架，Agent 没有 wk_ 工具。安装后完整重启游戏，再回来看。</p>
-          <p class="muted" x-show="access.data && access.data.kit_state === 'stopped'">扩展框架已安装但未运行：新装的需完整重启游戏，停用的在插件列表中启用后重载界面。</p>
-          <p class="muted" x-show="access.data && access.data.kit_state === 'unknown'">游戏未连接，读不到扩展框架；连上后这里会更新。</p>
-          <p class="ext-note" x-show="access.data && access.data.kit && access.data.kit.newer">游戏里的扩展框架比这个版本的无限工坊新：Agent 只拿到 wk_docs。请更新无限工坊。</p>
-          <div class="access-exts" x-show="accessExts.length">
-            <template x-for="e in accessExts" :key="e.id">
-              <details class="access-ext">
-                <summary>
-                  <span class="access-title" x-text="e.title || e.id"></span>
-                  <span class="muted mono" x-text="e.id + (e.version ? ' ' + e.version : '')"></span>
-                  <span class="pill tiny" :class="e.state === 'on' ? 'ok' : 'off'" x-text="e.state === 'on' ? t('已启用') : t('未启用')"></span>
-                  <span class="spacer"></span>
-                  <span class="muted" x-text="t('{n} 个工具', { n: e.tools.length })"></span>
-                </summary>
-                <table class="table">
-                  <tr x-t><th>工具</th><th>类别</th><th>名称</th></tr>
-                  <template x-for="tool in e.tools" :key="tool.name">
-                    <tr><td class="mono" x-text="tool.name"></td><td><span class="pill tiny" :class="kindPill(tool)" x-text="kindName(tool)"></span></td><td x-text="toolTitle(tool)"></td></tr>
-                  </template>
-                </table>
-              </details>
-            </template>
-          </div>
-          <h3 class="access-h" x-show="access.data">正在使用的 Agent</h3>
-          <p class="muted" x-show="access.data && !access.data.servers.length">现在没有 Agent 连着无限工坊。</p>
-          <table class="table access-servers" x-show="access.data && access.data.servers.length">
-            <tr><th>Agent</th><th>MCP 服务器</th><th>协议</th><th>wk_ 工具</th><th>最近活动</th><th>状态</th></tr>
-            <template x-for="s in (access.data ? access.data.servers : [])" :key="s.kind + ':' + s.pid + ':' + (s.first || 0)">
-              <tr>
-                <td x-text="agentName(s)"></td>
-                <td class="mono" x-text="serverWhere(s)"></td>
-                <td class="mono" x-text="s.protocol || '—'"></td>
-                <td x-text="s.tools == null ? '—' : s.tools"></td>
-                <td x-text="s.last ? ago(s.last) : '—'"></td>
-                <td><span class="pill" :class="accessPill(s)" :title="accessTip(s)" x-text="accessState(s)"></span></td>
-              </tr>
-            </template>
-          </table>
-          <p class="muted access-foot" x-show="access.data">列出最近 30 分钟内用过无限工坊的 Agent 会话。用 0.9.8 以前的版本启动的会话不会列出，可能仍在用旧工具，重启会话即可。</p>
-        </div>
-        <div class="ext-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
-        <div class="ext-note" x-show="ext.note">
+      <div class="pagebody xp">
+        <div class="xp-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
+        <div class="xp-note" x-show="ext.note">
           <span x-text="ext.note"></span>
-          <button class="btn" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(); ext.reload = false">重载界面</button>
+          <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(); ext.reload = false">重载界面</button>
         </div>
         <div class="loader" x-show="ext.list === null"><svg class="inf"><use href="#inf-line"/></svg>读取扩展目录…</div>
-        <p class="muted pad" x-show="ext.list && !ext.list.length && !ext.error">目录里还没有扩展。</p>
+        <p class="muted pad" x-show="ext.list && !ext.list.length && !ext.error">扩展目录暂无内容。</p>
+
         <template x-for="a in (ext.list || [])" :key="a.id">
-          <div class="panel ext-card" x-t>
-            <header>
-              <svg class="ico"><use href="#i-puzzle"/></svg>
-              <h2 x-text="loc(a.title) || a.folder"></h2>
-              <span class="muted mono" x-text="a.folder + ' ' + a.version"></span>
+          <article class="panel xp-pack" x-t>
+            <div class="xp-pack-head">
+              <div class="xp-mark"><svg class="ico"><use href="#i-puzzle"/></svg></div>
+              <div class="xp-pack-title">
+                <h2 x-text="loc(a.title) || a.folder"></h2>
+                <div class="muted"><span class="mono" x-text="a.folder + ' ' + a.version"></span><span x-show="a.released" x-text="' · ' + t('{d} 发布', { d: a.released })"></span></div>
+              </div>
               <span class="pill" :class="extPill(a)" x-text="extState(a)"></span>
-            </header>
-            <p class="ext-summary" x-text="loc(a.summary)"></p>
-            <dl class="spec">
-              <div x-show="a.extensions && a.extensions.length"><dt>包含</dt><dd x-text="(a.extensions || []).map(e => loc(e.title)).join(t('、'))"></dd></div>
-              <div x-show="a.skills && a.skills.length"><dt>Agent 技能</dt><dd :title="(a.skills || []).map(s => loc(s.description)).join('\n')" x-text="(a.skills || []).map(s => loc(s.title) || s.name).join(t('、'))"></dd></div>
-              <div x-show="loc(a.notes)"><dt>更新说明</dt><dd class="ext-notes" x-text="loc(a.notes)"></dd></div>
-            </dl>
-            <div class="ext-acts">
+            </div>
+            <p class="xp-summary" x-text="loc(a.summary)"></p>
+            <div class="xp-run" :class="kitRun.cls" x-show="a.id === 'wuxiankit' && a.there"><span class="xp-dot"></span><span x-text="kitRun.text"></span></div>
+            <div class="xp-acts">
               <button class="btn primary" x-show="a.state === 'available'" :disabled="ext.busy !== ''" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('安装中…') : t('安装')"></button>
               <button class="btn primary" x-show="a.state === 'update' || a.state === 'installed'" :disabled="ext.busy !== ''" @click="extAct(a, 'install')" x-text="ext.busy === a.id ? t('更新中…') : t('更新到 {v}', { v: a.version })"></button>
               <button class="btn" x-show="a.there && ext.confirm !== a.id" :disabled="ext.busy !== ''" @click="extAct(a, 'remove')">卸载</button>
-              <span class="ext-confirm" x-show="ext.confirm === a.id">
-                <span class="muted">卸载会删除插件文件夹（删除前存一份历史版本）。</span>
-                <button class="btn" :disabled="ext.busy !== ''" @click="extAct(a, 'remove')">确认卸载</button>
+              <span class="xp-confirm" x-show="ext.confirm === a.id">
+                <span class="muted">卸载将删除插件文件夹，并先保留一份历史版本。</span>
+                <button class="btn confirm" :disabled="ext.busy !== ''" @click="extAct(a, 'remove')">确认卸载</button>
                 <button class="btn" @click="ext.confirm = ''">取消</button>
               </span>
               <div class="spacer"></div>
+              <button class="btn" x-show="loc(a.notes)" :class="{ on: ext.notes === a.id }" @click="ext.notes = ext.notes === a.id ? '' : a.id">更新内容</button>
               <button class="btn" x-show="a.homepage" @click="openOut(a.homepage)"><svg class="ico"><use href="#i-globe"/></svg>介绍</button>
             </div>
-          </div>
+            <p class="xp-notes" x-show="ext.notes === a.id" x-text="loc(a.notes)"></p>
+          </article>
         </template>
-        <p class="muted ext-foot" x-show="ext.catalog" x-text="extCatalogLine"></p>
+
+        <section class="xp-sec" x-show="xpModules.length">
+          <header class="xp-sec-head">
+            <h3 x-text="xpModulesTitle"></h3>
+            <span class="muted" x-text="xpModulesLine"></span>
+          </header>
+          <template x-for="g in xpGroups" :key="g.key">
+            <div class="xp-group">
+              <div class="xp-group-head">
+                <span class="xp-tag" :class="g.key" x-text="g.title"></span>
+                <span class="muted" x-text="t('{n} 个', { n: g.mods.length }) + ' · ' + g.note"></span>
+              </div>
+              <div class="xp-grid">
+                <template x-for="m in g.mods" :key="m.id">
+                  <button class="xp-mod" :class="{ open: xp.open === m.id, off: m.state && m.state !== 'on' }" :disabled="!m.tools"
+                          @click="xp.open = xp.open === m.id ? '' : m.id">
+                    <span class="xp-mod-top"><b x-text="m.title"></b><span class="pill tiny off" x-show="m.state && m.state !== 'on'" x-text="t('未启用')"></span></span>
+                    <span class="mono muted ellipsis" x-text="m.id + (m.version ? ' · ' + m.version : '')"></span>
+                    <span class="xp-mod-foot" x-text="m.line"></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div class="panel xp-tools" x-show="xpOpen">
+            <header>
+              <b x-text="xpOpen ? xpOpen.title : ''"></b>
+              <span class="xp-tag" :class="xpOpen && !xpOpen.builtin ? 'custom' : 'sys'" x-text="xpOpen && !xpOpen.builtin ? t('自定义扩展') : t('系统扩展')"></span>
+              <span class="mono muted ellipsis" x-show="xpOpen && !xpOpen.builtin && xpOpen.addon" x-text="xpOpen ? xpOpen.addon : ''"></span>
+              <span class="muted" x-text="xpOpen ? t('{n} 个 Agent 工具', { n: xpOpen.tools.length }) : ''"></span>
+              <div class="spacer"></div>
+              <button class="btn small" @click="xp.open = ''">收起</button>
+            </header>
+            <div class="xp-toollist">
+              <template x-for="tool in (xpOpen ? xpOpen.tools : [])" :key="tool.name">
+                <div class="xp-tool">
+                  <span class="xp-tool-top"><span class="ellipsis" x-text="toolTitle(tool)"></span><span class="pill tiny" :class="kindPill(tool)" x-text="kindName(tool)"></span></span>
+                  <span class="mono muted ellipsis" x-text="tool.name"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </section>
+
+        <section class="xp-sec" x-show="xpSkills.length">
+          <header class="xp-sec-head"><h3>Agent 技能</h3><span class="muted">随扩展框架提供给 Agent 的操作流程</span></header>
+          <div class="xp-skills">
+            <template x-for="s in xpSkills" :key="s.name">
+              <div class="xp-skill"><b x-text="loc(s.title) || s.name"></b><span class="muted" x-text="loc(s.description)"></span></div>
+            </template>
+          </div>
+        </section>
+
+        <section class="xp-sec" x-show="access.data">
+          <header class="xp-sec-head">
+            <h3>Agent 会话</h3>
+            <span class="muted" x-text="sessionLine"></span>
+            <div class="spacer"></div>
+            <button class="btn small" x-show="access.data && access.data.servers.length" @click="xp.sessions = !xp.sessions" x-text="xp.sessions ? t('收起') : t('查看')"></button>
+          </header>
+          <div class="panel xp-tools" x-show="xp.sessions && access.data && access.data.servers.length">
+            <table class="table">
+              <tr x-t><th>Agent</th><th>连接</th><th>协议</th><th>工具</th><th>最近活动</th><th>状态</th></tr>
+              <template x-for="s in (access.data ? access.data.servers : [])" :key="s.kind + ':' + s.pid + ':' + (s.first || 0)">
+                <tr>
+                  <td x-text="agentName(s)"></td>
+                  <td class="mono" x-text="serverWhere(s)"></td>
+                  <td class="mono" x-text="s.protocol || '—'"></td>
+                  <td x-text="s.tools == null ? '—' : s.tools"></td>
+                  <td x-text="s.last ? ago(s.last) : '—'"></td>
+                  <td><span class="pill" :class="accessPill(s)" :title="accessTip(s)" x-text="accessState(s)"></span></td>
+                </tr>
+              </template>
+            </table>
+            <p class="muted xp-small">显示最近 30 分钟内的会话。</p>
+          </div>
+        </section>
+
+        <p class="xp-foot" x-show="ext.catalog" :title="ext.catalog ? ext.catalog.url : ''" x-text="extCatalogLine"></p>
       </div>
     </section>
 
