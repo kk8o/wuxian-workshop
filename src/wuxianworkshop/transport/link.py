@@ -21,8 +21,9 @@ missing parts again; CODE (agent/commands.py code) and, to an addon with link fe
 call (agent/commands.py data_call).
 To an addon with link features ZIP (f=3, 0.9.9) the CODE and CALL jobs that are worth it go compressed (agent/commands.py
 _packed); a job the addon could not unpack ("could not be unpacked" in its RUN result) turns that off for the session.
-Frames: the WELCOME says mode=3 (0.9.9 on): the addon draws data frames, heartbeats (32 x 16) and PONGs with their
-cells laid along ∞ (core/frame.py inf_order), its HELLO in mode 1; an older addon ignores mode 3 and stays in mode 1.
+Frames: the WELCOME says mode=3 (0.9.9 on): the addon draws data frames (w3 x h, bw3 x bh: 56 x 16, 128 x 32),
+heartbeats (32 x 12) and PONGs with their cells laid along ∞ (core/frame.py inf_order), its HELLO in mode 1; an older
+addon ignores mode 3 and the mode-3 widths and stays in mode 1.
 Display time: a LAZY addon is told show_lazy (0.15 s) for each part of a long message; the first time the companion has
 to ask again for something that went up while the link had been up a while (STEADY), it tells that session show_safe
 (0.2 s) in a new WELCOME, for good. A /reload starts the next session at show_lazy again.
@@ -274,9 +275,9 @@ class Companion(AgentCommands):
         self.show_lazy, self.show_safe = show_lazy, show_safe
         self.up_since = None          # when the link last came up (frames visible)
         self.reload_wait = reload_wait
-        # mode 3: data frames and heartbeats with their cells laid along ∞ (core/frame.py inf_order); an addon before
-        # 0.9.9 takes modes 0..2 only and stays in mode 1
-        self.welcome = welcome or dict(mode=3, w=64, h=16, bw=128, bh=32, win=16, show=0.25)   # + hb, per session
+        # mode 3: data frames and heartbeats with their cells laid along ∞ (core/frame.py inf_order), each about as wide
+        # as its ∞ (w3, bw3); an addon before 0.9.9 takes modes 0..2 only, stays in mode 1 and reads neither width
+        self.welcome = welcome or dict(mode=3, w=64, h=16, bw=128, bh=32, w3=56, bw3=128, win=16, show=0.25)   # + hb
         self.slot = None              # the next slot to write: unknown until the addon says where it reads
         self.addon_slot = None        # the slot the addon reads next, as its last HELLO / HB / PONG said
         self.addon_slot_since = None  # ... since when it has said so

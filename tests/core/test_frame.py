@@ -53,20 +53,22 @@ class InfOrder(unittest.TestCase):
                 self.assertEqual(F.capacity(W, H, 3), F.capacity(W, H, 1))
 
     def test_a_heartbeat_draws_the_infinity(self):
-        """a heartbeat (134 of a 32 x 16 frame's 438 data cells) lies within two cells of the curve (sampled here
-        another way: cos t / (1 + sin^2 t), sin t cos t / (1 + sin^2 t)), across its crossing, and not inside a loop"""
-        W, H = 32, 16
+        """a heartbeat (134 of a 32 x 12 frame's 314 data cells) lies within two cells of the curve, here as wide as the
+        frame (13 cells each side of the middle) and as high (3.5 cells: 9.9 at its own proportions, so 1.31 times
+        wider), sampled another way: cos t / (1 + sin^2 t), sin t cos t / (1 + sin^2 t); across its crossing, and not
+        inside a loop"""
+        W, H = 32, 12
         payload = b"HB;n=12;k=905;m=7543;l=7542;q=0"
         n = -(-len(F.stream(F.TYPE_CONTROL, W, H, 1, 1, payload)) * 8 // 3)
         used = F.inf_order(W, H)[:n]
-        a, cx, cy = 13, 15.5, 7.5
+        cx, cy, ax, ay = 15.5, 5.5, 13, 3.5 / F.INF_YMAX
         ts = [i * 2 * math.pi / 4000 for i in range(4000)]
-        curve = [(cx + a * math.cos(t) / (1 + math.sin(t) ** 2), cy + a * math.sin(t) * math.cos(t) / (1 + math.sin(t) ** 2))
+        curve = [(cx + ax * math.cos(t) / (1 + math.sin(t) ** 2), cy + ay * math.sin(t) * math.cos(t) / (1 + math.sin(t) ** 2))
                  for t in ts]
         far = max(min(math.hypot(x - u, y - v) for u, v in curve) for x, y in used)
         self.assertLess(far, 2.0)
-        self.assertIn((15, 7), used)                                   # the crossing
-        for inside in ((8, 7), (8, 8), (23, 7), (23, 8)):              # the loops
+        self.assertIn((15, 5), used)                                   # the crossing
+        for inside in ((8, 5), (8, 6), (23, 5), (23, 6)):              # the loops
             self.assertNotIn(inside, used)
         cells = F.build(W, H, 3, 1, F.TYPE_CONTROL, 1, 1, payload)
         self.assertEqual({cells[xy] for xy in F.inf_order(W, H)[n:]}, {F.palette_rgb(F.BLACK)})   # the rest: padding

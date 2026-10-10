@@ -18,10 +18,12 @@
 -- ack waits for that one (0.9.9; before, a stream of RUN results shown again could keep it from ever going up, and the
 -- frame never stopped changing). /wb flush, or the companion's "flush", drops every message waiting.
 -- A WELCOME that says mode=3 (0.9.9) has data frames, heartbeats and PONGs drawn in mode 3 (Frame.lua: the cells laid
--- along ∞), the heartbeat 32 x 12 so that its ∞ shows; a HELLO stays in mode 1, which every companion reads. In mode 3
--- no frame is filled past BREATH_HIGH of its room (fuller, the ∞ swells into a blob), and the parts of a long message
--- breathe: their sizes go from BREATH_LOW to BREATH_HIGH of a big frame's room and back every BREATH_PERIOD parts, so
--- that its ∞ swells and shrinks as it goes up (each part's header says its length; the companion joins them as ever).
+-- along ∞, drawn up to 1.6 times wider than its own proportions to fill the frame), each frame about as wide as its ∞
+-- (heartbeat 32 x 12; data frames w3 x h and bw3 x bh, which the WELCOME may set: 56 x 16 and 128 x 32); a HELLO stays in
+-- mode 1, which every companion reads. In mode 3 no frame is filled past
+-- BREATH_HIGH of its room (fuller, the ∞ swells into a blob), and the parts of a long message breathe: their sizes go
+-- from BREATH_LOW to BREATH_HIGH of a big frame's room and back every BREATH_PERIOD parts, so that its ∞ swells and
+-- shrinks as it goes up (each part's header says its length; the companion joins them as ever).
 -- From 0.9.6 (FEATURES, f= in HELLO and PONG) a WELCOME may also set rto (the companion then acknowledges every few
 -- seconds instead of every second, which saves mailbox slots, and asks at once for what went missing) and pack=1: a small
 -- message joins the last one of its kind not shown yet, as a batch (TYPE_BATCH: type, length (2 bytes), text, ...), so
@@ -49,7 +51,8 @@ local AGAIN_MAX = 120                            -- seconds between a message's 
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
-	hbH3 = 12,                  -- the heartbeat's height in mode 3: room for the ∞ its cells make
+	hbW3 = 32, hbH3 = 12,       -- mode 3: the heartbeat, about as wide as the ∞ its cells make ...
+	dataW3 = 56, bigW3 = 128,   -- ... and the data frames' widths (WELCOME w3, bw3; heights as in mode 1)
 	dataW = 64, dataH = 16,     -- a message that fits one frame
 	bigW = 128, bigH = 32,      -- the parts of a longer one
 	cell = 4, mode = 1,
@@ -121,7 +124,7 @@ local function Control(kind, payload)
 	if kind == "hello" then
 		Draw(kind, P.helloW, P.helloH, Codec.TYPE_CONTROL, ctlId, payload)
 	elseif P.mode == 3 then
-		Draw(kind, P.hbW, P.hbH3, Codec.TYPE_CONTROL, ctlId, payload, 3)
+		Draw(kind, P.hbW3, P.hbH3, Codec.TYPE_CONTROL, ctlId, payload, 3)
 	else
 		Draw(kind, P.hbW, P.hbH, Codec.TYPE_CONTROL, ctlId, payload)
 	end
@@ -231,6 +234,8 @@ function L.Welcome(text)
 	if n("mode") and n("mode") >= 0 and n("mode") <= 3 then P.mode = n("mode") end
 	if n("w") and n("h") and n("w") >= 24 and n("w") <= 255 and n("h") >= 8 and n("h") <= 255 then P.dataW, P.dataH = n("w"), n("h") end
 	if n("bw") and n("bh") and n("bw") >= 24 and n("bw") <= 255 and n("bh") >= 8 and n("bh") <= 255 then P.bigW, P.bigH = n("bw"), n("bh") end
+	if n("w3") and n("w3") >= 24 and n("w3") <= 255 then P.dataW3 = n("w3") end
+	if n("bw3") and n("bw3") >= 24 and n("bw3") <= 255 then P.bigW3 = n("bw3") end
 	if n("win") and n("win") >= 1 and n("win") <= 64 then P.win = n("win") end
 	if n("show") and n("show") >= 0.1 and n("show") <= 2 then P.show = n("show") end
 	if n("hb") and n("hb") >= 1 and n("hb") <= 60 then          -- offline after three heartbeats missed
@@ -390,7 +395,11 @@ local function Capacity(W, H)
 	return Codec.Capacity(ns.Frame.DataCells(W, H), P.mode, 0)
 end
 
-local BREATH_LOW, BREATH_HIGH, BREATH_PERIOD = 0.38, 0.62, 12
+local BREATH_LOW, BREATH_HIGH, BREATH_PERIOD = 0.45, 0.70, 12
+
+-- the data frames' widths in this mode: mode 3's as wide as their ∞
+local function DataW() return P.mode == 3 and P.dataW3 or P.dataW end
+local function BigW() return P.mode == 3 and P.bigW3 or P.bigW end
 
 -- the most a frame of this size takes in one go: in mode 3, BREATH_HIGH of its room
 local function Most(W, H)
@@ -408,8 +417,8 @@ end
 
 -- the frames of message m for this body: one small frame when it fits, else parts of big ones (255 at most, the rest cut)
 local function Shape(m, body)
-	local W, H = P.dataW, P.dataH
-	if #body > Most(W, H) then W, H = P.bigW, P.bigH end
+	local W, H = DataW(), P.dataH
+	if #body > Most(W, H) then W, H = BigW(), P.bigH end
 	local cap, whole = Capacity(W, H), #body <= Most(W, H)
 	local frags, pending, at = {}, {}, 1
 	while at <= #body do
@@ -443,7 +452,7 @@ function L.Send(text, kind)
 	local last = queue[#queue]
 	if P.pack and not URGENT[kind] and last and last.kind == kind and not last.firstShown and #last.frags == 1 then
 		local size = (#last.items == 1 and 4 + #last.items[1] or last.bytes) + 3 + #text
-		if size <= Most(P.bigW, P.bigH) then
+		if size <= Most(BigW(), P.bigH) then
 			last.items[#last.items + 1] = text
 			Shape(last, Batch(last))
 			return last.id, 1

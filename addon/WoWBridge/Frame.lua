@@ -64,26 +64,28 @@ function Frame.Layout(W, H)
 end
 
 -- mode 3's order of the data cells (their keys, y * W + x): nearest first to Bernoulli's lemniscate centred in the
--- frame, as wide as it fits at its own proportions. A quarter of the curve is sampled as a (s + s^3, s - s^3) /
--- (1 + s^4) for s = k / 128 (the rest is its mirror image); a cell's distance (squared) is the least to those points,
+-- frame, as high as it fits and as wide as it fits up to INF_STRETCH times its own proportions. A quarter of the curve
+-- is sampled as (ax (s + s^3), ay (s - s^3)) / (1 + s^4) for s = k / 128 (the rest is its mirror image); a cell's
+-- distance (squared) is the least to those points,
 -- searched outwards from the first point at or right of it, and the cells go by floor(distance * 4096) * 65536 + key,
 -- one exact number each (sorted without a Lua comparator). frame.py's inf_order does the same + - * / in the same
 -- order: both sides must lay the cells out alike (the tests compare them). Worked out once a size, a mirrored cell's
 -- distance taken from the one already worked out (about 10 ms for 128 x 32 in the game)
-local INF_STEPS, INF_MX, INF_MY, INF_YMAX = 128, 2.5, 2.0, 0.35355339059327373
+local INF_STEPS, INF_MX, INF_MY, INF_YMAX, INF_STRETCH = 128, 2.5, 2.0, 0.35355339059327373, 1.6
 
 function Frame.InfOrder(W, H)
 	local L = Frame.Layout(W, H)
 	if L.inf then return L.inf end
 	local cx, cy = (W - 1) / 2, (H - 1) / 2
-	local a = math.min(cx - INF_MX, (cy - INF_MY) / INF_YMAX)
+	local ay = (cy - INF_MY) / INF_YMAX
+	local ax = math.min(cx - INF_MX, ay * INF_STRETCH)
 	local px, py = {}, {}
 	for k = 0, INF_STEPS do
 		local s = k / INF_STEPS
 		local s2 = s * s
 		local s3 = s2 * s
 		local d = 1 + s2 * s2
-		px[k], py[k] = a * ((s + s3) / d), a * ((s - s3) / d)
+		px[k], py[k] = ax * ((s + s3) / d), ay * ((s - s3) / d)
 	end
 	-- the least distance (squared) from (X, Y) to the points, searched outwards from the first one at or right of X
 	local function Nearest(X, Y)

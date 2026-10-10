@@ -160,7 +160,7 @@ class Link099(unittest.TestCase):
         return [sizes[i] for i in range(len(sizes))]
 
     def test_a_long_message_breathes(self):
-        """mode 3: a long message's parts go from 38 % of a big frame's room up to 62 % and back, a cosine over 12 parts
+        """mode 3: a long message's parts go from 45 % of a big frame's room up to 70 % and back, a cosine over 12 parts
         (its ∞ swells and shrinks as it goes up, never a blob); it is read whole"""
         s = self.start()
         cap = F.capacity(128, 32, 3)
@@ -170,10 +170,10 @@ class Link099(unittest.TestCase):
             s.run(0.05)
         self.assertEqual((s.comp.stats["long_ok"], s.comp.stats["long_bad"]), (1, 0))
         sizes = self.part_sizes(s, b"LONG n=12000")
-        want = [int(cap * (0.38 + 0.24 * (1 - math.cos(2 * math.pi * i / 12)) / 2)) for i in range(len(sizes) - 1)]
+        want = [int(cap * (0.45 + 0.25 * (1 - math.cos(2 * math.pi * i / 12)) / 2)) for i in range(len(sizes) - 1)]
         self.assertEqual(sizes[:-1], want)
-        self.assertEqual((min(want), max(want)), (int(cap * 0.38), int(cap * 0.62)))
-        self.assertLessEqual(sizes[-1], int(cap * 0.62))
+        self.assertEqual((min(want), max(want)), (int(cap * 0.45), int(cap * 0.70)))
+        self.assertLessEqual(sizes[-1], int(cap * 0.70))
         self.assertEqual(sum(sizes), 12000 + 1)                          # the type byte too
 
     def test_an_older_companion_gets_full_parts(self):
@@ -196,7 +196,7 @@ class Link099(unittest.TestCase):
         s.lua.execute(b'print("along the curve")')
         s.run(6)
         self.assertIn((32, 12, 3), self.shapes(s, t0, F.TYPE_CONTROL))
-        self.assertEqual(self.shapes(s, t0, F.TYPE_DATA), {(64, 16, 3)})
+        self.assertEqual(self.shapes(s, t0, F.TYPE_DATA), {(56, 16, 3)})              # mode 3's narrower data frame
         self.assertIn("along the curve", [t for _, k, t in self.got if k == "OUT"])
 
     def test_the_addon_lays_the_cells_out_as_frame_py_does(self):
@@ -205,7 +205,7 @@ class Link099(unittest.TestCase):
         s = Session(self)
         self.addCleanup(s.close)
         inf = s.ns[b"Frame"][b"InfOrder"]
-        for W, H in ((24, 8), (32, 16), (64, 16), (128, 32), (64, 32), (37, 11), (200, 48), (101, 77)):
+        for W, H in ((24, 8), (32, 12), (56, 16), (128, 32), (32, 16), (64, 16), (64, 32), (37, 11), (200, 48), (101, 77)):
             with self.subTest(W=W, H=H):
                 keys = inf(W, H)
                 self.assertEqual([int(keys[i + 1]) for i in range(len(keys))], [y * W + x for x, y in F.inf_order(W, H)])

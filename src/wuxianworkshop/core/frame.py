@@ -75,31 +75,34 @@ def layout(W, H):
 INF_STEPS = 128                    # points on a quarter of the curve
 INF_MARGIN = (2.5, 2.0)            # cells between the curve and the frame's sides, and its top and bottom
 INF_YMAX = 0.35355339059327373     # the lemniscate's half height for a half width of 1: 1 / (2 sqrt 2)
+INF_STRETCH = 1.6                  # how much wider than its own proportions the ∞ may be drawn to fill a wide frame
 _INF = {}
 
 
 def inf_order(W, H):
-    """the data cells in mode 3's order, [(x, y)]: nearest first to Bernoulli's lemniscate (x^2 + y^2)^2 = a^2 (x^2 - y^2)
-    centred in the frame (a = min((W - 1) / 2 - 2.5, ((H - 1) / 2 - 2) / INF_YMAX): as wide as the frame allows at
-    its own proportions). A quarter of the curve is sampled as a (s + s^3, s - s^3) / (1 + s^4) for s = k / 128,
-    k = 0..128 (the rest is its mirror image); a cell's distance (squared) is the least to those points, searched
-    outwards from the first point at or right of it, and the cells go by floor(distance * 4096) * 65536 + their
-    row-major position (y * W + x), one exact number each. Frame.lua does the same + - * / on doubles in the same
-    order, so that both sides lay the cells out alike (tests compare them for every size)"""
+    """the data cells in mode 3's order, [(x, y)]: nearest first to Bernoulli's lemniscate centred in the frame, as high as
+    the frame allows (its half height (H - 1) / 2 - 2: scale ay = that / INF_YMAX) and as wide as the frame allows up to
+    INF_STRETCH times its own proportions (scale ax = min((W - 1) / 2 - 2.5, ay * INF_STRETCH)). A quarter of the curve
+    is sampled as (ax (s + s^3), ay (s - s^3)) / (1 + s^4) for s = k / 128, k = 0..128 (the rest is its mirror image);
+    a cell's distance (squared) is the least to those points, searched outwards from the first point at or right of
+    it, and the cells go by floor(distance * 4096) * 65536 + their row-major position (y * W + x), one exact number
+    each. Frame.lua does the same + - * / on doubles in the same order, so that both sides lay the cells out alike
+    (tests compare them for every size)"""
     got = _INF.get((W, H))
     if got is not None:
         return got
     _, order = layout(W, H)
     cx, cy = (W - 1) / 2, (H - 1) / 2
-    a = min(cx - INF_MARGIN[0], (cy - INF_MARGIN[1]) / INF_YMAX)
+    ay = (cy - INF_MARGIN[1]) / INF_YMAX
+    ax = min(cx - INF_MARGIN[0], ay * INF_STRETCH)
     px, py = [], []
     for k in range(INF_STEPS + 1):
         s = k / INF_STEPS
         s2 = s * s
         s3 = s2 * s
         d = 1 + s2 * s2
-        px.append(a * ((s + s3) / d))
-        py.append(a * ((s - s3) / d))
+        px.append(ax * ((s + s3) / d))
+        py.append(ay * ((s - s3) / d))
     scored = []
     for x, y in order:
         X, Y = abs(x - cx), abs(y - cy)
