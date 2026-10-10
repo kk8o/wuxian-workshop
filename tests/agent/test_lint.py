@@ -102,7 +102,10 @@ class Bytecode(unittest.TestCase):
                     "local guarded = UnitHealth(\"target\")\n"                              # 10
                     "if canaccessvalue(guarded) then end\n"                                # 11
                     "local isSecret = issecretvalue or function() return false end\n"     # 12 an addon's own test
-                    "local function f() local p = UnitPower(\"p\") if isSecret(p) then return end end\n")   # 13
+                    "local function f() local p = UnitPower(\"p\") if isSecret(p) then return end end\n"   # 13
+                    "local m = UnitHealthMax(\"target\") if E:IsSecretValue(m) then end\n"   # 14 a method (ElvUI's)
+                    "local q = UnitPower(\"target\") if ns.IsSecret(q) or q <= 0 then end\n"  # 15 a field
+                    "local r = UnitHealth(\"focus\") if ns.Show(r) then end\n")             # 16 not a test
         calls = s["calls"]
         self.assertIn(("UnitHealth", 2, 1), calls)                                       # through the local
         self.assertIn(("C_Timer.After", 7, 1), calls)
@@ -113,7 +116,7 @@ class Bytecode(unittest.TestCase):
                     ("eq", "UnitName", 9, ("k", "nil"))]:
             self.assertIn(use, uses)
         tested = {(calls[c][0], calls[c][1]) for c in s["checked"]}
-        self.assertEqual(tested, {("UnitHealth", 10), ("UnitPower", 13)})
+        self.assertEqual(tested, {("UnitHealth", 10), ("UnitPower", 13), ("UnitHealthMax", 14), ("UnitPower", 15)})
 
     def test_syntax_errors_with_the_5_1_way(self):
         cases = {

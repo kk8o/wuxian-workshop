@@ -793,6 +793,11 @@ def _flow(main):
                 label[a] = f["upnames"][b] if b < len(f["upnames"]) else None
             elif op == OP["GETGLOBAL"]:
                 label[a] = K[bx]
+            elif op in (OP["GETTABLE"], OP["SELF"]):  # t.IsSecret, obj:IsSecretValue: the field's name (ElvUI's E:IsSecretValue)
+                key = K[c & 0xFF] if c & RK else None
+                label[a] = key if isinstance(key, str) else None
+                if op == OP["SELF"]:
+                    label.pop(a + 1, None)
             elif op in (OP["CALL"], OP["TAILCALL"]):
                 for r in [r for r in label if r >= a]:
                     del label[r]
@@ -1052,16 +1057,20 @@ def typo_of(name, pool, loose=False):
     return best[1] if best else None
 
 
-_known = None
+_known = (None, None)                  # (the index it was made from, its Known)
 _known_lock = threading.Lock()
 
 
 def known():
+    """the names of the pack in use: made again when apidocs.index() is another (a newer pack came while the App runs),
+    so that check and api_search read the same scan"""
     global _known
+    from .. import apidocs
+    ix = apidocs.index()
     with _known_lock:
-        if _known is None:
-            _known = Known()
-        return _known
+        if _known[0] is not ix:
+            _known = (ix, Known(ix))
+        return _known[1]
 
 
 # --- the .toc and the files -------------------------------------------------------------------------------------------
@@ -1252,7 +1261,8 @@ def client_number(addons):
 
 
 SECRET_HINT = ("test it first: if canaccessvalue(v) then … end (or issecretvalue(v)); to show it, hand it as it is to "
-               "FontString:SetText or SetFormattedText, which take secret values")
+               "FontString:SetText or SetFormattedText, which take secret values. In a branch that only other game "
+               "versions run (behind WOW_PROJECT_ID, isClassic and the like), leave it")
 
 
 def _calls_and_secrets(s, rel, k, add, own):
