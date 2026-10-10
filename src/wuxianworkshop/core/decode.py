@@ -64,8 +64,9 @@ def decode(img, lk):
         d.error = f"unknown mode {d.mode}"
         return d
     bits = F.BITS_PER_CELL[d.mode]
+    order = F.cell_order(lk.W, lk.H, d.mode)
     rgb = sample(img, lk, [x for x, _ in order], [y for _, y in order])
-    if d.mode == 1:
+    if d.mode in (1, 3):
         values = _palette(rgb, d.calibration)
     elif d.mode == 0:
         values = (_palette(rgb, d.calibration) == F.WHITE).astype(int)

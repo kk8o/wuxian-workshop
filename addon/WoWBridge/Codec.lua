@@ -11,7 +11,7 @@ ns.Codec = Codec
 Codec.VERSION = 1
 Codec.TYPE_DATA, Codec.TYPE_PROBE, Codec.TYPE_CONTROL = 0, 1, 2   -- control: HELLO, HB, PONG (Link.lua)
 Codec.HEADER_LEN = 15
-Codec.BITS = { [0] = 1, [1] = 3, [2] = 6 }
+Codec.BITS = { [0] = 1, [1] = 3, [2] = 6, [3] = 3 }   -- mode 3: mode 1's cells laid along ∞ (Frame.InfOrder)
 
 function Codec.CRC16(bytes, first, last)
 	local crc = 0xFFFF

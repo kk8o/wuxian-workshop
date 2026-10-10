@@ -40,7 +40,7 @@ def as_098(source):
     start = source.index(b"local function Pick(now)")
     end = source.index(b"\nend\n", start) + 5
     assert source.count(NEW_WAIT) == 1
-    return (source[:start] + OLD_PICK + source[end:]).replace(NEW_WAIT, b"P.rto")
+    return (source[:start] + OLD_PICK + source[end:]).replace(NEW_WAIT, b"P.rto").replace(b'n("mode") <= 3', b'n("mode") <= 2')
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
@@ -93,7 +93,7 @@ class Stuck(unittest.TestCase):
         s.comp._sacks = lambda sess, now: []
         self.burst(s)
         took = self.until(s, lambda: "held up" in self.outs(), 30)
-        self.assertLess(took, 10)
+        self.assertLess(took, 15)                       # the results' first passes: 10 x 6 breathing parts
         s.run(40)
         self.assertEqual(self.data_frames(s, s.now() - 20), [])
         self.assertEqual(len([t for _, k, t in self.got if k == "RUN"]), 10)

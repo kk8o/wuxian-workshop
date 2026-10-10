@@ -8,20 +8,24 @@ Fixed cells (x = column, y = row, both 0-based):
   timing    row 0 between the top finders and column 0 between the left finders, black/white alternating, black first
   control   row 1, x = 3..13: 2 mode cells (black = 0, white = 1, high bit first), 1 toggle cell (flips on every new frame),
             8 calibration cells K W R G B C M Y
-Every other cell is a data cell, in row-major order. The data cells carry one bit stream, most significant bit first:
+Every other cell is a data cell, in row-major order (mode 3: in inf_order). The data cells carry one bit stream, most
+significant bit first:
   header (15 bytes) | payload | CRC-32 of header + payload (4 bytes, big-endian) | padding (zero bits)
 A probe frame (type 1) continues after that stream, from the next whole cell, with literal colours: 256-level ramps of
 red, green, blue and grey (1024 cells), then the 8 palette colours repeating.
 
-Cell values in modes 0 and 1 are palette indices with red = bit 2, green = bit 1, blue = bit 0.
+Cell values in modes 0, 1 and 3 are palette indices with red = bit 2, green = bit 1, blue = bit 0. Mode 3 (0.9.9) is
+mode 1 with the data cells in inf_order: nearest first to an ∞ in the middle of the frame, so a short message's cells
+gather into an ∞ on the black padding and a long one fills the frame as in mode 1; it carries as much.
 """
+import math
 import zlib
 
 MAGIC = b"WB"
 VERSION = 1
 TYPE_DATA, TYPE_PROBE, TYPE_CONTROL = 0, 1, 2     # control: HELLO, HB, PONG (the v0.5 link)
 HEADER_LEN = 15
-BITS_PER_CELL = {0: 1, 1: 3, 2: 6}
+BITS_PER_CELL = {0: 1, 1: 3, 2: 6, 3: 3}
 
 BLACK, BLUE, GREEN, CYAN, RED, MAGENTA, YELLOW, WHITE = range(8)
 CALIBRATION = (BLACK, WHITE, RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW)   # K W R G B C M Y
@@ -65,6 +69,83 @@ def layout(W, H):
         order = [(x, y) for y in range(H) for x in range(W) if (x, y) not in fixed]
         _LAYOUTS[key] = (fixed, order)
     return _LAYOUTS[key]
+
+
+# ---------------------------------------------------------------- mode 3: the data cells along ∞
+INF_STEPS = 128                    # points on a quarter of the curve
+INF_MARGIN = (2.5, 2.0)            # cells between the curve and the frame's sides, and its top and bottom
+INF_YMAX = 0.35355339059327373     # the lemniscate's half height for a half width of 1: 1 / (2 sqrt 2)
+_INF = {}
+
+
+def inf_order(W, H):
+    """the data cells in mode 3's order, [(x, y)]: nearest first to Bernoulli's lemniscate (x^2 + y^2)^2 = a^2 (x^2 - y^2)
+    centred in the frame (a = min((W - 1) / 2 - 2.5, ((H - 1) / 2 - 2) / INF_YMAX): as wide as the frame allows at
+    its own proportions). A quarter of the curve is sampled as a (s + s^3, s - s^3) / (1 + s^4) for s = k / 128,
+    k = 0..128 (the rest is its mirror image); a cell's distance (squared) is the least to those points, searched
+    outwards from the first point at or right of it, and the cells go by floor(distance * 4096) * 65536 + their
+    row-major position (y * W + x), one exact number each. Frame.lua does the same + - * / on doubles in the same
+    order, so that both sides lay the cells out alike (tests compare them for every size)"""
+    got = _INF.get((W, H))
+    if got is not None:
+        return got
+    _, order = layout(W, H)
+    cx, cy = (W - 1) / 2, (H - 1) / 2
+    a = min(cx - INF_MARGIN[0], (cy - INF_MARGIN[1]) / INF_YMAX)
+    px, py = [], []
+    for k in range(INF_STEPS + 1):
+        s = k / INF_STEPS
+        s2 = s * s
+        s3 = s2 * s
+        d = 1 + s2 * s2
+        px.append(a * ((s + s3) / d))
+        py.append(a * ((s - s3) / d))
+    scored = []
+    for x, y in order:
+        X, Y = abs(x - cx), abs(y - cy)
+        lo, hi = 0, INF_STEPS + 1                  # the first point at or right of X (Frame.lua searches alike)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if px[mid] < X:
+                lo = mid + 1
+            else:
+                hi = mid
+        best, r, left = float("inf"), lo, lo - 1
+        while True:
+            moved = False
+            if r <= INF_STEPS:
+                dx = X - px[r]
+                if dx * dx < best:
+                    dy = Y - py[r]
+                    d2 = dx * dx + dy * dy
+                    if d2 < best:
+                        best = d2
+                    r += 1
+                    moved = True
+                else:
+                    r = INF_STEPS + 1
+            if left >= 0:
+                dx = X - px[left]
+                if dx * dx < best:
+                    dy = Y - py[left]
+                    d2 = dx * dx + dy * dy
+                    if d2 < best:
+                        best = d2
+                    left -= 1
+                    moved = True
+                else:
+                    left = -1
+            if not moved:
+                break
+        scored.append(math.floor(best * 4096) * 65536 + y * W + x)
+    scored.sort()
+    out = _INF[(W, H)] = [(v % 65536 % W, v % 65536 // W) for v in scored]
+    return out
+
+
+def cell_order(W, H, mode):
+    """the data cells in the order a frame of this mode fills them"""
+    return inf_order(W, H) if mode == 3 else layout(W, H)[1]
 
 
 def capacity(W, H, mode):
@@ -151,7 +232,8 @@ def ramp_rgb(i):
 # ---------------------------------------------------------------- build
 def build(W, H, mode, toggle, ftype, session, msg, payload, part=0, parts=1):
     """the whole frame as {(x, y): (r, g, b)} with 0..255 channels; raises ValueError when the payload does not fit"""
-    fixed, order = layout(W, H)
+    fixed, _ = layout(W, H)
+    order = cell_order(W, H, mode)
     bits = BITS_PER_CELL[mode]
     cells = pack(stream(ftype, W, H, session, msg, payload, part, parts), bits)
     if len(cells) > len(order):

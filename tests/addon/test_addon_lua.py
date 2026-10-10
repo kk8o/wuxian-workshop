@@ -42,7 +42,7 @@ class Link(unittest.TestCase):
             s.run(8)
             chat = s.chat()
             self.assertIn("connected to the companion (mailbox slot 1)", chat)
-            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 1, 64 in flight, 0.15 s a frame, "
+            self.assertIn(f"companion {link.VERSION}: frames 64x16 (long messages 128x32), mode 3, 64 in flight, 0.15 s a frame, "
                           "a heartbeat every 5 s", chat)
             self.assertIn("> 你好 WoWBridge", chat)
             sess = comp.sessions[comp.current]
@@ -66,13 +66,13 @@ class Link(unittest.TestCase):
             s.run(15)
             self.assertEqual(comp.stats["long_ok"], 1, logs)
             done = sess.messages[-1][4]
-            self.assertRegex(done, r"^LONG DONE id=\d+ bytes=6000 parts=5 shown_again=0 time=\S+ draw=\S+$")
+            self.assertRegex(done, r"^LONG DONE id=\d+ bytes=6000 parts=9 shown_again=0 time=\S+ draw=\S+$")
             # one part lost on its way: the companion reports the parts it has, the addon shows only the missing one
             s.drop_part = 2
             s.slash("long 6000")
             s.run(20)
             self.assertEqual(comp.stats["long_ok"], 2, logs)
-            self.assertRegex(sess.messages[-1][4], r"^LONG DONE id=\d+ bytes=6000 parts=5 shown_again=1 ")
+            self.assertRegex(sess.messages[-1][4], r"^LONG DONE id=\d+ bytes=6000 parts=9 shown_again=1 ")
             s.slash("link")
             self.assertRegex(s.chat(), r"link online, mailbox slot (\d+) \(poll, \d+ left\), \d+ packets read; 0 waiting, "
                                        r"15 acknowledged")

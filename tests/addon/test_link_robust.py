@@ -89,7 +89,7 @@ class Link(unittest.TestCase):
         self.assertLess(took, 2.5)
         self.assertEqual([t.split("\n")[0] for t in self.texts("ERR")],
                          [f"Interface/AddOns/Foo/Foo.lua:{i}: burst number {i} of a burst of errors" for i in range(20)])
-        self.assertLessEqual(len([f for f in s.frames[frames:] if f[1] == F.TYPE_DATA]), 4)
+        self.assertLessEqual(len([f for f in s.frames[frames:] if f[1] == F.TYPE_DATA]), 8)   # mode 3: a frame 62 % full
         self.assertGreaterEqual(s.comp.stats["batches"], 1)
 
     def test_a_run_result_goes_first(self):

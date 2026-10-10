@@ -17,6 +17,11 @@
 -- time (rto, 2 rto, 4 rto ... at most AGAIN_MAX s) and never before a message that has not gone up yet: the cumulative
 -- ack waits for that one (0.9.9; before, a stream of RUN results shown again could keep it from ever going up, and the
 -- frame never stopped changing). /wb flush, or the companion's "flush", drops every message waiting.
+-- A WELCOME that says mode=3 (0.9.9) has data frames, heartbeats and PONGs drawn in mode 3 (Frame.lua: the cells laid
+-- along ∞), the heartbeat 32 x 12 so that its ∞ shows; a HELLO stays in mode 1, which every companion reads. In mode 3
+-- no frame is filled past BREATH_HIGH of its room (fuller, the ∞ swells into a blob), and the parts of a long message
+-- breathe: their sizes go from BREATH_LOW to BREATH_HIGH of a big frame's room and back every BREATH_PERIOD parts, so
+-- that its ∞ swells and shrinks as it goes up (each part's header says its length; the companion joins them as ever).
 -- From 0.9.6 (FEATURES, f= in HELLO and PONG) a WELCOME may also set rto (the companion then acknowledges every few
 -- seconds instead of every second, which saves mailbox slots, and asks at once for what went missing) and pack=1: a small
 -- message joins the last one of its kind not shown yet, as a batch (TYPE_BATCH: type, length (2 bytes), text, ...), so
@@ -44,6 +49,7 @@ local AGAIN_MAX = 120                            -- seconds between a message's 
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
+	hbH3 = 12,                  -- the heartbeat's height in mode 3: room for the ∞ its cells make
 	dataW = 64, dataH = 16,     -- a message that fits one frame
 	bigW = 128, bigH = 32,      -- the parts of a longer one
 	cell = 4, mode = 1,
@@ -109,10 +115,13 @@ local function Draw(kind, W, H, ftype, msg, payload, mode, part, parts)
 	frame = { kind = kind, since = GetTime() }
 end
 
+-- a HELLO in mode 1, which every companion reads; a heartbeat or PONG in mode 3 when the WELCOME said so
 local function Control(kind, payload)
 	ctlId = ctlId % 65535 + 1
 	if kind == "hello" then
 		Draw(kind, P.helloW, P.helloH, Codec.TYPE_CONTROL, ctlId, payload)
+	elseif P.mode == 3 then
+		Draw(kind, P.hbW, P.hbH3, Codec.TYPE_CONTROL, ctlId, payload, 3)
 	else
 		Draw(kind, P.hbW, P.hbH, Codec.TYPE_CONTROL, ctlId, payload)
 	end
@@ -219,7 +228,7 @@ function L.Welcome(text)
 	local f = {}
 	for k, v in text:gmatch("(%w+)=([^;]*)") do f[k] = v end
 	local n = function(k) return tonumber(f[k]) end
-	if n("mode") and n("mode") >= 0 and n("mode") <= 2 then P.mode = n("mode") end
+	if n("mode") and n("mode") >= 0 and n("mode") <= 3 then P.mode = n("mode") end
 	if n("w") and n("h") and n("w") >= 24 and n("w") <= 255 and n("h") >= 8 and n("h") <= 255 then P.dataW, P.dataH = n("w"), n("h") end
 	if n("bw") and n("bh") and n("bw") >= 24 and n("bw") <= 255 and n("bh") >= 8 and n("bh") <= 255 then P.bigW, P.bigH = n("bw"), n("bh") end
 	if n("win") and n("win") >= 1 and n("win") <= 64 then P.win = n("win") end
@@ -381,20 +390,38 @@ local function Capacity(W, H)
 	return Codec.Capacity(ns.Frame.DataCells(W, H), P.mode, 0)
 end
 
+local BREATH_LOW, BREATH_HIGH, BREATH_PERIOD = 0.38, 0.62, 12
+
+-- the most a frame of this size takes in one go: in mode 3, BREATH_HIGH of its room
+local function Most(W, H)
+	local cap = Capacity(W, H)
+	return P.mode == 3 and floor(cap * BREATH_HIGH) or cap
+end
+
+-- the size of part i (0, 1, ...) of a long message in a frame with room for cap bytes: in mode 3 a cosine from
+-- BREATH_LOW of it up to BREATH_HIGH and back over BREATH_PERIOD parts, else all of it
+local function PartSize(cap, i)
+	if P.mode ~= 3 then return cap end
+	local f = BREATH_LOW + (BREATH_HIGH - BREATH_LOW) * (1 - math.cos(2 * math.pi * i / BREATH_PERIOD)) / 2
+	return floor(cap * f)
+end
+
 -- the frames of message m for this body: one small frame when it fits, else parts of big ones (255 at most, the rest cut)
 local function Shape(m, body)
-	local W, H, cap = P.dataW, P.dataH, Capacity(P.dataW, P.dataH)
-	if #body > cap then
-		W, H, cap = P.bigW, P.bigH, Capacity(P.bigW, P.bigH)
-	end
-	if #body > 255 * cap then
-		Print(ns.L.CUT:format(#body - 1, 255 * cap - 1))
-		body = body:sub(1, 255 * cap)
-	end
-	local frags, pending = {}, {}
-	for i = 1, #body, cap do
-		frags[#frags + 1] = body:sub(i, i + cap - 1)
+	local W, H = P.dataW, P.dataH
+	if #body > Most(W, H) then W, H = P.bigW, P.bigH end
+	local cap, whole = Capacity(W, H), #body <= Most(W, H)
+	local frags, pending, at = {}, {}, 1
+	while at <= #body do
+		if #frags == 255 then                   -- the rest is cut
+			Print(ns.L.CUT:format(#body - 1, at - 2))
+			body = body:sub(1, at - 1)
+			break
+		end
+		local n = whole and #body or PartSize(cap, #frags)
+		frags[#frags + 1] = body:sub(at, at + n - 1)
 		pending[#pending + 1] = #frags
+		at = at + n
 	end
 	m.W, m.H, m.frags, m.pending, m.bytes, m.size = W, H, frags, pending, #body, #body - 1
 end
@@ -416,7 +443,7 @@ function L.Send(text, kind)
 	local last = queue[#queue]
 	if P.pack and not URGENT[kind] and last and last.kind == kind and not last.firstShown and #last.frags == 1 then
 		local size = (#last.items == 1 and 4 + #last.items[1] or last.bytes) + 3 + #text
-		if size <= Capacity(P.bigW, P.bigH) then
+		if size <= Most(P.bigW, P.bigH) then
 			last.items[#last.items + 1] = text
 			Shape(last, Batch(last))
 			return last.id, 1

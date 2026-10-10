@@ -1,4 +1,6 @@
 -- WoWBridge frame layout, builder and renderer. Mirrors src/wuxianworkshop/core/frame.py (the reference for the format).
+-- Mode 3 (0.9.9) is mode 1 with the data cells in InfOrder: nearest first to an ∞ in the middle of the frame, so that a
+-- short message's cells gather into an ∞ on the black padding and a long one fills the frame as in mode 1.
 -- The frame is drawn pixel-exact: the bus ignores its parent's scale and uses 768 / physical screen height, the same
 -- factor as Blizzard's PixelUtil, so one UI unit is one physical pixel and every cell is `cell` pixels wide. It sits
 -- cfg.x, cfg.y whole physical pixels from the top-left corner (0, 0 by default), its top-left corner fixed whatever its
@@ -61,12 +63,87 @@ function Frame.Layout(W, H)
 	return L
 end
 
+-- mode 3's order of the data cells (their keys, y * W + x): nearest first to Bernoulli's lemniscate centred in the
+-- frame, as wide as it fits at its own proportions. A quarter of the curve is sampled as a (s + s^3, s - s^3) /
+-- (1 + s^4) for s = k / 128 (the rest is its mirror image); a cell's distance (squared) is the least to those points,
+-- searched outwards from the first point at or right of it, and the cells go by floor(distance * 4096) * 65536 + key,
+-- one exact number each (sorted without a Lua comparator). frame.py's inf_order does the same + - * / in the same
+-- order: both sides must lay the cells out alike (the tests compare them). Worked out once a size, a mirrored cell's
+-- distance taken from the one already worked out (about 10 ms for 128 x 32 in the game)
+local INF_STEPS, INF_MX, INF_MY, INF_YMAX = 128, 2.5, 2.0, 0.35355339059327373
+
+function Frame.InfOrder(W, H)
+	local L = Frame.Layout(W, H)
+	if L.inf then return L.inf end
+	local cx, cy = (W - 1) / 2, (H - 1) / 2
+	local a = math.min(cx - INF_MX, (cy - INF_MY) / INF_YMAX)
+	local px, py = {}, {}
+	for k = 0, INF_STEPS do
+		local s = k / INF_STEPS
+		local s2 = s * s
+		local s3 = s2 * s
+		local d = 1 + s2 * s2
+		px[k], py[k] = a * ((s + s3) / d), a * ((s - s3) / d)
+	end
+	-- the least distance (squared) from (X, Y) to the points, searched outwards from the first one at or right of X
+	local function Nearest(X, Y)
+		local lo, hi = 0, INF_STEPS + 1
+		while lo < hi do
+			local mid = floor((lo + hi) / 2)
+			if px[mid] < X then lo = mid + 1 else hi = mid end
+		end
+		local best, r, left = math.huge, lo, lo - 1
+		while true do
+			local moved = false
+			if r <= INF_STEPS then
+				local dx = X - px[r]
+				if dx * dx < best then
+					local dy = Y - py[r]
+					local d2 = dx * dx + dy * dy
+					if d2 < best then best = d2 end
+					r, moved = r + 1, true
+				else
+					r = INF_STEPS + 1
+				end
+			end
+			if left >= 0 then
+				local dx = X - px[left]
+				if dx * dx < best then
+					local dy = Y - py[left]
+					local d2 = dx * dx + dy * dy
+					if d2 < best then best = d2 end
+					left, moved = left - 1, true
+				else
+					left = -1
+				end
+			end
+			if not moved then return best end
+		end
+	end
+	local keys, seen, abs = {}, {}, math.abs
+	for i, key in ipairs(L.order) do
+		local X, Y = abs(key % W - cx), abs(floor(key / W) - cy)
+		local at = X * 2048 + Y * 2               -- X, Y: whole or half numbers; a mirrored cell's are the same
+		local best = seen[at]
+		if not best then
+			best = Nearest(X, Y)
+			seen[at] = best
+		end
+		keys[i] = floor(best * 4096) * 65536 + key
+	end
+	table.sort(keys)
+	for i = 1, #keys do keys[i] = keys[i] % 65536 end
+	L.inf = keys
+	return keys
+end
+
 -- R, G, B arrays indexed by cell (y * W + x + 1) with channels 0..1, or nil and an error message.
 -- A probe frame continues after its bit stream with 256-level ramps of red, green, blue and grey, then the palette.
 function Frame.Build(W, H, mode, toggle, ftype, session, msg, payload, part, parts)
 	local L = Frame.Layout(W, H)
+	local order = mode == 3 and Frame.InfOrder(W, H) or L.order
 	local cells = Codec.Pack(Codec.Stream(ftype, W, H, session, msg, part or 0, parts or 1, payload), Codec.BITS[mode])
-	if #cells > #L.order then
+	if #cells > #order then
 		return nil, ("%d bytes do not fit a %dx%d mode-%d frame"):format(#payload, W, H, mode)
 	end
 	local R, G, B = {}, {}, {}
@@ -81,11 +158,11 @@ function Frame.Build(W, H, mode, toggle, ftype, session, msg, payload, part, par
 		R[k + 1], G[k + 1], B[k + 1] = Palette(v)
 	end
 	local n = #cells
-	for i, k in ipairs(L.order) do
+	for i, k in ipairs(order) do
 		local r, g, b
 		local v = cells[i]
 		if v then
-			if mode == 1 then
+			if mode == 1 or mode == 3 then
 				r, g, b = Palette(v)
 			elseif mode == 0 then
 				r, g, b = Palette(v == 1 and WHITE or BLACK)

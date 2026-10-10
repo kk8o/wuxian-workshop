@@ -471,6 +471,7 @@ class Session:
             if conf is not None:
                 conf[k.encode()] = v
         self.frames, self.last_key = [], None              # (time, ftype, msg, payload)
+        self.shapes = []                                   # (time, ftype, W, H, mode, msg, part, parts) of the same
         if bridge:
             build = self.ns[b"Frame"][b"Build"]
             session = self
@@ -507,6 +508,7 @@ class Session:
                               (msg, ftype, mode, part, parts))
         now = self.now()
         self.frames.append((now, ftype, msg, bytes(payload)))
+        self.shapes.append((now, ftype, W, H, mode, msg, part, parts))
         key = (sess, ftype, msg, part)
         lost = parts > 1 and part == self.drop_part
         if lost:

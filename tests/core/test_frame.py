@@ -1,4 +1,5 @@
 """.venv\\Scripts\\python.exe -m unittest discover -s tests -t .   (from the repository root)"""
+import math
 import random
 import unittest
 
@@ -38,6 +39,39 @@ class Codec(unittest.TestCase):
             F.build(32, 8, 1, 0, F.TYPE_DATA, 1, 1, b"x" * 53)
 
 
+class InfOrder(unittest.TestCase):
+    """mode 3: mode 1's cells laid along ∞ (inf_order): every data cell once, as much room as mode 1, and a short
+    message's cells gather into an ∞, along the curve and across its crossing, the loops' insides left black"""
+
+    def test_every_data_cell_once(self):
+        rnd = random.Random(4)
+        sizes = [(24, 8), (32, 16), (64, 16), (128, 32), (255, 255)]
+        sizes += [(rnd.randrange(24, 256), rnd.randrange(8, 256)) for _ in range(6)]
+        for W, H in sizes:
+            with self.subTest(W=W, H=H):
+                self.assertEqual(sorted(F.inf_order(W, H)), sorted(F.layout(W, H)[1]))
+                self.assertEqual(F.capacity(W, H, 3), F.capacity(W, H, 1))
+
+    def test_a_heartbeat_draws_the_infinity(self):
+        """a heartbeat (134 of a 32 x 16 frame's 438 data cells) lies within two cells of the curve (sampled here
+        another way: cos t / (1 + sin^2 t), sin t cos t / (1 + sin^2 t)), across its crossing, and not inside a loop"""
+        W, H = 32, 16
+        payload = b"HB;n=12;k=905;m=7543;l=7542;q=0"
+        n = -(-len(F.stream(F.TYPE_CONTROL, W, H, 1, 1, payload)) * 8 // 3)
+        used = F.inf_order(W, H)[:n]
+        a, cx, cy = 13, 15.5, 7.5
+        ts = [i * 2 * math.pi / 4000 for i in range(4000)]
+        curve = [(cx + a * math.cos(t) / (1 + math.sin(t) ** 2), cy + a * math.sin(t) * math.cos(t) / (1 + math.sin(t) ** 2))
+                 for t in ts]
+        far = max(min(math.hypot(x - u, y - v) for u, v in curve) for x, y in used)
+        self.assertLess(far, 2.0)
+        self.assertIn((15, 7), used)                                   # the crossing
+        for inside in ((8, 7), (8, 8), (23, 7), (23, 8)):              # the loops
+            self.assertNotIn(inside, used)
+        cells = F.build(W, H, 3, 1, F.TYPE_CONTROL, 1, 1, payload)
+        self.assertEqual({cells[xy] for xy in F.inf_order(W, H)[n:]}, {F.palette_rgb(F.BLACK)})   # the rest: padding
+
+
 class EndToEnd(unittest.TestCase):
     def roundtrip(self, W=64, H=16, mode=1, cell=4, origin=(0, 0), transform=None, payload=b"hello WoWBridge", size=(640, 360)):
         cells = F.build(W, H, mode, 1, F.TYPE_DATA, 0x1234, 7, payload)
@@ -57,7 +91,7 @@ class EndToEnd(unittest.TestCase):
                 self.assertAlmostEqual(lk.px, cell, places=6)
 
     def test_offset_and_modes(self):
-        for mode in (0, 1, 2):
+        for mode in (0, 1, 2, 3):
             with self.subTest(mode=mode):
                 self.roundtrip(mode=mode, origin=(37, 15), payload=bytes(range(60)))
 
