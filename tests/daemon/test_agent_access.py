@@ -318,6 +318,32 @@ class Report(Home):
         self.assertEqual((new.posted[0][0], starts, backend.client), ("/api/mcp/report", [False], new))
 
 
+class BeforeMcpIsBuilt(unittest.TestCase):
+    """the App's daemon builds /mcp a while after it listens (server.LazyMcp): the 扩展 page asking before then has it
+    built at once and uses its view of the kit, none of its own beside it"""
+
+    def test_the_page_has_mcp_built(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WUXIAN_HOME": str(Path(tmp) / "home")}), \
+                mock.patch.object(daemon, "MCP_AFTER", 600):
+            addons = Path(tmp) / "client" / "Interface" / "AddOns"
+            (addons / "WoWBridge").mkdir(parents=True)
+            MB.install(addons, pool=16)
+            (addons / "WuxianKit").mkdir()                                     # WuxianKit in the AddOns folder
+            (addons / "WuxianKit" / "WuxianKit.toc").write_text("## Interface: 16001\n## Version: 0.4.0\n", encoding="utf-8")
+            handle = daemon.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
+                                  mutex_name=MUTEX + "B", window=True)
+            try:
+                game = Game(manifest())
+                handle.service.call_exposed, handle.service.addon_api = game.call_exposed, game.addon_api
+                self.assertIsNone(handle.mcp.endpoint)
+                kit = request(handle, "GET", "/api/agent_access")["kit"]
+                self.assertIsNotNone(handle.mcp.endpoint)                     # built for the page ...
+                self.assertIsNone(handle.service.kit_view)                    # ... and its view of the kit used
+                self.assertEqual((kit["version"], kit["tools"]), ("0.4.0", len(WK)))
+            finally:
+                handle.stop()
+
+
 class AgentAccessApi(unittest.TestCase):
     """over a real daemon: WuxianKit's tools as the page lists them, the rows of the stdio servers' reports with their
     states, the App's own /mcp agent; a report silent too long goes"""

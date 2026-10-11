@@ -716,7 +716,7 @@
                     <span class="mitem-title" x-text="m.title"></span>
                     <span class="mono mitem-aside" x-text="m.id"></span>
                     <span class="pill tiny off" x-show="m.state && m.state !== 'on'">未启用</span>
-                    <span class="mitem-badge" :title="t('{n} 个 Agent 工具', { n: m.count })" x-text="m.count"></span>
+                    <span class="mitem-badge" x-show="m.count" :title="t('{n} 个 Agent 工具', { n: m.count })" x-text="m.count"></span>
                   </div>
                 </li>
               </template>
@@ -743,8 +743,9 @@
         </div>
 
         <div class="detail">
-          <div class="xp-note" :class="{ bad: !ext.note && !ext.missing }" x-show="ext.note || ext.error">
-            <span class="grow" x-text="ext.note || ext.error"></span>
+          <div class="xp-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
+          <div class="xp-note" x-show="ext.note">
+            <span class="grow" x-text="ext.note"></span>
             <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
           </div>
 
@@ -769,13 +770,13 @@
               <button class="btn confirm small" :disabled="ext.busy !== ''" @click="extAct(xpSel.pkg, 'remove')">确认卸载</button>
               <button class="btn small" @click="ext.confirm = ''">取消</button>
             </div>
-            <div class="tabs" x-show="xpSel.kind !== 'sys' && (xpSel.tools || xpSel.notes)">
-              <button class="tab" :class="{ on: xp.tab === 'info' }" @click="xp.tab = 'info'">概况</button>
-              <button class="tab" x-show="xpSel.tools" :class="{ on: xp.tab === 'tools' }" @click="xp.tab = 'tools'">Agent 工具<span class="tab-count" x-text="xpSel.tools ? xpSel.tools.length : ''"></span></button>
-              <button class="tab" x-show="xpSel.notes" :class="{ on: xp.tab === 'notes' }" @click="xp.tab = 'notes'">更新内容</button>
+            <div class="tabs" x-show="xpSel.kind !== 'sys' && ((xpSel.tools && xpSel.tools.length) || xpSel.notes)">
+              <button class="tab" :class="{ on: xpTab === 'info' }" @click="xp.tab = 'info'">概况</button>
+              <button class="tab" x-show="xpSel.tools && xpSel.tools.length" :class="{ on: xpTab === 'tools' }" @click="xp.tab = 'tools'">Agent 工具<span class="tab-count" x-text="xpSel.tools ? xpSel.tools.length : ''"></span></button>
+              <button class="tab" x-show="xpSel.notes" :class="{ on: xpTab === 'notes' }" @click="xp.tab = 'notes'">更新内容</button>
             </div>
             <div class="detail-scroll">
-              <div x-show="xpSel.kind !== 'sys' && xp.tab === 'info'">
+              <div x-show="xpSel.kind !== 'sys' && xpTab === 'info'">
                 <p class="notes-line" x-show="xpSel.summary" x-text="xpSel.summary"></p>
                 <dl class="kv">
                   <dt>状态</dt><dd><span class="xp-state" :class="xpState.cls"><span class="xp-dot"></span><span x-text="xpState.text"></span></span></dd>
@@ -796,8 +797,8 @@
                   </ul>
                 </div>
               </div>
-              <div x-show="xpSel.kind === 'sys' || xp.tab === 'tools'">
-                <p class="xp-warn" x-show="xpSel.mod && xpSel.mod.state && xpSel.mod.state !== 'on'">游戏中未启用：它的工具不提供给 Agent</p>
+              <div x-show="xpSel.kind === 'sys' || xpTab === 'tools'">
+                <p class="xp-warn" x-show="xpSel.mod && xpSel.mod.state && xpSel.mod.state !== 'on'">游戏中未启用，Agent 无法使用其工具</p>
                 <p class="xp-toolhint" x-text="xpToolsLine"></p>
                 <table class="table xp-tools" x-show="xpSel.tools && xpSel.tools.length">
                   <tr><th>名称</th><th>类型</th><th>工具</th></tr>
@@ -806,7 +807,7 @@
                   </template>
                 </table>
               </div>
-              <p class="xp-notes" x-show="xp.tab === 'notes'" x-text="xpSel.notes"></p>
+              <p class="xp-notes" x-show="xpTab === 'notes'" x-text="xpSel.notes"></p>
             </div>
           </div>
 
@@ -818,19 +819,18 @@
             <div class="detail-scroll">
               <p class="xp-warn" x-show="sessionStale" x-text="t('{n} 个会话运行的是旧代码：在 Agent 里重启会话后才能使用新工具。', { n: sessionStale })"></p>
               <table class="table xp-sessions" x-show="access.data && access.data.servers.length">
-                <tr><th>Agent</th><th>连接</th><th>协议</th><th>wk_ 工具</th><th>最近活动</th><th>状态</th></tr>
+                <tr><th>Agent</th><th>状态</th><th>最近活动</th><th>wk_ 工具</th><th>连接</th><th>协议</th></tr>
                 <template x-for="s in (access.data ? access.data.servers : [])" :key="s.kind + ':' + s.pid + ':' + (s.first || 0)">
                   <tr>
                     <td x-text="agentName(s)"></td>
+                    <td><span class="pill" :class="accessPill(s)" :title="accessTip(s)" x-text="accessState(s)"></span></td>
+                    <td x-text="s.last ? ago(s.last) : '—'"></td>
+                    <td x-text="s.tools == null ? '—' : s.tools"></td>
                     <td class="mono" x-text="serverWhere(s)"></td>
                     <td class="mono" x-text="s.protocol || '—'"></td>
-                    <td x-text="s.tools == null ? '—' : s.tools"></td>
-                    <td x-text="s.last ? ago(s.last) : '—'"></td>
-                    <td><span class="pill" :class="accessPill(s)" :title="accessTip(s)" x-text="accessState(s)"></span></td>
                   </tr>
                 </template>
               </table>
-              <p class="muted" x-show="!access.data || !access.data.servers.length">暂无 Agent 连接</p>
               <p class="muted small xp-small">显示最近 30 分钟内的会话；鼠标移到状态上可查看说明。</p>
             </div>
           </div>

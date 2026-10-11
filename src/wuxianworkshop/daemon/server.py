@@ -16,7 +16,6 @@ the page served at / (same checks, no token). Errors are {"error": {"code", "mes
 import argparse
 import asyncio
 import contextlib
-import ctypes
 import importlib.util
 import json
 import os
@@ -41,11 +40,10 @@ from ..core.game import addons_dir
 from ..paths import daemon_file, logs_dir, settings_file, snaps_dir, ui_static_dir
 from .api import ApiError, read_daemon_json  # noqa: F401  (read_daemon_json is this module's interface too)
 from .companion import CompanionLoop, installed_at
+from .instance import ERROR_ALREADY_EXISTS, MUTEX, SingleInstance, instance_mutex  # noqa: F401  (this module's too)
 from .journal import Journal
 from .service import Service
 
-MUTEX = r"Local\WuxianWorkshop"
-ERROR_ALREADY_EXISTS = 183
 SNAP_NAME = re.compile(r"^[\w.-]+\.png$")
 STARTUP_WAIT = 15.0
 MCP_AFTER = 4.0                    # seconds the App's daemon waits to build its MCP server: the window and its page first
@@ -59,32 +57,6 @@ class AlreadyRunning(RuntimeError):
     def __init__(self, info):
         super().__init__("the daemon is already running" + (f" at {info.get('url')} (pid {info.get('pid')})" if info else ""))
         self.info = info
-
-
-class SingleInstance:
-    """a named mutex held for the life of the process: the second CreateMutexW of the name says ERROR_ALREADY_EXISTS"""
-
-    def __init__(self, name=MUTEX):
-        self.name, self.handle = name, None
-        self.k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.k32.CreateMutexW.restype = ctypes.c_void_p
-        self.k32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
-        self.k32.CloseHandle.argtypes = (ctypes.c_void_p,)
-
-    def acquire(self):
-        h = self.k32.CreateMutexW(None, 0, self.name)
-        if not h:                                    # cannot tell: do not keep the daemon from running
-            return True
-        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-            self.k32.CloseHandle(h)
-            return False
-        self.handle = h
-        return True
-
-    def release(self):
-        if self.handle:
-            self.k32.CloseHandle(self.handle)
-            self.handle = None
 
 
 class UiFiles(StaticFiles):
@@ -188,10 +160,11 @@ class LazyMcp:
     """the MCP server at /mcp, built once the daemon listens: importing the mcp package (the pydantic models of two
     protocol versions) took 1.2 s of the daemon's 1.6 s start, and the App's window waited for it to load its page.
     start() builds it on a thread of its own, after a while or at the first request; run(), the lifespan's task,
-    keeps its session manager going on the server's loop. A request waits until it runs"""
+    keeps its session manager going on the server's loop. A request waits until it runs. on_off() when the build
+    fails (a broken mcp package): the daemon stops naming /mcp"""
 
-    def __init__(self, service):
-        self.service = service
+    def __init__(self, service, on_off=None):
+        self.service, self.on_off = service, on_off
         self.mcp = self.endpoint = self.error = self.loop = None
         self.wanted = threading.Event()               # a request has come: build now
         self.built = asyncio.Event()                  # these three on the server's loop: build() has ended, well or not
@@ -217,10 +190,15 @@ class LazyMcp:
         except Exception as e:                     # a broken mcp package among others: the daemon goes on without it
             self.error = f"MCP is off: {e}"
             self.service.journal.add("INFO", self.error)
-        try:
-            self.loop.call_soon_threadsafe(self.built.set)
-        except RuntimeError:                       # the loop has closed: the daemon stopped meanwhile
-            pass
+        finally:                                   # also after what no except takes (a SystemExit in an import)
+            if self.endpoint is None and self.error is None:
+                self.error = "MCP is off: its build did not finish"
+            try:
+                self.loop.call_soon_threadsafe(self.built.set)
+            except RuntimeError:                   # the loop has closed: the daemon stopped meanwhile
+                pass
+            if self.endpoint is None and self.on_off is not None:
+                self.on_off()
 
     async def run(self):
         try:
@@ -610,8 +588,8 @@ def make_app(service, access, handle, mcp=None):
 class DaemonHandle:
     """the running daemon, for the program that started it (the shell): where it listens, how to stop it.
     on_show: called (on its own thread) for POST /api/show, the shell shows its window; window: that window is coming
-    (the shell sets on_show while it makes the window, seconds after the daemon listens), so a request before then is
-    kept for it; on_quit: called once the daemon has stopped, from the API or stop()."""
+    (the shell sets on_show once the daemon listens and its page is on the way), so a request before then is kept for
+    it; on_quit: called once the daemon has stopped, from the API or stop()."""
 
     def __init__(self, service, lock, token, mode, host="127.0.0.1", port=0, window=False):
         self.service, self.lock, self.token, self.mode = service, lock, token, mode
@@ -635,7 +613,16 @@ class DaemonHandle:
 
     @property
     def mcp_url(self):
-        return f"http://{self.host}:{self.port}/mcp" if self.mcp is not None else None
+        on = self.mcp is not None and self.mcp.error is None        # still to be built, or built: not failed
+        return f"http://{self.host}:{self.port}/mcp" if on else None
+
+    def _mcp_off(self):
+        """(the MCP build's thread) /mcp could not be built: it is named nowhere from now on, daemon.json too"""
+        with self._cleanup_lock:
+            if self._cleaned:                        # stopped meanwhile: no daemon.json to write again
+                return
+            self.service.mcp_url = None
+            write_daemon_json(self.info())
 
     @property
     def running(self):
@@ -654,8 +641,8 @@ class DaemonHandle:
         off = mcp_off()
         if off:
             self.service.journal.add("INFO", off)
-        self.mcp = None if off else LazyMcp(self.service)
-        self.service.url, self.service.mcp_url = self.url, self.mcp_url
+        self.mcp = None if off else LazyMcp(self.service, on_off=self._mcp_off)
+        self.service.url, self.service.mcp_url, self.service.mcp_lazy = self.url, self.mcp_url, self.mcp
         app = make_app(self.service, self.access, self, mcp=self.mcp)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_config=None, log_level="warning", access_log=False,
                                 lifespan="on", loop="asyncio", timeout_graceful_shutdown=3)
@@ -754,13 +741,14 @@ def saved_settings():
 
 
 def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0, wait_restart=True,
-          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0, window=False):
+          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0, window=False, lock=None):
     """the daemon in this process: the HTTP server on its thread, the companion on another; returns a DaemonHandle
     (port, token, url, mcp_url; stop(), wait()). AlreadyRunning when another instance holds the mutex.
     mode / capture / game_dir: None takes what the 设置 page saved (state/settings.json), else developer / wgc.
     worker_factory(on_debug=, log=) replaces the CompanionLoop (tests: a loop without a screen).
     window: the program opens a window on the daemon's page once it listens (the shell): POST /api/show before that
-    window has set on_show is kept for it (DaemonHandle.show)."""
+    window has set on_show is kept for it (DaemonHandle.show). lock: the single-instance mutex, already taken (the shell
+    takes it before it opens its window); else it is taken here."""
     saved = saved_settings()
     mode = mode or (saved.get("mode") if saved.get("mode") in ("developer", "player") else "developer")
     capture = capture or (saved.get("capture") if saved.get("capture") in ("gdi", "wgc") else "wgc")
@@ -768,10 +756,10 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
     if saved_dir and not game_dir and not Path(saved_dir).is_dir():
         gone, saved_dir = saved_dir, None                  # moved or removed (a new client folder): the running game's
     game_dir = game_dir or saved_dir
-    lock = SingleInstance(mutex_name or os.environ.get("WUXIAN_MUTEX") or MUTEX)   # WUXIAN_MUTEX: a test instance
-                                                                                    # beside the one in use
-    if not lock.acquire():
-        raise AlreadyRunning(read_daemon_json())
+    if lock is None:
+        lock = SingleInstance(instance_mutex(mutex_name))
+        if not lock.acquire():
+            raise AlreadyRunning(read_daemon_json())
     try:
         journal = Journal(logs_dir() / "debug.log")
         if gone:

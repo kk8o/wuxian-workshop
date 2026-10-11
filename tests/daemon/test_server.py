@@ -585,6 +585,36 @@ class LateMcp(unittest.TestCase):
             finally:
                 handle.stop()
 
+    def test_a_build_that_fails_names_no_mcp(self):
+        """a broken mcp package (or anything else that stops the build): /mcp answers 503 at once, and the daemon no longer
+        names it (daemon.json, status) for the agents' configurations"""
+        from wuxianworkshop.mcp import server as mcp_server
+        for problem in (ImportError("No module named 'mcp_types'"), SystemExit(3)):
+            with self.subTest(problem=type(problem).__name__), tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.dict(os.environ, {"WUXIAN_HOME": tmp}), mock.patch.object(mcp_server, "build_server", side_effect=problem):
+                addons = Path(tmp) / "Interface" / "AddOns"
+                (addons / "WoWBridge").mkdir(parents=True)
+                MB.install(addons, pool=16)
+                handle = server.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
+                                      mutex_name=MUTEX + "N")                  # window=False: built at once
+                try:
+                    deadline = time.time() + 20                                 # the build's thread rewrites daemon.json last
+                    while read_daemon_json()["mcp_url"] is not None and time.time() < deadline:
+                        time.sleep(0.05)
+                    self.assertIn("MCP is off", handle.mcp.error)
+                    self.assertIsNone(handle.mcp_url)
+                    self.assertIsNone(read_daemon_json()["mcp_url"])
+                    self.assertIsNone(request(handle, "GET", "/api/status")["mcp_url"])
+                    req = urllib.request.Request(handle.url + "mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}', method="POST",
+                                                 headers={"Authorization": f"Bearer {handle.token}", "Content-Type": "application/json",
+                                                          "Accept": "application/json, text/event-stream"})
+                    with self.assertRaises(urllib.error.HTTPError) as cm:
+                        urllib.request.urlopen(req, timeout=10)
+                    with cm.exception:
+                        self.assertEqual(cm.exception.code, 503)
+                finally:
+                    handle.stop()
+
 
 class ShowRequests(unittest.TestCase):
     """POST /api/show (DaemonHandle.show): the shell's window shows. The shell sets on_show while it makes the window,

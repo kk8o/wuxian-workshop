@@ -4,13 +4,14 @@ r"""The desktop shell: `wuxian` with no sub-command = daemon + tray icon + windo
 
 run_app() checks first for what the window needs from Windows, the WebView2 Runtime and the .NET Framework (webview2.py:
 a missing one is offered for install, Microsoft's own installer, signature checked), hands over to a daemon that is
-already running (POST /api/show makes it raise its window), else opens a pywebview window that says it is starting,
-starts the daemon in this process meanwhile (Starting: daemon.server.start with window=True: a POST /api/show that
-comes before the window is up is kept for it, so that a second start meanwhile opens no second window), opens its page
-in that window and puts an icon in the tray (tray.py); a --background start starts the daemon first. Closing the
-window hides it (the closing handler returns False); "退出" in the tray menu sets the quit flag, destroys the window, stops
-the daemon and then the tray icon, in that order. pywebview owns the main thread; the tray icon has its own thread and its
-callbacks only call window.show() / hide() (marshalled onto the UI thread by pywebview) or set the flag.
+already running (POST /api/show makes it raise its window), else takes the daemon's single-instance mutex, opens a
+pywebview window that says it is starting, starts the daemon in this process meanwhile (Starting: daemon.server.start
+with window=True: a POST /api/show that comes before the window is up is kept for it, so that a second start meanwhile
+opens no second window), opens its page in that window and puts an icon in the tray (tray.py); a --background start
+starts the daemon first. Closing the window hides it (the closing handler returns False; page_seen tells WebView2);
+"退出" in the tray menu sets the quit flag, destroys the window, stops the daemon and then the tray icon, in that order.
+pywebview owns the main thread; the tray icon has its own thread and its callbacks only call window.show() / hide()
+(marshalled onto the UI thread by pywebview, as page_seen marshals its own call) or set the flag.
 --background (what the command line's clients start when no daemon answers: cli/client.py) makes the window hidden from
 the start; the tray icon shows that the daemon runs, and opening the program shows the window. Without WebView2 it runs
 the daemon alone instead of asking. It asks a running daemon only whether it answers (GET /api/status), never to show
@@ -276,8 +277,17 @@ def start_fake(url=None):
     return load_fake_api().start_in_thread()
 
 
-def start_backend(args):
-    """(handle, note): the daemon (handle.url/port/token/stop()), or the fake API with a note that says why"""
+def take_instance():
+    """the daemon's single-instance mutex, taken for the daemon this process will start (daemon/instance.py, light to
+    import: before the window); None when another start holds it"""
+    from ..daemon.instance import SingleInstance, instance_mutex
+    lock = SingleInstance(instance_mutex())
+    return lock if lock.acquire() else None
+
+
+def start_backend(args, lock=None):
+    """(handle, note): the daemon (handle.url/port/token/stop()), or the fake API with a note that says why. lock: the
+    daemon's mutex, taken already (take_instance)"""
     if args.fake:
         return start_fake(args.fake), ""
     try:
@@ -286,19 +296,19 @@ def start_backend(args):
         log.warning("daemon not importable (%s); using the fake API", e)
         return start_fake(), tr(f"守护进程未就绪（{e}）", f"the daemon is not ready ({e})")
     try:
-        handle = server.start(mode=args.mode, capture=args.capture, game_dir=args.game, window=True)
+        handle = server.start(mode=args.mode, capture=args.capture, game_dir=args.game, window=True, lock=lock)
     except getattr(server, "AlreadyRunning", ()) as e:
         raise AlreadyRunning(getattr(e, "info", None)) from e
     return handle, ""
 
 
-def start_or_join(args):
-    """start_backend(args), and when another start has taken the mutex a moment earlier, that one's daemon once it
+def start_or_join(args, lock=None):
+    """start_backend(args, lock), and when another start has taken the mutex a moment earlier, that one's daemon once it
     answers (wait_for_winner, attach): (backend, note). backend: the daemon of this process, or an AttachedBackend this
     start's window shows; (None, note): no daemon, the note says why; (None, None): the other start's daemon has taken
     over, and this start has nothing to do"""
     try:
-        return start_backend(args)
+        return start_backend(args, lock)
     except AlreadyRunning as e:                      # lost the race for the mutex: that instance is starting; once it
         found = wait_for_winner(e.info, show=not args.background)    # answers, hand over to it
         if found is not None:
@@ -313,14 +323,14 @@ def start_or_join(args):
 
 
 class Starting:
-    """the backend of a window that came up before its daemon (run_app without --background): start_or_join() runs on a
-    thread of its own while WebView2 starts in processes of its own. The daemon first, the window waited for both one
-    after the other (0.8 s and 0.5 s here). Shell.on_before_show starts it once pywebview has loaded .NET (the two
-    loading at once held each other up); Shell.arrive takes its result"""
+    """the backend of a window that came up before its daemon (run_app without --background, the daemon's mutex taken):
+    start_or_join() runs on a thread of its own while WebView2 starts in processes of its own. The daemon first, the
+    window waited for both one after the other (0.8 s and 0.5 s here). Shell.on_before_show starts it once pywebview
+    has loaded .NET (the two loading at once held each other up); Shell.arrive takes its result"""
     url = None
 
-    def __init__(self, args):
-        self.args = args
+    def __init__(self, args, lock=None):
+        self.args, self.lock = args, lock
         self.result = (None, None)
         self.done = threading.Event()
         self.thread = threading.Thread(target=self._run, name="wuxian-start", daemon=True)
@@ -331,13 +341,17 @@ class Starting:
 
     def _run(self):
         try:
-            self.result = start_or_join(self.args)
+            self.result = start_or_join(self.args, self.lock)
+        except BaseException as e:               # what start_or_join lets through (a SystemExit): the error page says it
+            log.exception("no backend")
+            self.result = (None, f"{type(e).__name__}: {e}")
         finally:
             self.done.set()
 
     def stop(self):
         """退出 before the daemon's page came: it stops once it has started"""
-        if self.thread.ident is None:
+        if self.thread.ident is None:            # the window never got so far: none comes, and arrive() waits no more
+            self.done.set()
             return
         self.done.wait()
         backend = self.result[0]
@@ -465,7 +479,8 @@ class Shell:
         return 0
 
     def after_start(self):
-        """runs on its own thread once the window is up: the tray icon, and the daemon's hook for /api/show"""
+        """runs on its own thread, started by pywebview as it makes the window: the tray icon, the daemon (a Starting:
+        waited for, its page loaded), and the daemon's hooks for /api/show and /api/quit"""
         try:
             self.tray.start()
         except Exception as e:
@@ -487,17 +502,21 @@ class Shell:
         backend, note = starting.result
         if self.quitting:
             return False
-        try:
-            if backend is not None:
-                self.backend = backend
+        if backend is not None:
+            self.backend = backend                   # its hooks too, even when its page does not load
+            try:
                 self.window.load_url(backend.url)
-                return True
-            if note is None:
-                self.quit()
-            else:
-                self.window.load_html(error_html(note))
+            except Exception:
+                log.exception("open the daemon's page")
+            return True
+        if note is None:
+            self.quit()
+            return False
+        try:                                         # the window's html too: WebView2 not up yet loads that, not this
+            self.window.html = error_html(note)
+            self.window.load_html(self.window.html)
         except Exception:
-            log.exception("open the daemon's page")
+            log.exception("show the error page")
         return False
 
     def watch_backend(self, every=WATCH_EVERY):
@@ -510,7 +529,8 @@ class Shell:
                 return
 
     def on_before_show(self):
-        """the title bar dark like the page (Windows 10 1809 and later; on Windows 11 also its colours), before it shows"""
+        """before the window shows, on its thread: the title bar dark like the page (Windows 10 1809 and later; on
+        Windows 11 also its colours), pywebview's request handlers unhooked, and a Starting daemon started"""
         try:
             dark_title_bar(self.window.native.Handle.ToInt64())
         except Exception as e:                                  # an older Windows keeps the light one
@@ -558,6 +578,7 @@ class Shell:
             self.page_seen(True)
             self.window.show()
             self.window.restore()
+            self.page_seen(True)                  # a hide() between the two calls hid the control again
         except Exception:
             log.exception("show")
 
@@ -627,6 +648,8 @@ class Shell:
 
     def shutdown(self):
         self.quitting = True
+        if isinstance(self.backend, Starting) and not self.backend.done.is_set() and self.tray is not None:
+            self.tray.stop()                         # the daemon still starting may take seconds: the icon goes now
         if self.backend is not None:
             try:
                 self.backend.stop()
@@ -679,8 +702,10 @@ def run_app(argv=None):
         found = running_instance(show=not args.background)
         if found is not None:
             return join_running(found, args)
-        if not args.background:                      # the window first, its daemon meanwhile (Starting); a client's
-            return Shell(Starting(args), args).run()     # --background start waits for daemon.json: the daemon first
+        lock = None if args.background else take_instance()   # a client's --background start waits for daemon.json:
+        if lock is not None:                         # the daemon first. Else the window first, its daemon meanwhile
+            return Shell(Starting(args, lock), args).run()    # (Starting): with the mutex taken, no other start's window
+                                                     # opens beside it (one that lost it hands over below, windowless)
     backend, note = start_or_join(args)
     if backend is None and note is None:             # the other start's daemon took over
         return 0

@@ -61,15 +61,21 @@ def read_pack(path):
     return data if isinstance(data, dict) and data.get("pack") and data.get("version") else None
 
 
+def head_of(start):
+    """(pack, version) where a pack's JSON (its first bytes) has them, None when it does not start so; ValueError for
+    bytes that are not UTF-8"""
+    m = PACK_HEAD.match(start)
+    return (m.group(1).decode("utf-8"), m.group(2).decode("utf-8")) if m else None
+
+
 def pack_head(path):
-    """(pack, version) from the first bytes of a .json.gz file, where a pack has them, without reading the rest: the
-    API pack whole takes 75 ms; None when the file is missing or does not start so"""
+    """(pack, version) from the first bytes of a .json.gz file, without reading the rest: the API pack whole takes
+    75 ms; None when the file is missing, broken or does not start so"""
     try:
         with gzip.open(path, "rb") as fh:
-            m = PACK_HEAD.match(fh.read(512))
-    except (OSError, EOFError, zlib.error):
+            return head_of(fh.read(512))
+    except (OSError, EOFError, zlib.error, ValueError):
         return None
-    return (m.group(1).decode("utf-8"), m.group(2).decode("utf-8")) if m else None
 
 
 class Packs:
@@ -193,9 +199,12 @@ class ContentUpdater:
             raise ValueError(f"{entry['file']}: {len(raw)} bytes, the manifest says {entry['size']}")
         if hashlib.sha256(raw).hexdigest() != str(entry.get("sha256", "")).lower():
             raise ValueError(f"{entry['file']}: SHA-256 does not match the manifest")
-        pack = json.loads(gzip.decompress(raw).decode("utf-8"))
+        data = gzip.decompress(raw)
+        pack = json.loads(data.decode("utf-8"))
         if pack.get("pack") != name or str(pack.get("version")) != str(entry["version"]):
             raise ValueError(f"{entry['file']}: holds {pack.get('pack')} {pack.get('version')}, not {name} {entry['version']}")
+        if head_of(data[:512]) != (name, str(entry["version"])):     # what Packs finds it by: kept, it would be ignored
+            raise ValueError(f'{entry["file"]}: "pack" and "version" do not lead it')
         self.packs.replace(name, raw)
 
 

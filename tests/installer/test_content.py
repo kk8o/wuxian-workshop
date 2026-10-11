@@ -53,7 +53,8 @@ class Packs(unittest.TestCase):
 
     def test_bad_downloads_change_nothing(self):
         cases = (dict(sha256="0" * 64), dict(size=1), dict(raw=pack_bytes("2026.10.08.9")),     # another version inside
-                 dict(raw=b"not gzip"))
+                 dict(raw=b"not gzip"),
+                 dict(raw=gzip.compress(json.dumps({"version": "2026.10.08.1", "pack": "api"}).encode("utf-8"))))   # not led by them
         for case in cases:
             raw = case.pop("raw", None)
             self.publish("2026.10.08.1", raw=raw, **case)
@@ -95,6 +96,8 @@ class Packs(unittest.TestCase):
             self.assertEqual(whole.call_count, 1)                             # the newer copy only
         self.assertEqual(content.pack_head(self.cached / "api.json.gz"), ("api", "2026.10.08.1"))
         self.assertIsNone(content.pack_head(self.root / "missing.json.gz"))
+        (self.root / "bytes.json.gz").write_bytes(gzip.compress(b'{"pack":"api","version":"\xff\xfe"}'))   # not UTF-8
+        self.assertIsNone(content.pack_head(self.root / "bytes.json.gz"))
 
 
 if __name__ == "__main__":

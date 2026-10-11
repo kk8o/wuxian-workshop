@@ -88,6 +88,7 @@ class Service:
         self.ext_catalog = extensions.Catalog(store=extensions.catalog_store())   # the 扩展 page's, read when it looks
         self.mcp_reports = {}        # pid -> what a stdio MCP server last reported (mcp_report): the 扩展 page's Agent 接入
         self.local_mcp = None        # the daemon's own /mcp server (set by the server): its connections, its WuxianKit tools
+        self.mcp_lazy = None         # the server.LazyMcp that builds it after the daemon listens (None: no MCP)
         self.kit_view = None         # mcp.kit.KitTools of the page, made when it first looks
         self.kit_cache = KitCache(self.ui_session)   # what every view of WuxianKit asks, asked of the game once
         self.started = time.time()
@@ -1052,7 +1053,12 @@ class Service:
         folder), servers: the MCP servers that serve agents now, a row per agent, each with its state against this program
         and that kit}. The kit is /mcp's own view of it (the page's own when there is no /mcp): read from the game when it
         is online, else the manifest kept on disk. An extension's tools are its capabilities'; wk_docs, wk_wait and
-        wk_propose go with WuxianKit's own (kit)"""
+        wk_propose go with WuxianKit's own (kit). Asked before /mcp is built, it has it built now and waits: its view of the
+        kit is the one to use, and the mcp package is not imported on this loop"""
+        lazy = self.mcp_lazy
+        if lazy is not None and not lazy.built.is_set():
+            lazy.wanted.set()
+            await lazy.built.wait()
         from ..mcp import kit as kit_tools
         view = getattr(self.local_mcp, "kit_tools", None)
         if view is None:

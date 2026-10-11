@@ -159,10 +159,16 @@ class WindowLooks(unittest.TestCase):
             self.assertEqual(calls[-1], "search")                              # WINDOW_SEARCH has passed
 
     def test_a_stand_in_is_asked_every_round(self):
+        win = Window(1, 2, "Wow.exe", "魔兽世界", 0, 0, *SIZE, 96, False)
         calls = []
-        loop = C.CompanionLoop(None, find_window=lambda: calls.append(1), files=False)
-        for _ in range(3):
-            loop.win = loop._window()
+
+        def find():
+            calls.append(1)
+            return win
+        with mock.patch.object(C.capture, "look_again", side_effect=AssertionError("a stand-in's window is not looked at again")):
+            loop = C.CompanionLoop(None, find_window=find, files=False)
+            for _ in range(3):
+                loop.win = loop._window()
         self.assertEqual(len(calls), 3)
 
 

@@ -598,11 +598,11 @@ function appState() {
     get xpRunning() {                          // WuxianKit as the game last had it: null when never seen, or gone
       return (this.access.data && this.access.data.kit) || null;
     },
-    get xpMods() {                             // the extensions: the game's, with their tools, once WuxianKit has run there;
-      const k = this.xpRunning;                //   else the built-in ones the catalog lists, their tools only counted
+    get xpMods() {                             // the extensions: all the game runs (with tools or none) once WuxianKit has run
+      const k = this.xpRunning;                //   there; else the built-in ones the catalog lists, their tools only counted
       if (k && (k.extensions || []).length) {
-        return k.extensions.filter((e) => e.tools.length || e.state !== 'on').map((e) => ({ id: e.id, title: e.title || e.id,
-          version: e.version, state: e.state, tools: e.tools, count: e.tools.length, builtin: e.builtin !== false, addon: e.addon,
+        return k.extensions.map((e) => ({ id: e.id, title: e.title || e.id, version: e.version, state: e.state, tools: e.tools,
+          count: e.tools.length, builtin: e.builtin !== false, addon: e.addon,
           confirm: e.tools.filter((x) => ['Change', 'Send', 'Proposal'].includes(x.label)).length }));
       }
       const p = this.xpPkg;
@@ -612,32 +612,45 @@ function appState() {
     get xpSys() {
       return this.xpMods.filter((m) => m.builtin);
     },
-    get xpCustom() {                           // [{ key, title, pkg, mod }]: the catalog's other packages, each with the extension
-      const mods = this.xpMods.filter((m) => !m.builtin);   // the game runs from its addon; then those of no package
-      const rows = (this.ext.list || []).filter((a) => a.id !== 'wuxiankit')
-        .map((p) => ({ key: 'c:' + p.id, pkg: p, mod: mods.find((m) => m.addon === p.folder) || null }));
-      for (const m of mods) if (!rows.some((r) => r.mod === m)) rows.push({ key: 'm:' + m.id, pkg: null, mod: m });
+    get xpCustom() {                           // [{ key, title, pkg, mod, count }]: the catalog's other packages, each with what
+      const mods = this.xpMods.filter((m) => !m.builtin);   // the game runs from its addon (its extensions as one); then
+      const rows = (this.ext.list || []).filter((a) => a.id !== 'wuxiankit').map((p) => {   // the extensions of no package
+        const own = mods.filter((m) => m.addon === p.folder);
+        return { key: 'c:' + p.id, pkg: p, own, mod: own.length ? this.xpJoin(own) : null };
+      });
+      for (const m of mods) if (!rows.some((r) => r.own && r.own.includes(m))) rows.push({ key: 'm:' + m.id, pkg: null, mod: m });
       for (const r of rows) {                  // a package's title names the framework first ("扩展框架 · EllesmereUI"): its own part
-        r.title = r.mod ? r.mod.title : (this.loc(r.pkg.title) || r.pkg.folder).split(' · ').pop();
+        r.title = r.pkg ? (this.loc(r.pkg.title) || r.pkg.folder).split(' · ').pop() : r.mod.title;
         r.count = r.mod ? r.mod.count : (r.pkg.extensions || []).reduce((n, e) => n + (e.tools || 0), 0);
       }
       return rows;
+    },
+    xpJoin(mods) {                             // the extensions of one addon as one: their tools together, on while one is
+      if (mods.length === 1) return mods[0];
+      const tools = mods.flatMap((m) => m.tools || []);
+      return { id: mods.map((m) => m.id).join('+'), title: mods[0].title, version: mods[0].version, builtin: false,
+        state: mods.some((m) => m.state === 'on') ? 'on' : mods[0].state, tools, count: tools.length, addon: mods[0].addon,
+        confirm: mods.reduce((n, m) => n + (m.confirm || 0), 0) };
     },
     get xpTools() {                            // the agents' tools from all the extensions, and those the player confirms
       const mods = this.xpMods;
       return { n: mods.reduce((s, m) => s + (m.count || 0), 0), confirm: mods.reduce((s, m) => s + (m.confirm || 0), 0) };
     },
-    get xpKitVersion() {                       // the framework's version here: the one installed, else the catalog's
+    xpVersion(p) {                             // a package's version here: the one installed (— when unread), else the catalog's
+      return p.there ? (p.installed || '—') : p.version;
+    },
+    get xpKitVersion() {
       const p = this.xpPkg, k = this.xpRunning;
-      return (p && p.there && p.installed) || (k && k.version) || (p && p.version) || '';
+      return p ? this.xpVersion(p) : (k ? k.version : '');
     },
     get xpKitBadge() {                         // the framework in the list: what to do first, else how it runs
       const p = this.xpPkg, d = this.access.data, k = this.xpRunning;
       if (p && p.state === 'needs_app') return { text: t('需更新无限工坊'), cls: 'bad' };
       if (p && !p.there) return { text: t('未安装'), cls: 'off' };
       if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
-      if (k) return k.newer ? { text: t('版本较新'), cls: 'warn' }
-        : k.source === 'game' ? { text: t('运行中'), cls: 'ok' } : { text: t('游戏未连接'), cls: 'off' };
+      if (this.access.error) return { text: t('读取失败'), cls: 'bad' };
+      if (k && k.newer) return { text: t('需更新无限工坊'), cls: 'warn' };
+      if (k) return k.source === 'game' ? { text: t('运行中'), cls: 'ok' } : { text: t('游戏未连接'), cls: 'off' };
       if (d && d.kit_state === 'stopped') return { text: t('未运行'), cls: 'warn' };
       if (d && d.kit_state === 'unknown') return { text: t('游戏未连接'), cls: 'off' };
       return null;
@@ -661,26 +674,32 @@ function appState() {
       return null;
     },
     xpVersionOf(c) {
-      return (c.pkg && (c.pkg.there && c.pkg.installed ? c.pkg.installed : c.pkg.version)) || (c.mod && c.mod.version) || '';
+      return c.pkg ? this.xpVersion(c.pkg) : (c.mod && c.mod.version) || '';
     },
     get xpSel() {                              // what the detail shows (xp.sel: kit, x:<id>, c:<package id>, m:<id>, sessions)
       const s = this.xp.sel;
       if (s === 'sessions') return { kind: 'sessions' };
       const m = s.startsWith('x:') && this.xpSys.find((x) => 'x:' + x.id === s);
       if (m) return { kind: 'sys', title: m.title, tag: t('系统扩展'), line: m.id + (m.version ? ' · ' + m.version : ''),
-        pkg: null, mod: m, tools: m.tools, notes: '' };
+        pkg: null, mod: m, count: m.count, confirm: m.confirm, tools: m.tools, notes: '' };
       const c = this.xpCustom.find((r) => r.key === s);       // else the framework (also for a row that has gone)
       const p = c ? c.pkg : this.xpPkg, mod = c ? c.mod : null, k = this.xpRunning;
       const missing = (p && p.missing) || [];
       return {
         kind: c ? 'custom' : 'kit', title: c ? c.title : (p ? this.loc(p.title) : t('扩展框架')), tag: c ? t('自定义扩展') : '',
-        line: p ? p.folder + ' · ' + (p.there && p.installed ? p.installed : p.version)
+        line: p ? p.folder + ' · ' + this.xpVersion(p)
           : mod ? (mod.addon || mod.id) + (mod.version ? ' · ' + mod.version : '') : 'WuxianKit' + (k ? ' · ' + k.version : ''),
-        pkg: p, mod, count: c ? c.count : this.xpTools.n, tools: mod ? mod.tools : null, notes: p ? this.loc(p.notes) : '',
-        summary: p ? this.loc(p.summary) : '',
+        pkg: p, mod, count: c ? c.count : this.xpTools.n, confirm: c ? (mod ? mod.confirm : 0) : this.xpTools.confirm,
+        tools: mod ? mod.tools : null, notes: p ? this.loc(p.notes) : '', summary: p ? this.loc(p.summary) : '',
         released: p ? p.released : '', folder: p ? p.folder : (mod ? mod.addon : 'WuxianKit'),
         needs: (p && p.requires || []).map((r) => (missing.includes(r) ? t('{name}（未安装）', { name: r }) : r)).join(t('、')),
       };
+    },
+    get xpTab() {                              // the tab shown: the one chosen while the selection has it, else 概况
+      const tab = this.xp.tab, sel = this.xpSel;
+      if (tab === 'tools' && !(sel.tools && sel.tools.length)) return 'info';
+      if (tab === 'notes' && !sel.notes) return 'info';
+      return tab;
     },
     xpSelect(key) {
       this.xp.sel = key;
@@ -690,11 +709,18 @@ function appState() {
     get xpState() {                            // the 状态 of the one selected: { cls, text }
       const sel = this.xpSel;
       if (sel.kind !== 'custom') return this.xpKitState;
-      const p = sel.pkg, m = sel.mod, k = this.xpRunning;
+      const p = sel.pkg, m = sel.mod, d = this.access.data, k = this.xpRunning;
       if (p && !p.there) return { cls: '', text: t('未安装') };
-      if (m) return m.state && m.state !== 'on' ? { cls: 'warn', text: t('游戏中未启用：它的工具不提供给 Agent') }
+      if (this.access.error) return { cls: 'bad', text: this.access.error };
+      if (!d) return { cls: '', text: t('读取运行状态…') };
+      if (k && k.newer) return { cls: 'warn', text: t('游戏中的扩展框架版本较新，Agent 仅能使用 wk_docs：请更新无限工坊') };
+      if (m) return m.state && m.state !== 'on' ? { cls: 'warn', text: t('游戏中未启用，Agent 无法使用其工具') }
         : k && k.source === 'game' ? { cls: 'ok', text: t('运行中') } : { cls: '', text: t('游戏未连接 · 显示上次读取的结果') };
-      if (!k) return this.xpKitState;           // the framework does not run: that comes first
+      if (!k) {                                 // the framework does not run: that first, said of the framework
+        if (d.kit_state === 'stopped') return { cls: 'warn', text: t('扩展框架未运行') };
+        if (d.kit_state === 'absent' || (this.xpPkg && !this.xpPkg.there)) return { cls: 'warn', text: t('扩展框架未安装') };
+        return { cls: '', text: t('游戏未连接') };
+      }
       return k.source === 'game' ? { cls: 'warn', text: t('游戏中未加载：安装或更新后需重载界面') } : { cls: '', text: t('游戏未连接') };
     },
     get xpVer() {                              // the 版本 of the one selected: { text, pill, cls }
@@ -702,7 +728,7 @@ function appState() {
       if (!p) return { text: (this.xpSel.mod && this.xpSel.mod.version) || this.xpKitVersion || '—', pill: '', cls: '' };
       const pill = { update: t('可更新到 {v}', { v: p.version }), current: t('已是最新'), installed: t('已安装'),
         newer: t('本机版本较新'), needs_app: t('需要无限工坊 {v} 或更高版本', { v: p.min_app }) }[p.state] || '';
-      return { text: p.there ? (p.installed || '—') : p.version, pill, cls: this.extPill(p) };   // not installed: 状态 says so
+      return { text: this.xpVersion(p), pill, cls: this.extPill(p) };   // not installed: the catalog's (状态 says so)
     },
     get xpExtLine() {                          // the framework's 扩展
       const custom = this.xpCustom.filter((c) => c.mod || (c.pkg && c.pkg.there)).length;
@@ -710,22 +736,21 @@ function appState() {
     },
     get xpToolsLine() {                        // the Agent 工具 of the one selected: how many, how many the player confirms
       const sel = this.xpSel;
-      const tools = sel.kind === 'kit' ? this.xpTools : { n: sel.count || 0, confirm: sel.mod ? sel.mod.confirm : 0 };
-      if (!tools.n) return sel.kind === 'custom' && !sel.mod ? t('在游戏中加载后可查看') : '—';
+      if (!sel.count) return sel.kind === 'custom' && !sel.mod ? t('在游戏中加载后可查看') : '—';
       const known = sel.kind === 'kit' ? !!this.xpRunning : !!(sel.mod && sel.mod.tools);
-      return t('{n} 个', { n: tools.n }) + (known && tools.confirm ? ' · ' + t('其中 {n} 个需玩家在游戏里确认', { n: tools.confirm }) : '')
+      return t('{n} 个', { n: sel.count }) + (known && sel.confirm ? ' · ' + t('其中 {n} 个需玩家在游戏里确认', { n: sel.confirm }) : '')
         + (known ? '' : ' · ' + t('在游戏中运行后可查看明细'));
     },
     get xpSkills() {
       return this.xpPkg ? (this.xpPkg.skills || []) : [];
     },
-    get sessionLine() {
-      const list = (this.access.data && this.access.data.servers) || [];
+    get sessionLine() {                        // under the sessions' title: how many, how many tools to refresh
+      if (this.access.error) return this.access.error;
+      if (!this.access.data) return t('读取中…');
+      const list = this.access.data.servers || [];
       if (!list.length) return t('暂无 Agent 连接');
-      const stale = list.filter((x) => x.state === 'stale').length;
       const behind = list.filter((x) => x.state === 'behind' || x.state === 'no_kit').length;
-      return t('{n} 个会话', { n: list.length }) + (stale ? ' · ' + t('{n} 个需重启会话以使用新工具', { n: stale }) : '')
-        + (behind ? ' · ' + t('{n} 个工具待刷新', { n: behind }) : '');
+      return t('{n} 个会话', { n: list.length }) + (behind ? ' · ' + t('{n} 个工具待刷新', { n: behind }) : '');
     },
     get sessionStale() {
       return ((this.access.data && this.access.data.servers) || []).filter((x) => x.state === 'stale').length;

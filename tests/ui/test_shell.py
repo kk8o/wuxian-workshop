@@ -5,10 +5,11 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import urllib.request
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from wuxianworkshop.ui import shell, webview2
 
@@ -74,6 +75,7 @@ class WithoutWebView2(unittest.TestCase):
         with patch.object(webview2, "missing", return_value=["dotnet", "webview2"]), \
                 patch.object(webview2, "ensure", return_value=True), \
                 patch.object(shell, "running_instance", return_value=None), \
+                patch.object(shell, "take_instance", return_value=None), \
                 patch.object(shell, "start_backend", return_value=(StandInBackend(), "")), \
                 patch.object(shell.Shell, "run", autospec=True, return_value=0) as run:
             self.assertEqual(shell.run_app([]), 0)
@@ -211,7 +213,8 @@ class RunningDaemon(unittest.TestCase):
 class LostTheRace(unittest.TestCase):
     """another start took the mutex a moment earlier and answers only once it listens (2026-10-08: `wuxian status`
     started `app --background` half a second after the program; it asked once, too early, and stayed as a hidden error
-    page that kept files in dist open after `wuxian quit`)"""
+    page that kept files in dist open after `wuxian quit`). Such a start opens no window first (take_instance finds the
+    mutex taken): the old way, the winner waited for windowless"""
 
     info = {"port": 4321, "token": "t", "url": "http://127.0.0.1:4321/"}
 
@@ -220,48 +223,30 @@ class LostTheRace(unittest.TestCase):
         clock = Clock()
         with patch.object(webview2, "missing", return_value=[]), \
                 patch.object(shell, "time", clock), \
+                patch.object(shell, "take_instance", return_value=None), \
                 patch.object(shell, "start_backend", side_effect=error or shell.AlreadyRunning(None)), \
                 patch.object(shell, "running_instance", side_effect=answers) as found, \
                 patch.object(shell.Shell, "run", autospec=True, return_value=7) as run:
             code = shell.run_app(argv)
         return code, found, run, clock
 
-    def program_start(self, answers, error=None):
-        """a start with a window (no --background): the window comes up first (Shell.run, a stand-in here) and its
-        daemon starts meanwhile (Starting); (the Shell, what arrive() said, running_instance, the clock)"""
-        clock, seen = Clock(), {}
-
-        def window_up(app):
-            app.window = StandInWindow()
-            app.backend.start()                                      # on_before_show
-            seen["app"], seen["arrived"] = app, app.arrive(app.backend)
-            return 7
-        with patch.object(webview2, "missing", return_value=[]), \
-                patch.object(shell, "time", clock), \
-                patch.object(shell, "start_backend", side_effect=error or shell.AlreadyRunning(None)), \
-                patch.object(shell, "running_instance", side_effect=answers) as found, \
-                patch.object(shell.Shell, "run", autospec=True, side_effect=window_up):
-            self.assertEqual(shell.run_app([]), 7)
-        return seen["app"], seen["arrived"], found, clock
-
     def test_the_program_waits_for_the_winner(self):
         """daemon.json is written once the winner listens: the one there when the mutex was found taken (here what a
         killed daemon left) is tried once, then daemon.json is read again"""
         stale = {"port": 1, "token": "old"}
-        app, arrived, found, clock = self.program_start([None, None, None, (self.info, True)],
-                                                        error=shell.AlreadyRunning(stale))
-        self.assertFalse(arrived)
-        self.assertEqual(app.window.calls, ["destroy"])               # its window was shown: this one closes
+        code, found, run, clock = self.run_app([], [None, None, None, (self.info, True)],
+                                               error=shell.AlreadyRunning(stale))
+        self.assertEqual(code, 0)                                     # its window was shown
+        run.assert_not_called()                                       # no window here, not even for a moment
         self.assertEqual(found.call_args_list, [call(show=True), call(stale, show=True), call(None, show=True),
                                                 call(None, show=True)])
         self.assertLess(clock.now, shell.WINNER_WAIT)
 
     def test_the_program_shows_the_winners_page_when_it_has_no_window(self):
         with patch.object(shell.AttachedBackend, "claim", return_value=True):
-            app, arrived, found, clock = self.program_start([None, (self.info, False)])
-        self.assertTrue(arrived)
-        self.assertIsInstance(app.backend, shell.AttachedBackend)
-        self.assertEqual(app.window.calls, [("url", "http://127.0.0.1:4321/")])
+            code, found, run, clock = self.run_app([], [None, (self.info, False)])
+        self.assertEqual(code, 7)
+        self.assertIsInstance(run.call_args[0][0].backend, shell.AttachedBackend)
 
     def test_background_start_hands_over_to_the_winner(self):
         code, found, run, clock = self.run_app(["--background"], [None, None, (self.info, False)])
@@ -281,61 +266,118 @@ class LostTheRace(unittest.TestCase):
 
     def test_the_program_shows_the_note_when_the_winner_hangs(self):
         with self.assertLogs(shell.log, "ERROR"):
-            app, arrived, found, clock = self.program_start(lambda info=None, show=True: None)
-        self.assertFalse(arrived)
-        backend, note = app.backend.result
-        self.assertIsNone(backend)
-        self.assertTrue(note)
-        self.assertEqual(app.window.calls, [("html", shell.error_html(note))])
+            code, found, run, clock = self.run_app([], lambda info=None, show=True: None)
+        self.assertEqual(code, 7)
+        app = run.call_args[0][0]
+        self.assertIsNone(app.backend)
+        self.assertTrue(app.note)
         self.assertGreaterEqual(clock.now, shell.WINNER_WAIT)
 
-    def test_a_daemon_that_cannot_start(self):
-        """any other failure: the program shows it on its error page, a background start exits"""
-        error = RuntimeError("the HTTP server did not start")
+    def test_a_background_start_that_cannot_start_the_daemon(self):
+        """no error page in a hidden window: a background start exits"""
         with self.assertLogs(shell.log, "ERROR"):
-            code, found, run, clock = self.run_app(["--background"], [None], error=error)
+            code, found, run, clock = self.run_app(["--background"], [None], error=RuntimeError("the HTTP server did not start"))
         self.assertEqual(code, 1)
         run.assert_not_called()
-        with self.assertLogs(shell.log, "ERROR"):
-            app, arrived, found, clock = self.program_start([None], error=error)
-        self.assertFalse(arrived)
-        self.assertIn("the HTTP server did not start", app.window.calls[-1][1])
+
+
+class StandInLock:
+    def __init__(self):
+        self.released = False
+
+    def release(self):
+        self.released = True
 
 
 class WindowFirst(unittest.TestCase):
-    """a start with a window opens it before its daemon, which starts while WebView2 does (Starting)"""
+    """a start with a window that took the daemon's mutex opens the window before its daemon, which starts while
+    WebView2 does (Starting)"""
+
+    def window_up(self, result=None, error=None):
+        """run_app as far as Shell.run (a stand-in that only records the Shell), then the window: start(), arrive()"""
+        seen, lock = {}, StandInLock()
+
+        def run(app):
+            seen["app"] = app
+            return 0
+        with patch.object(webview2, "missing", return_value=[]), \
+                patch.object(shell, "running_instance", return_value=None), \
+                patch.object(shell, "take_instance", return_value=lock), \
+                patch.object(shell, "start_backend", return_value=result, side_effect=error) as start, \
+                patch.object(shell.Shell, "run", autospec=True, side_effect=run):
+            self.assertEqual(shell.run_app([]), 0)
+            app = seen["app"]
+            self.assertIsInstance(app.backend, shell.Starting)
+            start.assert_not_called()                                # not before the window has loaded .NET
+            app.window = StandInWindow()
+            app.backend.start()                                      # on_before_show
+            arrived = app.arrive(app.backend)
+        self.assertIs(start.call_args[0][1], lock)                  # the daemon gets the mutex taken for it
+        return app, arrived
 
     def test_the_page_comes_once_the_daemon_listens(self):
         backend = StandInBackend()
-        with patch.object(webview2, "missing", return_value=[]), \
-                patch.object(shell, "running_instance", return_value=None), \
-                patch.object(shell, "start_backend", return_value=(backend, "")) as start, \
-                patch.object(shell.Shell, "run", autospec=True, return_value=0) as run:
-            self.assertEqual(shell.run_app([]), 0)
-            app = run.call_args[0][0]
-            self.assertIsInstance(app.backend, shell.Starting)
-            start.assert_not_called()                                # not before the window loads .NET
-            app.window = StandInWindow()
-            app.backend.start()
-            self.assertTrue(app.arrive(app.backend))
+        app, arrived = self.window_up(result=(backend, ""))
+        self.assertTrue(arrived)
         self.assertIs(app.backend, backend)
         self.assertEqual(app.window.calls, [("url", backend.url)])
 
+    def test_a_daemon_that_cannot_start(self):
+        """the error page, also when WebView2 is not up yet: it loads the window's html then, which is set too"""
+        with self.assertLogs(shell.log, "ERROR"):
+            app, arrived = self.window_up(error=RuntimeError("the HTTP server did not start"))
+        self.assertFalse(arrived)
+        self.assertEqual(app.window.calls, [("html", app.window.html)])
+        self.assertIn("the HTTP server did not start", app.window.html)
+
+    def test_a_start_that_stops_short(self):
+        """what start_or_join lets through (a SystemExit) is shown, not taken for another start's daemon"""
+        with self.assertLogs(shell.log, "ERROR"):
+            app, arrived = self.window_up(error=SystemExit(3))
+        self.assertFalse(arrived)
+        self.assertNotIn("destroy", app.window.calls)
+        self.assertIn("SystemExit", app.window.html)
+
+    def test_its_hooks_even_when_the_page_does_not_load(self):
+        backend = StandInBackend()
+        backend.on_show = None
+        with patch.object(StandInWindow, "load_url", side_effect=RuntimeError("WebView2 has gone")), \
+                self.assertLogs(shell.log, "ERROR"):
+            app, arrived = self.window_up(result=(backend, ""))
+        self.assertTrue(arrived)                                     # after_start hooks on_show / on_quit then
+        self.assertIs(app.backend, backend)
+
     def test_quit_before_the_page(self):
-        """退出 while the daemon starts: it stops once it has; its page no longer loads"""
+        """退出 while the daemon starts: the tray icon goes at once, the daemon once it has started; no page loads"""
         backend = StandInBackend()
         app = shell.Shell(shell.Starting(shell.parse_args([])), shell.parse_args([]))
         app.window = StandInWindow()
-        with patch.object(shell, "start_backend", return_value=(backend, "")):
+        app.tray = Mock()
+        gate = threading.Event()
+
+        def slow(args, lock=None):
+            gate.wait(5)
+            return backend, ""
+        with patch.object(shell, "start_backend", side_effect=slow):
             app.backend.start()
             app.quit()
-            app.shutdown()
+            stopping = threading.Thread(target=app.shutdown)
+            stopping.start()
+            for _ in range(100):                                     # shutdown() waits for the daemon ...
+                if app.tray.stop.called:
+                    break
+                time.sleep(0.01)
+            app.tray.stop.assert_called()                            # ... the icon went first
+            gate.set()
+            stopping.join(5)
         self.assertTrue(backend.stopped)
         self.assertFalse(app.arrive(app.backend))
         self.assertEqual(app.window.calls, ["destroy"])
 
     def test_a_window_that_never_came_up(self):
-        shell.Starting(shell.parse_args([])).stop()                 # never started: nothing to wait for
+        starting = shell.Starting(shell.parse_args([]))
+        starting.stop()                                              # never started: nothing to wait for ...
+        self.assertTrue(starting.done.is_set())                      # ... and arrive() waits no more either
 
 
 def start_daemon(case, window):
@@ -483,7 +525,7 @@ class ClosingAndQuitting(unittest.TestCase):
         with patch.object(shell, "on_ui_thread", lambda form, fn: fn()):
             self.app.on_closing()
             self.app.show()
-        self.assertEqual(window.calls, [("Visible", False), "hide", ("Visible", True), "show", "restore"])
+        self.assertEqual(window.calls, [("Visible", False), "hide", ("Visible", True), "show", "restore", ("Visible", True)])
 
     def test_shutdown_stops_backend(self):
         self.app.shutdown()
