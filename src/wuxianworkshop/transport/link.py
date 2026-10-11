@@ -61,7 +61,7 @@ from ..core import frame as F
 from ..core import mailbox as MB
 from ..core import squeeze
 
-VERSION = "0.9.9"
+VERSION = "0.9.10"
 LEGACY_HB = 5.0                 # heartbeat for addons before 0.7.0: they go offline after 15 s without a packet
 SLOT_WARN = (400, 100)          # mailbox slots left: tell the agent (debug.log) and the log
 WRAP = 65535                    # message ids run 1..WRAP, then start over at 1

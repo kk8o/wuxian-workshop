@@ -22,7 +22,7 @@
 local addonName, ns = ...
 local Frame, L = ns.Frame, ns.L
 
-local VERSION = "0.9.9"
+local VERSION = "0.9.10"
 local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true, toasts = true }   -- /wb set <key> on|off
 local WAIT_SAY = 15       -- not connected this long after entering the world: the chat says what to do
 
