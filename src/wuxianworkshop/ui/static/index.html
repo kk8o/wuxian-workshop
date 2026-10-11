@@ -108,7 +108,7 @@
               <div class="wmark" x-text="stepMark('game')"></div>
               <div class="panel wbody">
                 <h2>找到游戏</h2>
-                <div class="loader" x-show="!doctor.checks.length && doctor.busy"><svg class="inf"><use href="#inf-line"/></svg>正在检查…</div>
+                <div class="loader" x-show="!doctor.checks.length && doctor.busy"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在检查…</div>
                 <template x-if="stepGame && !start.gameEdit">
                   <div x-t>
                     <p>客户端目录：<span class="mono selectable" x-text="gamePath"></span></p>
@@ -171,7 +171,7 @@
               <div class="panel wbody">
                 <h2>接上 Agent</h2>
                 <p>把无限工坊登记给你的 Agent（用户级设置，所有项目都能用），它就能自己写插件，在游戏里试、看报错和截图来调试。</p>
-                <div class="loader" x-show="agents.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在查找 Agent…</div>
+                <div class="loader" x-show="agents.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在查找 Agent…</div>
                 <div class="agent-list" x-show="agents.list !== null">
                   <template x-for="h in agentsShown" :key="h.id">
                     <div class="agent-row" :class="'st-' + h.state">
@@ -238,7 +238,7 @@
       <div class="pagebody overview">
         <div class="ov-hero" :class="'st-' + linkClass">
           <div class="ov-top">
-            <div class="ov-badge" aria-hidden="true"><svg class="ov-mark" viewBox="0 0 64 40"><use href="#inf-line" class="track"/><use href="#inf-line" class="flow"/></svg></div>
+            <div class="ov-badge" aria-hidden="true"><svg class="ov-mark" viewBox="0 0 64 40"><path class="track" d="M32,20 C40,8 54,8 54,20 C54,32 40,32 32,20 C24,8 10,8 10,20 C10,32 24,32 32,20"/><path class="flow" x-flow="2600 0 -123.6" d="M32,20 C40,8 54,8 54,20 C54,32 40,32 32,20 C24,8 10,8 10,20 C10,32 24,32 32,20"/></svg></div>
             <div class="ov-head">
               <div class="ov-title">
                 <span class="ov-state" x-text="linkText"></span>
@@ -429,7 +429,7 @@
       </div>
       <div class="pagebody fill master-detail">
         <div class="master">
-          <div class="loader" x-show="addons.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在读取…</div>
+          <div class="loader" x-show="addons.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在读取…</div>
           <p class="muted pad" x-show="addons.list !== null && !addons.list.length" x-text="addons.note"></p>
           <ul class="mlist">
             <template x-for="a in addonRows" :key="a.name">
@@ -698,7 +698,7 @@
           <span x-text="ext.note"></span>
           <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
         </div>
-        <div class="loader" x-show="ext.list === null"><svg class="inf"><use href="#inf-line"/></svg>读取扩展目录…</div>
+        <div class="loader" x-show="ext.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取扩展目录…</div>
         <p class="muted pad" x-show="ext.list && !ext.list.length && !ext.error">扩展目录暂无内容。</p>
 
         <div class="xp-run" :class="kitRun.cls" x-show="ext.list !== null && !extTop.some(a => a.id === 'wuxiankit') && access.data && (access.data.kit || access.data.kit_state === 'stopped')"><span class="xp-dot"></span><span x-text="kitRun.text"></span></div>
@@ -920,7 +920,7 @@
                     </li>
                   </template>
                 </ul>
-                <div class="loader" x-show="docs.tab !== 'topics' && !docs.systems"><svg class="inf"><use href="#inf-line"/></svg><span>正在读取…</span></div>
+                <div class="loader" x-show="docs.tab !== 'topics' && !docs.systems"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg><span>正在读取…</span></div>
                 <ul class="mlist topics" x-show="docs.tab === 'topics'">
                   <template x-for="m in docs.topics" :key="m.id">
                     <li class="mitem" :class="{active: docs.topic && docs.topic.id === m.id && !docs.sel}" @click="docsTopic(m)"><span class="mitem-title" x-text="topicTitle(m)"></span></li>
@@ -1134,7 +1134,7 @@
       <div class="pagebody">
         <div class="panel">
           <div class="panel-head">一键接入<div class="spacer"></div><span class="muted small mono selectable" x-text="agentsProgram"></span></div>
-          <div class="loader" x-show="agents.list === null"><svg class="inf"><use href="#inf-line"/></svg>正在查找 Agent…</div>
+          <div class="loader" x-show="agents.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在查找 Agent…</div>
           <div class="agent-list" x-show="agents.list !== null">
             <template x-for="h in agentsShown" :key="h.id">
               <div x-t class="agent-row" :class="'st-' + h.state">
@@ -1227,7 +1227,7 @@
               </li>
             </template>
           </ul>
-          <div class="loader" x-show="doctor.busy && !doctor.checks.length"><svg class="inf"><use href="#inf-line"/></svg>检查中…</div>
+          <div class="loader" x-show="doctor.busy && !doctor.checks.length"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>检查中…</div>
           <p class="muted pad" x-show="!doctor.checks.length && !doctor.busy" x-text="doctor.error || t('还没有检查结果。')"></p>
           <pre class="result selectable" x-show="doctor.result" x-text="doctor.result"></pre>
         </div>

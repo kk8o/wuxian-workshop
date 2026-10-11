@@ -15,10 +15,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
 
 from . import __version__
@@ -28,6 +30,7 @@ MANIFEST = "https://wuxianwow.com/workshop/data/manifest.json"
 BUNDLED = Path(__file__).resolve().parent / "data"
 TIMEOUT = 30
 MAX_PACK = 64 * 1024 * 1024
+PACK_HEAD = re.compile(rb'\{\s*"pack"\s*:\s*"([^"\\]+)"\s*,\s*"version"\s*:\s*"([^"\\]+)"')
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +61,17 @@ def read_pack(path):
     return data if isinstance(data, dict) and data.get("pack") and data.get("version") else None
 
 
+def pack_head(path):
+    """(pack, version) from the first bytes of a .json.gz file, where a pack has them, without reading the rest: the
+    API pack whole takes 75 ms; None when the file is missing or does not start so"""
+    try:
+        with gzip.open(path, "rb") as fh:
+            m = PACK_HEAD.match(fh.read(512))
+    except (OSError, EOFError, zlib.error):
+        return None
+    return (m.group(1).decode("utf-8"), m.group(2).decode("utf-8")) if m else None
+
+
 class Packs:
     """the packs in use: get(name) is the newer of the bundled and the downloaded copy, read once and kept"""
 
@@ -79,16 +93,32 @@ class Packs:
         self.get(name)
         return self.loaded[name][1]
 
-    def _newest(self, name):
-        found = []
+    def _copies(self, name):
+        """[(version, where, path)] of the copies, the newest first (the bundled one first of two alike)"""
+        copies = []
         for where, folder in (("bundled", self.bundled), ("downloaded", self.cache())):
-            pack = read_pack(folder / f"{name}.json.gz")
+            path = folder / f"{name}.json.gz"
+            head = pack_head(path)
+            if head is not None and head[0] == name:
+                copies.append((head[1], where, path))
+        return sorted(copies, key=lambda c: version_key(c[0]), reverse=True)
+
+    def _newest(self, name):
+        """the newest copy that reads whole: the older one only when it does not"""
+        for _, where, path in self._copies(name):
+            pack = read_pack(path)
             if pack is not None and pack.get("pack") == name:
-                found.append((version_key(pack["version"]), where, pack))
-        if not found:
-            return None, None
-        _, where, pack = max(found, key=lambda x: x[0])
-        return pack, where
+                return pack, where
+        return None, None
+
+    def peek(self, name):
+        """(version, source) of the copy in use: once it has been read, else the newest by the files' first bytes"""
+        loaded = self.loaded.get(name)           # without the lock, which a get() reading the pack whole holds
+        if loaded is not None:
+            pack, where = loaded
+            return (pack["version"] if pack else None), where
+        copies = self._copies(name)
+        return copies[0][:2] if copies else (None, None)
 
     def version(self, name):
         pack = self.get(name)
@@ -105,7 +135,8 @@ class Packs:
             self.loaded.pop(name, None)
 
     def status(self):
-        return {name: dict(version=self.version(name), source=self.source(name)) for name in ("api",)}
+        """for /api/status, the page's first request: no pack is read whole for it"""
+        return {name: dict(zip(("version", "source"), self.peek(name))) for name in ("api",)}
 
 
 def fetch(url, limit=MAX_PACK):

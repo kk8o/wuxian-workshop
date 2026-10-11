@@ -133,5 +133,38 @@ class FollowsTheRunningGame(unittest.TestCase):
         self.assertTrue(any(n.startswith("game process P") for n in notes), notes)   # the new folder's mailbox in use
 
 
+class WindowLooks(unittest.TestCase):
+    """the desktop is searched for the game window at most every WINDOW_SEARCH (a search asks every top-level window's
+    process); the rounds between look at the window found again"""
+
+    def test_the_window_found_is_looked_at_again(self):
+        win = Window(1, 2, "Wow.exe", "魔兽世界", 0, 0, *SIZE, 96, False)
+        calls = []
+
+        def find():
+            calls.append("search")
+            return win
+        with mock.patch.object(C.capture, "find_window", find), \
+                mock.patch.object(C.capture, "look_again", lambda w: calls.append("look") or w), \
+                mock.patch.object(C, "WINDOW_SEARCH", 3600):
+            loop = C.CompanionLoop(None, find_window=find, files=False)
+            for _ in range(3):
+                loop.win = loop._window()
+            self.assertEqual(calls, ["search", "look", "look"])
+            with mock.patch.object(C.capture, "look_again", lambda w: calls.append("gone")):
+                loop.win = loop._window()
+            self.assertEqual(calls[-2:], ["gone", "search"])                    # gone: searched for at once
+            loop.searched -= 7200
+            loop.win = loop._window()
+            self.assertEqual(calls[-1], "search")                              # WINDOW_SEARCH has passed
+
+    def test_a_stand_in_is_asked_every_round(self):
+        calls = []
+        loop = C.CompanionLoop(None, find_window=lambda: calls.append(1), files=False)
+        for _ in range(3):
+            loop.win = loop._window()
+        self.assertEqual(len(calls), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

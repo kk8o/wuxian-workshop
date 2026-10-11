@@ -1854,6 +1854,44 @@ function formJson(form) {
 
 document.addEventListener('alpine:init', () => { Alpine.data('app', appState); });
 
+/* x-flow="2600 0 -123.6": a moving ∞ (the overview's badge while the link is up, the loaders) takes its dash offset from 0
+   to -123.6 every 2600 ms, 20 times a second. A CSS animation runs at the screen's refresh rate: on a 360 Hz screen the
+   badge alone kept WebView2 busy with 1.7 cores. The timer runs while a mark is on screen (IntersectionObserver: one that
+   x-show hides is not) and the window shows, and not at all with prefers-reduced-motion. */
+const FLOW_FPS = 20;
+const flowSpecs = new WeakMap();                 // element -> [period ms, from, to]
+const flowsShown = new Set();
+let flowTimer = 0;
+let flowSeen = null;
+
+function flowStep() {
+  const now = performance.now();
+  for (const el of flowsShown) {
+    const [period, from, to] = flowSpecs.get(el);
+    el.style.strokeDashoffset = (from + (to - from) * (now % period) / period).toFixed(2);
+  }
+}
+
+function flowRun() {
+  const on = flowsShown.size > 0 && !document.hidden;
+  if (on && !flowTimer) flowTimer = setInterval(flowStep, 1000 / FLOW_FPS);
+  else if (!on && flowTimer) { clearInterval(flowTimer); flowTimer = 0; }
+}
+
+document.addEventListener('alpine:init', () => {
+  Alpine.directive('flow', (el, { expression }, { cleanup }) => {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    flowSeen = flowSeen || new IntersectionObserver((entries) => {
+      for (const e of entries) { if (e.isIntersecting) flowsShown.add(e.target); else flowsShown.delete(e.target); }
+      flowRun();
+    });
+    flowSpecs.set(el, expression.trim().split(/\s+/).map(Number));
+    flowSeen.observe(el);
+    cleanup(() => { flowSeen.unobserve(el); flowsShown.delete(el); flowRun(); });
+  });
+});
+document.addEventListener('visibilitychange', flowRun);
+
 document.addEventListener('DOMContentLoaded', () => {
   if (!window.htmx) return;
   htmx.defineExtension('json', {

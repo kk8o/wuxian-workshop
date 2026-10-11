@@ -77,7 +77,20 @@ def find_window(exes=GAME_EXES):
     user32.EnumWindows(proc(cb), 0)
     if not found:
         return None
-    hwnd, pid, exe = found[0]
+    return _window(*found[0])
+
+
+def look_again(win):
+    """the game window found before, as it is now, without a search (find_window asks every top-level window's process:
+    2.3 ms with 600 windows); None when it has gone: closed, hidden, or its handle another process's now"""
+    if not user32.IsWindow(win.hwnd) or not user32.IsWindowVisible(win.hwnd):
+        return None
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(win.hwnd, ctypes.byref(pid))
+    return _window(win.hwnd, win.pid, win.exe) if pid.value == win.pid else None
+
+
+def _window(hwnd, pid, exe):
     n = user32.GetWindowTextLengthW(hwnd)
     title = ctypes.create_unicode_buffer(n + 1)
     user32.GetWindowTextW(hwnd, title, n + 1)

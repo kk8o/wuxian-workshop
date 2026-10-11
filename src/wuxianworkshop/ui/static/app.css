@@ -190,9 +190,8 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .tab-count { font-family: var(--mono); font-size: 10.5px; color: var(--muted); background: var(--panel2); border-radius: 8px; padding: 0 5px; line-height: 15px; }
 .tab-count.bad { color: var(--bad); background: var(--bad-soft); }
 .loader { display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 12.5px; padding: 26px 0; }
-.loader svg.inf { width: 44px; height: 24px; stroke-dasharray: 160; stroke-dashoffset: 160; animation: inf-draw 1.6s linear infinite; }
-@keyframes inf-draw { to { stroke-dashoffset: -160; } }
-@media (prefers-reduced-motion: reduce) { .loader svg.inf { animation: none; stroke-dasharray: none; } }
+.loader svg.inf { width: 44px; height: 24px; stroke-dasharray: 160; stroke-dashoffset: 160; will-change: transform; }
+@media (prefers-reduced-motion: reduce) { .loader svg.inf { stroke-dasharray: none; } }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--muted); padding: 22px 12px; text-align: center; font-size: 12.5px; }
 .empty.intro { padding: 60px 20px; line-height: 1.8; }
 
@@ -221,13 +220,13 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .ov-badge { width: 62px; height: 62px; flex: none; display: grid; place-items: center; border-radius: 50%;
             border: 1px solid color-mix(in srgb, var(--hero-c) 30%, transparent);
             background: radial-gradient(circle, color-mix(in srgb, var(--hero-c) 14%, transparent), transparent 72%); }
-.ov-mark { width: 40px; height: 25px; overflow: visible; color: var(--hero-c); }
+.ov-mark { width: 40px; height: 25px; overflow: visible; color: var(--hero-c); will-change: transform; }
+.ov-mark path { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
 .ov-mark .track { opacity: .35; }
-.ov-mark .flow { stroke-dasharray: 18 105.6; animation: ov-flow 2.6s linear infinite; display: none; }
+.ov-mark .flow { stroke-dasharray: 18 105.6; display: none; }
 .st-ok .ov-mark .track { opacity: .3; }
 .st-ok .ov-mark .flow { display: inline; }
-@keyframes ov-flow { to { stroke-dashoffset: -123.6; } }
-@media (prefers-reduced-motion: reduce) { .ov-mark .flow { animation: none; stroke-dasharray: none; } }
+@media (prefers-reduced-motion: reduce) { .ov-mark .flow { stroke-dasharray: none; } }
 .ov-head { flex: 1; min-width: 280px; }
 .ov-title { display: flex; align-items: baseline; gap: 12px; }
 .ov-state { font-size: 22px; font-weight: 600; letter-spacing: .03em; color: var(--hero-c); }

@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import contextlib
 import ctypes
+import importlib.util
 import json
 import os
 import re
@@ -33,7 +34,7 @@ from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
+from starlette.staticfiles import NotModifiedResponse, StaticFiles
 
 from .. import __version__
 from ..core.game import addons_dir
@@ -47,6 +48,9 @@ MUTEX = r"Local\WuxianWorkshop"
 ERROR_ALREADY_EXISTS = 183
 SNAP_NAME = re.compile(r"^[\w.-]+\.png$")
 STARTUP_WAIT = 15.0
+MCP_AFTER = 4.0                    # seconds the App's daemon waits to build its MCP server: the window and its page first
+UI_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+            ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".txt": "text/plain"}
 
 
 class AlreadyRunning(RuntimeError):
@@ -85,10 +89,15 @@ class SingleInstance:
 
 class UiFiles(StaticFiles):
     """the page's files, revalidated on every load (their ETag / Last-Modified make that cheap): after an update of the
-    program the window must not go on with the previous version's script or styles from the WebView2 cache"""
+    program the window must not go on with the previous version's script or styles from the WebView2 cache. Their types
+    come from UI_TYPES: mimetypes reads the Windows registry at its first use (40 ms on the server's loop, the page's
+    other requests waiting), and a registry may say text/plain for .js"""
 
-    def file_response(self, *args, **kwargs):
-        response = super().file_response(*args, **kwargs)
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result,
+                                media_type=UI_TYPES.get(os.path.splitext(full_path)[1].lower()))
+        if self.is_not_modified(response.headers, Headers(scope=scope)):
+            response = NotModifiedResponse(response.headers)
         response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -167,22 +176,73 @@ def sse(event, data):
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def mcp_route(service):
-    """(the /mcp route, the MCPServer) or (None, None) with the reason when the mcp package is not installed"""
+def mcp_off():
+    """why the daemon has no MCP server (the mcp package is not installed), None when it has one"""
     try:
-        from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
-        from mcp.server.transport_security import TransportSecuritySettings
-        from ..mcp.server import build_server
-    except ImportError as e:
-        return None, None, f"MCP is off: {e}"
-    mcp = build_server(service)
-    mcp.streamable_http_app(streamable_http_path="/mcp",           # makes the session manager; Guard does Host / Origin
-                            transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
-    return Route("/mcp", endpoint=StreamableHTTPASGIApp(mcp.session_manager)), mcp, None
+        return None if importlib.util.find_spec("mcp") is not None else "MCP is off: No module named 'mcp'"
+    except (ImportError, ValueError) as e:
+        return f"MCP is off: {e}"
 
 
-def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
-    """the Starlette application: the routes of the API, SSE, the MCP endpoint (a Route), the page at /"""
+class LazyMcp:
+    """the MCP server at /mcp, built once the daemon listens: importing the mcp package (the pydantic models of two
+    protocol versions) took 1.2 s of the daemon's 1.6 s start, and the App's window waited for it to load its page.
+    start() builds it on a thread of its own, after a while or at the first request; run(), the lifespan's task,
+    keeps its session manager going on the server's loop. A request waits until it runs"""
+
+    def __init__(self, service):
+        self.service = service
+        self.mcp = self.endpoint = self.error = self.loop = None
+        self.wanted = threading.Event()               # a request has come: build now
+        self.built = asyncio.Event()                  # these three on the server's loop: build() has ended, well or not
+        self.ready = asyncio.Event()                  # the session manager runs, or never will
+        self.stopping = asyncio.Event()
+
+    def start(self, after):
+        def build_later():
+            self.wanted.wait(after)
+            self.build()
+        threading.Thread(target=build_later, name="wuxian-mcp", daemon=True).start()
+
+    def build(self):
+        try:
+            from mcp.server.streamable_http_manager import StreamableHTTPASGIApp
+            from mcp.server.transport_security import TransportSecuritySettings
+            from ..mcp.server import build_server
+            mcp = build_server(self.service)
+            mcp.streamable_http_app(streamable_http_path="/mcp",       # makes the session manager; Guard does Host / Origin
+                                    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
+            self.mcp, self.endpoint = mcp, StreamableHTTPASGIApp(mcp.session_manager)
+            self.service.local_mcp = mcp           # its connections and tools count in the 扩展 page's Agent 接入
+        except Exception as e:                     # a broken mcp package among others: the daemon goes on without it
+            self.error = f"MCP is off: {e}"
+            self.service.journal.add("INFO", self.error)
+        try:
+            self.loop.call_soon_threadsafe(self.built.set)
+        except RuntimeError:                       # the loop has closed: the daemon stopped meanwhile
+            pass
+
+    async def run(self):
+        try:
+            await self.built.wait()
+            if self.endpoint is not None and not self.stopping.is_set():
+                async with self.mcp.session_manager.run():
+                    self.ready.set()
+                    await self.stopping.wait()
+        finally:
+            self.ready.set()
+
+    async def __call__(self, scope, receive, send):
+        self.wanted.set()
+        await self.ready.wait()
+        if self.endpoint is None or self.stopping.is_set():
+            message = self.error or "the daemon is stopping"
+            return await JSONResponse({"error": {"code": "mcp_off", "message": message}}, status_code=503)(scope, receive, send)
+        await self.endpoint(scope, receive, send)
+
+
+def make_app(service, access, handle, mcp=None):
+    """the Starlette application: the routes of the API, SSE, the MCP endpoint (a LazyMcp), the page at /"""
 
     def api(fn):
         async def endpoint(request):
@@ -516,8 +576,8 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),
     ]
-    if mcp_endpoint is not None:
-        routes.append(mcp_endpoint)
+    if mcp is not None:
+        routes.append(Route("/mcp", endpoint=mcp))
     static = ui_static_dir()
     if (static / "index.html").is_file():
         routes.append(Mount("/", app=UiFiles(directory=str(static), html=True), name="ui"))
@@ -531,11 +591,17 @@ def make_app(service, access, handle, mcp=None, mcp_endpoint=None):
     @contextlib.asynccontextmanager
     async def lifespan(app):
         handle.loop = asyncio.get_running_loop()
-        if mcp is not None:
-            async with mcp.session_manager.run():
-                yield
-        else:
+        if mcp is None:
             yield
+            return
+        mcp.loop = handle.loop
+        task = asyncio.create_task(mcp.run())
+        try:
+            yield
+        finally:
+            mcp.stopping.set()
+            mcp.built.set()                          # one still building: run() ends without it
+            await task
 
     app = Starlette(routes=routes, lifespan=lifespan)
     return Guard(app, access)
@@ -585,12 +651,12 @@ class DaemonHandle:
         sock.bind((self.host, self.port))
         self.port = sock.getsockname()[1]
         self.access.bind(self.port)
-        route, self.mcp, off = mcp_route(self.service)
+        off = mcp_off()
         if off:
             self.service.journal.add("INFO", off)
+        self.mcp = None if off else LazyMcp(self.service)
         self.service.url, self.service.mcp_url = self.url, self.mcp_url
-        self.service.local_mcp = self.mcp                  # its connections and tools count in the 扩展 page's Agent 接入
-        app = make_app(self.service, self.access, self, mcp=self.mcp, mcp_endpoint=route)
+        app = make_app(self.service, self.access, self, mcp=self.mcp)
         config = uvicorn.Config(app, host=self.host, port=self.port, log_config=None, log_level="warning", access_log=False,
                                 lifespan="on", loop="asyncio", timeout_graceful_shutdown=3)
         self.server = uvicorn.Server(config)
@@ -605,6 +671,8 @@ class DaemonHandle:
             raise RuntimeError(f"the HTTP server did not start: {self.error!r}")
         write_daemon_json(self.info())
         self.service.start()
+        if self.mcp is not None:
+            self.mcp.start(MCP_AFTER if self.window else 0)
 
     def _serve(self, sock):
         try:

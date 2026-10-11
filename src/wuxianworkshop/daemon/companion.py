@@ -56,6 +56,7 @@ FULL_SEARCH_EVERY = 1.0                          # seconds between searches of t
 MARGIN = 16                                      # pixels read around the frame's top-left corner once it is found
 SETTLE = 0.5                                     # the window counts as moved / resized once its geometry held this long
 WINDOW_POLL = 2.0                                # seconds between looks for the game window while there is none
+WINDOW_SEARCH = 1.0                              # seconds between searches for it while it is there (the topmost of two)
 
 
 def log(*a):
@@ -113,7 +114,8 @@ class CompanionLoop:
         self.capture_wanted = self.capture = capture      # asked for / in use: WGC falls back to GDI when it fails
         self.wait_restart, self.installed, self.files, self.link = wait_restart, installed, files, link
         self.find_window = find_window
-        self.before_load = None                      # the daemon's hook for its Companion (see AgentCommands)
+        self.searched = 0.0                          # time.monotonic() of the last find_window
+        self.before_load = None                     # the daemon's hook for its Companion (see AgentCommands)
         self.on_session = None                       # the daemon's: (session, its newest job) for a new session's HELLO
         self.comp = None
         if addons is not None:
@@ -217,10 +219,22 @@ class CompanionLoop:
         if self.comp is not None and self.link:           # player mode: the link is off, no packet is written
             self.comp.tick()
 
+    def _window(self):
+        """the game window this round: the one found before, looked at again, between searches of the desktop at most
+        every WINDOW_SEARCH (a search asks every top-level window's process: 2.3 ms with 600 windows, and the rounds
+        come 20 times a second); one that has gone is searched for at once. A stand-in find_window is asked every round"""
+        now = time.monotonic()
+        if self.find_window is capture.find_window and self.win is not None and now - self.searched < WINDOW_SEARCH:
+            win = capture.look_again(self.win)
+            if win is not None:
+                return win
+        self.searched = now
+        return self.find_window()
+
     def step(self):
         """one round: requests, the window, the command files, one read of the frame area, the link's clock"""
         self._serve_requests()
-        win = self.find_window()
+        win = self._window()
         if win is None:
             if self.win is not None:
                 self.log("the game window is gone")

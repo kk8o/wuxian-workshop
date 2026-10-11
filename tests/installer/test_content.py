@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from wuxianworkshop import content
 
@@ -75,6 +76,25 @@ class Packs(unittest.TestCase):
     def test_a_broken_cached_copy_is_ignored(self):
         (self.cached / "api.json.gz").write_bytes(b"\x1f\x8b broken")
         self.assertEqual(self.packs.source("api"), "bundled")
+
+    def test_a_newer_copy_that_does_not_read_whole_gives_way(self):
+        whole = pack_bytes("2026.10.07.1", entries=list(range(5000)))
+        (self.cached / "api.json.gz").write_bytes(whole[:len(whole) // 2])      # its first bytes read, the rest not
+        self.assertEqual((self.packs.version("api"), self.packs.source("api")), ("2026.10.06.1", "bundled"))
+
+    def test_status_reads_no_pack_whole(self):
+        """/api/status asks first: the versions come from the files' first bytes, and only the newest is read whole"""
+        (self.cached / "api.json.gz").write_bytes(pack_bytes("2026.10.07.1"))
+        with mock.patch.object(content, "read_pack") as whole:
+            self.assertEqual(self.packs.status(), {"api": {"version": "2026.10.07.1", "source": "downloaded"}})
+            whole.assert_not_called()
+        self.assertEqual(self.packs.version("api"), "2026.10.07.1")
+        with mock.patch.object(content, "read_pack", wraps=content.read_pack) as whole:
+            self.packs.replace("api", pack_bytes("2026.10.08.1"))
+            self.assertEqual(self.packs.version("api"), "2026.10.08.1")
+            self.assertEqual(whole.call_count, 1)                             # the newer copy only
+        self.assertEqual(content.pack_head(self.cached / "api.json.gz"), ("api", "2026.10.08.1"))
+        self.assertIsNone(content.pack_head(self.root / "missing.json.gz"))
 
 
 if __name__ == "__main__":

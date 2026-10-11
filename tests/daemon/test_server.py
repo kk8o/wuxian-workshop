@@ -220,6 +220,20 @@ class LiveDaemon(unittest.TestCase):
             body = resp.read()
         self.assertTrue(b"<html" in body.lower() or b"/api/" in body, body[:200])
 
+    @unittest.skipUnless((server.ui_static_dir() / "app.js").is_file(), "the page is not in this checkout")
+    def test_page_files_carry_their_types(self):
+        """from UI_TYPES, not the registry; revalidated on every load"""
+        with urllib.request.urlopen(self.base + "/app.js", timeout=10) as resp:
+            self.assertEqual(resp.headers["Content-Type"], "text/javascript; charset=utf-8")
+            self.assertEqual(resp.headers["Cache-Control"], "no-cache")
+            etag = resp.headers["ETag"]
+        req = urllib.request.Request(self.base + "/app.js", headers={"If-None-Match": etag})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=10)
+        with cm.exception:
+            self.assertEqual(cm.exception.code, 304)
+            self.assertEqual(cm.exception.headers["Cache-Control"], "no-cache")
+
     # --- the endpoints ---------------------------------------------------------------------------------------------
 
     def test_status(self):
@@ -538,6 +552,36 @@ class Lifecycle(unittest.TestCase):
                                      mutex_name=MUTEX + "L")             # the mutex was released
                 again.stop()
                 self.assertIsNone(read_daemon_json())
+            finally:
+                handle.stop()
+
+
+class LateMcp(unittest.TestCase):
+    """the App's daemon listens before its MCP server is built (LazyMcp): the first /mcp request builds it at once"""
+
+    def test_built_at_the_first_request(self):
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WUXIAN_HOME": tmp}), \
+                mock.patch.object(server, "MCP_AFTER", 600):
+            addons = Path(tmp) / "Interface" / "AddOns"
+            (addons / "WoWBridge").mkdir(parents=True)
+            MB.install(addons, pool=16)
+            handle = server.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
+                                  mutex_name=MUTEX + "M", window=True)
+            try:
+                self.assertIsNone(handle.mcp.endpoint)                   # not built: the window and its page first
+                self.assertEqual(read_daemon_json()["mcp_url"], handle.url + "mcp")
+
+                async def go():
+                    async with create_mcp_http_client(headers={"Authorization": f"Bearer {handle.token}"}) as http:
+                        async with Client(streamable_http_client(handle.url + "mcp", http_client=http)) as c:
+                            return {t.name for t in (await c.list_tools()).tools}
+
+                self.assertIn("status", asyncio.run(go()))
+                self.assertIs(handle.service.local_mcp, handle.mcp.mcp)
             finally:
                 handle.stop()
 
