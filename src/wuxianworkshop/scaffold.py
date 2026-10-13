@@ -304,8 +304,9 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
 - 受保护函数（施法、选目标、移动等）插件不能直接调用；战斗中不能改受保护的框体（动作条、单位框体）。违规会出
   `ADDON_ACTION_BLOCKED` / `FORBIDDEN`，`logs` 里能看到。
 - 机密值（secret values，12.0 起）：战斗、首领战、PvP 对局、聊天锁定时，部分 API 返回机密值；在无限里，玩家自己的
-  `UnitHealth`、`UnitPower` 脱战也是机密值（最大血量不是）。机密值可以原样传给暴雪 API（如 `SetFormattedText`、状态条的
-  `SetValue`），但不能比较、运算、拼接或存进表。
+  `UnitHealth`、`UnitPower` 脱战也是机密值（最大血量不是）。机密值可以原样传给接受它的暴雪 API（如 `SetFormattedText`、
+  状态条的 `SetValue`），可以拼接（结果仍是机密值）、作为值存进表；但不能运算、与同类型的值比较、取长度、当表的键、
+  判断机密布尔值，也不能传给 `math.*`、`string.upper` 这类转换数字或字符串的函数。用之前先 `canaccessvalue(v)` 判断。
 - 觉得被拦截了、没反应，或者用户说游戏里有弹窗：先看 `logs`（kinds `ERR,BLOCKED`），再 `snap` 截图看游戏里的提示——很多
   警告只以弹窗出现。
 
@@ -451,8 +452,10 @@ doubt, test in the game: `run` `return type(C_Foo.Bar)`.
   bars, unit frames) cannot be changed in combat. Breaking this gives `ADDON_ACTION_BLOCKED` / `FORBIDDEN`, seen in `logs`.
 - Secret values (from 12.0): in combat, boss encounters, PvP matches and chat lockdown, some APIs return secret values;
   on this client the player's own `UnitHealth` and `UnitPower` are secret even out of combat (max health is not). Pass
-  them to Blizzard APIs as they are (e.g. `SetFormattedText`, a status bar's `SetValue`); never compare, compute with,
-  concatenate or store them.
+  them as they are to Blizzard APIs that take them (e.g. `SetFormattedText`, a status bar's `SetValue`); concatenating
+  (the result stays secret) and storing them as table values are fine; computing with them, comparing them with a value
+  of their type, taking their length, using them as table keys, testing a secret boolean, or passing them to functions
+  that turn them into numbers or strings (`math.*`, `string.upper` …) fails. Test with `canaccessvalue(v)` first.
 - Something seems blocked or does nothing, or the user mentions a dialog in the game: read `logs` first (kinds
   `ERR,BLOCKED`), then `snap` to see the game's message: many warnings show only as dialogs.
 
