@@ -66,8 +66,19 @@ local TextM = { __index = function(t, k)
 	if k == "GetText" then return function(self) return self.text end end
 	return Base[k]
 end }
+-- a Line is placed by its two ends: it has GetNumPoints and GetPoint (the region base's), and the client raises on them
+local LineM = { __index = function(t, k)
+	if k == "GetNumPoints" or k == "GetPoint" then
+		return function() error("Line:" .. k .. "(): Wrong object type for function") end
+	end
+	if k == "GetStartPoint" then return function(self) return unpack(self.from) end end
+	if k == "GetEndPoint" then return function(self) return unpack(self.to) end end
+	if k == "GetDrawLayer" then return function() return "ARTWORK", 0 end end
+	return Base[k]
+end }
 function NewFrame(t) t.otype = t.otype or "Frame" return setmetatable(t, FrameM) end
 function NewText(t) t.otype = "FontString" return setmetatable(t, TextM) end
+function NewLine(t) t.otype = "Line" return setmetatable(t, LineM) end
 """
 
 
@@ -252,6 +263,52 @@ class Probes(unittest.TestCase):
         self.assertEqual(bar["rect"], [100, 460, 200, 20])
         fill = bar["regions"][0]
         self.assertEqual((fill["rect"], fill["size"]), ("<secret>", ["<secret>", "<secret>"]))
+
+    def test_a_line_is_placed_by_its_ends(self):
+        """seen in the game (BGLite's main window, depth 1, client 1.60.1): a Line region has GetNumPoints and GetPoint,
+        the region base's, but the client raises on them ("Wrong object type for function") and the whole inspect
+        failed. A Line is placed by its two ends: they are its points, "start" and "end", beside what any region has"""
+        self.lua.execute(r"""
+			UIParent = NewFrame({ name = "UIParent", l = 0, b = 0, w = 1920, h = 1080, scale = 768 / 1080 })
+			Main = NewFrame({ name = "Main", parent = UIParent, l = 100, b = 600, w = 400, h = 300, scale = 768 / 1080 })
+			Rule = NewLine({ parent = Main, l = 101, b = 879, w = 398, h = 0, scale = 768 / 1080,
+				from = { "TOPLEFT", Main, 1, -21 }, to = { "TOPRIGHT", Main, -1, -21 } })
+			local title = NewText({ parent = Main, text = "战场", w = 80, h = 14, l = 260, b = 880, scale = 768 / 1080,
+				points = { { "TOP", Main, "TOP", 0, -6 } } })
+			Main.regions = { Rule, title }
+		""")
+        main = self.run_chunk(P.inspect("Main", depth=1))["frames"][0]
+        rule, title = main["regions"]
+        self.assertEqual((rule["type"], rule["name"], rule["parent"], rule["shown"], rule["visible"], rule["layer"]),
+                         ("Line", "Main.anon", "Main", True, True, "ARTWORK"))
+        self.assertEqual((rule["size"], rule["rect"]), ([398, 0], [101, 201, 398, 0]))
+        self.assertEqual(rule["points"], [["start", "Main", "TOPLEFT", 1, -21], ["end", "Main", "TOPRIGHT", -1, -21]])
+        self.assertEqual((title["text"], title["points"]), ("战场", [["TOP", "Main", "TOP", 0, -6]]))   # the one after it
+        line = self.run_chunk(P.inspect("Rule"))["frames"][0]                 # a Line as the target
+        self.assertEqual((line["type"], line["points"]), ("Line", rule["points"]))
+
+    def test_a_call_refused_leaves_out_only_its_field(self):
+        """a method the client refuses on some kind of object (as GetNumPoints on a Line) leaves out what it would give;
+        the object's other fields, and the objects after it, are still described"""
+        self.lua.execute(r"""
+			local function refuse(self) error(self.otype .. ": Wrong object type for function") end
+			UIParent = NewFrame({ name = "UIParent", l = 0, b = 0, w = 1920, h = 1080, scale = 768 / 1080 })
+			Odd = NewFrame({ name = "Odd", otype = "Oddity", parent = UIParent, l = 10, b = 10, w = 30, h = 30,
+				points = { { "CENTER", UIParent, "CENTER", 0, 0 } }, GetNumPoints = refuse, GetEffectiveScale = refuse,
+				IsVisible = refuse, GetFrameLevel = refuse, IsMouseEnabled = refuse, HasScript = refuse,
+				GetRegions = refuse })
+			Odd.kids = { NewFrame({ name = "OddKid", parent = Odd, points = { { "TOP", Odd, "TOP", 0, 0 } },
+				GetPoint = refuse }), NewFrame({ name = "Next", parent = Odd, points = { { "BOTTOM", Odd, "BOTTOM", 0, 0 } } }) }
+		""")
+        odd = self.run_chunk(P.inspect("Odd", depth=1))["frames"][0]
+        self.assertEqual((odd["type"], odd["shown"], odd["size"], odd["strata"], odd["parent"]),
+                         ("Oddity", True, [30, 30], "MEDIUM", "UIParent"))
+        for refused in ("visible", "rect", "level", "mouse"):                # rect: no scale to put it in pixels
+            self.assertNotIn(refused, odd)
+        self.assertEqual((odd["points"], odd["scripts"], odd["children_count"], odd["regions_count"]), ([], [], 2, 0))
+        kid, after = odd["children"]
+        self.assertEqual((kid["name"], kid["points"]), ("OddKid", []))      # one point, and GetPoint refused
+        self.assertEqual(after["points"], [["BOTTOM", "Odd", "BOTTOM", 0, 0]])
 
     def test_inspect_the_mouse_and_errors(self):
         self.lua.execute(r"""

@@ -115,6 +115,10 @@ INSPECT_BODY = r"""
 local physW, physH = GetPhysicalScreenSize()
 local SCRIPTS = { "OnShow", "OnHide", "OnEvent", "OnUpdate", "OnClick", "OnEnter", "OnLeave", "OnMouseDown", "OnMouseUp",
 	"OnDragStart", "OnValueChanged", "OnTextChanged", "OnKeyDown" }
+-- f:m(...), or nothing when f has no m or the client refuses m on this kind of object: a Line has GetNumPoints and
+-- GetPoint (the region base's) and raises "Wrong object type for function" on them, which failed the whole inspect
+local function results(ok, ...) if ok then return ... end end
+local function call(f, m, ...) if f[m] then return results(pcall(f[m], f, ...)) end end
 local function forbidden(f) return f.IsForbidden and f:IsForbidden() end
 local function nm(f)
 	if f == nil then return nil end
@@ -124,42 +128,44 @@ local function nm(f)
 	return ok and n or tostring(f)
 end
 local function px(f)
-	local ok, l, b, w, h = pcall(f.GetRect, f)
-	if not ok then return nil end
+	local l, b, w, h = call(f, "GetRect")
 	-- a bar set from a secret value (on this client the player's own health too) has a secret place: no arithmetic on it
 	if issecret and (issecret(l) or issecret(b) or issecret(w) or issecret(h)) then return "<secret>" end
-	if not l then return nil end
-	local s = f:GetEffectiveScale() * physH / 768
+	local scale = call(f, "GetEffectiveScale")
+	if not (l and scale) then return nil end
+	local s = scale * physH / 768
 	return { math.floor(l * s + 0.5), math.floor(physH - (b + h) * s + 0.5), math.floor(w * s + 0.5), math.floor(h * s + 0.5) }
 end
 local function info(f, depth)
 	if type(f) ~= "table" or not f.GetObjectType then return { value = tostring(f), type = type(f) } end
 	if forbidden(f) then return { name = "<forbidden>" } end
-	local o = { name = nm(f), type = f:GetObjectType(), shown = f:IsShown(), visible = f:IsVisible(), alpha = f:GetAlpha(),
-		size = { f:GetWidth(), f:GetHeight() }, rect = px(f), parent = nm(f:GetParent()) }
-	if f.GetFrameStrata then o.strata, o.level = f:GetFrameStrata(), f:GetFrameLevel() end
-	if f.GetDrawLayer then o.layer = f:GetDrawLayer() end
+	local o = { name = nm(f), type = f:GetObjectType(), shown = call(f, "IsShown"), visible = call(f, "IsVisible"),
+		alpha = call(f, "GetAlpha"), size = { call(f, "GetWidth"), call(f, "GetHeight") }, rect = px(f),
+		parent = nm(call(f, "GetParent")), strata = call(f, "GetFrameStrata"), level = call(f, "GetFrameLevel"),
+		layer = call(f, "GetDrawLayer"), text = call(f, "GetText"), texture = call(f, "GetTexture"),
+		protected = call(f, "IsProtected") or nil, mouse = call(f, "IsMouseEnabled") }
 	local points = {}
-	for i = 1, (f.GetNumPoints and f:GetNumPoints() or 0) do
-		local p, rel, rp, x, y = f:GetPoint(i)
-		points[i] = { p, nm(rel), rp, x, y }
+	if f.GetStartPoint then                        -- a Line: placed by its two ends, as its points "start" and "end"
+		for _, e in ipairs({ "Start", "End" }) do
+			local rp, rel, x, y = call(f, "Get" .. e .. "Point")
+			if rp then points[#points + 1] = { e:lower(), nm(rel), rp, x, y } end
+		end
+	else
+		for i = 1, call(f, "GetNumPoints") or 0 do
+			local ok, p, rel, rp, x, y = pcall(f.GetPoint, f, i)
+			if ok then points[#points + 1] = { p, nm(rel), rp, x, y } end
+		end
 	end
 	o.points = points
-	if f.GetText then local ok, t = pcall(f.GetText, f) if ok and t ~= nil then o.text = t end end
-	if f.GetTexture then local ok, t = pcall(f.GetTexture, f) if ok and t ~= nil then o.texture = t end end
-	if f.IsProtected then o.protected = f:IsProtected() or nil end
-	if f.IsMouseEnabled then o.mouse = f:IsMouseEnabled() end
 	if f.HasScript then
 		local s = {}
 		for _, h in ipairs(SCRIPTS) do
-			local ok, has = pcall(f.HasScript, f, h)
-			if ok and has and f:GetScript(h) then s[#s + 1] = h end
+			if call(f, "HasScript", h) and call(f, "GetScript", h) then s[#s + 1] = h end
 		end
 		o.scripts = s
 	end
 	if f.GetChildren then
-		local kids = { f:GetChildren() }
-		local regions = f.GetRegions and { f:GetRegions() } or {}
+		local kids, regions = { call(f, "GetChildren") }, { call(f, "GetRegions") }
 		o.children_count, o.regions_count = #kids, #regions
 		if depth > 0 then
 			o.children, o.regions = {}, {}
@@ -173,8 +179,8 @@ local frames = {}
 if MOUSE then
 	for i, f in ipairs(GetMouseFoci and GetMouseFoci() or {}) do
 		local o = info(f, 0)
-		local chain, p = {}, f.GetParent and f:GetParent()
-		while p and #chain < 12 do chain[#chain + 1] = nm(p) p = p.GetParent and p:GetParent() end
+		local chain, p = {}, call(f, "GetParent")
+		while p and #chain < 12 do chain[#chain + 1] = nm(p) p = call(p, "GetParent") end
 		o.parents = chain
 		frames[i] = o
 	end
