@@ -555,6 +555,33 @@ class Lifecycle(unittest.TestCase):
             finally:
                 handle.stop()
 
+    def test_a_reader_holds_the_write_off_for_a_moment(self):
+        # Windows refuses to replace a file that is open: a client reading daemon.json just then made the write fail
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WUXIAN_HOME": tmp}):
+            server.write_daemon_json({"port": 1, "token": "a"})
+            reader = open(server.daemon_file(), encoding="utf-8")
+            threading.Timer(0.15, reader.close).start()
+            server.write_daemon_json({"port": 2, "token": "b"})
+            self.assertTrue(reader.closed)
+            self.assertEqual(read_daemon_json()["port"], 2)
+            with open(server.daemon_file(), encoding="utf-8"), mock.patch.object(server, "REPLACE_WAITS", (0.01,)):
+                with self.assertRaises(PermissionError):                # held off for good: the error, as before
+                    server.write_daemon_json({"port": 3, "token": "c"})
+
+    def test_a_read_while_it_is_replaced(self):
+        # opening it while the daemon replaces it fails for a moment: read again, it is not "no daemon"
+        from wuxianworkshop.daemon import api
+        text = json.dumps({"port": 4, "token": "d"})
+        for answers, want, naps in (([PermissionError(), PermissionError(), text], 4, 2),
+                                    ([PermissionError()] * 4, None, 3),
+                                    ([FileNotFoundError()], None, 0)):            # none there: no daemon, at once
+            fake = mock.Mock()
+            fake.read_text.side_effect = answers
+            with mock.patch.object(api, "daemon_file", return_value=fake), mock.patch.object(api.time, "sleep") as nap:
+                info = api.read_daemon_json()
+            self.assertEqual(info and info["port"], want)
+            self.assertEqual(nap.call_count, naps)
+
 
 class LateMcp(unittest.TestCase):
     """the App's daemon listens before its MCP server is built (LazyMcp): the first /mcp request builds it at once"""

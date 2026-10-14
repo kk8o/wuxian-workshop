@@ -74,11 +74,25 @@ class UiFiles(StaticFiles):
         return response
 
 
+REPLACE_WAITS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)     # seconds between tries of a replace a reader holds off
+
+
 def write_daemon_json(info):
+    """daemon.json replaced whole. Windows refuses to replace a file while it is open: a client that reads it just
+    then (one waiting for this daemon to start reads it every few milliseconds) holds the replace off for a moment,
+    so it is tried again. Tried once, such a write failed: the daemon's start with it, or after a failed MCP build
+    daemon.json kept naming /mcp (a test that read it meanwhile saw that)"""
     path = daemon_file()
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    for wait in (*REPLACE_WAITS, None):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 
 def remove_daemon_json(pid):

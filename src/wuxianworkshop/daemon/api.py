@@ -3,19 +3,30 @@ JSON error body, the RUN result parser, the kinds of a log entry, state/daemon.j
 can import it without the HTTP stack."""
 import json
 import re
+import time
 
 from ..paths import daemon_file
 
 LOG_KINDS = ("ERR", "OUT", "WARN", "BLOCKED", "DROPPED", "RUN", "RELOAD", "EVENT", "SNAP", "WATCH", "SLOTS", "INFO")
 
 
+READ_WAITS = (0.01, 0.02, 0.05)         # seconds between reads of a daemon.json that is being replaced
+
+
 def read_daemon_json():
     """state/daemon.json as a dict ({"pid", "port", "token", "version", "started", "mode", "url", "mcp_url"}), or None
-    when there is none (or it is not JSON): the daemon writes it when it listens and removes it when it exits"""
-    try:
-        info = json.loads(daemon_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    when there is none (or it is not JSON): the daemon writes it when it listens and removes it when it exits. While
+    the daemon replaces it Windows refuses to open it for a moment: read again, not taken for no daemon"""
+    for wait in (*READ_WAITS, None):
+        try:
+            info = json.loads(daemon_file().read_text(encoding="utf-8"))
+            break
+        except PermissionError:
+            if wait is None:
+                return None
+            time.sleep(wait)
+        except (OSError, ValueError):
+            return None
     return info if isinstance(info, dict) and "port" in info and "token" in info else None
 
 
