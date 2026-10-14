@@ -1,5 +1,7 @@
 """Find the game window and read its client area: GDI from the screen, or Windows Graphics Capture of the window itself
-(WgcSource, optional). Neither needs extra packages."""
+(WgcSource, optional). Neither needs extra packages. Every coordinate here is in physical pixels, on every monitor
+(physical())."""
+import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import os
@@ -9,12 +11,28 @@ from dataclasses import dataclass
 import numpy as np
 
 user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
-user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))     # per-monitor DPI aware v2: every coordinate below is in physical pixels
 
 GAME_EXES = ("wow.exe", "wowt.exe", "wowb.exe", "wowclassic.exe")
 GAME_CLASSES = ("waApplication Window", "GxWindowClass")    # the client's main window (12.x; older clients)
 CLIENT_MARKS = (".flavor.info", "Interface", "WTF")          # what sits next to the exe in a client folder
 SRCCOPY = 0x00CC0020        # without CAPTUREBLT: layered windows and the cursor are not copied
+PER_MONITOR_V2 = ctypes.c_void_p(-4)                         # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+_set_thread_dpi = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p)(("SetThreadDpiAwarenessContext", user32))
+
+
+@contextlib.contextmanager
+def physical():
+    """this thread measures windows in physical pixels meanwhile (per-monitor DPI aware v2), whatever the process is.
+    The App's window library makes the whole process system DPI aware, and for such a thread Windows scales the
+    rectangles of a window on a monitor whose scaling is not the primary one's (0.9.10: a game on the second monitor
+    was read in the wrong place and never linked). Grabs go through it too, although the screen's DC gave the same
+    pixels to an unaware thread on a primary monitor at 125 % (a second monitor was not tried)"""
+    old = _set_thread_dpi(PER_MONITOR_V2)
+    try:
+        yield
+    finally:
+        if old:
+            _set_thread_dpi(old)
 
 
 @dataclass
@@ -94,11 +112,19 @@ def _window(hwnd, pid, exe):
     n = user32.GetWindowTextLengthW(hwnd)
     title = ctypes.create_unicode_buffer(n + 1)
     user32.GetWindowTextW(hwnd, title, n + 1)
-    r = wt.RECT()
-    user32.GetClientRect(hwnd, ctypes.byref(r))
-    pt = wt.POINT(0, 0)
-    user32.ClientToScreen(hwnd, ctypes.byref(pt))
+    r, pt = wt.RECT(), wt.POINT(0, 0)
+    with physical():
+        user32.GetClientRect(hwnd, ctypes.byref(r))
+        user32.ClientToScreen(hwnd, ctypes.byref(pt))
     return Window(hwnd, pid, exe, title.value, pt.x, pt.y, r.right, r.bottom, user32.GetDpiForWindow(hwnd), bool(user32.IsIconic(hwnd)))
+
+
+def client_size(hwnd):
+    """(width, height) of the window's client area, in physical pixels"""
+    r = wt.RECT()
+    with physical():
+        user32.GetClientRect(hwnd, ctypes.byref(r))
+    return r.right, r.bottom
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -107,6 +133,7 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
 
 
+@physical()
 def grab(x, y, w, h):
     """RGB uint8 array (h, w, 3) of the screen rectangle, as composed by DWM"""
     sdc = user32.GetDC(None)
@@ -322,11 +349,10 @@ class WgcSource:
         rectangles disagree for a moment (snaps were cut at the title bar)"""
         if user32.IsIconic(self.hwnd):
             return None
-        rc = wt.RECT()
-        user32.GetClientRect(self.hwnd, ctypes.byref(rc))
-        dx = (size[0] - rc.right) // 2
-        dy = size[1] - rc.bottom - dx
-        if rc.right <= 0 or rc.bottom <= 0 or dx < 0 or dy < 0:
+        cw, ch = client_size(self.hwnd)
+        dx = (size[0] - cw) // 2
+        dy = size[1] - ch - dx
+        if cw <= 0 or ch <= 0 or dx < 0 or dy < 0:
             return None
         return dx, dy
 
@@ -362,10 +388,9 @@ class WgcSource:
             if off is None:                                  # minimized, or a frame of a size the window does not have
                 return None
             dx, dy = off
-            rc = wt.RECT()
-            user32.GetClientRect(self.hwnd, ctypes.byref(rc))
-            w = min(rc.right, size.w - dx, self.pool_size[0] - dx)
-            h = min(rc.bottom, size.h - dy, self.pool_size[1] - dy)
+            cw, ch = client_size(self.hwnd)
+            w = min(cw, size.w - dx, self.pool_size[0] - dx)
+            h = min(ch, size.h - dy, self.pool_size[1] - dy)
             if w <= 0 or h <= 0:
                 return None
             surface = frame.out(6, ())
