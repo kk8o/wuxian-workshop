@@ -124,8 +124,7 @@ local function nm(f)
 	if f == nil then return nil end
 	if type(f) ~= "table" or not f.GetObjectType then return tostring(f) end
 	if forbidden(f) then return "<forbidden>" end
-	local ok, n = pcall(function() return (f.GetDebugName and f:GetDebugName()) or f:GetName() end)
-	return ok and n or tostring(f)
+	return call(f, "GetDebugName") or call(f, "GetName") or tostring(f)
 end
 local function px(f)
 	local l, b, w, h = call(f, "GetRect")
@@ -139,7 +138,7 @@ end
 local function info(f, depth)
 	if type(f) ~= "table" or not f.GetObjectType then return { value = tostring(f), type = type(f) } end
 	if forbidden(f) then return { name = "<forbidden>" } end
-	local o = { name = nm(f), type = f:GetObjectType(), shown = call(f, "IsShown"), visible = call(f, "IsVisible"),
+	local o = { name = nm(f), type = call(f, "GetObjectType"), shown = call(f, "IsShown"), visible = call(f, "IsVisible"),
 		alpha = call(f, "GetAlpha"), size = { call(f, "GetWidth"), call(f, "GetHeight") }, rect = px(f),
 		parent = nm(call(f, "GetParent")), strata = call(f, "GetFrameStrata"), level = call(f, "GetFrameLevel"),
 		layer = call(f, "GetDrawLayer"), text = call(f, "GetText"), texture = call(f, "GetTexture"),

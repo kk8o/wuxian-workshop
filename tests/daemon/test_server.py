@@ -567,6 +567,17 @@ class Lifecycle(unittest.TestCase):
             with open(server.daemon_file(), encoding="utf-8"), mock.patch.object(server, "REPLACE_WAITS", (0.01,)):
                 with self.assertRaises(PermissionError):                # held off for good: the error, as before
                     server.write_daemon_json({"port": 3, "token": "c"})
+            self.assertFalse(server.daemon_file().with_name("daemon.json.tmp").exists())   # and no .tmp left
+
+    def test_a_reader_holds_the_delete_off_for_a_moment(self):
+        # deleting an open file fails on Windows too: left there, daemon.json named a daemon that had exited
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WUXIAN_HOME": tmp}):
+            server.write_daemon_json({"pid": 7, "port": 1, "token": "a"})
+            reader = open(server.daemon_file(), encoding="utf-8")
+            threading.Timer(0.15, reader.close).start()
+            server.remove_daemon_json(7)
+            self.assertTrue(reader.closed)
+            self.assertFalse(server.daemon_file().exists())
 
     def test_a_read_while_it_is_replaced(self):
         # opening it while the daemon replaces it fails for a moment: read again, it is not "no daemon"

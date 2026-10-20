@@ -38,7 +38,7 @@ from starlette.staticfiles import NotModifiedResponse, StaticFiles
 from .. import __version__
 from ..core.game import addons_dir
 from ..paths import daemon_file, logs_dir, settings_file, snaps_dir, ui_static_dir
-from .api import ApiError, read_daemon_json  # noqa: F401  (read_daemon_json is this module's interface too)
+from .api import ApiError, read_daemon_json, retry_shared  # noqa: F401  (read_daemon_json is this module's interface too)
 from .companion import CompanionLoop, installed_at
 from .instance import ERROR_ALREADY_EXISTS, MUTEX, SingleInstance, instance_mutex  # noqa: F401  (this module's too)
 from .journal import Journal
@@ -74,33 +74,31 @@ class UiFiles(StaticFiles):
         return response
 
 
-REPLACE_WAITS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)     # seconds between tries of a replace a reader holds off
+REPLACE_WAITS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)     # seconds between tries of a replace / delete a reader holds off
 
 
 def write_daemon_json(info):
-    """daemon.json replaced whole. Windows refuses to replace a file while it is open: a client that reads it just
-    then (one waiting for this daemon to start reads it every few milliseconds) holds the replace off for a moment,
-    so it is tried again. Tried once, such a write failed: the daemon's start with it, or after a failed MCP build
-    daemon.json kept naming /mcp (a test that read it meanwhile saw that)"""
+    """daemon.json replaced whole. A client that reads it just then (one waiting for this daemon to start reads it every
+    few milliseconds) holds the replace off for a moment, so it is tried again (retry_shared). Tried once, such a write
+    failed: the daemon's start with it, or after a failed MCP build daemon.json kept naming /mcp. One that fails for
+    good takes its .tmp with it"""
     path = daemon_file()
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
-    for wait in (*REPLACE_WAITS, None):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if wait is None:
-                raise
-            time.sleep(wait)
+    try:
+        retry_shared(lambda: os.replace(tmp, path), REPLACE_WAITS)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def remove_daemon_json(pid):
-    """our daemon.json, not one a later instance wrote"""
+    """our daemon.json, not one a later instance wrote; a client reading it just then holds the delete off for a moment
+    (left there, it named a daemon that had exited)"""
     info = read_daemon_json()
     if info is not None and info.get("pid") == pid:
         try:
-            daemon_file().unlink()
+            retry_shared(lambda: daemon_file().unlink(missing_ok=True), REPLACE_WAITS)
         except OSError:
             pass
 
@@ -631,12 +629,19 @@ class DaemonHandle:
         return f"http://{self.host}:{self.port}/mcp" if on else None
 
     def _mcp_off(self):
-        """(the MCP build's thread) /mcp could not be built: it is named nowhere from now on, daemon.json too"""
+        """(the MCP build's thread) /mcp could not be built: it is named nowhere from now on, daemon.json too. Written
+        outside the cleanup lock (a write a reader holds off may wait seconds, and a quit would wait with it); a daemon
+        that stopped meanwhile has its daemon.json removed again"""
         with self._cleanup_lock:
             if self._cleaned:                        # stopped meanwhile: no daemon.json to write again
                 return
             self.service.mcp_url = None
-            write_daemon_json(self.info())
+            info = self.info()
+        write_daemon_json(info)
+        with self._cleanup_lock:
+            stopped = self._cleaned
+        if stopped:
+            remove_daemon_json(self.pid)
 
     @property
     def running(self):

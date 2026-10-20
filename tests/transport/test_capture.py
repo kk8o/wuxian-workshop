@@ -134,6 +134,9 @@ class Physical(unittest.TestCase):
                               700, None, None, None, None)              # never shown
         self.assertTrue(hwnd)
         self.addCleanup(ctypes.windll.user32.DestroyWindow, hwnd)
+        if ctypes.windll.user32.GetDpiForWindow(hwnd) == 96:            # GitHub's runners: nothing would be scaled
+            self.skipTest("the monitor is at 100 %: an unaware thread measures the same anyway (the stand-in test "
+                          "test_a_window_on_a_monitor_of_another_scaling covers it)")
 
         def measure():
             win = capture._window(hwnd, 0, "")

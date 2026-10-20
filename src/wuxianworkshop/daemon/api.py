@@ -13,20 +13,26 @@ LOG_KINDS = ("ERR", "OUT", "WARN", "BLOCKED", "DROPPED", "RUN", "RELOAD", "EVENT
 READ_WAITS = (0.01, 0.02, 0.05)         # seconds between reads of a daemon.json that is being replaced
 
 
+def retry_shared(fn, waits):
+    """fn(), tried again after each of waits (seconds) while it raises PermissionError; the last one's error goes out.
+    Windows refuses to open a file that is being replaced, and to replace or delete one another process has open: the
+    daemon writing daemon.json and a client reading it just then hold each other off for a moment"""
+    for wait in waits:
+        try:
+            return fn()
+        except PermissionError:
+            time.sleep(wait)
+    return fn()
+
+
 def read_daemon_json():
     """state/daemon.json as a dict ({"pid", "port", "token", "version", "started", "mode", "url", "mcp_url"}), or None
-    when there is none (or it is not JSON): the daemon writes it when it listens and removes it when it exits. While
-    the daemon replaces it Windows refuses to open it for a moment: read again, not taken for no daemon"""
-    for wait in (*READ_WAITS, None):
-        try:
-            info = json.loads(daemon_file().read_text(encoding="utf-8"))
-            break
-        except PermissionError:
-            if wait is None:
-                return None
-            time.sleep(wait)
-        except (OSError, ValueError):
-            return None
+    when there is none (or it is not JSON): the daemon writes it when it listens and removes it when it exits. One the
+    daemon is replacing just then is read again, not taken for no daemon"""
+    try:
+        info = json.loads(retry_shared(lambda: daemon_file().read_text(encoding="utf-8"), READ_WAITS))
+    except (OSError, ValueError):
+        return None
     return info if isinstance(info, dict) and "port" in info and "token" in info else None
 
 
