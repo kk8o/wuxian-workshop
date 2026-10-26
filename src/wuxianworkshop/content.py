@@ -7,8 +7,9 @@ The website lists the newest packs in MANIFEST (wuxianwow.com/workshop/data/mani
     {"packs": {"api": {"version": "2026.10.06.1", "file": "api-2026.10.06.1.json.gz", "size": 512345,
                        "sha256": "...", "min_app": "0.8.0"}}}
 with the files beside it. ContentUpdater.check() reads it, downloads what is newer than what is here (size and SHA-256
-checked, the JSON parsed, the pack and version it says matched) and replaces the cached file atomically. A failure keeps
-what was there. WUXIAN_CONTENT_FEED overrides the manifest's URL (a URL or a local manifest.json), for tests.
+checked, the JSON parsed, the pack and version it says matched) and replaces the cached file atomically. The manifest
+is taken only with its signature (manifest.json.sig, signing.py). A failure keeps what was there. WUXIAN_CONTENT_FEED
+overrides the manifest's URL (a URL or a local manifest.json, taken unsigned), for tests.
 """
 import gzip
 import hashlib
@@ -25,6 +26,7 @@ from pathlib import Path
 
 from . import __version__
 from .paths import home
+from .signing import BadSignature, fetch_signed
 
 MANIFEST = "https://wuxianwow.com/workshop/data/manifest.json"
 BUNDLED = Path(__file__).resolve().parent / "data"
@@ -174,7 +176,7 @@ class ContentUpdater:
             return []
         self.busy, self.error, done = True, "", []
         try:
-            manifest = json.loads(self.fetch(self.url, 1 << 20).decode("utf-8"))
+            manifest = json.loads(fetch_signed(self.url, 1 << 20, self.fetch).decode("utf-8"))
             for name, entry in (manifest.get("packs") or {}).items():
                 if not isinstance(entry, dict) or version_key(entry.get("version")) <= version_key(self.packs.version(name)):
                     continue
@@ -186,7 +188,11 @@ class ContentUpdater:
         except Exception as e:
             from .i18n import tr
             why = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
-            self.error = tr(f"内容包更新失败：{why}", f"the content pack update failed: {why}")
+            if isinstance(e, BadSignature):
+                self.error = tr("内容包清单未通过签名校验，没有更新。",
+                                "the content pack manifest failed its signature check: nothing was updated")
+            else:
+                self.error = tr(f"内容包更新失败：{why}", f"the content pack update failed: {why}")
             self.note(f"content check failed: {e}")
         finally:
             self.checked, self.busy = self.clock(), False

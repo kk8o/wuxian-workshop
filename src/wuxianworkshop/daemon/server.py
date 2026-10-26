@@ -417,8 +417,9 @@ def make_app(service, access, handle, mcp=None):
         if action != "apply":
             return await service.update(action)
         u = service.updater
-        if u is None or not u.apply_on_exit(bool(body.get("background"))):   # Update.exe waits for this process to end
-            raise ApiError(409, "not_ready", "no downloaded update to apply")
+        # the package is hashed first (some tens of MB); Update.exe then waits for this process to end
+        if u is None or not await asyncio.to_thread(u.apply_on_exit, bool(body.get("background"))):
+            raise ApiError(409, "not_ready", (u and u.status()["error"]) or "no downloaded update to apply")
         service.journal.add("INFO", "update: the program stops now; Velopack puts the new version in place and starts it")
         handle.request_stop(delay=0.5)
         return dict(u.status(), restarting=True)

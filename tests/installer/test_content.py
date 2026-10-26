@@ -1,6 +1,6 @@
 """Content packs (wuxianworkshop/content.py): the newer of the carried and the downloaded copy is used, and the updater
-takes a newer pack from a manifest only when its size, SHA-256 and contents check out. A local folder stands in for
-wuxianwow.com/workshop/data."""
+takes a newer pack from a manifest only when its size, SHA-256 and contents check out, and from the website only when the
+manifest is signed. A local folder stands in for wuxianwow.com/workshop/data."""
 import gzip
 import hashlib
 import json
@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.installer import signed
 from wuxianworkshop import content
 
 
@@ -63,6 +64,22 @@ class Packs(unittest.TestCase):
             self.assertIn("内容包更新失败", u.error)
             self.assertEqual(self.packs.version("api"), "2026.10.06.1")
         self.assertFalse((self.cached / "api.json.gz").exists())
+
+    def test_from_the_website_the_manifest_counts_only_signed(self):
+        self.publish("2026.10.07.1")
+        with signed.keys():
+            u = content.ContentUpdater(self.packs, url=signed.BASE + "site/manifest.json", note=self.notes.append,
+                                       clock=lambda: 5.0, fetcher=signed.fetcher(self.root))
+            for sign in (None, signed.OTHER):                         # no signature; one by a key the program does not accept
+                if sign:
+                    signed.sign(self.site / "manifest.json", sign)
+                self.assertEqual(u.check(), [])
+                self.assertEqual(u.error, "内容包清单未通过签名校验，没有更新。")
+                self.assertEqual(self.packs.version("api"), "2026.10.06.1")
+            signed.sign(self.site / "manifest.json")
+            self.assertEqual(u.check(), ["api"])
+            self.assertEqual(u.error, "")
+        self.assertEqual((self.packs.version("api"), self.packs.source("api")), ("2026.10.07.1", "downloaded"))
 
     def test_a_pack_for_a_newer_program_waits(self):
         self.publish("2026.10.09.1", min_app="99.0")

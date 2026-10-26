@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=2.5,<3",
     "pillow>=12,<13",
     "lupa>=2.8,<3",          # Lua 5.1, the client's own version: agent/lint.py compiles the addons' Lua with it
+    "cryptography>=50,<51",  # Ed25519: signing.py checks the signed update feed, content manifest and extension catalog
 ]
 
 [project.optional-dependencies]

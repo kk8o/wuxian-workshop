@@ -1,6 +1,7 @@
 """The extension catalog (extensions.py): its entries checked, the zip downloaded and checked (size, SHA-256, every member),
 installed in place of what the folder held (a version kept first, the .toc's Interface the client's, whether the game
-must start again), removed (a version kept), and what the 扩展 page offers for each state."""
+must start again), removed (a version kept), and what the 扩展 page offers for each state. From the website the catalog
+counts only signed."""
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+from tests.installer import signed
 from wuxianworkshop import extensions as X
 from wuxianworkshop.agent import history
 
@@ -70,8 +72,25 @@ class Catalog(unittest.TestCase):
                 raise raised
             other = X.Catalog(url="https://example.invalid/extensions.json", fetcher=fetcher).refresh()
             self.assertEqual((other.missing, other.error), (False, said))
+            if isinstance(raised, urllib.error.HTTPError):
+                raised.close()                          # else a later test's garbage collection warns of it
         with mock.patch.dict(os.environ, {"WUXIAN_EXTENSIONS_FEED": "C:/x/extensions.json"}):
             self.assertEqual(X.Catalog().url, "C:/x/extensions.json")
+
+    def test_from_the_website_the_catalog_counts_only_signed(self):
+        raw = make_zip()
+        entry = make_catalog(self.dir, raw)
+        with signed.keys():
+            cat = X.Catalog(url=signed.BASE + "extensions.json", fetcher=signed.fetcher(self.dir)).refresh()
+            self.assertEqual((cat.addons, cat.missing, cat.error), ([], False, "扩展目录未通过签名校验，没有采用。"))
+            signed.sign(self.dir / "extensions.json")
+            self.assertEqual((cat.refresh().addons, cat.error), ([entry], ""))
+            self.assertEqual(cat.download(entry), raw)                     # the zip beside it, by the signed SHA-256
+            catalog = json.loads((self.dir / "extensions.json").read_text(encoding="utf-8"))
+            catalog["addons"][0]["sha256"] = hashlib.sha256(b"another zip").hexdigest()
+            (self.dir / "extensions.json").write_text(json.dumps(catalog), encoding="utf-8")   # replaced on the server
+            self.assertEqual(cat.refresh().error, "扩展目录未通过签名校验，没有采用。")
+            self.assertEqual(cat.addons, [entry])                          # what was read stands
 
     def test_the_catalog_is_kept_for_the_agent(self):
         """a catalog read is kept (its addons' id, folder and version) when the Catalog has a store; a failed read

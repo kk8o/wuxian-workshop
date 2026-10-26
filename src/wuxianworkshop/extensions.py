@@ -15,9 +15,10 @@ and SHA-256 those of the catalog), checks every member (inside the addon's folde
 addon has, MAX_UNPACKED bytes at most) and that its .toc is of the catalog's version, keeps the folder as it was (a version
 in agent/history.py, reason "update": it can be put back), writes the new one beside it, swaps the two and makes the
 .toc's Interface the client's, as for the bundled addons. A removal keeps a version too ("remove"), then the folder goes.
-WUXIAN_EXTENSIONS_FEED overrides the catalog's URL (a URL or a local extensions.json): for tests, and to try a catalog
-before it is uploaded. The daemon keeps the addons it last read (id, folder, version) in the state folder
-(extension-catalog.json): the agent's WuxianKit tools (mcp/kit.py) tell by it the addons the catalog lists.
+The catalog is taken only with its signature (extensions.json.sig, signing.py). WUXIAN_EXTENSIONS_FEED overrides the
+catalog's URL (a URL or a local extensions.json, taken unsigned): for tests, and to try a catalog before it is uploaded.
+The daemon keeps the addons it last read (id, folder, version) in the state folder (extension-catalog.json): the agent's
+WuxianKit tools (mcp/kit.py) tell by it the addons the catalog lists.
 """
 import hashlib
 import io
@@ -36,6 +37,7 @@ from .agent import history
 from .content import fetch, version_key
 from .installer.addons import find_toc, read_toc, toc_with_interface
 from .paths import state_dir
+from .signing import BadSignature, fetch_signed
 
 CATALOG = "https://wuxianwow.com/workshop/data/extensions.json"
 MAX_CATALOG = 1 << 20
@@ -111,7 +113,7 @@ class Catalog:
         from .i18n import tr
         self.missing = False
         try:
-            data = json.loads(self.fetch(self.url, MAX_CATALOG).decode("utf-8"))
+            data = json.loads(fetch_signed(self.url, MAX_CATALOG, self.fetch).decode("utf-8"))
             if not isinstance(data, dict) or not isinstance(data.get("addons"), list):
                 raise CatalogError("not an extension catalog")
             self.addons, self.updated, self.error = entries(data), data.get("updated"), ""
@@ -122,6 +124,9 @@ class Catalog:
             self.missing = code == 404
             self.error = (tr("网站上还没有扩展目录。", "The website has no extension catalog yet.") if self.missing else
                           tr(f"扩展目录读取失败：网站返回 {code}", f"The extension catalog could not be read: the website answered {code}"))
+        except BadSignature:
+            self.error = tr("扩展目录未通过签名校验，没有采用。",
+                            "The extension catalog failed its signature check and was not used.")
         except urllib.error.URLError:
             self.error = tr("连不上无限工坊网站，稍后点「刷新」再试。",
                             "Cannot reach the Wuxian Workshop website; try Refresh again later.")
