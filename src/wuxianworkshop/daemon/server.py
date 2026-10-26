@@ -36,7 +36,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import NotModifiedResponse, StaticFiles
 
 from .. import __version__
-from ..core.game import addons_dir
+from ..core.game import addons_dir, isolated
 from ..paths import daemon_file, logs_dir, settings_file, snaps_dir, ui_static_dir
 from .api import ApiError, read_daemon_json, retry_shared  # noqa: F401  (read_daemon_json is this module's interface too)
 from .companion import CompanionLoop, installed_at
@@ -803,7 +803,8 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
         lock.release()
         raise
     journal.add("INFO", f"daemon {__version__} listening on {handle.url} (pid {os.getpid()}, mode {mode}, "
-                        f"MCP {handle.mcp_url or 'off'})")
+                        f"MCP {handle.mcp_url or 'off'})" + ("; an isolated test instance (WUXIAN_MUTEX): it does not "
+                                                            "look for the game" if isolated() else ""))
     return handle
 
 
@@ -815,7 +816,8 @@ def main(argv=None):
     ap.add_argument("--capture", choices=("gdi", "wgc"), default=None,
                     help="wgc: the window itself, also when covered; gdi: the screen (the corner must be visible) "
                          "(default: what the 设置 page saved, else wgc)")
-    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _cn_beta_)")
+    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _cn_beta_; "
+                                   "none in an isolated test instance, WUXIAN_MUTEX set)")
     ap.add_argument("--rate", type=float, default=0.05, help="seconds between screen reads")
     ap.add_argument("--ping-every", type=float, default=10.0, help="seconds between pings")
     ap.add_argument("--no-wait-restart", action="store_true", help="do not wait for the game to restart after an install")

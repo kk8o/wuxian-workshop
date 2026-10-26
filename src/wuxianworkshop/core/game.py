@@ -18,10 +18,22 @@ def silent_wav(ms=10):
     return head + b"data" + struct.pack("<I", samples) + bytes([128]) * samples
 
 
+def isolated():
+    """a test instance beside the program in use (WUXIAN_MUTEX names its own mutex, daemon/instance.py): it never looks
+    for the game, so it cannot install into, read the screen of or write the mailbox of the one the player is in. No game
+    window (transport.capture.find_window), no client folder but the one given (game_dir). 10-12: a test instance whose
+    page switched it to developer mode installed into the running game, read its screen and wrote its mailbox"""
+    return bool(os.environ.get("WUXIAN_MUTEX"))
+
+
 def game_dir(explicit=None):
-    """the client folder (the one holding Interface/AddOns): explicit, else the running game's, else a default"""
+    """the client folder (the one holding Interface/AddOns): explicit, else the running game's, else a default; an
+    isolated test instance has only the explicit one"""
     if explicit:
         return Path(explicit)
+    if isolated():
+        raise SystemExit("an isolated test instance (WUXIAN_MUTEX) does not look for the game: "
+                         "pass --game <a client folder of its own>")
     try:
         from ..transport.capture import find_window
         win = find_window()

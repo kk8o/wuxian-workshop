@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..core.game import isolated
+
 user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
 
 GAME_EXES = ("wow.exe", "wowt.exe", "wowb.exe", "wowclassic.exe")
@@ -79,7 +81,9 @@ def _class(hwnd):
 
 
 def find_window(exes=GAME_EXES):
-    """the visible top-level window of the game, or None"""
+    """the visible top-level window of the game, or None; always None in an isolated test instance (core.game.isolated)"""
+    if isolated():
+        return None
     found = []
     proc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 

@@ -117,6 +117,33 @@ class ModeSwitch(unittest.TestCase):
                 handle.stop()
 
 
+class IsolatedInstance(unittest.TestCase):
+    """10-12: a test instance beside the program in use, started in player mode, was switched to developer mode by its
+    page (migrateMode) and installed into the running game, then read its screen and wrote its mailbox. With
+    WUXIAN_MUTEX set it is isolated (core.game.isolated): the real companion loop finds no game, the switch installs
+    nothing, and the default client folder stays as it was"""
+
+    def test_switch_installs_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Path(tmp) / "client"                     # stands for the player's: the default client folder
+            addons = client / "Interface" / "AddOns"
+            addons.mkdir(parents=True)
+            env = {"WUXIAN_HOME": str(Path(tmp) / "home"), "WUXIAN_MUTEX": MUTEX + "I"}
+            with mock.patch.dict(os.environ, env), mock.patch("wuxianworkshop.core.game.DEFAULT_GAME_DIRS", [str(client)]):
+                handle = server.start(mode="player", capture="gdi")          # as a test instance is started: no factory
+                try:
+                    status = request(handle, "GET", "/api/status")
+                    self.assertTrue(status["daemon"]["isolated"])
+                    self.assertIsNone(status["addons_dir"])
+                    res = request(handle, "POST", "/api/settings", {"mode": "developer"})   # what migrateMode sends
+                    self.assertEqual(res["mode"], "developer")
+                    self.assertFalse(res["install"]["available"])
+                    self.assertIn("WUXIAN_MUTEX", res["install"]["detail"])
+                    self.assertEqual(list(addons.iterdir()), [])                # nothing went into the game
+                finally:
+                    handle.stop()
+
+
 class LiveDaemon(unittest.TestCase):
     """one daemon for the class: starting uvicorn takes a moment"""
 

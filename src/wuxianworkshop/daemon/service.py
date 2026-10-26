@@ -29,6 +29,7 @@ from ..agent.commands import toc_files
 from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
 from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
+from ..core.game import isolated
 from ..paths import settings_file
 from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
@@ -374,7 +375,7 @@ class Service:
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
                                 mode=self.mode, started=round(self.started, 3), url=self.url,
-                                command=[exe, *args[:-1]]),
+                                command=[exe, *args[:-1]], isolated=isolated()),
                     game=w.game_status(), link=link, watch=watch, reload_pending=reload_pending, mcp_url=self.mcp_url,
                     addons_dir=str(w.addons) if w.addons else None,
                     update=self.updater.status() if self.updater is not None else None,

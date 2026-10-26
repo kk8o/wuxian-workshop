@@ -1,6 +1,6 @@
 r"""One daemon per user: the named mutex Local\WuxianWorkshop (WUXIAN_MUTEX names another: a test instance beside the
-one in use). Light to import: the shell takes it before it opens its window (ui/shell.py), the daemon when it starts
-(server.start)."""
+one in use, isolated from the game: core.game.isolated). Light to import: the shell takes it before it opens its window
+(ui/shell.py), the daemon when it starts (server.start)."""
 import ctypes
 import os
 
