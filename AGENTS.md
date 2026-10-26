@@ -31,7 +31,7 @@
 - 守护进程：`.venv\Scripts\wuxian serve [--capture gdi|wgc]`（无窗口）；客户端子命令 `status | check | try | run <lua> | load <target> | watch | snap | reload | logs | events | call | respond | addon-api | api-scan | say | quit` 和 `wuxian mcp` 在没有守护进程时自动拉起 `wuxian app --background`（测试或无界面环境设 `WUXIAN_HEADLESS=1` 改拉 `serve`）。`wuxian mcp-config claude|codex|cursor` 打印接入片段。
 - 窗口：`.venv\Scripts\wuxian`（无参数）= 守护进程 + 托盘 + pywebview 窗口。
 - 打包：`powershell scripts\build.ps1`（`dist\wuxian\wuxian.exe`）；发布包：`powershell scripts\pack.ps1 [-Version X] [-Notes notes.md]`（`dist\releases\`）。
-- 测试实例：`WUXIAN_HOME`（运行时目录）+ `WUXIAN_MUTEX`（单实例互斥量）+ `serve --mode player`（不读屏幕、不写信箱）可以在正在用的程序旁边再起一个；`WUXIAN_UPDATE_FEED` / `WUXIAN_CONTENT_FEED` 指向本地文件夹测更新和内容包。
+- 测试实例：`WUXIAN_HOME`（运行时目录）+ `WUXIAN_MUTEX`（单实例互斥量）+ `serve --mode player` 可以在正在用的程序旁边再起一个，但只在没有页面连上它时才不读屏幕、不写信箱：页面一打开就 `migrateMode`（`ui/static/app.js`）切成开发者模式并装插件，没设游戏目录时装进正在运行的游戏，随后读它的画面、写同一个信箱。测页面用 `scripts\dev_fake_api.py` 或拦截 `POST /api/settings`，测守护进程用进程内的 `server.start(worker_factory=…)`；游戏开着时不要起带页面的真实测试实例。`WUXIAN_UPDATE_FEED` / `WUXIAN_CONTENT_FEED` 指向本地文件夹测更新和内容包。
 
 ## 运行时文件
 - 都在 `%LOCALAPPDATA%\WuxianWorkshop\` 下（环境变量 `WUXIAN_HOME` 可改根目录；`tests/__init__.py` 给整个测试默认一个临时目录，测试绝不碰用户的文件）：`state\daemon.json`（端口、token、pid）、`state\settings.json`、`state\install.json`、`state\clients.json`（游戏报告的 Interface 号）、`state\kit-manifest.json`（扩展框架的清单）、`logs\debug.log`、`snaps\*.png`、`history\`、`webview\`。
