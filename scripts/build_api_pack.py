@@ -8,9 +8,12 @@ lists filled in, and MANUAL_EN, the same in English; read with ast, never run). 
 The pack's `runtime` is what the game has, from the scan `wuxian api-scan --out <that repository>\api\game_scan.json` made
 in the running game of the documentation's build (runtime()): the documentation leaves functions out (C_Garrison has 227
 in 1.60.1.70338, 40 documented) and lists some the game lacks (the login screen's); a pack without it (--no-scan) is read
-as before.
+as before. While the game of a new build cannot be played (the official client 1.60.1.70630 came on 2026-10-27, its
+servers open on 11-05), --carry-scan takes the scan of an earlier build and applies to it what the documentation says
+changed since (changes.json: functions and Enum / Constants tables added or removed); the pack's runtime keeps the build it
+was scanned on and names the one it was carried to (carried).
 
-    .venv\Scripts\python.exe scripts\build_api_pack.py --codex <that repository> [--version 2026.10.06.1] [--no-scan]
+    .venv\Scripts\python.exe scripts\build_api_pack.py --codex <that repository> [--version 2026.10.06.1] [--no-scan | --carry-scan]
 """
 import argparse
 import ast
@@ -173,7 +176,47 @@ def runtime(scan, docs):
     return out
 
 
-def build(codex, version, scan=True):
+def carry(scan, changes, docs, to):
+    """the scan of an earlier build brought to the documentation's build `to` by the documentation's own changes since
+    (the records of changes.json from the scan's build on): functions added or removed (namespaced or global), Enum and
+    Constants tables added or removed; SystemExit when the records do not lead from the one build to the other"""
+    chain, at = [], scan.get("client")
+    for record in reversed(changes):                    # changes.json: the newest first
+        if record.get("from") == at:
+            chain.append(record)
+            at = record.get("to")
+    if at != to or not chain:
+        raise SystemExit(f"changes.json does not lead from {scan.get('client')} (the scan) to {to} (the documentation)")
+    kinds = {t["name"]: t["type"] for n in docs["namespaces"] for t in n["tables"]}
+    out = dict(scan, namespaces={ns: list(names) for ns, names in scan["namespaces"].items()},
+               globals=list(scan["globals"]), enums=list(scan["enums"]), constants=list(scan["constants"]))
+    for record in chain:
+        for side in ("added", "removed"):
+            for item in record.get(side, []):
+                what, name = item["what"], item["name"]
+                if what.endswith("函数"):
+                    ns, _, short = name.rpartition(".")
+                    names = out["namespaces"].setdefault(ns, []) if ns else out["globals"]
+                elif what.endswith(("枚举", "表")) and kinds.get(name, "Enumeration" if what.endswith("枚举") else None) \
+                        in ("Enumeration", "Constants"):
+                    short = name
+                    names = out["enums" if kinds.get(name, "Enumeration") == "Enumeration" else "constants"]
+                elif what.endswith(("枚举", "表")) and side == "removed":   # gone from the documentation: either list
+                    for key in ("enums", "constants"):
+                        out[key] = [n for n in out[key] if n != name]
+                    continue
+                else:
+                    continue
+                if side == "added" and short not in names:
+                    names.append(short)
+                elif side == "removed" and short in names:
+                    names.remove(short)
+    out["namespaces"] = {ns: names for ns, names in out["namespaces"].items() if names}
+    out["carried"] = to
+    return out
+
+
+def build(codex, version, scan=True, carry_scan=False):
     docs = json.loads((codex / "api" / "apidocs.json").read_text(encoding="utf-8"))
     usage = [line.strip() for line in (codex / "api" / "api_usage.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     man, client, protected = manual(codex, docs)
@@ -187,20 +230,25 @@ def build(codex, version, scan=True):
                 source=SOURCE, namespaces=docs["namespaces"], usage=usage, manual=man, changes=changes,
                 protected_globals=protected)
     if scan:
-        pack["runtime"] = runtime(game_scan(codex, client), docs)
+        game = game_scan(codex, client, older=carry_scan)
+        if game.get("client") != client:
+            game = carry(game, changes, docs, client)
+        pack["runtime"] = runtime(game, docs)
+        if game.get("carried"):
+            pack["runtime"]["carried"] = game["carried"]
     return pack
 
 
-def game_scan(codex, client):
+def game_scan(codex, client, older=False):
     """the game scan beside the documentation (api/game_scan.json); SystemExit when there is none, or it is of another
-    client build than the documentation"""
+    client build than the documentation (older: another build is taken, for carry())"""
     spath = codex / "api" / SCAN
     if not spath.is_file():
         raise SystemExit(f"{spath}: no game scan; in the game of {client}: wuxian api-scan --out {spath} (or --no-scan)")
     game = json.loads(spath.read_text(encoding="utf-8"))
-    if game.get("client") != client:
+    if game.get("client") != client and not older:
         raise SystemExit(f"{spath} is a scan of {game.get('client')}, the documentation is of {client}: scan the game "
-                         f"again (wuxian api-scan --out {spath}), or --no-scan")
+                         f"again (wuxian api-scan --out {spath}), or --no-scan / --carry-scan")
     return game
 
 
@@ -209,9 +257,12 @@ def main():
     ap.add_argument("--codex", default=os.environ.get("WUXIAN_CODEX"), required=not os.environ.get("WUXIAN_CODEX"),
                     help="the checkout of the wuxianwow.com data repository (or WUXIAN_CODEX)")
     ap.add_argument("--version", default=time.strftime("%Y.%m.%d") + ".1", help="the pack's version (default: today.1)")
-    ap.add_argument("--no-scan", action="store_true", help=f"without the game scan (api/{SCAN}): the documentation alone")
+    how = ap.add_mutually_exclusive_group()
+    how.add_argument("--no-scan", action="store_true", help=f"without the game scan (api/{SCAN}): the documentation alone")
+    how.add_argument("--carry-scan", action="store_true", help=f"a scan of an earlier build (api/{SCAN}), brought to the "
+                     "documentation's build by its changes.json")
     args = ap.parse_args()
-    pack = build(Path(args.codex), args.version, scan=not args.no_scan)
+    pack = build(Path(args.codex), args.version, scan=not args.no_scan, carry_scan=args.carry_scan)
     raw = gzip.compress(json.dumps(pack, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9, mtime=0)
     BUNDLED.parent.mkdir(parents=True, exist_ok=True)
     BUNDLED.write_bytes(raw)
@@ -231,7 +282,9 @@ def main():
     if game:
         documented = {(n["ns"], f["name"]) for n in pack["namespaces"] if n["ns"].startswith("C_") for f in n["functions"]}
         scanned = {(ns, f) for ns, names in game["namespaces"].items() for f in names}
-        print(f"game scan of {game['client']} ({game['scanned']}): {len(scanned - documented)} C_ functions the "
+        print(f"game scan of {game['client']} ({game['scanned']})"
+              + (f", carried to {game['carried']} by the documentation's changes" if game.get("carried") else "")
+              + f": {len(scanned - documented)} C_ functions the "
               f"documentation leaves out, {len(documented - scanned)} documented ones the game lacks; "
               f"{len(game['globals'])} global functions, {len(game['enums'])} Enum and {len(game['constants'])} Constants "
               f"tables ({len(game['fields'])} with fields from the game)")

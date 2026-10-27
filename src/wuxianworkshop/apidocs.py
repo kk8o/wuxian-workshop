@@ -225,7 +225,7 @@ class ApiIndex:
         changes = p.get("changes") or []
         latest = changes[0] if changes else None
         game = self.runtime
-        scan = dict(client=game.get("client"), scanned=game.get("scanned"),
+        scan = dict(client=game.get("client"), scanned=game.get("scanned"), carried=game.get("carried"),
                     undocumented=sum(1 for e in self.entries if e.get("undocumented")),
                     absent=sum(1 for e in self.entries if e.get("absent"))) if game else None
         return dict(version=p.get("version"), client=p.get("client"), interface=p.get("interface"), built=p.get("built"),

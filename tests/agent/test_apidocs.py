@@ -258,7 +258,7 @@ class Scanned(unittest.TestCase):
         self.assertEqual((target["absent"], target["call"], target["why"]), (True, "protected", ["NotInClient", "ProtectedGlobal"]))
         for name in ("UnitHealth", "C_Spell.GetSpellInfo", "SpellInfo", "SPELL_UPDATE_COOLDOWN"):
             self.assertNotIn("absent", self.ix.get(name), name)
-        self.assertEqual(self.ix.about()["scan"], {"client": "1.60.1.70338", "scanned": "2026-10-11", "undocumented": 4,
+        self.assertEqual(self.ix.about()["scan"], {"client": "1.60.1.70338", "scanned": "2026-10-11", "carried": None, "undocumented": 4,
                                                    "absent": 2})
         self.assertIsNone(apidocs.ApiIndex(PACK).about()["scan"])               # a pack without a scan
 
@@ -308,6 +308,30 @@ class Build(unittest.TestCase):
             self.assertEqual(script.game_scan(codex, "1.60.1.70245"), {"client": "1.60.1.70245"})
 
 
+class Carry(unittest.TestCase):
+    """--carry-scan: the scan of an earlier build, with what the documentation says changed since"""
+
+    def test_the_documentations_changes_applied(self):
+        docs = {"namespaces": [{"ns": "", "name": "", "functions": [], "events": [],
+                                "tables": [{"name": "Rule", "type": "Enumeration"}, {"name": "Consts", "type": "Constants"}]}]}
+        scan = dict(client="1.60.1.70450", scanned="2026-10-25", namespaces={"C_GameRules": ["Old", "Kept"], "C_Gone": ["X"]},
+                    globals=["Pet", "Kept"], enums=["Rule", "Gone"], constants=[], fields={})
+        changes = [dict(added=[dict(what="新增函数", name="C_GameRules.New"), dict(what="新增函数", name="GetPetCrit"),
+                               dict(what="新增事件", name="EVENT"), dict(what="新增表", name="Consts")],
+                        removed=[dict(what="删除函数", name="C_GameRules.Old"), dict(what="删除函数", name="C_Gone.X"),
+                                 dict(what="删除枚举", name="Gone")], **{"from": "1.60.1.70450", "to": "1.60.1.70630"}),
+                   dict(added=[], removed=[], **{"from": "1.60.1.70374", "to": "1.60.1.70450"})]
+        script = build_script()
+        got = script.carry(scan, changes, docs, "1.60.1.70630")
+        self.assertEqual(got["namespaces"], {"C_GameRules": ["Kept", "New"]})
+        self.assertEqual(got["globals"], ["Pet", "Kept", "GetPetCrit"])
+        self.assertEqual((got["enums"], got["constants"]), (["Rule"], ["Consts"]))
+        self.assertEqual((got["client"], got["carried"]), ("1.60.1.70450", "1.60.1.70630"))   # scanned there, carried here
+        self.assertEqual(scan["namespaces"]["C_GameRules"], ["Old", "Kept"])                # the scan itself untouched
+        with self.assertRaises(SystemExit):
+            script.carry(scan, changes, docs, "1.60.1.70700")                                # no records lead there
+
+
 class Carried(unittest.TestCase):
     """the pack in src/wuxianworkshop/data (scripts/build_api_pack.py)"""
 
@@ -321,8 +345,9 @@ class Carried(unittest.TestCase):
             self.assertTrue(ix.manual(topic)["md"], topic)
         self.assertNotIn("__", ix.manual("protected")["md"])                       # every placeholder filled in
         preset = ix.get("Enum.ForeverExperiencePreset")                            # in C_GameRules' file (forever-api)
-        self.assertEqual([f["n"] for f in preset["fields"]], ["Classic", "Modern"])
-        self.assertEqual(ix.about()["scan"]["client"], ix.about()["client"])       # a game scan of the same build
+        self.assertEqual([f["n"] for f in preset["fields"]], ["Classic", "Enhanced"])  # 1.60.1.70630: Modern -> Enhanced
+        scan = ix.about()["scan"]                                                   # a game scan of the same build, or
+        self.assertEqual(scan["carried"] or scan["client"], ix.about()["client"])   # one carried to it (--carry-scan)
         self.assertTrue(ix.get("C_Garrison.GetGarrisonInfo")["undocumented"])     # the documentation leaves it out
         self.assertEqual(ix.get("Constants.LegacyConsts")["fields"][2]["n"], "LEGACY_TREE_PROFESSIONS_ID")
 
