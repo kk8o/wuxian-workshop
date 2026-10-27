@@ -116,7 +116,7 @@ class FollowsTheRunningGame(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(Path(tmp.name) / "home")})
         env.start()
         self.addCleanup(env.stop)
-        old, new = (Path(tmp.name) / d / "Interface" / "AddOns" for d in ("_cn_beta_", "_cn_"))
+        old, new = (Path(tmp.name) / d / "Interface" / "AddOns" for d in ("_cn_beta_", "_forever_"))
         for addons in (old, new):
             (addons / "WoWBridge").mkdir(parents=True)
             MB.install(addons, pool=16)
@@ -131,6 +131,41 @@ class FollowsTheRunningGame(unittest.TestCase):
         self.assertEqual(loop.addons, new)
         self.assertTrue(any(n.startswith("the game runs from") and n.endswith("following it") for n in notes), notes)
         self.assertTrue(any(n.startswith("game process P") for n in notes), notes)   # the new folder's mailbox in use
+
+    def test_a_new_client_without_wowbridge(self):
+        """10-27: the game ran from the new _forever_, which had no WoWBridge yet: writing proc.ttf failed every second
+        (200 tracebacks in 1.5 minutes) until the game was closed and the program installed its addons. Now the loop
+        follows the folder (also one without Interface\\AddOns), says so once and waits: blocked "missing"
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(Path(tmp.name) / "home")})
+        env.start()
+        self.addCleanup(env.stop)
+        old = Path(tmp.name) / "_cn_beta_" / "Interface" / "AddOns"
+        (old / "WoWBridge").mkdir(parents=True)
+        MB.install(old, pool=16)
+        client = Path(tmp.name) / "_forever_"
+        client.mkdir()
+        (client / "Wow.exe").write_bytes(b"")
+        win = Window(hwnd=1, pid=os.getpid(), exe=str(client / "Wow.exe"), title="魔兽世界", x=0, y=0, w=SIZE[0], h=SIZE[1],
+                     dpi=96, minimized=False)
+        notes = []
+        loop = C.CompanionLoop(old, capture="gdi", wait_restart=False, files=False, log=notes.append, find_window=lambda: win)
+        loop._wait = lambda seconds: None
+        with mock.patch.object(C, "grab_client", Screen((40, 40)).grab):
+            for _ in range(3):
+                loop.step()
+        self.assertEqual(loop.addons, client / "Interface" / "AddOns")
+        self.assertEqual(loop.blocked, "missing")
+        self.assertEqual(sum(n.startswith("WoWBridge is not installed in") for n in notes), 1, notes)
+        self.assertFalse(any(n.startswith("game process P") for n in notes), notes)  # no mailbox written
+        (loop.addons / "WoWBridge").mkdir(parents=True)                               # the program's install
+        MB.install(loop.addons, pool=16)
+        with mock.patch.object(C, "grab_client", Screen((40, 40)).grab):
+            loop.step()
+        self.assertIsNone(loop.blocked)
+        self.assertTrue(any(n.startswith("game process P") for n in notes), notes)
 
 
 class WindowLooks(unittest.TestCase):

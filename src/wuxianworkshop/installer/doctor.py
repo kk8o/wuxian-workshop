@@ -338,7 +338,7 @@ def report(checks, fixed=()):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wuxian doctor", description=__doc__.split("\n")[0])
-    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _cn_beta_)")
+    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _forever_)")
     ap.add_argument("--fix", action="store_true", help="run the repairs the failed checks ask for, then check again")
     ap.add_argument("--mode", choices=MODES, default="developer", help="what should be installed (default: developer)")
     ap.add_argument("--source", help="addon folder to compare with (default: the program's own copy)")

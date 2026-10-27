@@ -40,6 +40,7 @@ from ..agent.diag import parse_diag
 from ..agent.snap import take_snap
 from ..core import frame as F
 from ..core.decode import decode
+from ..core import mailbox as MB
 from ..core.game import addons_dir, process_start, read_build_info
 from ..core.locate import locate
 from ..paths import logs_dir, state_dir
@@ -265,14 +266,23 @@ class CompanionLoop:
             if self.comp is None:
                 self._make_companion(running)
                 self.log(f"game folder: {self.addons.parent.parent}")
-            elif os.path.normcase(str(running)) != os.path.normcase(str(self.addons)) and running.is_dir():
-                # the game runs from another folder than the one the loop started with (a moved or a new client): the
-                # link only works through the running game's mailbox
+            elif os.path.normcase(str(running)) != os.path.normcase(str(self.addons)):
+                # the game runs from another folder than the one the loop started with (a moved or a new client, also
+                # one without Interface\AddOns yet): the link only works through the running game's mailbox, and the
+                # program's addons go there
                 self.log(f"the game runs from {running.parent.parent}, not {self.addons.parent.parent}: following it")
                 self._make_companion(running)
                 self.pid = None
         if not self.link:                             # player mode: the window is followed, the screen is not read
             self.blocked = "player"
+            self._wait(WINDOW_POLL)
+            return
+        if not MB.mail_dir(self.addons).is_dir():
+            # WoWBridge is not in this client (a new client folder): no mailbox to write; Service.sync_addons brings it
+            # along once the game is closed, and the game started after that connects
+            self.blocked = "missing"
+            self._once(f"WoWBridge is not installed in {self.addons.parent.parent}: "
+                       "the program installs it once the game is closed")
             self._wait(WINDOW_POLL)
             return
         self.blocked = None

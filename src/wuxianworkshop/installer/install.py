@@ -151,7 +151,7 @@ def install(game_dir=None, clean=True, source=None, mode="developer", keep_devel
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wuxian install", description=__doc__.split("\n")[0])
-    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _cn_beta_)")
+    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _forever_)")
     ap.add_argument("--mode", choices=MODES, default="developer",
                     help="player: the error collector only (removes the developer components); developer (default): WoWBridge too")
     ap.add_argument("--no-clean", dest="clean", action="store_false",

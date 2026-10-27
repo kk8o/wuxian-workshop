@@ -399,13 +399,14 @@ function appState() {
       if (!this.status) return '—';
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'restart') return t('等待游戏重启');
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'player') return t('未读取');
+      if (this.status.link.state !== 'online' && this.status.link.blocked === 'missing') return t('等待安装');
       const st = this.status.link.state || (this.status.game.found ? 'waiting' : 'offline');
       return t(LINK_TEXT[st] || st);
     },
     get linkClass() {
       if (!this.status) return 'muted';
       const st = this.status.link.state;
-      if (st !== 'online' && this.status.link.blocked === 'restart') return 'warn';
+      if (st !== 'online' && ['restart', 'missing'].includes(this.status.link.blocked)) return 'warn';
       return st === 'online' ? 'ok' : (st === 'offline' || !st) ? 'muted' : 'warn';
     },
     get linkWhy() {                            // one line under 离线: why, and what to do
@@ -413,6 +414,7 @@ function appState() {
       if (!s || s.link.state === 'online') return '';
       if (s.link.blocked === 'restart') return t('安装加入了运行中的游戏不认识的新文件：完整退出并重启游戏后才能连接（/reload 不够）。');
       if (s.link.blocked === 'player') return t('旧设置里是玩家模式，正在切回开发模式…');
+      if (s.link.blocked === 'missing') return t('这个游戏目录还没有装 WoWBridge：退出游戏后程序自动装上，再启动游戏即可连接。');
       if (!s.game.found) return t('没有找到游戏窗口。');
       if (s.game.minimized) return t('游戏窗口最小化了：还原窗口后自动恢复。');
       return t('看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。');
@@ -1633,7 +1635,7 @@ function appState() {
         this.applySettings(await this.api('/api/settings', { body: { game_dir: this.start.gameInput.trim() } }));
         await this.runDoctor();
         if (this.stepGame) { this.start.gameEdit = false; this.say(t('已保存游戏目录')); }
-        else this.start.gameNote = t('这个文件夹里没有 Interface\\AddOns：请选《魔兽世界：无限》客户端的文件夹（_cn_beta_）。');
+        else this.start.gameNote = t('这个文件夹里没有 Interface\\AddOns：请选《魔兽世界：无限》客户端的文件夹（_forever_）。');
         this.refreshStatus();
       } catch (e) {
         this.start.gameNote = t('保存失败：') + errText(e);
@@ -1883,7 +1885,7 @@ function appState() {
     },
     show(v) { return typeof v === 'string' ? v : JSON.stringify(v); },
     firstLine(text) { return (text || '').split('\n')[0]; },
-    shortPath(p) {                             // the last three parts of a Windows path: _cn_beta_\Interface\AddOns
+    shortPath(p) {                             // the last three parts of a Windows path: _forever_\Interface\AddOns
       if (!p) return '—';
       const parts = String(p).split(/[\\/]/).filter(Boolean);
       return parts.length > 3 ? '…\\' + parts.slice(-3).join('\\') : p;

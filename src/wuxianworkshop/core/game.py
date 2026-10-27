@@ -6,8 +6,11 @@ import struct
 import time
 from pathlib import Path
 
-DEFAULT_GAME_DIRS = [r"C:\Program Files (x86)\World of Warcraft\_cn_beta_", r"C:\Program Files (x86)\World of Warcraft\_cn_",
-                     r"C:\Program Files (x86)\World of Warcraft\_classic_beta_"]
+# 《魔兽世界：无限》 since 2026-10-27 (product wowf, 1.60.1.70630); _cn_beta_ was its beta (wow_cn_beta), which the launcher
+# left behind as an empty folder: a folder counts only with a client in it (CLIENT_MARKS)
+DEFAULT_GAME_DIRS = [r"C:\Program Files (x86)\World of Warcraft\_forever_", r"C:\Program Files (x86)\World of Warcraft\_cn_",
+                     r"C:\Program Files (x86)\World of Warcraft\_cn_beta_", r"C:\Program Files (x86)\World of Warcraft\_classic_beta_"]
+CLIENT_MARKS = (".flavor.info", "Interface")          # what a client folder holds once the launcher has installed it
 
 
 def silent_wav(ms=10):
@@ -42,9 +45,14 @@ def game_dir(explicit=None):
     except Exception:
         pass
     for d in DEFAULT_GAME_DIRS:
-        if os.path.isdir(d):
+        if is_client(d):
             return Path(d)
     raise SystemExit("game folder not found: pass --game <folder with Interface\\AddOns>")
+
+
+def is_client(folder):
+    """a client folder, not the empty one a finished beta leaves (_cn_beta_ after 2026-10-27: Wow.exe and logs only)"""
+    return any(os.path.exists(os.path.join(folder, m)) for m in CLIENT_MARKS)
 
 
 def addons_dir(explicit=None):
@@ -52,7 +60,7 @@ def addons_dir(explicit=None):
 
 
 def read_flavor(game):
-    """the product in <client>/.flavor.info (wow_cn_beta), or None"""
+    """the product in <client>/.flavor.info (wowf; the beta's was wow_cn_beta), or None"""
     p = Path(game) / ".flavor.info"
     if not p.is_file():
         return None

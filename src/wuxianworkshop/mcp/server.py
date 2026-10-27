@@ -233,6 +233,8 @@ def build_server(backend, name="wuxian"):
           un-minimized, then call status again.
         - link.blocked "restart": the game was started before WoWBridge was installed; ask the user to exit the game
           fully and start it again.
+        - link.blocked "missing": the running game's folder has no WoWBridge yet (a new client); ask the user to exit
+          the game (the program then installs it) and start it again.
         - link.slots_left: messages this game process can still receive; at 0 nothing reaches the game until a restart.
         - reload_pending true: a reload button waits for the player's click. watch: the files hot-loaded on every save.
         - mcp.stale true (only when this server runs on stdio): it runs old code and may lack tools. You cannot fix that:

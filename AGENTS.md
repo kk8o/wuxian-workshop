@@ -32,7 +32,7 @@
 - 窗口：`.venv\Scripts\wuxian`（无参数）= 守护进程 + 托盘 + pywebview 窗口。
 - 打包：`powershell scripts\build.ps1`（`dist\wuxian\wuxian.exe`）；发布包：`powershell scripts\pack.ps1 [-Version X] [-Notes notes.md]`（`dist\releases\`）。
 - 签名：上传到网站前，`releases.*.json`、`manifest.json`、`extensions.json` 都要用发布私钥签名（`.venv\Scripts\python.exe -m wuxianworkshop.signing sign <私钥文件> <文件>…`，写出旁边的 `.sig`；只接受 `KEYS` 里的密钥）；网站的上传脚本每次上传都重签。私钥只在发布者的电脑上，不进任何仓库、不上服务器。查网站上的：`… signing verify https://wuxianwow.com/workshop/data/manifest.json`。
-- 测试实例：`WUXIAN_HOME`（运行时目录）+ `WUXIAN_MUTEX`（单实例互斥量）可以在正在用的程序旁边再起一个。设了 `WUXIAN_MUTEX` 的实例是隔离的（`core/game.py` 的 `isolated()`）：不找游戏窗口，所以不读画面、不写信箱；也不找游戏目录，不认正在运行的游戏，也不退回默认的 `_cn_beta_`，只用 `--game` 给的文件夹。页面把它切到开发者模式、装插件，都碰不到正在玩的游戏。要测安装，就用 `--game` 指一个自己的客户端文件夹（指向正在玩的那个就不隔离了）。测页面用 `scripts\dev_fake_api.py`，测守护进程用进程内的 `server.start(worker_factory=…)`。`WUXIAN_UPDATE_FEED` / `WUXIAN_CONTENT_FEED` / `WUXIAN_EXTENSIONS_FEED` 指向本地文件夹（或文件）测更新、内容包和扩展目录，本地的不验签名。
+- 测试实例：`WUXIAN_HOME`（运行时目录）+ `WUXIAN_MUTEX`（单实例互斥量）可以在正在用的程序旁边再起一个。设了 `WUXIAN_MUTEX` 的实例是隔离的（`core/game.py` 的 `isolated()`）：不找游戏窗口，所以不读画面、不写信箱；也不找游戏目录，不认正在运行的游戏，也不退回默认的 `_forever_`，只用 `--game` 给的文件夹。页面把它切到开发者模式、装插件，都碰不到正在玩的游戏。要测安装，就用 `--game` 指一个自己的客户端文件夹（指向正在玩的那个就不隔离了）。测页面用 `scripts\dev_fake_api.py`，测守护进程用进程内的 `server.start(worker_factory=…)`。`WUXIAN_UPDATE_FEED` / `WUXIAN_CONTENT_FEED` / `WUXIAN_EXTENSIONS_FEED` 指向本地文件夹（或文件）测更新、内容包和扩展目录，本地的不验签名。
 
 ## 运行时文件
 - 都在 `%LOCALAPPDATA%\WuxianWorkshop\` 下（环境变量 `WUXIAN_HOME` 可改根目录；`tests/__init__.py` 给整个测试默认一个临时目录，测试绝不碰用户的文件）：`state\daemon.json`（端口、token、pid）、`state\settings.json`、`state\install.json`、`state\clients.json`（游戏报告的 Interface 号）、`state\kit-manifest.json`（扩展框架的清单）、`logs\debug.log`、`snaps\*.png`、`history\`、`webview\`。

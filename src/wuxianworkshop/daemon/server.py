@@ -36,7 +36,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import NotModifiedResponse, StaticFiles
 
 from .. import __version__
-from ..core.game import addons_dir, isolated
+from ..core.game import addons_dir, is_client, isolated
 from ..paths import daemon_file, logs_dir, settings_file, snaps_dir, ui_static_dir
 from .api import ApiError, read_daemon_json, retry_shared  # noqa: F401  (read_daemon_json is this module's interface too)
 from .companion import CompanionLoop, installed_at
@@ -773,8 +773,8 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
     mode = mode or (saved.get("mode") if saved.get("mode") in ("developer", "player") else "developer")
     capture = capture or (saved.get("capture") if saved.get("capture") in ("gdi", "wgc") else "wgc")
     saved_dir, gone = saved.get("game_dir") or None, None
-    if saved_dir and not game_dir and not Path(saved_dir).is_dir():
-        gone, saved_dir = saved_dir, None                  # moved or removed (a new client folder): the running game's
+    if saved_dir and not game_dir and not is_client(saved_dir):
+        gone, saved_dir = saved_dir, None                  # moved, removed or left empty (a finished beta): the running game's
     game_dir = game_dir or saved_dir
     if lock is None:
         lock = SingleInstance(instance_mutex(mutex_name))
@@ -817,7 +817,7 @@ def main(argv=None):
     ap.add_argument("--capture", choices=("gdi", "wgc"), default=None,
                     help="wgc: the window itself, also when covered; gdi: the screen (the corner must be visible) "
                          "(default: what the 设置 page saved, else wgc)")
-    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _cn_beta_; "
+    ap.add_argument("--game", help="client folder that holds Interface\\AddOns (default: the running game's, else _forever_; "
                                    "none in an isolated test instance, WUXIAN_MUTEX set)")
     ap.add_argument("--rate", type=float, default=0.05, help="seconds between screen reads")
     ap.add_argument("--ping-every", type=float, default=10.0, help="seconds between pings")

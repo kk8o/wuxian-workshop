@@ -358,7 +358,8 @@ class Service:
         w = self.worker
         comp = w.comp
         # blocked: why the screen is not read ("restart": an install added files the running game does not know, so it
-        # has to be restarted; "player": player mode), None while the link is read
+        # has to be restarted; "missing": the running game's folder has no WoWBridge yet, installed once the game is
+        # closed; "player": player mode), None while the link is read
         link = dict(state="offline", session=None, slot_next=None, slots_left=None, hb=None, capture=w.capture,
                     ping_p50=None, last_frame=None, addon_version=None, blocked=getattr(w, "blocked", None))
         watch, reload_pending = [], False

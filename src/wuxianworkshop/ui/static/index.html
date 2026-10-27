@@ -118,9 +118,9 @@
                 </template>
                 <template x-if="(!stepGame && doctor.checks.length) || start.gameEdit">
                   <div x-t>
-                    <p x-show="!stepGame">没有找到《魔兽世界：无限》的客户端目录。游戏开着时会自动找到；也可以在这里选它的文件夹（里面有 Interface\AddOns，通常是 <span class="mono">…\World of Warcraft\_cn_beta_</span>）。</p>
+                    <p x-show="!stepGame">没有找到《魔兽世界：无限》的客户端目录。游戏开着时会自动找到；也可以在这里选它的文件夹（里面有 Interface\AddOns，通常是 <span class="mono">…\World of Warcraft\_forever_</span>）。</p>
                     <div class="row">
-                      <input class="input mono grow" x-model="start.gameInput" placeholder="C:\Program Files (x86)\World of Warcraft\_cn_beta_">
+                      <input class="input mono grow" x-model="start.gameInput" placeholder="C:\Program Files (x86)\World of Warcraft\_forever_">
                       <button class="btn" x-show="canPick" @click="pickFolder()">浏览…</button>
                       <button class="btn primary" @click="saveGameDir()" :disabled="start.saving || !start.gameInput.trim()" x-text="start.saving ? t('保存中…') : t('保存')"></button>
                       <button class="btn" x-show="start.gameEdit" @click="start.gameEdit = false">取消</button>
@@ -1251,7 +1251,7 @@
                  x-text="t('当前实际在用 {m}，新的抓图模式在下一次找到游戏窗口时生效。', { m: String(settings.capture_in_use).toUpperCase() })"></p>
               <label class="field">
                 <span>游戏目录</span>
-                <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _cn_beta_">
+                <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _forever_">
               </label>
               <label class="switch">
                 <input type="checkbox" name="autostart" x-model="form.autostart">

@@ -42,7 +42,7 @@ if str(ROOT / "src") not in sys.path:            # when the package is not insta
 from wuxianworkshop import __version__           # noqa: E402
 from wuxianworkshop.ui import STATIC_DIR         # noqa: E402
 
-GAME_DIR = r"C:\Program Files (x86)\World of Warcraft\_cn_beta_"
+GAME_DIR = r"C:\Program Files (x86)\World of Warcraft\_forever_"
 OUT_LINES = ["WoWBridge: hb %d (q=0)", "Hello from the addon: print() goes here", "DBM-Core: 已加载 12 个模块",
              "[ElvUI] Profile switched to Default", "WeakAuras: 3 auras loaded", "Details!: segment 4 closed (02:13)"]
 INFO_LINES = ["frame {n} ok (64x16 cells, 2 parts)", "mailbox slot {slot:05d} written (ack {n})", "code {job}: =run (38 B, 1 part)"]
