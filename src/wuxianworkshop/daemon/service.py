@@ -138,6 +138,7 @@ class Service:
             except RuntimeError:
                 pass
         self.pending.clear()
+        self.journal.close()
 
     def on_debug(self, kind, text):
         """the Companion's debug output (worker thread): journaled; a RUN result wakes the request waiting for its job;
@@ -581,11 +582,12 @@ class Service:
                                  f"{len(result['counts'])} kinds, {result['kept']} kept" + (f" ({events})" if events else ""))
         return result
 
-    async def inspect(self, target=None, mouse=False, depth=1, snap=False):
+    async def inspect(self, target=None, mouse=False, depth=1, snap=False, snap_format=None):
         """frames described (probes.py): the one a Lua expression gives, or the ones under the mouse; with snap, a
-        picture of the first one's rectangle (and some margin)"""
+        picture of the first one's rectangle (and some margin), a PNG or (snap_format "jpeg") a JPEG"""
         if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= 3:
             raise ApiError(400, "bad_request", "depth: 0..3 levels of children")
+        self.snap_format(snap_format)
         try:
             code = probes.inspect(target, bool(mouse), depth)
         except ValueError as e:
@@ -599,7 +601,7 @@ class Service:
             x, y = max(0, rect[0] - 12), max(0, rect[1] - 12)
             w, h = min(sw - x, rect[2] + 24), min(sh - y, rect[3] + 24)
             if w > 0 and h > 0:
-                result["snap"] = await self.snap([x, y, w, h], None)
+                result["snap"] = await self.snap([x, y, w, h], None, snap_format)
         return result
 
     async def api_scan(self, part, names=None):
@@ -783,13 +785,14 @@ class Service:
     TRY_KINDS = ("ERR", "WARN", "BLOCKED", "OUT", "RELOAD", "EVENT", "SLOTS")
 
     async def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None,
-                   timeout_ms=10000):
+                   timeout_ms=10000, snap_format=None):
         """do something in the game and collect what came of it: the action (Lua `code`, or a `slash` command line run
         through its handler) and its own result, then for `seconds` the Lua errors (with stacks), print output, warnings
         and blocked actions the game reported, the events that fired (`events`: names or globs, "all"), and a picture at
         the end (`snap`: the screen; `frame`: a Lua expression of a frame, pictured with a margin). A last run after the
         wait (the trace's stop, or a marker) is answered only after everything the game sent before it, so the window
-        is complete. Everything in it counts: the player's own actions too (`addon` says whose an entry is)"""
+        is complete. Everything in it counts: the player's own actions too (`addon` says whose an entry is).
+        snap_format: the picture's, as snap() takes it"""
         if (code is None) == (slash is None):
             raise ApiError(400, "bad_request", "code (Lua) or slash (a command line such as \"/myaddon show\"), one of them")
         if code is not None and (not isinstance(code, str) or not code.strip()):
@@ -800,6 +803,7 @@ class Service:
             raise ApiError(400, "bad_request", 'events: names or globs ("BAG_*, LOOT_OPENED"), or "all"')
         if frame is not None and (not isinstance(frame, str) or not frame.strip()):
             raise ApiError(400, "bad_request", "frame: a Lua expression that gives a frame")
+        self.snap_format(snap_format)
         try:
             lua = probes.slash_call(slash) if slash is not None else code
             start = probes.trace_start(None if events.strip().lower() == "all" else events) if events else None
@@ -856,7 +860,7 @@ class Service:
             out["events"] = traced
         if frame:
             try:
-                seen = await self.inspect(frame, False, 0, True)
+                seen = await self.inspect(frame, False, 0, True, snap_format)
                 out["frame"] = (seen.get("frames") or [None])[0]
                 if seen.get("snap"):
                     out["snap"] = seen["snap"]
@@ -864,7 +868,7 @@ class Service:
                 out["notes"].append(dict(t=None, kind="SNAP", text=f"frame {frame}: {e.message}"))
         elif snap:
             try:
-                out["snap"] = await self.snap(None, 1280)
+                out["snap"] = await self.snap(None, 1280, snap_format)
             except ApiError as e:
                 out["notes"].append(dict(t=None, kind="SNAP", text=e.message))
         out["ok"] = bool(action.get("ok")) and not out["errors"] and not out["blocked"]
@@ -1357,19 +1361,11 @@ class Service:
             await asyncio.sleep(0.1)
         return True
 
-    async def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):
-        """a file, or an addon's Lua files in .toc order, for the addon to run; waits for every job's result. check: the
-        files are checked first (agent/lint.py): a syntax error in any of them sends none (422 check_failed), the other
-        findings come with the answer (`check`)"""
-        if not isinstance(target, str) or not target.strip():
-            raise ApiError(400, "bad_request", "target: a file, an addon folder or an addon name")
-        if mode not in (None, "file", "addon"):
-            raise ApiError(400, "bad_request", 'mode: "file" or "addon"')
-        timeout = self.timeout_seconds(timeout_ms, 30000)
-        w = self.worker
-        if w.comp is None:
-            raise ApiError(503, "no_game_folder", "the game folder is not known yet (no game window, no default folder)")
-        addons = Path(w.addons)
+    @staticmethod
+    def load_files(addons, target, mode):
+        """what a load sends (worker of asyncio.to_thread: reading the .toc and listing the folder is disk work):
+        (the target's path, its Lua files in .toc order, the addon or None for a file, their bytes); ApiError when the
+        target cannot be loaded"""
         path = resolve_target(addons, target)
         if path is None:
             raise ApiError(404, "not_found", f"load {target}: no such file or addon folder")
@@ -1387,9 +1383,23 @@ class Service:
             if toc is None:
                 raise ApiError(400, "no_toc", f"load {target}: no .toc in that folder")
             files, addon = toc_files(toc)[0], path.name
+        return path, files, addon, sum(f.stat().st_size for f in files if f.is_file())
+
+    async def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):
+        """a file, or an addon's Lua files in .toc order, for the addon to run; waits for every job's result. check: the
+        files are checked first (agent/lint.py): a syntax error in any of them sends none (422 check_failed), the other
+        findings come with the answer (`check`)"""
+        if not isinstance(target, str) or not target.strip():
+            raise ApiError(400, "bad_request", "target: a file, an addon folder or an addon name")
+        if mode not in (None, "file", "addon"):
+            raise ApiError(400, "bad_request", 'mode: "file" or "addon"')
+        timeout = self.timeout_seconds(timeout_ms, 30000)
+        w = self.worker
+        if w.comp is None:
+            raise ApiError(503, "no_game_folder", "the game folder is not known yet (no game window, no default folder)")
+        path, files, addon, size = await asyncio.to_thread(self.load_files, Path(w.addons), target, mode)
         names = [str(f) for f in files]
         # about 3.7 KB of Lua go into the game a second: a big addon gets the time it takes, whatever timeout_ms says
-        size = sum(f.stat().st_size for f in files if f.is_file())
         timeout = min(max(timeout, 5 + size / 2500), MAX_TIMEOUT_MS / 1000)
         found = None
         if check:
@@ -1473,12 +1483,23 @@ class Service:
 
     SNAP_WAIT, SNAP_AGAIN = 3.0, 0.1   # a snap waits this long at most for WoWBridge's frame to rest, looking this often
 
-    async def snap(self, region=None, max_width=1280):
-        """a picture of the client area (or the region of it) in the snaps folder. WoWBridge's frame is in it where the
-        player put it; one that shows a message going up is bigger than at rest, over the UI next to it, and the answer
-        the daemon has just read stays up 0.2 s at least (after an inspect or a try nearly always): while the region
-        shows such a frame the picture is taken again, SNAP_WAIT seconds at most. link_frame: where the frame shows in
-        the picture, busy when it still showed a message"""
+    @staticmethod
+    def snap_format(format):
+        """a snap's format as asked ("png", the default, or "jpeg"), or 400"""
+        if format in (None, ""):
+            return "png"
+        if format not in ("png", "jpeg"):
+            raise ApiError(400, "bad_request", 'format: "png" (the default) or "jpeg"')
+        return format
+
+    async def snap(self, region=None, max_width=1280, format=None):
+        """a picture of the client area (or the region of it) in the snaps folder: a PNG, or with format "jpeg" a JPEG
+        (agent/snap.py: a third of the bytes, encoded ten times faster; what the MCP tools send). WoWBridge's frame is
+        in it where the player put it; one that shows a message going up is bigger than at rest, over the UI next to
+        it, and the answer the daemon has just read stays up 0.2 s at least (after an inspect or a try nearly always):
+        while the region shows such a frame the picture is taken again, SNAP_WAIT seconds at most. link_frame: where the
+        frame shows in the picture, busy when it still showed a message"""
+        format = self.snap_format(format)
         if region is not None:
             if not (isinstance(region, (list, tuple)) and len(region) == 4
                     and all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in region)):
@@ -1509,19 +1530,19 @@ class Service:
                 break
             await asyncio.sleep(self.SNAP_AGAIN)
         try:
-            path, width, height = await asyncio.to_thread(save_snap, img, region, max_width, client)
+            path, width, height = await asyncio.to_thread(save_snap, img, region, max_width, client, format)
         except SnapError as e:
             raise ApiError(409, "snap_failed", str(e)) from None
         self.journal.add("SNAP", f"{path} {width}x{height}" + ("" if wgc else " (GDI: anything over the game is in it)")
                          + (f" (WoWBridge's frame still showed a message after {self.SNAP_WAIT:g} s)" if busy else ""))
-        out = dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}")
+        out = dict(path=str(path), width=width, height=height, url=f"/api/snaps/{path.name}", format=format)
         at = in_picture(found[0], region, size, (width, height)) if found is not None else None
         if at is not None:
             out["link_frame"] = dict(rect=at, busy=busy)
         return out
 
     async def snap_bytes(self, result):
-        """the PNG of a snap() result (the MCP tool returns it as an image block)"""
+        """the file of a snap() result, PNG or JPEG (the MCP tool returns it as an image block)"""
         return await asyncio.to_thread(Path(result["path"]).read_bytes)
 
     async def reload(self, reason=""):
@@ -1559,14 +1580,17 @@ class Service:
 
         return await self.call(do)
 
-    async def logs(self, since=0, limit=200, kinds=None):
+    async def logs(self, since=0, limit=200, kinds=None, tail=False):
+        """the journal's entries from id `since` on, oldest first, at most `limit` (1..1000); tail: the newest `limit`
+        of them (still oldest first), for what happened lately. next: the `since` of the next read"""
         try:
             since, limit = int(since or 0), int(limit or 200)
         except (TypeError, ValueError):
             raise ApiError(400, "bad_request", "since and limit: integers") from None
         if isinstance(kinds, str):
             kinds = [k.strip().upper() for k in kinds.split(",") if k.strip()]
-        entries, next_id, truncated = self.journal.since(max(since, 0), max(1, min(limit, 1000)), kinds or None)
+        entries, next_id, truncated = self.journal.since(max(since, 0), max(1, min(limit, 1000)), kinds or None,
+                                                         tail=bool(tail))
         return dict(entries=entries, next=next_id, truncated=truncated)
 
     async def doctor(self, game_dir=None):

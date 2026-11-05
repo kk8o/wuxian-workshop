@@ -978,19 +978,35 @@ class Known:
         self._by_first = {}
         for name in self.globals:
             self._by_first.setdefault(name[:1].lower(), []).append(name)
+        self._near = {}
 
     def has(self, name):
         return name in self.globals or bool(UI_PATTERNS.match(name))
+
+    NEAR_KEPT = 20000          # answers of near / near_field remembered (the names never change once made)
+
+    def _near_memo(self, key, find):
+        """near / near_field remembered by name: difflib over thousands of globals was a check's slowest part, and
+        every check of an addon asks the same names again"""
+        memo = self._near
+        if key not in memo:
+            if len(memo) >= self.NEAR_KEPT:
+                memo.clear()
+            memo[key] = find()
+        return memo[key]
 
     def near(self, name):
         """a known global that name looks like a slip of the keys for, or None"""
         if len(name) < 4:
             return None
-        pool = [n for n in self._by_first.get(name[:1].lower(), []) if abs(len(n) - len(name)) <= 2]
-        return typo_of(name, pool)
+
+        def find():
+            pool = [n for n in self._by_first.get(name[:1].lower(), []) if abs(len(n) - len(name)) <= 2]
+            return typo_of(name, pool)
+        return self._near_memo(("g", name), find)
 
     def near_field(self, ns, field):
-        return typo_of(field, sorted(self.ns.get(ns, ())), loose=True)
+        return self._near_memo(("f", ns, field), lambda: typo_of(field, sorted(self.ns.get(ns, ())), loose=True))
 
     def secrecy(self, name):
         """when a function's results are secret values in addon code: "SecretReturns" always, its SecretWhen… /
@@ -1146,10 +1162,23 @@ def _xml_refs(path):
         return re.findall(r"<(Script|Include)\b[^>]*?\bfile\s*=\s*[\"']([^\"']+)[\"']", text)
 
 
+def addon_files(folder):
+    """every file under an addon folder (what folder.rglob("*") finds that is a file), by os.walk: one directory
+    listing per folder instead of a stat per file. WoWBridge's mailbox (mail\\, 4,097 font slots that are never Lua or
+    XML) is left out: listing it was most of a check's time for an addon that depends on WoWBridge"""
+    folder = Path(folder)
+    for root, dirs, files in os.walk(folder):
+        if root == str(folder) and folder.name.casefold() == "wowbridge":
+            dirs[:] = [d for d in dirs if d.casefold() != "mail"]
+        base = Path(root)
+        for name in files:
+            yield base / name
+
+
 def loaded_files(folder, info):
     """what the client loads of an addon folder: {lua: [paths, in order], xml: [paths], missing: [(line, text)]}: the
     .toc's lines for this client (read_toc), the XML files' <Script file> and <Include file> followed"""
-    index = {_key(p): p for p in folder.rglob("*") if p.is_file()}
+    index = {_key(p): p for p in addon_files(folder)}
     out = dict(lua=[], xml=[], missing=[])
     seen = set()
 
@@ -1511,7 +1540,7 @@ def check(path, addons=None, ix=None):
                 add(rel, e.position[0] if e.position else 0, "xml", f"not well-formed XML: {e}", "", "errors")
             except OSError:
                 pass
-        left = sorted((rel_of(p) for p in folder.rglob("*") if p.suffix.lower() in (".lua", ".xml") and p.is_file()
+        left = sorted((rel_of(p) for p in addon_files(folder) if p.suffix.lower() in (".lua", ".xml")
                        and _key(p) not in reached
                        and not (_key(p.parent) == _key(folder) and p.name.lower().startswith("bindings"))), key=str.lower)
         if not tocinfo["loads"]:

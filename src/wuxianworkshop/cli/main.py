@@ -21,7 +21,7 @@
     wuxian checkpoint <addon> [note]          keep a version of an addon's files now
     wuxian restore <addon> <id>               put an addon's files back as a kept version had them
     wuxian reload                             ask the player for a UI reload
-    wuxian logs [--follow] [--since N] [--kinds ERR,OUT]
+    wuxian logs [--follow] [--since N] [--tail] [--kinds ERR,OUT]
     wuxian say <text>                         a line in the game's chat
     wuxian doctor                             the self-check
     wuxian addons                             the installed addons, with the errors collected for each
@@ -151,6 +151,7 @@ def build_parser():
     p.add_argument("--follow", "-f", action="store_true", help="keep printing new entries (Ctrl+C ends it)")
     p.add_argument("--since", type=int, default=None, help="the first entry id (default: the last 50)")
     p.add_argument("--limit", type=int, default=200, help="at most this many entries (default 200)")
+    p.add_argument("--tail", action="store_true", help="the newest --limit entries instead of the oldest")
     p.add_argument("--kinds", help="only these kinds, comma-separated: ERR,OUT,WARN,BLOCKED,RUN,RELOAD,EVENT,SNAP,WATCH,SLOTS,INFO")
     p = sub.add_parser("say", help="show a line of text in the game's chat")
     p.add_argument("text", nargs="+")
@@ -680,7 +681,12 @@ def cmd_api_scan(client, args):
 
 def cmd_logs(client, args):
     since = args.since
-    if since is None:                                   # the tail: the last 50 entries (of these kinds), page by page
+    if args.tail:                                       # the newest --limit entries (from --since on), in one answer
+        res = client.logs(since or 0, args.limit, args.kinds, True)
+        for e in res["entries"]:
+            print_entry(e)
+        since = res["next"]
+    elif since is None:                                 # the tail: the last 50 entries (of these kinds), page by page
         since, tail = 0, []
         while True:
             res = client.logs(since, 1000, args.kinds)

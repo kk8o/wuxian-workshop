@@ -153,7 +153,8 @@ class JournalRing(unittest.TestCase):
             j = Journal(path, capacity=10)
             j.add("ERR", "boom\nline 2")
             j.add("INFO", "note")
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")         # written through: readable while the journal holds it
+            j.close()                                         # the folder can go
             self.assertRegex(text, r"^\d\d:\d\d:\d\d ERR boom\n    line 2\n\d\d:\d\d:\d\d INFO note\n$")
 
     def test_subscribers_get_entries_on_their_loop(self):
