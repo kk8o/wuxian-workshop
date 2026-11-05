@@ -229,6 +229,8 @@ class Stream(unittest.TestCase):
 
     def test_events_replay_from_since(self):
         handle = F.start_in_thread(token="t0ken", ticker=False)
+        self.addCleanup(handle.fake.close)                                            # its snaps folder
+        self.addCleanup(F.shutil.rmtree, handle.fake.new_addons, True)               # close() leaves this one
         try:
             handle.fake.entry("OUT", "hello")
             conn = http.client.HTTPConnection("127.0.0.1", handle.port, timeout=5)

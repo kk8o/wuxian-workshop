@@ -35,7 +35,7 @@
 - 测试实例：`WUXIAN_HOME`（运行时目录）+ `WUXIAN_MUTEX`（单实例互斥量）可以在正在用的程序旁边再起一个。设了 `WUXIAN_MUTEX` 的实例是隔离的（`core/game.py` 的 `isolated()`）：不找游戏窗口，所以不读画面、不写信箱；也不找游戏目录，不认正在运行的游戏，也不退回默认的 `_forever_`，只用 `--game` 给的文件夹。页面把它切到开发者模式、装插件，都碰不到正在玩的游戏。要测安装，就用 `--game` 指一个自己的客户端文件夹（指向正在玩的那个就不隔离了）。测页面用 `scripts\dev_fake_api.py`，测守护进程用进程内的 `server.start(worker_factory=…)`。`WUXIAN_UPDATE_FEED` / `WUXIAN_CONTENT_FEED` / `WUXIAN_EXTENSIONS_FEED` 指向本地文件夹（或文件）测更新、内容包和扩展目录，本地的不验签名。
 
 ## 运行时文件
-- 都在 `%LOCALAPPDATA%\WuxianWorkshop\` 下（环境变量 `WUXIAN_HOME` 可改根目录；`tests/__init__.py` 给整个测试默认一个临时目录，测试绝不碰用户的文件）：`state\daemon.json`（端口、token、pid）、`state\settings.json`、`state\install.json`、`state\clients.json`（游戏报告的 Interface 号）、`state\kit-manifest.json`（扩展框架的清单）、`logs\debug.log`、`snaps\*.png`、`history\`、`webview\`。
+- 都在 `%LOCALAPPDATA%\WuxianWorkshop\` 下（环境变量 `WUXIAN_HOME` 可改根目录；`tests/__init__.py` 给整个测试默认一个临时目录，测试绝不碰用户的文件）：`state\daemon.json`（端口、token、pid）、`state\settings.json`、`state\install.json`、`state\clients.json`（游戏报告的 Interface 号）、`state\kit-manifest.json`（扩展框架的清单）、`logs\debug.log`（一直开着写，超过 10 MB 轮转成 `debug.log.1`）、`snaps\*.png` 与 `*.jpg`（只留最近 300 张、200 MB）、`history\`、`webview\`。
 
 ## 约定
 - 注释密度与现有代码一致：模块顶部一段说明用途与协议，函数一行 docstring，只在"为什么"不显然处加行内注释；注释一律英文。界面文案中英两份：页面的中文直接写在 index.html / app.js 里（它也是词条的键：静态文字由 `x-t` 翻译，表达式里用 `t('…{名}…', {名})` 整句模板，不拼接碎片），英文写进 `ui/static/i18n.js` 的 `EN`（`tests/ui/test_i18n.py` 查每条都有英文）；Python 给人看的文字（自检、Agent、新建插件、托盘与对话框）用 `i18n.tr(中文, 英文)`，跟设置里的语言走（自动 = 跟随 Windows 显示语言）。插件里给玩家看的文字一律放 `Locale.lua`（`!WuxianWorkshop` 放 `Core.lua` 的 `WORDS`），中英两份都写；发给守护进程的内容（调试、RUN/RELOAD 结果、测试消息）保持英文。
