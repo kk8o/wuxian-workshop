@@ -15,6 +15,7 @@ Font.SIZE = 64
 Font.MAX_PACKET = 4096
 
 local holder
+local calGen = 0         -- bumped when the holder's scale is set: every kept calibration (Font.Peek) is measured again
 
 -- UTF-8 of U+E000 + i
 local function Glyph(i)
@@ -34,12 +35,14 @@ local function Holder()
 	end
 	local _, physH = GetPhysicalScreenSize()
 	holder:SetScale(768 / physH)   -- one UI unit = one physical pixel, like the bus: size 64 means 64 pixels
+	calGen = calGen + 1
 	return holder
 end
 
 -- after the physical size changed (window resized, resolution, mode): one UI unit must stay one physical pixel, or the
 -- glyph widths stop being whole pixels and bytes misread
 function Font.Rescale()
+	calGen = calGen + 1
 	if holder then
 		local _, physH = GetPhysicalScreenSize()
 		holder:SetScale(768 / physH)
@@ -58,6 +61,7 @@ end
 
 -- SetFont, timed. Returns ok (no Lua error), its return value, whether GetFont() names the file afterwards, milliseconds.
 function Font.Load(fs, path, size)
+	if fs.wbCal then fs.wbCal[1] = false end   -- the font may change: Font.Peek calibrates again
 	local t0 = debugprofilestop()
 	local ok, res = pcall(fs.SetFont, fs, path, size or Font.SIZE, "")
 	local ms = debugprofilestop() - t0
@@ -105,6 +109,31 @@ function Font.Bytes(fs, step, w0, first, n, out)
 		out[#out + 1] = r
 	end
 	return out, worst
+end
+
+-- data byte k (0-based) by the FontString's kept calibration, or nil: the cheapest look whether a new font is in. The
+-- calibration is measured when there is none (and kept only when it is one of our fonts), and goes when the FontString
+-- gets SetFont again (Font.Load) or the scale changes (Rescale). All our fonts calibrate alike at one scale, so the byte
+-- is what Font.Head would read with a fresh calibration whichever of them the FontString shows.
+function Font.Peek(fs, k)
+	local cal = fs.wbCal
+	local step, w0
+	if cal and cal[1] == calGen then
+		step, w0 = cal[2], cal[3]
+	else
+		step, w0 = Font.Calibrate(fs)
+		if not step then return nil end
+		if cal then
+			cal[1], cal[2], cal[3] = calGen, step, w0
+		else
+			fs.wbCal = { calGen, step, w0 }
+		end
+	end
+	local w = Width(fs, 2 + k)
+	if not w then return nil end
+	local r = floor((w - w0) / step + 0.5)
+	if r < 0 or r > 255 then return nil end
+	return r
 end
 
 -- the first n data bytes, or nil: a cheap look before reading a whole packet

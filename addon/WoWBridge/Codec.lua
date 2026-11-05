@@ -51,41 +51,63 @@ function Codec.CRC32(bytes, first, last)
 	return bxor(crc, 0xFFFFFFFF)
 end
 
--- bytes -> cell values of `bits` bits each, most significant bit first; the last cell is padded with zeros
-function Codec.Pack(bytes, bits)
-	local out, acc, n, base = {}, 0, 0, 2 ^ bits
-	for i = 1, #bytes do
+local POW2 = {}
+for i = 0, 15 do POW2[i] = 2 ^ i end
+
+-- bytes -> cell values of `bits` bits each, most significant bit first; the last cell is padded with zeros. Into `out`
+-- (a new table if nil) from its first entry, entries past the cells cleared; count: the bytes to take (#bytes if nil).
+-- Returns out and the number of cells.
+function Codec.Pack(bytes, bits, out, count)
+	out = out or {}
+	local o, acc, n, base = 0, 0, 0, POW2[bits]
+	for i = 1, count or #bytes do
 		acc = acc * 256 + bytes[i]
 		n = n + 8
 		while n >= bits do
 			n = n - bits
-			local p = 2 ^ n
-			out[#out + 1] = floor(acc / p) % base
+			local p = POW2[n]
+			o = o + 1
+			out[o] = floor(acc / p) % base
 			acc = acc % p
 		end
 	end
 	if n > 0 then
-		out[#out + 1] = (acc * 2 ^ (bits - n)) % base
+		o = o + 1
+		out[o] = (acc * POW2[bits - n]) % base
 	end
-	return out
+	for i = o + 1, #out do out[i] = nil end
+	return out, o
 end
 
--- header (15 bytes) + payload + CRC-32, as a byte array
+-- header (15 bytes) + payload + CRC-32, as a byte array, and its length. The array is the same table on every call
+-- (entries past the length cleared): use it before the next call.
+local stream = {}
+
 function Codec.Stream(ftype, W, H, session, msg, part, parts, payload)
 	local len = #payload
-	local b = { 0x57, 0x42, Codec.VERSION * 16 + ftype, W, H, floor(session / 256) % 256, session % 256,
-		floor(msg / 256) % 256, msg % 256, part, parts, floor(len / 256) % 256, len % 256 }
+	local b = stream
+	b[1], b[2], b[3], b[4], b[5] = 0x57, 0x42, Codec.VERSION * 16 + ftype, W, H
+	b[6], b[7], b[8], b[9] = floor(session / 256) % 256, session % 256, floor(msg / 256) % 256, msg % 256
+	b[10], b[11], b[12], b[13] = part, parts, floor(len / 256) % 256, len % 256
 	local c = Codec.CRC16(b, 1, 13)
 	b[14], b[15] = floor(c / 256), c % 256
-	for i = 1, len do
-		b[15 + i] = payload:byte(i)
+	local byte, i = string.byte, 1
+	while i + 7 <= len do                          -- 8 at a time
+		b[15 + i], b[16 + i], b[17 + i], b[18 + i], b[19 + i], b[20 + i], b[21 + i], b[22 + i] = byte(payload, i, i + 7)
+		i = i + 8
 	end
-	local crc = Codec.CRC32(b, 1, 15 + len)
-	b[#b + 1] = band(rshift(crc, 24), 0xFF)
-	b[#b + 1] = band(rshift(crc, 16), 0xFF)
-	b[#b + 1] = band(rshift(crc, 8), 0xFF)
-	b[#b + 1] = band(crc, 0xFF)
-	return b
+	while i <= len do
+		b[15 + i] = byte(payload, i)
+		i = i + 1
+	end
+	local last = 15 + len
+	local crc = Codec.CRC32(b, 1, last)
+	b[last + 1] = band(rshift(crc, 24), 0xFF)
+	b[last + 2] = band(rshift(crc, 16), 0xFF)
+	b[last + 3] = band(rshift(crc, 8), 0xFF)
+	b[last + 4] = band(crc, 0xFF)
+	for k = last + 5, #b do b[k] = nil end
+	return b, last + 4
 end
 
 -- largest payload a frame of this layout carries in this mode, leaving `reserve` data cells free (probe ramps)

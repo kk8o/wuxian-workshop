@@ -72,16 +72,23 @@ local function FlushOut()
 	D.Queue("OUT " .. text)
 end
 
+-- an error seen before (on its line in the debug window, and sent already when forwarding) only counts: no stack is
+-- taken (debugstack is the dear part of an error flood); the window's [详情] keeps the first one
 local function OnError(msg)
 	D.stats.errors = D.stats.errors + 1
-	-- the stack from the error on: without this handler's own line and the C call into it
-	local stack = debugstack and debugstack(3) or ""
-	stack = stack:gsub("^%[[^%]]*WoWBridge[/\\]Debug%.lua%][^\n]*\n", ""):gsub("^%[C%]: %?\n", "")
-	ns.Console.Add("ERR", tostring(msg), stack:sub(1, 1500))
-	if not Enabled() then return end
-	local text = "ERR " .. tostring(msg)
+	msg = tostring(msg)
+	local text = "ERR " .. msg
+	local forward = Enabled()
+	local stack
+	if not ns.Console.Has("ERR", msg) or (forward and not seen[text]) then
+		-- the stack from the error on: without this handler's own line and the C call into it
+		stack = debugstack and debugstack(3) or ""
+		stack = stack:gsub("^%[[^%]]*WoWBridge[/\\]Debug%.lua%][^\n]*\n", ""):gsub("^%[C%]: %?\n", ""):sub(1, 1500)
+	end
+	ns.Console.Add("ERR", msg, stack)
+	if not forward then return end
 	if seen[text] then return Seen(text) end
-	Seen(text, stack:sub(1, 1500))
+	Seen(text, stack)
 end
 
 local function OnPrint(...)

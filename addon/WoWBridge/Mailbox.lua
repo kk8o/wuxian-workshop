@@ -116,10 +116,12 @@ function M.Tick()
 	end
 	if st.phase ~= "poll" then return end
 	local k = st.slot
+	local low = k % 256
 	for i, meter in ipairs(st.meters) do
 		-- "WF" envelope (4 bytes), then "WM", version, flags, slot: until slot k has loaded, a FontString still shows an
-		-- earlier font (or the stock one), so look at the slot number before reading everything
-		local head = Font.Head(meter, 12)
+		-- earlier font (or the stock one), so look at the slot number before reading everything; first only at its low
+		-- byte (data byte 11, one glyph by the kept calibration), then at the whole head as measured afresh
+		local head = Font.Peek(meter, 11) == low and Font.Head(meter, 12)
 		if head and head[5] == 87 and head[6] == 77 and ((head[9] * 256 + head[10]) * 256 + head[11]) * 256 + head[12] == k then
 			local s = Font.Packet(meter)
 			local pkt = s and M.Parse(s)
