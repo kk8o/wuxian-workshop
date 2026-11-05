@@ -135,6 +135,11 @@ class Fake:
         truncated = bool(self.logs) and since and since < self.logs[0]["id"] - 1
         return out[:limit], bool(truncated)
 
+    def tail(self, limit=200, kinds=None):
+        """the newest `limit` entries of these kinds, oldest first (the daemon's ?tail=1); truncated = the ring dropped some"""
+        out = [e for e in self.logs if not kinds or e["kind"] in kinds][-limit:]
+        return out, bool(self.logs) and self.logs[0]["id"] > 1
+
     # ---- status
     def status(self):
         """the daemon's shape (daemon/service.py status()), plus what only this fake knows: daemon.port / exe / fake and
@@ -746,6 +751,10 @@ def create_app(fake=None, ticker=True):
             since, limit = int(q.get("since", 0) or 0), int(q.get("limit", 200) or 200)
         except ValueError:
             return error("bad_request", "since and limit must be integers", 400)
+        if q.get("tail") not in (None, "", "0"):     # the newest ones, next = the id after the last (the daemon's shape)
+            entries, truncated = fake.tail(max(1, min(limit, 1000)), kinds)
+            return JSONResponse({"entries": entries, "next": entries[-1]["id"] + 1 if entries else fake.next_id,
+                                 "truncated": truncated})
         entries, truncated = fake.entries(since, max(1, min(limit, 5000)), kinds)
         out = {"entries": entries, "next": entries[-1]["id"] if entries else since}
         if truncated:

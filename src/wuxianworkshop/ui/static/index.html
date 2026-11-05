@@ -318,7 +318,7 @@
     <section class="page" x-t x-show="page === 'dev'">
       <div class="pagebar">
         <h1>开发台</h1>
-        <span class="muted" x-text="t('{a} / {b} 条日志', { a: visibleLogs.length, b: logs.length })"></span>
+        <span class="muted" x-text="logView.count > visibleLogs.length ? t('{a} / {b} 条日志，显示最近 {n} 条', { a: logView.count, b: logTotal, n: visibleLogs.length }) : t('{a} / {b} 条日志', { a: logView.count, b: logTotal })"></span>
       </div>
       <div class="pagebody fill dev-split">
         <div class="dev-logs">
@@ -862,7 +862,7 @@
             </div>
             <div class="toolbar calls" role="group" aria-label="能否从插件调用" x-t>
               <template x-for="c in CALL_FILTERS" :key="c.id">
-                <button class="chip call" :class="['c-' + c.id, {on: docs.call === c.id}]" :title="t(c.tip)"
+                <button class="chip call" :class="{['c-' + c.id]: true, on: docs.call === c.id}" :title="t(c.tip)"
                         @click="docs.call = docs.call === c.id ? '' : c.id; docsSearch()"><span class="cmark" x-show="c.id !== 'usable'"></span><span x-text="t(c.label)"></span><span class="cnt" x-show="docs.counts" x-text="callCount(c.id)"></span></button>
               </template>
             </div>
@@ -886,7 +886,7 @@
                     <div class="api-ghead" x-text="t(KIND_TEXT[g.kind] || g.kind) + ' · ' + g.rows.length"></div>
                     <ul class="api-results">
                       <template x-for="r in g.rows" :key="r.kind + ':' + r.name">
-                        <li :class="['call-' + (r.call || 'ok'), {active: docs.sel && docs.sel.name === r.name, cur: docsFlat[docs.cursor] === r}]" @click="docsOpen(r)" :title="callText(r)">
+                        <li :class="{['call-' + (r.call || 'ok')]: true, active: docs.sel && docs.sel.name === r.name, cur: docs.curKey === r.kind + ':' + r.name}" @click="docsOpen(r)" :title="callText(r)">
                           <div class="mono sig"><span class="cmark" x-show="r.kind !== 'table' && r.kind !== 'usage'"></span><span x-text="r.sig"></span></div>
                           <span class="since" x-show="r.since" x-text="sinceText(r.since)"></span>
                         </li>

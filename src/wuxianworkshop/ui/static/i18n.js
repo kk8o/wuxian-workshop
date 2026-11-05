@@ -114,6 +114,7 @@ const EN = {
   '还没有动态': 'Nothing yet',
   '开发台': 'Console',
   '{a} / {b} 条日志': '{a} / {b} log entries',
+  '{a} / {b} 条日志，显示最近 {n} 条': '{a} / {b} log entries, the last {n} shown',
   '筛选文字': 'Filter text',
   '跟随': 'Follow',
   '清屏': 'Clear',
