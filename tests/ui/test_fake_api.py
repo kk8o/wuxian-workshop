@@ -26,6 +26,8 @@ AUTH = {"Authorization": "Bearer t0ken"}
 class Endpoints(unittest.TestCase):
     def setUp(self):
         self.fake = F.Fake(token="t0ken", seed=1)
+        self.addCleanup(self.fake.close)                                              # its snaps folder
+        self.addCleanup(F.shutil.rmtree, self.fake.new_addons, True)                  # close() leaves this one
         self.client = TestClient(F.create_app(self.fake, ticker=False), base_url="http://127.0.0.1")
         self.client.__enter__()
 

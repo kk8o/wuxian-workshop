@@ -4,7 +4,11 @@ of the client (Client: fonts, sounds, load-on-demand addons) and one UI session 
 The mock models what 1.60.1.70235 was measured to do: GetStringWidth measures up to the ink of the last glyph; SetFont on
 a font that is not loaded yet returns false and the font takes effect 0.8 s later; a font is cached by path for the life
 of the client (/reload included), a failed load is not; an empty wav played for the first time counts as playing for half
-a second. Every frame the addon draws is decoded with the Python decoder."""
+a second. The frames the addon draws are decoded with the Python decoder: the first of each shape and every
+PIXEL_EVERY-th one go the whole way (Lua cells -> a synthetic screen -> locate -> decode), the others hand their bytes
+to the companion as they are (the round trip was most of a link test). WUXIAN_MOCK_PIXELS=all sends every frame through
+the pixels, a number sets PIXEL_EVERY."""
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -32,6 +36,8 @@ WORKSHOP = ("!WuxianWorkshop", toc_files(ADDON / "!WuxianWorkshop"))            
 BRIDGE = ("WoWBridge", toc_files(ADDON / "WoWBridge"))
 SAVED = {"!WuxianWorkshop": "WuxianWorkshopDB", "WoWBridge": "WoWBridgeDB"}
 FONT_DELAY = 0.8
+_PIXELS = os.environ.get("WUXIAN_MOCK_PIXELS", "").strip().lower()
+PIXEL_EVERY = 1 if _PIXELS == "all" else max(1, int(_PIXELS)) if _PIXELS.isdigit() else 8
 
 MOCK = r"""
 local py = ...
@@ -441,6 +447,7 @@ class Session:
         self.client = client or Client(self.addons, (config or {}).pop("cache_failed_fonts", False))
         self.comp, self.comp_running = comp, True
         self.drop_part = None      # the first frame showing this part of a multi-part message is lost on its way
+        self.pixel_counts = {}     # (W, H, mode, type): frames of that shape drawn so far (see PIXEL_EVERY)
         self.lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
         c = self.client
         py = self.lua.table_from({k.encode(): v for k, v in dict(
@@ -500,13 +507,11 @@ class Session:
         self.loaded.append(name)
 
     def drawn(self, W, H, mode, toggle, ftype, sess, msg, payload, part, parts, r, g, b):
-        cells = {(k % W, k // W): (round(r[k + 1] * 255), round(g[k + 1] * 255), round(b[k + 1] * 255)) for k in range(W * H)}
-        img = R.draw(cells, W, H, 4, origin=(0, 0), size=((W + 4) * 4, (H + 4) * 4), background=(30, 30, 30))
-        dec = decode(img, locate(img))
-        self.test.assertTrue(dec.ok, dec.error)
-        self.test.assertEqual(dec.payload, bytes(payload))
-        self.test.assertEqual((dec.header["msg"], dec.header["type"], dec.mode, dec.header["part"], dec.header["parts"]),
-                              (msg, ftype, mode, part, parts))
+        shape = (W, H, mode, ftype)
+        n = self.pixel_counts.get(shape, 0)
+        self.pixel_counts[shape] = n + 1
+        if n % PIXEL_EVERY == 0:
+            self.round_trip(W, H, mode, ftype, msg, payload, part, parts, r, g, b)
         now = self.now()
         self.frames.append((now, ftype, msg, bytes(payload)))
         self.shapes.append((now, ftype, W, H, mode, msg, part, parts))
@@ -517,6 +522,16 @@ class Session:
         if self.comp is not None and ftype != F.TYPE_PROBE and key != self.last_key and not lost:
             self.comp.on_frame(ftype, sess, msg, bytes(payload), part, parts)
         self.last_key = key
+
+    def round_trip(self, W, H, mode, ftype, msg, payload, part, parts, r, g, b):
+        """the frame as the companion sees it: the cells drawn on a synthetic screen, located and decoded"""
+        cells = {(k % W, k // W): (round(r[k + 1] * 255), round(g[k + 1] * 255), round(b[k + 1] * 255)) for k in range(W * H)}
+        img = R.draw(cells, W, H, 4, origin=(0, 0), size=((W + 4) * 4, (H + 4) * 4), background=(30, 30, 30))
+        dec = decode(img, locate(img))
+        self.test.assertTrue(dec.ok, dec.error)
+        self.test.assertEqual(dec.payload, bytes(payload))
+        self.test.assertEqual((dec.header["msg"], dec.header["type"], dec.mode, dec.header["part"], dec.header["parts"]),
+                              (msg, ftype, mode, part, parts))
 
     def now(self):
         return float(self.lua.globals()[b"__clock"]())

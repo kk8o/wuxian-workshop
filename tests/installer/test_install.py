@@ -12,6 +12,7 @@ from unittest import mock
 
 from tests.installer import fake
 from wuxianworkshop import installer
+from wuxianworkshop.core import mailbox
 from wuxianworkshop.installer import install as I
 
 
@@ -24,11 +25,13 @@ class Env:
         self.game = fake.make_client(self.root, **client)
         self.addons = self.game / "Interface" / "AddOns"
         self.source = fake.make_source(self.root)
-        self.env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(self.root / "home")})
-        self.env.start()
+        self.patches = [mock.patch.dict(os.environ, {"WUXIAN_HOME": str(self.root / "home")}), fake.small_mailbox()]
+        for p in self.patches:
+            p.start()
 
     def close(self):
-        self.env.stop()
+        for p in self.patches:
+            p.stop()
         self.tmp.cleanup()
 
     def install(self, **kw):
@@ -62,18 +65,18 @@ class Install(unittest.TestCase):
         self.assertTrue((a / f"WoWBridge_S{fake.FOREIGN_SLOT:03d}" / "Notes.txt").is_file())
         self.assertTrue((a / f"WoWBridge_S{fake.FOREIGN_SLOT:03d}" / "Inbox.lua").is_file())
         self.assertEqual((a / "SomeOtherAddon" / "Other.lua").read_text(encoding="utf-8"), "-- other\n")
-        # the mailbox: completed to 4,096 slots, the used ones and proc.ttf untouched
+        # the mailbox: completed to its slots (4,096: test_doctor FullMailbox), the used ones and proc.ttf untouched
         mail = a / "WoWBridge" / "mail"
-        self.assertEqual(len(list(mail.glob("*.ttf"))), 4097)
+        self.assertEqual(len(list(mail.glob("*.ttf"))), fake.MAIL_SLOTS + 1)
         for i, data in fake.USED_SLOTS.items():
             self.assertEqual((mail / f"{i:05d}.ttf").read_bytes(), data)
         self.assertEqual((mail / "proc.ttf").read_bytes(), b"proc-stamp")
-        self.assertEqual((mail / "04096.ttf").read_bytes(), b"")
+        self.assertEqual(mailbox.slot_path(a, fake.MAIL_SLOTS).read_bytes(), b"")
         self.assertIn("WoWBridge/mail/", r["installed"])
         self.assertTrue(r["restart_required"])
         self.assertEqual(r["errors"], [])
         self.assertEqual(r["addons_dir"], str(a))
-        self.assertGreaterEqual(r["new_files"], 4086 + 2 + 1)        # the missing slots, the new addon's files, UI.xml ...
+        self.assertGreaterEqual(r["new_files"], fake.MAIL_SLOTS - 10 + 2 + 1)        # the missing slots, the new addon's files, UI.xml ...
         # the record, under WUXIAN_HOME
         rec = json.loads((self.e.root / "home" / "state" / "install.json").read_text(encoding="utf-8"))
         self.assertEqual(rec["addons_dir"], str(a))
@@ -128,7 +131,7 @@ class Install(unittest.TestCase):
         self.assertTrue((a / "SomeOtherAddon" / "Other.lua").is_file())
         self.assertEqual((r["restart_required"], r["restart_for_link"]), (True, False))  # only removed: nothing new
         r = self.e.install(mode="developer")                          # and back: WoWBridge and a fresh mailbox
-        self.assertTrue((a / "WoWBridge" / "mail" / "04096.ttf").is_file())
+        self.assertTrue(mailbox.slot_path(a, fake.MAIL_SLOTS).is_file())
         self.assertTrue(r["restart_for_link"])
         with self.assertRaises(ValueError):
             self.e.install(mode="tourist")
@@ -140,7 +143,7 @@ class Install(unittest.TestCase):
         r = self.e.install(mode="player", keep_developer=True)
         self.assertEqual(r["deferred"], ["WoWBridge"])
         self.assertNotIn("WoWBridge", r["removed"])
-        self.assertTrue((self.e.addons / "WoWBridge" / "mail" / "04096.ttf").is_file())
+        self.assertTrue(mailbox.slot_path(self.e.addons, fake.MAIL_SLOTS).is_file())
         r = self.e.install(mode="developer")                     # back: nothing new, the link works on
         self.assertEqual((r["restart_for_link"], r["deferred"]), (False, []))
 

@@ -15,6 +15,7 @@ addon name and chunk name only in part 1; addon "-" = none). A CALL record (addo
 of a data call the same way, "<job> <i>/<n>[ <verb>]\n<JSON>": what the agent asks of an addon's API, which WoWBridge reads
 without compiling anything (agent/commands.py data_call).
 """
+import os
 import struct
 import zlib
 
@@ -22,6 +23,8 @@ from . import fontpack
 from .game import atomic_write
 
 POOL = 4096
+SLOTS = POOL      # how many placeholders install() makes and the doctor expects (the tests lower it: 4,096 files
+                  # per install is most of an installer test); the link's limit stays POOL
 MAGIC = b"WM"
 VERSION = 1
 WELCOME, HEARTBEAT, TEXT, COMMAND, PARTS, CODE, CALL = 1, 2, 3, 4, 5, 6, 7
@@ -72,16 +75,31 @@ def proc_path(addons):
     return mail_dir(addons) / "proc.ttf"
 
 
-def install(addons, pool=POOL):
-    """the placeholders that are missing (new files: the client only finds them when it starts). Slots in use are left
-    alone: emptying them under a running companion would lose packets; the companion empties them for a new game process."""
+def present(addons):
+    """the lower-case names in the mail folder, read in one listing (a stat per slot is 4,096 calls); empty if none"""
+    try:
+        with os.scandir(mail_dir(addons)) as it:
+            return {e.name.lower() for e in it}
+    except OSError:
+        return set()
+
+
+def missing(addons, pool=None):
+    """(the slot numbers without a placeholder, whether proc.ttf is there)"""
+    names = present(addons)
+    return [i for i in range(1, (pool or SLOTS) + 1) if f"{i:05d}.ttf" not in names], "proc.ttf" in names
+
+
+def install(addons, pool=None):
+    """the placeholders that are missing (new files: the client only finds them when it starts); pool: how many slots
+    (SLOTS). Slots in use are left alone: emptying them under a running companion would lose packets; the companion
+    empties them for a new game process."""
     d = mail_dir(addons)
     d.mkdir(exist_ok=True)
-    for i in range(1, pool + 1):
-        p = d / f"{i:05d}.ttf"
-        if not p.exists():
-            p.write_bytes(b"")
-    if not proc_path(addons).exists():
+    slots, proc = missing(addons, pool)
+    for i in slots:
+        (d / f"{i:05d}.ttf").write_bytes(b"")
+    if not proc:
         proc_path(addons).write_bytes(b"")
 
 

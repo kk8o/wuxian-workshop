@@ -25,7 +25,7 @@
 ## 命令
 - 虚拟环境在仓库的 `.venv`（Python 3.14），Python 命令一律用 `.venv\Scripts\python.exe`。
 - 装包（开发模式）：`.venv\Scripts\python.exe -m pip install -e ".[test,ui,mcp,build]"`。
-- 跑测试：`.venv\Scripts\python.exe -m unittest discover -s tests -t .`（含用 lupa 跑插件 Lua 的测试和起真实 uvicorn 的守护进程测试，几分钟）。
+- 跑测试：`.venv\Scripts\python.exe scripts\run_tests.py`（按模块分到 min(CPU 数, 8) 个子进程并行，最慢的先跑，半分钟左右；`-j N` 改进程数，后面跟包、模块、类或单个测试就只跑这些，`--list` 看顺序；每个子进程用本仓库的 `src/` 和自己的 `WUXIAN_HOME`，所以在工作区里跑测的就是工作区的代码；各模块上次的耗时记在 `build\test-times.json`）。串行的老办法照样能用：`.venv\Scripts\python.exe -m unittest discover -s tests -t .`（约两分钟；在工作区里先设 `PYTHONPATH=src`）。两种都含用 lupa 跑插件 Lua 的测试和起真实 uvicorn 的守护进程测试。模拟客户端（`tests/support/wowmock.py`）只让每种帧形状的第一帧和每 8 帧中的一帧走完整的像素往返，其余直接交字节；改了帧格式或 `Codec.lua`、`Frame.lua` 就用 `run_tests.py --pixels all tests.addon`（即 `WUXIAN_MOCK_PIXELS=all`）让每帧都走像素，CI 也跑这一遍。安装与自检的测试默认只建 64 个信箱槽位（`tests/installer/fake.py` 的 `small_mailbox()`），满 4096 个由 `test_doctor` 的 `FullMailbox` 测。
 - 装插件：`.venv\Scripts\wuxian install [--game "<客户端目录>"] [--no-clean]`；新增/删除文件后要完整重启游戏（toc 和新文件只在启动时被发现），只改已有 .lua 则 /reload 即可。
 - 自检：`.venv\Scripts\wuxian doctor [--fix]`。
 - 守护进程：`.venv\Scripts\wuxian serve [--capture gdi|wgc]`（无窗口）；客户端子命令 `status | check | try | run <lua> | load <target> | watch | snap | reload | logs | events | call | respond | addon-api | api-scan | say | quit` 和 `wuxian mcp` 在没有守护进程时自动拉起 `wuxian app --background`（测试或无界面环境设 `WUXIAN_HEADLESS=1` 改拉 `serve`）。`wuxian mcp-config claude|codex|cursor` 打印接入片段。
