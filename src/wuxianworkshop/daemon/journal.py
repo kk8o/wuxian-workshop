@@ -1,5 +1,5 @@
 """The daemon's log: the last CAPACITY entries in a ring with monotonic ids, each appended to logs/debug.log as it comes
-(the format of agent/debuglog.py) and handed to the subscribers (the SSE connections) through their asyncio loop. The
+(the format of agent/debuglog.py, which keeps the file open and rotates it to debug.log.1 past 10 MB) and handed to the subscribers (the SSE connections) through their asyncio loop. The
 EVENT entries have a ring of their own (EVENT_CAPACITY): an addon that emits a lot must not push the errors and the run
 results out of the log.
 
@@ -120,9 +120,10 @@ class Journal:
                 pass
         return entry
 
-    def since(self, since=0, limit=200, kinds=None):
+    def since(self, since=0, limit=200, kinds=None, tail=False):
         """(entries with id >= since, at most limit, of these kinds; next = the id to ask for next time;
-        truncated = entries before the oldest kept one were asked for)"""
+        truncated = entries before the oldest kept one were asked for). tail: the newest limit of them instead of the
+        oldest, still in id order (next is then the journal's next id: there is nothing newer to read)"""
         kinds = set(kinds) if kinds else None
         rings = [e for e in (False, True) if kinds is None or (("EVENT" in kinds) if e else bool(kinds - {"EVENT"}))]
         with self.lock:
@@ -131,6 +132,15 @@ class Journal:
             next_id = self.next_id
         entries = lists[0] if len(lists) == 1 else list(heapq.merge(*lists, key=lambda e: e["id"]))
         truncated = bool(lost) and since <= lost
+        if tail:
+            out = []
+            for e in reversed(entries):
+                if e["id"] < since or len(out) >= limit:
+                    break
+                if not kinds or e["kind"] in kinds:
+                    out.append(e)
+            out.reverse()
+            return out, next_id, truncated
         out = []
         for e in entries:
             if e["id"] < since or (kinds and e["kind"] not in kinds):
@@ -139,6 +149,12 @@ class Journal:
                 return out, out[-1]["id"] + 1, truncated      # more to come: resume after the last one returned
             out.append(e)
         return out, next_id, truncated
+
+    def close(self):
+        """let debug.log go (the daemon stops); entries added later still reach it, each opening it for itself"""
+        close = getattr(self.write, "close", None)
+        if close is not None:
+            close()
 
     def subscribe(self, loop, callback):
         """callback(entry) on that asyncio loop for every new entry; returns the function that ends it"""

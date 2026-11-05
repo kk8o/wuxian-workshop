@@ -44,7 +44,9 @@ from .instance import ERROR_ALREADY_EXISTS, MUTEX, SingleInstance, instance_mute
 from .journal import Journal
 from .service import Service
 
-SNAP_NAME = re.compile(r"^[\w.-]+\.png$")
+SNAP_NAME = re.compile(r"^[\w.-]+\.(png|jpg)$")
+SNAP_TYPES = {"png": "image/png", "jpg": "image/jpeg"}
+STATUS_EVERY = 2.0                 # seconds between the status events of /api/events, whether entries come or not
 STARTUP_WAIT = 15.0
 MCP_AFTER = 4.0                    # seconds the App's daemon waits to build its MCP server: the window and its page first
 UI_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
@@ -292,15 +294,16 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def snap(request):
         b = await body_of(request)
-        return await service.snap(b.get("region"), b.get("max_width", 1280))
+        return await service.snap(b.get("region"), b.get("max_width", 1280), b.get("format"))
 
     @api
     async def snaps(request):
         name = request.path_params["name"]
         path = snaps_dir() / name
-        if not SNAP_NAME.match(name) or not path.is_file():
+        m = SNAP_NAME.match(name)
+        if not m or not path.is_file():
             raise ApiError(404, "not_found", f"no snap named {name}")
-        return FileResponse(str(path), media_type="image/png")
+        return FileResponse(str(path), media_type=SNAP_TYPES[m[1]])
 
     @api
     async def reload(request):
@@ -312,10 +315,13 @@ def make_app(service, access, handle, mcp=None):
         b = await body_of(request)
         return await service.say(b.get("text"))
 
+    def bool_param(request, name):
+        return (request.query_params.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
     @api
     async def logs(request):
         return await service.logs(int_param(request, "since", 0), int_param(request, "limit", 200),
-                                  request.query_params.get("kinds"))
+                                  request.query_params.get("kinds"), bool_param(request, "tail"))
 
     @api
     async def events(request):
@@ -349,11 +355,18 @@ def make_app(service, access, handle, mcp=None):
                     last = e["id"]
                     yield sse("log", e)
                 yield sse("status", await service.status())
+                status_due = loop.time() + STATUS_EVERY
                 while True:
+                    # the status goes every STATUS_EVERY seconds also while entries keep coming: a chatty addon must not
+                    # leave the page's status bar behind
                     try:
-                        entry = await asyncio.wait_for(queue.get(), 2.0)
+                        entry = await asyncio.wait_for(queue.get(), max(0.0, status_due - loop.time()))
                     except asyncio.TimeoutError:
+                        entry = None
+                    if loop.time() >= status_due:
+                        status_due = loop.time() + STATUS_EVERY
                         yield sse("status", await service.status())
+                    if entry is None:
                         continue
                     while True:
                         if entry["id"] > last:         # not one the backlog above already carried
@@ -451,7 +464,8 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def inspect(request):
         b = await body_of(request)
-        return await service.inspect(b.get("target"), bool(b.get("mouse")), b.get("depth", 1), bool(b.get("snap")))
+        return await service.inspect(b.get("target"), bool(b.get("mouse")), b.get("depth", 1), bool(b.get("snap")),
+                                     b.get("snap_format"))
 
     @api
     async def api_scan(request):
@@ -491,7 +505,7 @@ def make_app(service, access, handle, mcp=None):
     async def try_(request):
         b = await body_of(request)
         return await service.try_(b.get("code"), b.get("slash"), b.get("seconds", 2), b.get("addon"), bool(b.get("snap")),
-                                  b.get("frame"), b.get("events"), b.get("timeout_ms", 10000))
+                                  b.get("frame"), b.get("events"), b.get("timeout_ms", 10000), b.get("snap_format"))
 
     @api
     async def check(request):

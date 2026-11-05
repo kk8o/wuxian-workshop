@@ -39,7 +39,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
             return self.answer.get("inspect", whole(json.dumps(
                 {"screen": [1311, 983], "frames": [{"name": "MyFrame", "rect": [5, 900, 200, 100]}]})))
 
-        async def snap(region=None, max_width=1280):
+        async def snap(region=None, max_width=1280, format=None):
             self.snaps.append((region, max_width))
             return dict(path="x.png", width=region[2], height=region[3], url="/api/snaps/x.png")
 

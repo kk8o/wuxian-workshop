@@ -84,9 +84,12 @@ class DaemonClient:
         return self.post("/api/load", target=target, mode=mode, reset=reset, timeout_ms=timeout_ms, check=check,
                          timeout=timeout_ms / 1000 + 10)
 
-    def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None, timeout_ms=10000):
+    def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None, timeout_ms=10000,
+             snap_format=None):
+        # snap_format: said only when given (a daemon before it reads no such field and answers a PNG)
         return self.post("/api/try", code=code, slash=slash, seconds=seconds, addon=addon, snap=snap, frame=frame,
-                         events=events, timeout_ms=timeout_ms, timeout=seconds + timeout_ms / 1000 + 120)
+                         events=events, timeout_ms=timeout_ms, timeout=seconds + timeout_ms / 1000 + 120,
+                         **({"snap_format": snap_format} if snap_format else {}))
 
     def check(self, target, live=True):
         return self.post("/api/check", target=target, live=live, timeout=60)
@@ -94,15 +97,16 @@ class DaemonClient:
     def watch(self, action="list", target=None):
         return self.post("/api/watch", action=action, target=target)
 
-    def snap(self, region=None, max_width=1280):
-        return self.post("/api/snap", region=region, max_width=max_width)
+    def snap(self, region=None, max_width=1280, format=None):
+        return self.post("/api/snap", region=region, max_width=max_width, **({"format": format} if format else {}))
 
     def trace(self, seconds=10, events=None, max_events=200, args=6):
         return self.post("/api/trace", seconds=seconds, events=events, max_events=max_events, args=args,
                          timeout=seconds + 120 + AGAIN)
 
-    def inspect(self, target=None, mouse=False, depth=1, snap=False):
-        return self.post("/api/inspect", target=target, mouse=mouse, depth=depth, snap=snap, timeout=60 + AGAIN)
+    def inspect(self, target=None, mouse=False, depth=1, snap=False, snap_format=None):
+        return self.post("/api/inspect", target=target, mouse=mouse, depth=depth, snap=snap, timeout=60 + AGAIN,
+                         **({"snap_format": snap_format} if snap_format else {}))
 
     def api_scan(self, part, names=None):
         return self.post("/api/api_scan", part=part, names=names, timeout=180 + AGAIN)
@@ -139,8 +143,8 @@ class DaemonClient:
     def say(self, text):
         return self.post("/api/say", text=text)
 
-    def logs(self, since=0, limit=200, kinds=None):
-        return self.get("/api/logs", since=since, limit=limit, kinds=kinds)
+    def logs(self, since=0, limit=200, kinds=None, tail=False):
+        return self.get("/api/logs", since=since, limit=limit, kinds=kinds, tail=1 if tail else None)
 
     def doctor(self, game_dir=None):
         return self.get("/api/doctor", game_dir=game_dir)
