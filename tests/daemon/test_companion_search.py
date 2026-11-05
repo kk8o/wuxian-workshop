@@ -31,7 +31,7 @@ class Screen:
         cells = render.sample_frame(128, 32, ftype=F.TYPE_DATA, payload=b"x" * 1000, session=0x2222, msg=2)
         self.img = render.draw(cells, 128, 32, 4, origin=self.at, size=SIZE, background=60)
 
-    def grab(self, win, max_w=None, max_h=None, x=0, y=0):
+    def grab(self, win, max_w=None, max_h=None, x=0, y=0, reader=None):
         self.calls.append((max_w, max_h, x, y))
         w = SIZE[0] - x if max_w is None else min(SIZE[0] - x, max_w)
         h = SIZE[1] - y if max_h is None else min(SIZE[1] - y, max_h)

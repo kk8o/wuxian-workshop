@@ -35,6 +35,8 @@ import traceback
 from concurrent.futures import Future
 from pathlib import Path
 
+import numpy as np
+
 from ..agent.debuglog import debug_writer
 from ..agent.diag import parse_diag
 from ..agent.snap import take_snap
@@ -45,7 +47,7 @@ from ..core.game import addons_dir, process_start, read_build_info
 from ..core.locate import locate
 from ..paths import logs_dir, state_dir
 from ..transport import capture
-from ..transport.capture import WgcSource, grab_client
+from ..transport.capture import GdiReader, WgcSource, grab_client
 from ..transport.link import Companion
 
 if sys.stdout is not None:                                       # None in a detached process
@@ -53,7 +55,10 @@ if sys.stdout is not None:                                       # None in a det
 
 ROI_SMALL, ROI_FULL = (600, 300), (1024, 640)   # the region read: every frame at 4 px cells fits; the WGC staging size
 MISSES_BEFORE_FULL = 20                          # reads in a row without a frame before the whole window is searched
-FULL_SEARCH_EVERY = 1.0                          # seconds between searches of the whole window while the frame is lost
+LOST_RATE = 0.2                                  # seconds between reads meanwhile (the usual rate again once one is found)
+FULL_SEARCH_EVERY = 1.0                          # seconds between searches of the whole window while the frame is lost,
+FULL_SEARCH_MAX = 8.0                            # doubled after every search that failed, up to this; back to the first
+                                                 # once a frame is found or the window moved or was resized
 MARGIN = 16                                      # pixels read around the frame's top-left corner once it is found
 SETTLE = 0.5                                     # the window counts as moved / resized once its geometry held this long
 WINDOW_POLL = 2.0                                # seconds between looks for the game window while there is none
@@ -134,11 +139,15 @@ class CompanionLoop:
         self.wgc, self.wgc_seq, self.wgc_failed = None, 0, None   # wgc_failed: the window WGC refused (GDI for it)
         self.roi, self.misses = ROI_SMALL, 0
         self.roi_at, self.last_search = (0, 0), 0.0  # where the region read starts (the player may move the frame)
+        self.search_fails = 0                        # searches of the whole window in a row that found no frame
+        self.gdi = GdiReader()                       # the GDI objects of the frame area's reads, kept on this thread
+        self.same = None                             # the last frame decoded: (what was read, its box, its pixels)
         self.last_key, self.pitch = None, None
         self.geom = self.moving_since = self.last_move = self.relock_from = None
         self.failed_since, self.minimized_since = 0, None
         self.changes = []
         self.loops, self.busy, self.worst, self.bad = 0, 0.0, 0.0, 0
+        self.unchanged = 0                           # reads that showed the last frame decoded again: not decoded
         self.started = time.time()
         state = state_dir()
         self.say_file, self.command_file = state / "say.txt", state / "command.txt"
@@ -241,6 +250,8 @@ class CompanionLoop:
                 self.log("the game window is gone")
                 self.said.discard("waiting for the game window")
             self.win = None                             # self.pid stays: the same process back is not a new one
+            self.gdi.close()
+            self.same = None
             self._gone()
             self._once("waiting for the game window")
             self._tick()
@@ -291,6 +302,7 @@ class CompanionLoop:
             comp.new_process(f"P{win.pid}-{int(start)}")
             self.pid = (win.pid, int(start))           # only once that worked: a failure is tried again next round
             self.geom = None
+            self._window_changed()
         now = time.time()
         if win.minimized:                                   # nothing is drawn: no geometry to follow
             if self.minimized_since is None:
@@ -302,12 +314,14 @@ class CompanionLoop:
         if self.minimized_since is not None:
             self.log(f"window restored after {now - self.minimized_since:.1f} s minimized")
             self.minimized_since, self.moving_since, self.relock_from, self.failed_since, self.geom = None, None, now, 0, None
+            self._window_changed()
             self.changes.append(dict(at=round(now, 3), client=[win.w, win.h], origin=[win.x, win.y], dpi=win.dpi,
                                      changing=0, restored=True, relock=None, failed=0))
         g = (win.x, win.y, win.w, win.h, win.dpi)
         if self.geom is not None and g != self.geom:        # E2: moved, resized, another monitor or mode
             self.moving_since = self.moving_since or now
             self.last_move = now
+            self._window_changed()
         self.geom = g
         if self.moving_since is not None and now - self.last_move >= SETTLE:
             self.log(f"window settled: client {win.w}x{win.h} at ({win.x},{win.y}), DPI {win.dpi}, "
@@ -332,8 +346,10 @@ class CompanionLoop:
         elif self.capture == "gdi" and self.wgc is not None:    # switched to GDI (settings)
             self.wgc.stop()
             self.wgc = None
+        if self.wgc is not None:
+            self.gdi.close()
         t0 = time.perf_counter()
-        if self.misses >= MISSES_BEFORE_FULL and time.time() - self.last_search >= FULL_SEARCH_EVERY:
+        if self.misses >= MISSES_BEFORE_FULL and time.time() - self.last_search >= self._search_every():
             self._search(win)                       # the frame was moved (WoWBridge's /wb unlock), or is not up yet
         region = self.roi
         if self.wgc is not None:
@@ -348,12 +364,12 @@ class CompanionLoop:
                 return
             if img is None or seq == self.wgc_seq:  # the window has shown nothing new since the last read
                 comp.tick()
-                self._wait(self.rate)
+                self._wait(self._rate())
                 return
             self.wgc_seq = seq
         else:
             try:
-                img = grab_client(win, *region, *self.roi_at)
+                img = grab_client(win, *region, *self.roi_at, reader=self.gdi)
             except OSError as e:                    # a UAC prompt, the lock screen or Ctrl+Alt+Del: no screen to read
                 self._once(f"screen capture failed ({e}); retrying (a UAC prompt or the lock screen hides the desktop)")
                 comp.tick()
@@ -362,7 +378,23 @@ class CompanionLoop:
             self.said.discard(next((m for m in self.said if m.startswith("screen capture failed")), None))
         self._frame(win, img, region, t0)
         comp.tick()
-        self._wait(max(0.0, self.rate - (time.perf_counter() - t0)))
+        self._wait(max(0.0, self._rate() - (time.perf_counter() - t0)))
+
+    def _rate(self):
+        """seconds between reads: LOST_RATE once MISSES_BEFORE_FULL reads in a row found no frame (the addon is off,
+        the link too, or the frame is somewhere else: a search finds it), the rate asked for otherwise"""
+        return max(self.rate, LOST_RATE) if self.misses >= MISSES_BEFORE_FULL else self.rate
+
+    def _search_every(self):
+        """seconds between searches of the whole window: FULL_SEARCH_EVERY, doubled for every failed one after the
+        first (1, 1, 2, 4, 8, 8 ... s), at most FULL_SEARCH_MAX"""
+        return min(FULL_SEARCH_MAX, FULL_SEARCH_EVERY * 2 ** max(0, self.search_fails - 1))
+
+    def _window_changed(self):
+        """the window moved, was resized, restored or is a new one: the frame is searched for at the first interval
+        again, and a frame decoded before is not taken as still up"""
+        self.search_fails = 0
+        self.same = None
 
     def _gone(self):
         """no game window: when the process the Companion knew has exited too (not just its window, which may come
@@ -407,7 +439,9 @@ class CompanionLoop:
             return
         lk = locate(full) if full is not None else None
         if lk is None:
+            self.search_fails += 1
             return
+        self.search_fails = 0
         at = (max(0, int(lk.ox - lk.px) - MARGIN), max(0, int(lk.oy - lk.py) - MARGIN))   # the quiet zone's corner
         if at != self.roi_at:
             self.log(f"frame found at ({int(lk.ox - lk.px)},{int(lk.oy - lk.py)}) of the client area: reading from there")
@@ -421,15 +455,50 @@ class CompanionLoop:
         if abs(at[0] - self.roi_at[0]) > MARGIN // 2 or abs(at[1] - self.roi_at[1]) > MARGIN // 2:
             self.roi_at = at
 
+    def _read_key(self, win, img, region):
+        """what a read was of: the same window and process, capture, region and place; a frame decoded from one read
+        is only taken as still up in a read of the same"""
+        return win.hwnd, win.pid, self.capture, self.wgc is not None, tuple(region), self.roi_at, img.shape
+
+    def _unchanged(self, key, img):
+        """the frame decoded last is still up: this read is of the same and its box (quiet zone included) holds the
+        same pixels. The addon flips the toggle cell on every frame it draws, so a new frame changes the box. Not while
+        the window moves or the frame is to be locked again after a change (that is logged on the next decode)"""
+        same = self.same
+        if same is None:
+            return False
+        if same[0] != key or self.relock_from is not None or self.moving_since is not None:
+            self.same = None
+            return False
+        y0, y1, x0, x1 = same[1]
+        return np.array_equal(img[y0:y1, x0:x1], same[2])
+
+    def _remember(self, key, img, lk):
+        """keep the box of the frame just decoded (the quiet zone around it), to tell when the next reads show it again"""
+        h, w = img.shape[:2]
+        x0, y0 = max(0, int(np.floor(lk.ox - lk.px))), max(0, int(np.floor(lk.oy - lk.py)))
+        x1 = min(w, int(np.ceil(lk.ox + (lk.W + 1) * lk.px)))
+        y1 = min(h, int(np.ceil(lk.oy + (lk.H + 1) * lk.py)))
+        self.same = (key, (y0, y1, x0, x1), img[y0:y1, x0:x1].copy()) if x1 > x0 and y1 > y0 else None
+
     def _frame(self, win, img, region, t0):
-        """one image of the frame area: locate, decode, hand a new frame to the Companion"""
+        """one image of the frame area: the frame decoded last still up is not decoded again; otherwise locate,
+        decode, hand a new frame to the Companion"""
         comp = self.comp
+        read = self._read_key(win, img, region)
+        if self._unchanged(read, img):
+            dt = time.perf_counter() - t0
+            self.loops, self.busy, self.worst = self.loops + 1, self.busy + dt, max(self.worst, dt)
+            self.misses, self.search_fails, self.unchanged = 0, 0, self.unchanged + 1
+            return
         lk = locate(img)
         dec = decode(img, lk) if lk is not None else None
         dt = time.perf_counter() - t0
         self.loops, self.busy, self.worst = self.loops + 1, self.busy + dt, max(self.worst, dt)
         self.misses = 0 if lk is not None else self.misses + 1
+        self.same = None
         if lk is not None:
+            self.search_fails = 0
             self._follow(lk)
         if dec is None:
             return
@@ -447,6 +516,8 @@ class CompanionLoop:
         if self.pitch is not None and abs(lk.px - self.pitch) > 0.01 and self.moving_since is None:
             self.log(f"frame pitch now {lk.px:.3f} px (was {self.pitch:.3f})")   # while settled; mid-drag DWM stretches
         self.pitch = lk.px
+        if self.moving_since is None:
+            self._remember(read, img, lk)
         h = dec.header
         key = (h["session"], h["type"], h["msg"], h["part"])
         if key == self.last_key:                  # the same frame stays up for several reads
@@ -473,6 +544,7 @@ class CompanionLoop:
             if self.wgc is not None:
                 self.wgc.stop()
                 self.wgc = None
+            self.gdi.close()                        # on this thread, which made them
             self._serve_requests()                  # nobody waits forever on a request made at the very end
 
     # --- what the daemon shows -------------------------------------------------------------------------------------
@@ -493,7 +565,7 @@ class CompanionLoop:
         rep["capture"] = self.capture
         rep["host"] = dict(seconds=round(time.time() - self.started, 1), reads=self.loops,
                            read_ms_avg=round(self.busy / max(self.loops, 1) * 1000, 1), read_ms_max=round(self.worst * 1000, 1),
-                           not_decoded=self.bad)
+                           not_decoded=self.bad, unchanged=self.unchanged)
         return rep
 
 
