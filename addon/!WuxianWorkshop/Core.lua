@@ -116,6 +116,24 @@ local function EvictOldest()
 	if oldest then errors[oldest] = nil end
 end
 
+-- the signature of the last message asked for: an error is looked at twice (NeedsStack, then Collect)
+local lastMessage, lastSignature
+
+local function SignatureOf(message)
+	if message ~= lastMessage then lastMessage, lastSignature = message, Signature(message) end
+	return lastSignature
+end
+
+-- whether an error now needs its stack: to be kept for WoWBridge, or as a new entry (one that is neither paused,
+-- over the rate limit, nor collected before); a repeat only counts, and debugstack is the dear part of an error flood
+local function NeedsStack(message)
+	if not early.taken and #early.errors < EARLY_MAX then return true end
+	local now = GetTime()
+	if pausedUntil and now < pausedUntil then return false end
+	if now - windowAt < 1 and window >= RATE_LIMIT then return false end
+	return errors[SignatureOf(message)] == nil
+end
+
 local function Collect(kind, message, stack, addon)
 	local now = GetTime()
 	if pausedUntil then
@@ -136,13 +154,14 @@ local function Collect(kind, message, stack, addon)
 	end
 	local t = time()
 	seq = seq + 1
-	local sig = Signature(message)
+	local sig = SignatureOf(message)
 	local e = errors[sig]
 	if e then
 		e.count, e.last, e.seq = e.count + 1, t, seq
 		return
 	end
 	while Count() >= MAX_ENTRIES do EvictOldest() end
+	stack = stack or ""
 	errors[sig] = { kind = kind, message = message:sub(1, 1000), addon = addon or AddonOf(stack, message), stack = stack:sub(1, 1500),
 		count = 1, first = t, last = t, seq = seq, build = Build() }
 end
@@ -224,7 +243,12 @@ end
 if seterrorhandler and geterrorhandler then
 	local previous = geterrorhandler()
 	seterrorhandler(function(msg, ...)
-		pcall(OnError, tostring(msg), debugstack and debugstack(3) or "")
+		local text = tostring(msg)
+		local ok, need = pcall(NeedsStack, text)
+		-- taken here, in the handler itself, so that its level (3) is the erring function's
+		local stack
+		if need or not ok then stack = debugstack and debugstack(3) or "" end
+		pcall(OnError, text, stack)
 		if previous then return previous(msg, ...) end
 	end)
 end

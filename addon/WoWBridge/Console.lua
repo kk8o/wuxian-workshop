@@ -66,6 +66,24 @@ end
 
 local function Kept(e) return tab == "all" or KEEP[tab][e.kind] end
 
+-- the minimap button's count, at most every BADGE_EVERY seconds: at once when it has not changed for that long, else
+-- once that time is up (an error flood redraws it twice a second, not once an error)
+local BADGE_EVERY = 0.5
+local badgeAt, badgeDue = -math.huge, false
+
+local function BadgeNow()
+	badgeAt, badgeDue = GetTime(), false
+	if ns.MinimapButton and ns.MinimapButton.Badge then ns.MinimapButton.Badge(K.unseen) end
+end
+
+local function Badge()
+	if badgeDue then return end
+	local wait = badgeAt + BADGE_EVERY - GetTime()
+	if wait <= 0 then return BadgeNow() end
+	badgeDue = true
+	C_Timer.After(wait, BadgeNow)
+end
+
 -- a line: kind ERR, WARN, BLOCKED, OUT, RUN, RELOAD or LINK; detail: the whole text behind [详情]; failed: the agent's
 -- code failed. An error, a warning or a blocked action seen before counts on its line, which moves to the bottom.
 function K.Add(kind, text, detail, failed)
@@ -96,8 +114,13 @@ function K.Add(kind, text, detail, failed)
 	dirty = true
 	if kind == "ERR" and not Shown() then
 		K.unseen = K.unseen + 1
-		if ns.MinimapButton and ns.MinimapButton.Badge then ns.MinimapButton.Badge(K.unseen) end
+		Badge()
 	end
+end
+
+-- whether an error, a warning or a blocked action with this text has a line now (Debug.lua takes no stack then)
+function K.Has(kind, text)
+	return merged[kind .. "\0" .. tostring(text or "")] ~= nil
 end
 
 -- the latest n lines, newest first (the panel's 概览): the time, the kind's tag and colour (a name of Skin's C), the

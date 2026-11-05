@@ -139,39 +139,89 @@ function Frame.InfOrder(W, H)
 	return keys
 end
 
--- R, G, B arrays indexed by cell (y * W + x + 1) with channels 0..1, or nil and an error message.
+-- a cell value's channels per mode, looked up rather than worked out per cell: LUT[mode][1..3][v]
+local LUT = {}
+do
+	local function Table(count, fn)
+		local r, g, b = {}, {}, {}
+		for v = 0, count - 1 do r[v], g[v], b[v] = fn(v) end
+		return { r, g, b }
+	end
+	LUT[0] = Table(2, function(v) return Palette(v == 1 and WHITE or BLACK) end)
+	LUT[1] = Table(8, Palette)
+	LUT[2] = Table(64, function(v) return (floor(v / 16) % 4) / 3, (floor(v / 4) % 4) / 3, (v % 4) / 3 end)
+	LUT[3] = LUT[1]
+end
+
+-- one set of R, G, B arrays per frame size, written over by every Build of that size (Frame.Show reads them at once, as
+-- WoWBridge.lua's Draw does: build, then show): the fixed cells once, then only the control and data cells; .n: how many
+-- data cells (the first of .order) may be other than black, so that a shorter message only blacks out what the last one
+-- coloured
+local buffers = {}
+local cellBuf = {}       -- Codec.Pack's output, reused
+
+local function Buffer(L, key)
+	local buf = buffers[key]
+	if buf then return buf end
+	local R, G, B = {}, {}, {}
+	local ctrl = {}
+	for k, v in pairs(L.fixed) do
+		if v < 0 then
+			ctrl[#ctrl + 1] = k
+		else
+			R[k + 1], G[k + 1], B[k + 1] = Palette(v)
+		end
+	end
+	for _, k in ipairs(L.order) do R[k + 1], G[k + 1], B[k + 1] = 0, 0, 0 end
+	buf = { R, G, B, ctrl = ctrl, n = 0 }
+	buffers[key] = buf
+	return buf
+end
+
+-- R, G, B arrays indexed by cell (y * W + x + 1) with channels 0..1, or nil and an error message. The arrays are the
+-- same tables on every call for a size: read them before the next Build.
 -- A probe frame continues after its bit stream with 256-level ramps of red, green, blue and grey, then the palette.
 function Frame.Build(W, H, mode, toggle, ftype, session, msg, payload, part, parts)
 	local L = Frame.Layout(W, H)
 	local order = mode == 3 and Frame.InfOrder(W, H) or L.order
-	local cells = Codec.Pack(Codec.Stream(ftype, W, H, session, msg, part or 0, parts or 1, payload), Codec.BITS[mode])
-	if #cells > #order then
+	local bytes, len = Codec.Stream(ftype, W, H, session, msg, part or 0, parts or 1, payload)
+	local cells, n = Codec.Pack(bytes, Codec.BITS[mode], cellBuf, len)
+	if n > #order then
 		return nil, ("%d bytes do not fit a %dx%d mode-%d frame"):format(#payload, W, H, mode)
 	end
-	local R, G, B = {}, {}, {}
-	for k, v in pairs(L.fixed) do
+	local buf = Buffer(L, W * 256 + H)
+	local R, G, B = buf[1], buf[2], buf[3]
+	local fixed = L.fixed
+	for _, k in ipairs(buf.ctrl) do
+		local v = fixed[k]
 		if v == MODE_HI then
 			v = floor(mode / 2) % 2 == 1 and WHITE or BLACK
 		elseif v == MODE_LO then
 			v = mode % 2 == 1 and WHITE or BLACK
-		elseif v == TOGGLE then
+		else
 			v = toggle == 1 and WHITE or BLACK
 		end
 		R[k + 1], G[k + 1], B[k + 1] = Palette(v)
 	end
-	local n = #cells
-	for i, k in ipairs(order) do
-		local r, g, b
-		local v = cells[i]
-		if v then
-			if mode == 1 or mode == 3 then
-				r, g, b = Palette(v)
-			elseif mode == 0 then
-				r, g, b = Palette(v == 1 and WHITE or BLACK)
-			else
-				r, g, b = (floor(v / 16) % 4) / 3, (floor(v / 4) % 4) / 3, (v % 4) / 3
-			end
-		elseif ftype == Codec.TYPE_PROBE then
+	local last = buf.n
+	if buf.order ~= order then                     -- the other order (mode 3 or not): black out what it coloured
+		local prev = buf.order
+		for i = 1, last do
+			local k = prev[i] + 1
+			R[k], G[k], B[k] = 0, 0, 0
+		end
+		last = 0
+		buf.order = order
+	end
+	local lut = LUT[mode]
+	local lr, lg, lb = lut[1], lut[2], lut[3]
+	for i = 1, n do
+		local k, v = order[i] + 1, cells[i]
+		R[k], G[k], B[k] = lr[v], lg[v], lb[v]
+	end
+	if ftype == Codec.TYPE_PROBE then
+		for i = n + 1, #order do
+			local r, g, b
 			local j = i - n - 1
 			if j < 1024 then
 				local ch, lv = floor(j / 256), (j % 256) / 255
@@ -187,10 +237,16 @@ function Frame.Build(W, H, mode, toggle, ftype, session, msg, payload, part, par
 			else
 				r, g, b = Palette((j - 1024) % 8)
 			end
-		else
-			r, g, b = 0, 0, 0
+			local k = order[i] + 1
+			R[k], G[k], B[k] = r, g, b
 		end
-		R[k + 1], G[k + 1], B[k + 1] = r, g, b
+		buf.n = #order
+	else
+		for i = n + 1, last do                     -- what the last frame of this size coloured past this one's cells
+			local k = order[i] + 1
+			R[k], G[k], B[k] = 0, 0, 0
+		end
+		buf.n = n
 	end
 	return R, G, B
 end
@@ -245,7 +301,10 @@ end
 Frame.Room = Room
 
 -- Re-anchor and re-scale: on DISPLAY_SIZE_CHANGED, GX_RESTARTED, a parent change, or when the physical size moved.
-function Frame.Relayout()
+-- Frame.Relayout (from outside) also has the next Show draw every cell again; Show's own call does not.
+local stale = true       -- the next Show draws everything again (Frame.Show)
+
+local function Relayout()
 	if not bus then return end
 	local parent = ParentFrame()
 	if bus:GetParent() ~= parent then
@@ -262,6 +321,11 @@ function Frame.Relayout()
 	bus:ClearAllPoints()
 	local x, y = Frame.Offset()
 	bus:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+end
+
+function Frame.Relayout()
+	stale = true
+	Relayout()
 end
 
 -- where the frame goes: cfg.x, cfg.y in whole pixels, kept on the screen with room for the biggest frame (also when the
@@ -330,6 +394,7 @@ end
 
 function Frame.SetUnlocked(on, onMoved, label)
 	EnsureBus()
+	stale = true                                   -- the bus may be sized for the black box, or moved: all again
 	if not on then
 		if mover then mover:Hide() end
 		if room then room:Hide() end
@@ -355,7 +420,7 @@ function Frame.SetUnlocked(on, onMoved, label)
 		plate:SetPoint("BOTTOMRIGHT", mover.text, "BOTTOMRIGHT", 8, -5)
 		Skin.Fill(plate, Skin.Alpha(Skin.C.panel, 0.92))
 		mover:SetScript("OnDragStart", function()
-			dragging = true
+			dragging, stale = true, true
 			bus:StartMoving()
 		end)
 		mover:SetScript("OnDragStop", function()
@@ -393,17 +458,44 @@ function Frame.IsUnlocked()
 	return mover ~= nil and mover:IsShown()
 end
 
+-- Show draws only what changed since the last frame: the textures pool[1..shownN] are shown, the rest hidden; each
+-- remembers its colour (wbR, wbG, wbB); the bus keeps its size and place while the frame's size, the physical screen,
+-- the parent, cfg.x, cfg.y and the room stay. stale (Frame.Relayout from outside: the size and GX events, the parent;
+-- the drag handle; Frame.Hide) or a new snap setting makes the next Show lay out, colour and show every cell again, and
+-- hide the rest of the pool.
+local shownN = 0
+local laid = {}         -- what the bus was laid out for: W, H, cell, physical size, parent, x, y, the room, snap
+
+local function Laid(W, H, cell)
+	local physW, physH = GetPhysicalScreenSize()
+	local rw, rh = Room()
+	local cfg = Frame.cfg
+	return laid.W == W and laid.H == H and laid.cell == cell and laid.physW == physW and laid.physH == physH
+		and laid.parent == cfg.parent and laid.x == cfg.x and laid.y == cfg.y and laid.rw == rw and laid.rh == rh,
+		physW, physH, rw, rh
+end
+
 function Frame.Show(W, H, cell, R, G, B)
 	EnsureBus()
-	bus:SetSize((W + 2) * cell, (H + 2) * cell)
-	Frame.Relayout()
+	local same, physW, physH, rw, rh = Laid(W, H, cell)
+	local cfg = Frame.cfg
+	local full = stale or laid.snap ~= cfg.snap
+	if full or not same then
+		bus:SetSize((W + 2) * cell, (H + 2) * cell)
+		Relayout()
+		laid.W, laid.H, laid.cell, laid.physW, laid.physH, laid.rw, laid.rh = W, H, cell, physW, physH, rw, rh
+		laid.parent, laid.x, laid.y, laid.snap = cfg.parent, cfg.x, cfg.y, cfg.snap
+	end
 	local n = W * H
+	local snap = cfg.snap
 	for k = 0, n - 1 do
 		local t = pool[k + 1]
+		local fresh = full or k >= shownN
 		if not t then
 			t = bus:CreateTexture(nil, "ARTWORK")
 			t.wbSnap0, t.wbBias0 = t:IsSnappingToPixelGrid(), t:GetTexelSnappingBias()
 			pool[k + 1] = t
+			fresh = true
 		end
 		if t.wbW ~= W or t.wbCell ~= cell then
 			local x, y = k % W, floor(k / W)
@@ -412,12 +504,18 @@ function Frame.Show(W, H, cell, R, G, B)
 			t:SetPoint("TOPLEFT", bus, "TOPLEFT", (x + 1) * cell, -(y + 1) * cell)
 			t.wbW, t.wbCell = W, cell
 		end
-		if t.wbSnapMode ~= Frame.cfg.snap then ApplySnap(t) end
-		t:SetColorTexture(R[k + 1], G[k + 1], B[k + 1], 1)
-		t:Show()
+		if t.wbSnapMode ~= snap then ApplySnap(t) end
+		local r, g, b = R[k + 1], G[k + 1], B[k + 1]
+		if full or t.wbR ~= r or t.wbG ~= g or t.wbB ~= b then
+			t:SetColorTexture(r, g, b, 1)
+			t.wbR, t.wbG, t.wbB = r, g, b
+		end
+		if fresh then t:Show() end
 	end
-	for k = n + 1, #pool do pool[k]:Hide() end
-	Frame.shown = { W = W, H = H, cell = cell }
+	for k = n + 1, full and #pool or shownN do pool[k]:Hide() end
+	shownN, stale = n, false
+	local s = Frame.shown
+	if not (s and s.W == W and s.H == H and s.cell == cell) then Frame.shown = { W = W, H = H, cell = cell } end
 	bus:Show()
 	if Frame.IsUnlocked() then DrawMarks() end
 end
@@ -425,6 +523,7 @@ end
 function Frame.Hide()
 	if bus then bus:Hide() end
 	Frame.shown = nil
+	stale = true
 end
 
 function Frame.IsShown()

@@ -454,6 +454,7 @@ class DebugWindow(unittest.TestCase):
             self.assertRegex(boom[0], r"^\d\d:\d\d:\d\d  error  Interface/AddOns/Foo/Core\.lua:3: boom  ×2  \[details\]$")
             self.assertTrue(any(line.endswith("  print  hello 2") for line in console_lines(s)))
             button = g[b"WoWBridgeMinimapButton"]
+            s.run(0.6)                                                  # the count is drawn at most twice a second
             self.assertEqual((con[b"unseen"], button[b"count"][b"text"], button[b"count"][b"shown"]), (2, b"2", True))
             s.slash("log errors")                                       # opens on the errors: the count is seen
             self.assertTrue(g[b"WoWBridgeConsole"][b"shown"])
