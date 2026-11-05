@@ -8,7 +8,7 @@
      GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language, font_scale}; the app is the
                                           development environment only: a "player" mode left in old settings is switched
                                           back to "developer" once (migrateMode)
-     GET  /api/logs?since=&limit=      -> {entries, next}: the backlog at load; then
+     GET  /api/logs?tail=1&limit=      -> {entries, next, truncated}: the newest of the backlog at load; then
      GET  /api/events?token=&since=    -> SSE "log" / "status" events; reconnects itself with since=<last id>
      POST /api/run {code, timeout_ms}  -> {ok, job, values, ms, chunk} or {ok:false, job, error, stack}; 504 = timeout
      POST /api/snap {max_width}        -> {path, width, height, url}; the PNG is fetched from url with the Bearer header
@@ -47,7 +47,8 @@
    what the daemon reports (doctor, link, agents, a hot-load); window.pywebview.api.pick_folder (ui/shell.py) is the
    native folder dialog when the page runs in the App's window.
 
-   The page keeps at most MAX_LOGS log entries. */
+   The page keeps about MAX_LOGS log entries (LogBook), outside Alpine's reactivity: the stream's entries are queued and
+   land once per animation frame, and 开发台 renders the last LOG_ROWS of the filtered list. */
 'use strict';
 
 const PAGES = [                                // the navigation, in its order on the left (Ctrl+1.. go there; Ctrl+9 设置)
@@ -136,6 +137,10 @@ const CHECK_TEXT = {                           // agent/lint.py's codes, for peo
   'args-missing': '缺少参数', secret: '机密值误用', 'secret-arg': '不收机密值', 'secret-maybe': '受限时是机密值',
 };
 const MAX_LOGS = 2000;
+const LOG_SLACK = 200;                         // the kept list grows this far past MAX_LOGS before it is cut back, in one block
+const LOG_ROWS = 300;                          // 开发台 renders the last this many of the filtered entries
+const LOAD_LOGS = 1000;                        // the backlog asked for at load (the daemon answers at most 1000)
+const LOG_IDLE_MS = 250;                       // queued entries land on this timer while the window is hidden (no frames)
 const RECONNECT_MS = 2000;
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
@@ -162,7 +167,48 @@ const CLI_HELP = [                             // `wuxian` and what each command
   ['wuxian mcp', 'stdio 方式的 MCP 服务器（给 Claude Code / Codex / Cursor）'],
 ];
 
+// The log entries the page keeps, as plain frozen objects outside Alpine's reactivity (a proxy per entry and an update per
+// entry made a burst of 2,000 a half-minute freeze). add() queues one (ids only grow: an id at or below the last one is a
+// duplicate); flush() moves the queue into the list, cutting it back to MAX_LOGS in one block once it is LOG_SLACK over;
+// errs counts the ERR entries as they come and go.
+class LogBook {
+  constructor() { this.list = []; this.queue = []; this.top = 0; this.errs = 0; }
+  add(e) {                                     // false: not an entry, or one already had
+    if (!e || typeof e.id !== 'number' || e.id <= this.top) return false;
+    this.top = e.id;
+    this.queue.push(Object.isFrozen(e) ? e : Object.freeze(e));
+    return true;
+  }
+  flush() {                                    // the number of entries moved into the list
+    const q = this.queue, list = this.list;
+    if (!q.length) return 0;
+    this.queue = [];
+    for (const e of q) { list.push(e); if (e.kind === 'ERR') this.errs++; }
+    if (list.length > MAX_LOGS + LOG_SLACK) {
+      const cut = list.length - MAX_LOGS;
+      for (let i = 0; i < cut; i++) if (list[i].kind === 'ERR') this.errs--;
+      list.splice(0, cut);
+    }
+    return q.length;
+  }
+  clear() { this.list = []; this.queue = []; this.errs = 0; }   // top stays: the stream's replays are not shown again
+  reset() { this.clear(); this.top = 0; }                       // a new daemon numbers its entries from 1 again
+  view(keep, n) {                              // {rows: the last n entries keep() lets through, oldest first; count: all of them}
+    const rows = [], list = this.list;
+    let count = 0;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (!keep(list[i])) continue;
+      if (count++ < n) rows.push(list[i]);
+    }
+    return Object.freeze({ rows: Object.freeze(rows.reverse()), count });
+  }
+}
+const NO_LOGS = Object.freeze({ rows: Object.freeze([]), count: 0 });
+
 function appState() {
+  const book = new LogBook();
+  let logView = { key: null, view: NO_LOGS };  // 开发台's rows, kept until the entries or the filters change
+  let logFrame = 0, logTimer = 0;
   return {
     PAGES, NAV, KINDS, API_KINDS, KIND_TEXT,
     page: 'status',
@@ -173,7 +219,7 @@ function appState() {
     settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto', font_scale: 100 },
     form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto', font_scale: '100' },
     settingsNote: '', settingsLoaded: false,
-    logs: [], lastId: 0,
+    logRev: 0, logTotal: 0, errCount: 0, lastId: 0,   // the kept entries are in `book`: these change once per batch
     kinds: Object.fromEntries(KINDS.map(k => [k, true])),
     filterText: '', follow: true,
     sse: null, sseState: 'closed', sseTimer: null,
@@ -193,7 +239,7 @@ function appState() {
     xp: { sel: 'kit', tab: 'info' },          // 扩展: the row the detail shows (see xpSel), and its tab
     showToken: false,
     CALL_FILTERS, BROWSE_TABS,
-    docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, busy: false, sel: null, topic: null,
+    docs: { q: '', kind: '', call: '', results: [], counts: null, total: 0, more: 0, cursor: -1, curKey: '', busy: false, sel: null, topic: null,
             topics: [], about: null, check: null, checking: false, open: {}, back: [], systems: null, sys: null, tab: 'namespace' },
     tryit: { code: '', busy: false, result: null, trace: null, seconds: 10 },
     lang: 'zh-CN',                             // the language in force (settings.language; 'auto' follows the system)
@@ -378,8 +424,8 @@ function appState() {
       s.link = s.link || {};
       s.watch = s.watch || [];
       if (this.daemonStarted !== null && s.daemon.started && s.daemon.started !== this.daemonStarted) {
-        this.logs = [];                                 // a new daemon numbers its entries from 1 again
-        this.lastId = 0;
+        book.reset();                                   // a new daemon numbers its entries from 1 again
+        this.logsChanged();
         this.say(t('守护进程已重启'));
         this.connectEvents();
       }
@@ -425,33 +471,57 @@ function appState() {
     },
 
     // ---- logs
-    async loadLogs() {
+    async loadLogs() {                         // the newest of the backlog (an older daemon answers the oldest; the stream adds the rest)
       try {
-        const d = await this.api('/api/logs?limit=' + MAX_LOGS);
-        (d.entries || []).forEach(e => this.pushLog(e, true));
+        const d = await this.api('/api/logs?tail=1&limit=' + LOAD_LOGS);
+        (d.entries || []).forEach(e => book.add(e));
+        this.flushLogs();
         this.scrollLogs(true);
       } catch (e) { /* the stream brings them */ }
     },
-    pushLog(e, quiet) {
-      if (!e || typeof e.id !== 'number') return;
-      if (e.id <= this.lastId && this.logs.some(x => x.id === e.id)) return;
-      this.logs.push(e);
-      if (this.logs.length > MAX_LOGS) this.logs.splice(0, this.logs.length - MAX_LOGS);
-      if (e.id > this.lastId) this.lastId = e.id;
-      if (!quiet) this.scrollLogs();
+    pushLog(e) {                               // one entry from the stream: queued, it lands with the next frame's batch
+      if (!book.add(e) || logFrame || logTimer) return;
+      const land = () => {
+        if (logFrame) cancelAnimationFrame(logFrame);
+        if (logTimer) clearTimeout(logTimer);
+        logFrame = logTimer = 0;
+        this.flushLogs();
+      };
+      // no frames while the window is hidden; the timer also covers a window hidden after the frame was asked for
+      if (!document.hidden) logFrame = requestAnimationFrame(land);
+      logTimer = setTimeout(land, document.hidden ? LOG_IDLE_MS : 1000);
     },
-    clearLogs() { this.logs = []; },
-    get visibleLogs() {
+    flushLogs() {                              // the queued entries into the list: one update for the whole batch
+      if (book.flush()) this.logsChanged(true);
+    },
+    logsChanged(added) {                       // the counts after a batch, a clear or a new daemon; follow the end if added
+      this.logRev++;
+      this.logTotal = book.list.length;
+      this.errCount = book.errs;
+      this.lastId = book.top;
+      if (added) this.scrollLogs();
+    },
+    clearLogs() { book.clear(); this.logsChanged(); },
+    get logView() {                            // 开发台's list (nothing on the other pages): {rows: the last LOG_ROWS, count}
+      if (this.page !== 'dev') return NO_LOGS;
       const q = this.filterText.trim().toLowerCase();
-      return this.logs.filter(e => this.kinds[e.kind] !== false && (!q || (e.text || '').toLowerCase().includes(q)));
+      const off = KINDS.filter(k => this.kinds[k] === false);
+      const key = this.logRev + '|' + off.join(',') + '|' + q;
+      if (logView.key !== key) {
+        const hide = new Set(off);
+        logView = { key, view: book.view(e => !hide.has(e.kind) && (!q || (e.text || '').toLowerCase().includes(q)), LOG_ROWS) };
+      }
+      return logView.view;
     },
-    get recentLogs() {                         // 概览's activity: the newest first, without the link's pings
-      const out = [];
-      for (let i = this.logs.length - 1; i >= 0 && out.length < 60; i--) {
-        const e = this.logs[i];
+    get visibleLogs() { return this.logView.rows; },
+    get recentLogs() {                         // 概览's activity: the newest first, without the link's pings (on 概览 only)
+      if (this.page !== 'status' || !this.logRev) return NO_LOGS.rows;   // logRev: read so that the feed follows the entries
+      const out = [], list = book.list;
+      for (let i = list.length - 1; i >= 0 && out.length < 60; i--) {
+        const e = list[i];
         if (!(e.kind === 'INFO' && /^ping \d+:/.test(e.text || ''))) out.push(e);
       }
-      return out;
+      return Object.freeze(out);
     },
     get ovVitals() {                           // 概览's readings of the link: [{label, value, unit, sub, tip}]
       const l = (this.status && this.status.link) || {};
@@ -469,7 +539,6 @@ function appState() {
           tip: t('WGC：直接读游戏窗口，被挡住也行；GDI：读屏幕，帧码所在的角不能被遮住') },
       ];
     },
-    get errCount() { return this.logs.reduce((n, e) => n + (e.kind === 'ERR' ? 1 : 0), 0); },
     scrollLogs(force) {
       if (!(this.follow || force) || this.page !== 'dev') return;
       this.$nextTick(() => {
@@ -488,7 +557,7 @@ function appState() {
     connectEvents() {
       this.closeEvents();
       if (!this.token) return;
-      const url = '/api/events?token=' + encodeURIComponent(this.token) + '&since=' + this.lastId;
+      const url = '/api/events?token=' + encodeURIComponent(this.token) + '&since=' + book.top;
       const es = new EventSource(url);
       this.sse = es;
       if (this.sseState !== 'open') this.sseState = 'connecting';
@@ -1173,7 +1242,7 @@ function appState() {
         if ([this.docs.q.trim(), this.docs.kind, this.docs.call].join('|') === asked) {
           this.docs.results = more ? this.docs.results.concat(d.results || []) : (d.results || []);
           this.docs.counts = d.counts || null; this.docs.total = d.total || 0; this.docs.more = d.more || 0;
-          if (!more) this.docs.cursor = -1;
+          if (!more) { this.docs.cursor = -1; this.docs.curKey = ''; }
         }
       } catch (e) { this.say(t('搜索失败：') + e.message); }
       finally { this.docs.busy = false; }
@@ -1210,6 +1279,8 @@ function appState() {
       const rows = this.docsFlat;
       if (!rows.length) return;
       this.docs.cursor = Math.max(0, Math.min(rows.length - 1, this.docs.cursor + step));
+      const r = rows[this.docs.cursor];
+      this.docs.curKey = r.kind + ':' + r.name;          // the rows compare this, not docsFlat (a walk of every row each)
       this.$nextTick(() => { const el = this.$refs.apilist && this.$refs.apilist.querySelector('li.cur'); if (el) el.scrollIntoView({ block: 'nearest' }); });
     },
     docsEnter() {
@@ -1689,7 +1760,7 @@ function appState() {
     get firstOutput() {                        // what the new addon printed in the game after the hot-load
       const f = this.start.first;
       if (!f.loaded || !f.result) return '';
-      const e = this.logs.find(x => x.id > f.fromId && x.kind === 'OUT' && (x.text || '').includes(f.result.name));
+      const e = this.logRev && book.list.find(x => x.id > f.fromId && x.kind === 'OUT' && (x.text || '').includes(f.result.name));
       return e ? e.text.replace(/\|c[0-9a-fA-F]{8}|\|r/g, '').trim() : '';
     },
     async finishStart() {
