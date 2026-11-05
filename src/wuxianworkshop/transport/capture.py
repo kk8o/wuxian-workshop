@@ -5,6 +5,7 @@ import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -137,21 +138,32 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
 
 
+def rgb_view(bgra):
+    """the RGB view (h, w, 3) of a contiguous BGRA array (h, w, 4), no copy: copying the pixels contiguously first and
+    viewing them takes 0.03 ms for 600 x 300, a copy in RGB order 0.8 ms (the frame finder reads the view as fast)"""
+    return bgra[:, :, 2::-1]
+
+
+def _blit(sdc, mdc, bmp, x, y, w, h):
+    """the screen rectangle through the memory DC mdc (its bitmap bmp, at least w x h selected), as RGB"""
+    if not gdi32.BitBlt(mdc, 0, 0, w, h, sdc, x, y, SRCCOPY):
+        raise OSError("BitBlt failed")
+    bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+    out = np.empty((h, w, 4), np.uint8)
+    if gdi32.GetDIBits(mdc, bmp, 0, h, out.ctypes.data_as(ctypes.c_void_p), ctypes.byref(bmi), 0) != h:
+        raise OSError("GetDIBits failed")
+    return rgb_view(out)
+
+
 @physical()
 def grab(x, y, w, h):
-    """RGB uint8 array (h, w, 3) of the screen rectangle, as composed by DWM"""
+    """RGB uint8 array (h, w, 3) of the screen rectangle, as composed by DWM (a view of a BGRA array: see rgb_view)"""
     sdc = user32.GetDC(None)
     mdc = gdi32.CreateCompatibleDC(sdc)
     bmp = gdi32.CreateCompatibleBitmap(sdc, w, h)
     old = gdi32.SelectObject(mdc, bmp)
     try:
-        if not gdi32.BitBlt(mdc, 0, 0, w, h, sdc, x, y, SRCCOPY):
-            raise OSError("BitBlt failed")
-        bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
-        buf = (ctypes.c_ubyte * (w * h * 4))()
-        if gdi32.GetDIBits(mdc, bmp, 0, h, buf, ctypes.byref(bmi), 0) != h:
-            raise OSError("GetDIBits failed")
-        return np.frombuffer(buf, np.uint8).reshape(h, w, 4)[:, :, 2::-1].copy()
+        return _blit(sdc, mdc, bmp, x, y, w, h)
     finally:
         gdi32.SelectObject(mdc, old)
         gdi32.DeleteObject(bmp)
@@ -159,11 +171,62 @@ def grab(x, y, w, h):
         user32.ReleaseDC(None, sdc)
 
 
-def grab_client(win, max_w=None, max_h=None, x=0, y=0):
-    """a part of the window's client area: max_w x max_h from (x, y) of it (all of it from there without them)"""
+class GdiReader:
+    """grab() for a loop that reads a rectangle of the same size over and over (the frame area, 20 times a second): the
+    memory DC and its bitmap are made once and kept while the size stays, released when it changes, after a failed read
+    and by close(). The screen's DC is still taken and given back on every read (ReleaseDC belongs on the thread of
+    GetDC). The kept objects belong to the thread that made them: a read from another thread goes through grab(), and
+    the owner closes the reader (CompanionLoop.run does, on its way out)"""
+
+    def __init__(self):
+        self.size = self.mdc = self.bmp = self.old = self.thread = None
+        self.made = 0                                   # DC + bitmap pairs made so far
+
+    @physical()
+    def grab(self, x, y, w, h):
+        """grab(x, y, w, h) with the kept objects"""
+        if self.thread is not None and self.thread != threading.get_ident():
+            return grab(x, y, w, h)
+        sdc = user32.GetDC(None)
+        try:
+            if self.size != (w, h):
+                self.close()
+                mdc = gdi32.CreateCompatibleDC(sdc)
+                bmp = gdi32.CreateCompatibleBitmap(sdc, w, h) if mdc else 0
+                if not bmp:
+                    if mdc:
+                        gdi32.DeleteDC(mdc)
+                    raise OSError("CreateCompatibleBitmap failed")
+                self.mdc, self.bmp, self.old = mdc, bmp, gdi32.SelectObject(mdc, bmp)
+                self.size, self.thread = (w, h), threading.get_ident()
+                self.made += 1
+            try:
+                return _blit(sdc, self.mdc, self.bmp, x, y, w, h)
+            except OSError:                             # a UAC prompt or the lock screen: made anew once it is back
+                self.close()
+                raise
+        finally:
+            user32.ReleaseDC(None, sdc)
+
+    def grab_client(self, win, max_w=None, max_h=None, x=0, y=0):
+        """grab_client() with the kept objects"""
+        return grab_client(win, max_w, max_h, x, y, reader=self)
+
+    def close(self):
+        """release the kept objects (a read after this makes them again)"""
+        if self.mdc:
+            gdi32.SelectObject(self.mdc, self.old)
+            gdi32.DeleteObject(self.bmp)
+            gdi32.DeleteDC(self.mdc)
+        self.size = self.mdc = self.bmp = self.old = self.thread = None
+
+
+def grab_client(win, max_w=None, max_h=None, x=0, y=0, reader=None):
+    """a part of the window's client area: max_w x max_h from (x, y) of it (all of it from there without them); through
+    a GdiReader's kept objects when one is given"""
     w = win.w - x if max_w is None else min(win.w - x, max_w)
     h = win.h - y if max_h is None else min(win.h - y, max_h)
-    return grab(win.x + x, win.y + y, w, h)
+    return (reader.grab if reader is not None else grab)(win.x + x, win.y + y, w, h)
 
 
 class ComError(OSError):
@@ -257,6 +320,12 @@ def _factory(name, iid):
         combase.WindowsDeleteString(hs)
 
 
+def _mapped_rgb(m, w, h):
+    """the w x h pixels of a mapped BGRA texture (rows m.pitch bytes apart), copied out before it is unmapped, as RGB"""
+    rows = np.frombuffer((ctypes.c_ubyte * (m.pitch * h)).from_address(m.data), np.uint8).reshape(h, m.pitch)
+    return rgb_view(rows[:, :w * 4].copy().reshape(h, w, 4))
+
+
 def _close(obj):
     """IClosable.Close (a frame goes back to the pool), then release"""
     if obj is None:
@@ -286,6 +355,7 @@ class WgcSource:
         self.hwnd, self.max_w, self.max_h = hwnd, max_w, max_h
         self.seq, self.latest, self.objs = 0, None, []
         self.pending, self.copies, self.skipped = [], 0, 0      # (staging index, w, h) in the order the copies were issued
+        self.snap_tex = self.snap_size = None                   # snapshot()'s staging texture, kept while the size stays
         ctypes.windll.combase.RoInitialize(1)                # multithreaded; fine if COM is already set up here
         d3d11 = ctypes.windll.d3d11
         dev, ctx, level = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_uint()
@@ -369,9 +439,23 @@ class WgcSource:
             time.sleep(0.001)
         return self.seq, self.latest
 
+    def _snap_staging(self, w, h):
+        """a staging texture of w x h for snapshot(): the one made before while the size stays (a search for a lost
+        frame snapshots the whole window every few seconds), released when it changes and by stop()"""
+        if self.snap_size != (w, h):
+            if self.snap_tex is not None:
+                self.objs.remove(self.snap_tex)
+                self.snap_tex.release()
+                self.snap_tex = self.snap_size = None
+            desc = _TexDesc(w, h, 1, 1, BGRA, 1, 0, 3, 0, 0x20000, 0)
+            self.snap_tex = self._keep(self.dev.out(5, (ctypes.POINTER(_TexDesc), ctypes.c_void_p), ctypes.byref(desc), None))
+            self.snap_size = (w, h)
+        return self.snap_tex
+
     def snapshot(self, timeout=1.0):
         """the whole client area of the next frame, as RGB, or None if none came within timeout. Waits for the GPU (a
-        one-off picture, not the frame reading loop)"""
+        one-off picture, not the frame reading loop): the copy is mapped and unmapped before it returns, so the staging
+        texture is free for the next one"""
         end, frame = time.perf_counter() + timeout, None
         while frame is None and time.perf_counter() < end:
             while True:
@@ -384,7 +468,7 @@ class WgcSource:
                 time.sleep(0.01)
         if frame is None:
             return None
-        surface = access = tex = staging = None
+        surface = access = tex = None
         try:
             size = _Size()
             frame.call(8, (ctypes.POINTER(_Size),), ctypes.byref(size))        # ContentSize
@@ -400,19 +484,17 @@ class WgcSource:
             surface = frame.out(6, ())
             access = surface.query(IID_DXGI_ACCESS)
             tex = access.out(3, (ctypes.POINTER(_Guid),), ctypes.byref(IID_TEXTURE2D))
-            desc = _TexDesc(w, h, 1, 1, BGRA, 1, 0, 3, 0, 0x20000, 0)
-            staging = self.dev.out(5, (ctypes.POINTER(_TexDesc), ctypes.c_void_p), ctypes.byref(desc), None)
+            staging = self._snap_staging(w, h)
             box = _Box(dx, dy, 0, dx + w, dy + h, 1)
             self.ctx.call(46, COPY_ARGS, staging.ptr, 0, 0, 0, 0, tex.ptr, 0, ctypes.byref(box), restype=None)
             m = _Mapped()
             self.ctx.call(14, MAP_ARGS, staging.ptr, 0, 1, 0, ctypes.byref(m))     # Map: read, waiting for the GPU
             try:
-                buf = (ctypes.c_ubyte * (m.pitch * h)).from_address(m.data)
-                return np.frombuffer(buf, np.uint8).reshape(h, m.pitch)[:, :w * 4].reshape(h, w, 4)[:, :, 2::-1].copy()
+                return _mapped_rgb(m, w, h)
             finally:
                 self.ctx.call(15, (ctypes.c_void_p, ctypes.c_uint), staging.ptr, 0, restype=None)
         finally:
-            for o in (staging, tex, access, surface):
+            for o in (tex, access, surface):
                 if o is not None:
                     o.release()
             _close(frame)
@@ -478,8 +560,7 @@ class WgcSource:
                     break
                 raise
             try:
-                buf = (ctypes.c_ubyte * (m.pitch * h)).from_address(m.data)
-                img = np.frombuffer(buf, np.uint8).reshape(h, m.pitch)[:, :w * 4].reshape(h, w, 4)[:, :, 2::-1].copy()
+                img = _mapped_rgb(m, w, h)
             finally:
                 self.ctx.call(15, (ctypes.c_void_p, ctypes.c_uint), self.ring[i].ptr, 0, restype=None)   # Unmap
             self.pending.pop(0)
@@ -505,3 +586,4 @@ class WgcSource:
             except OSError:
                 pass
         self.objs = []
+        self.snap_tex = self.snap_size = None
