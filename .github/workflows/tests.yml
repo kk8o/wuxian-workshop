@@ -1,11 +1,19 @@
 name: tests
 
+# A branch of this repository is tested on push; a pull request from a fork (which pushes nothing here) on pull_request.
+# The pull_request run of a branch that is already tested on push is skipped, so one change is not tested twice.
 on:
   push:
   pull_request:
 
+# A newer push to the same branch or pull request cancels the run it replaces.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -13,9 +21,17 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install
         run: python -m pip install -e ".[ui,mcp,test]"
       - name: Tests
         env:
           WUXIAN_HEADLESS: "1"
-        run: python -m unittest discover -s tests -t .
+        run: python scripts/run_tests.py -j 4
+      # The run above takes most mock-client frames as bytes (tests/support/wowmock.py PIXEL_EVERY); the modules that
+      # use the mock client run again with every frame through the pixels, so the frame codec keeps its whole coverage.
+      - name: Mock client, every frame through the pixels
+        env:
+          WUXIAN_HEADLESS: "1"
+        run: python scripts/run_tests.py -j 4 --pixels all tests.addon

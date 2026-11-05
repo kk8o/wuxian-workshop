@@ -1,8 +1,10 @@
 """A fake client folder in the v0.7 state (what the installer has to clean) and a fake addon/ source folder, both in a
 temporary folder; the installer and the doctor tests share them."""
 from pathlib import Path
+from unittest import mock
 
 from wuxianworkshop import __version__
+from wuxianworkshop.core import mailbox
 from wuxianworkshop.installer import doctor
 
 BUILD_INFO_HEADER = ("Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|CDN Key!HEX:16|Install Key!HEX:16|IM Size!DEC:4|CDN Path!STRING:0|"
@@ -10,9 +12,15 @@ BUILD_INFO_HEADER = ("Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|CDN Key!HEX:
                      "KeyRing!HEX:16|Product!STRING:0")
 CLIENT_VERSION = "1.60.1.70235"
 USED_SLOTS = {1: b"used-1", 2: b"used-2", 9: b"used-9"}          # non-empty mailbox slots the install must not touch
+MAIL_SLOTS = 64                    # the mailbox the installs make here: 4,096 empty files were most of each test
 FOREIGN_SLOT = 7                                                   # WoWBridge_S007 holds a file we did not write: left alone
 EXPERIMENT_FILES = {"ack": ["001.wav", "256.wav"], "fresh": ["001.wav"], "never": ["001.wav"], "flag": ["001.wav"],
                     "poll": ["001.wav"], "ctl": ["empty.wav", "valid.wav"], "play": ["rt1.wav"], "font": ["levels.ttf"]}
+
+
+def small_mailbox():
+    """a patch that makes install() and the doctor use MAIL_SLOTS slots (FullMailbox keeps the real 4,096)"""
+    return mock.patch.object(mailbox, "SLOTS", MAIL_SLOTS)
 
 
 def build_info_row(version=CLIENT_VERSION, product="wow_cn_beta", branch="cn", active="1"):

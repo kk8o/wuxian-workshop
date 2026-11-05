@@ -174,12 +174,12 @@ def _mailbox_check(addons):
     title = tr("字体信箱", "Font mailbox")
     if not wb.is_dir():
         return _check("mailbox", title, False, tr("WoWBridge 未安装，所以没有信箱", "WoWBridge is not installed, so there is no mailbox"), FIX_INSTALL)
-    missing = sum(1 for i in range(1, mailbox.POOL + 1) if not mailbox.slot_path(addons, i).exists())
-    proc = mailbox.proc_path(addons).exists()
+    slots, proc = mailbox.missing(addons)                     # one listing of the folder, not a stat per slot
+    missing, pool = len(slots), mailbox.SLOTS
     if not missing and proc:
-        return _check("mailbox", title, True, tr(f"{mailbox.POOL} 个信箱槽位和 proc.ttf 齐全（{mailbox.mail_dir(addons)}）",
-                                                 f"all {mailbox.POOL} mailbox slots and proc.ttf are there ({mailbox.mail_dir(addons)})"))
-    what = (([tr(f"缺少 {missing} 个信箱槽位（共 {mailbox.POOL} 个）", f"{missing} of the {mailbox.POOL} mailbox slots missing")] if missing else [])
+        return _check("mailbox", title, True, tr(f"{pool} 个信箱槽位和 proc.ttf 齐全（{mailbox.mail_dir(addons)}）",
+                                                 f"all {pool} mailbox slots and proc.ttf are there ({mailbox.mail_dir(addons)})"))
+    what = (([tr(f"缺少 {missing} 个信箱槽位（共 {pool} 个）", f"{missing} of the {pool} mailbox slots missing")] if missing else [])
             + ([] if proc else [tr("缺少 proc.ttf", "proc.ttf missing")]))
     return _check("mailbox", title, False, tr("，", ", ").join(what), FIX_CREATE_MAIL)
 

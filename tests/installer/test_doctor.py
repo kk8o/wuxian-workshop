@@ -20,7 +20,7 @@ def by_id(checks):
 
 
 class Env:
-    def __init__(self, **client):
+    def __init__(self, full_mailbox=False, **client):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.game = fake.make_client(self.root, **client)
@@ -29,7 +29,7 @@ class Env:
         self.patches = [mock.patch.dict(os.environ, {"WUXIAN_HOME": str(self.root / "home")}),
                         mock.patch.object(D, "webview2_version", lambda: "154.0.4258.53"),
                         mock.patch.object(D, "dotnet_release", lambda: 533325),
-                        mock.patch.object(D, "windows_build", lambda: 19045)]
+                        mock.patch.object(D, "windows_build", lambda: 19045)] + ([] if full_mailbox else [fake.small_mailbox()])
         for p in self.patches:
             p.start()
 
@@ -62,7 +62,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual((c["addon:WoWBridge:version"]["ok"], c["addon:WoWBridge:version"]["fix"]), (False, "install"))
         self.assertIn("游戏里的是 0.7.0，程序是", c["addon:WoWBridge:version"]["detail"])
         self.assertEqual((c["mailbox"]["ok"], c["mailbox"]["fix"]), (False, "create_mail"))
-        self.assertIn("缺少 4086 个信箱槽位（共 4096 个）", c["mailbox"]["detail"])
+        self.assertIn(f"缺少 {fake.MAIL_SLOTS - 10} 个信箱槽位（共 {fake.MAIL_SLOTS} 个）", c["mailbox"]["detail"])
         self.assertIsNone(c["addons_txt"]["ok"])
         self.assertEqual(c["webview2"]["ok"], True)
         self.assertEqual((c["leftovers"]["ok"], c["leftovers"]["fix"]), (False, "install_clean"))
@@ -88,7 +88,7 @@ class Doctor(unittest.TestCase):
         version = D.read_toc(self.e.source / "WoWBridge" / "WoWBridge.toc")["Version"]
         self.assertEqual(c["addon:WoWBridge:version"]["detail"], f"{version}，与程序一致")
         self.assertEqual(c["addon:WoWBridge:interface"]["detail"], "Interface 16001，与客户端 1.60.1.70235 一致")
-        self.assertIn("4096 个信箱槽位和 proc.ttf 齐全", c["mailbox"]["detail"])
+        self.assertIn(f"{fake.MAIL_SLOTS} 个信箱槽位和 proc.ttf 齐全", c["mailbox"]["detail"])
         self.assertEqual((self.e.addons / "WoWBridge" / "mail" / "00002.ttf").read_bytes(), b"used-2")
         self.assertFalse((self.e.addons / "!WoWBridge").exists())
         # nothing left to fix: --fix runs nothing
@@ -117,12 +117,12 @@ class Doctor(unittest.TestCase):
 
     def test_create_mail_is_the_only_fix_when_only_slots_are_missing(self):
         I.install(self.e.game, source=self.e.source)
-        for i in (100, 4096):
+        for i in (40, fake.MAIL_SLOTS):
             mailbox.slot_path(self.e.addons, i).unlink()
         mailbox.proc_path(self.e.addons).unlink()
         checks = D.run_checks(self.e.game, source=self.e.source)
         c = by_id(checks)
-        self.assertEqual(c["mailbox"]["detail"], "缺少 2 个信箱槽位（共 4096 个），缺少 proc.ttf")
+        self.assertEqual(c["mailbox"]["detail"], f"缺少 2 个信箱槽位（共 {fake.MAIL_SLOTS} 个），缺少 proc.ttf")
         self.assertEqual(D.apply_fixes(checks, self.e.game, source=self.e.source), ["create_mail"])
         self.assertEqual(self.e.checks()["mailbox"]["ok"], True)
         self.assertEqual(D.apply_fixes(self.e.checks().values(), self.e.game, source=self.e.source), [])
@@ -177,6 +177,33 @@ class Doctor(unittest.TestCase):
         self.assertEqual(set(c) - skipped, {"game_dir", "webview2", "dotnet", "windows", "runtime_dir"})  # Windows' own
         self.assertEqual(len(checks), 15)                                              # the list keeps its shape
         self.assertEqual(D.apply_fixes(checks, self.e.root / "nowhere", source=self.e.source), [])
+
+
+class FullMailbox(unittest.TestCase):
+    def test_the_real_pool(self):
+        """what a player gets: the install completes the mailbox to all 4,096 slots, the doctor counts them in one
+        listing of the folder and create_mail puts back the ones that went"""
+        self.assertEqual(mailbox.SLOTS, mailbox.POOL)
+        e = Env(full_mailbox=True)
+        self.addCleanup(e.close)
+        self.assertIn("缺少 4086 个信箱槽位（共 4096 个）", e.checks()["mailbox"]["detail"])
+        r = I.install(e.game, source=e.source)
+        mail = mailbox.mail_dir(e.addons)
+        self.assertEqual(len(list(mail.glob("*.ttf"))), 4097)
+        self.assertEqual((mail / "04096.ttf").read_bytes(), b"")
+        self.assertFalse((mail / "04097.ttf").exists())
+        for i, data in fake.USED_SLOTS.items():
+            self.assertEqual((mail / f"{i:05d}.ttf").read_bytes(), data)
+        self.assertGreaterEqual(r["new_files"], 4086 + 2 + 1)        # the missing slots, the new addon's files, UI.xml ...
+        self.assertIn("4096 个信箱槽位和 proc.ttf 齐全", e.checks()["mailbox"]["detail"])
+        for i in (100, 4096):
+            mailbox.slot_path(e.addons, i).unlink()
+        mailbox.proc_path(e.addons).unlink()
+        checks = D.run_checks(e.game, source=e.source)
+        self.assertEqual(by_id(checks)["mailbox"]["detail"], "缺少 2 个信箱槽位（共 4096 个），缺少 proc.ttf")
+        self.assertEqual(D.apply_fixes(checks, e.game, source=e.source), ["create_mail"])
+        self.assertEqual(e.checks()["mailbox"]["ok"], True)
+        self.assertEqual(len(list(mail.glob("*.ttf"))), 4097)
 
 
 class ClientVersion(unittest.TestCase):
