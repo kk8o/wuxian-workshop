@@ -1,6 +1,7 @@
 """CompanionLoop's cheap reads: a frame still up (the same pixels in its box) is not located and decoded again, and
-while no frame is found the reads slow down and the searches of the whole window come further apart. A synthetic
-client area stands in for the screen, a fake clock for time.time()."""
+while no frame is found the reads slow down and the searches of the whole window come further apart; a WGC capture
+that shows nothing new (after a restore, or stuck) starts again. A synthetic client area stands in for the screen, a
+fake clock for time.time()."""
 import os
 import tempfile
 import time
@@ -236,6 +237,91 @@ class LostFrame(Base):
         self.rounds(1)                                          # searched again at once, the next one 1 s later
         self.assertLessEqual(self.loop.search_fails, 1)
         self.assertEqual(self.loop._search_every(), C.FULL_SEARCH_EVERY)
+
+
+class FakeWgc:
+    """WgcSource over the Screen: a new picture on every read while `live`, the same sequence number once it is not"""
+    made, live_from_start = [], True
+
+    def __init__(self, screen, hwnd, max_w, max_h):
+        self.screen, self.hwnd, self.seq, self.live, self.stopped = screen, hwnd, 0, FakeWgc.live_from_start, False
+        self.closed = False
+        FakeWgc.made.append(self)
+
+    def read(self, w=None, h=None, x=0, y=0):
+        if self.live:
+            self.seq += 1
+        return self.seq, self.screen.grab(None, w, h, x, y)
+
+    def snapshot(self, timeout=1.0):
+        return self.screen.grab(None)
+
+    def stop(self):
+        self.stopped = True
+
+
+class WgcRestart(Base):
+    def setUp(self):
+        super().setUp()
+        FakeWgc.made, FakeWgc.live_from_start = [], True
+        p = mock.patch.object(C, "WgcSource", lambda hwnd, w, h: FakeWgc(self.screen, hwnd, w, h))
+        p.start()
+        self.addCleanup(p.stop)
+        self.loop.capture_wanted = self.loop.capture = "wgc"
+
+    def until(self, seconds):
+        end = self.clock[0] + seconds
+        while self.clock[0] < end:
+            self.loop.step()
+
+    def test_a_restored_window_gets_a_new_capture(self):
+        self.rounds(3)
+        self.assertEqual(len(FakeWgc.made), 1)
+        self.win = Window(**{**self.win.__dict__, "minimized": True})
+        self.rounds(3)
+        self.win = Window(**{**self.win.__dict__, "minimized": False})
+        self.rounds(1)
+        self.assertEqual(len(FakeWgc.made), 2)
+        self.assertTrue(FakeWgc.made[0].stopped)
+        self.assertIs(self.loop.wgc, FakeWgc.made[1])
+        self.screen.draw()
+        self.rounds(2)
+        self.assertEqual(self.loop.comp.stats["frames"], 2)        # read through the new one
+
+    def test_new_pictures_keep_the_capture(self):
+        for _ in range(10):
+            self.until(2)
+            self.screen.draw()
+        self.assertEqual(len(FakeWgc.made), 1)
+        self.assertFalse(any("WGC showed nothing new" in n for n in self.notes))
+
+    def test_a_capture_that_shows_nothing_new_starts_again(self):
+        self.rounds(2)
+        FakeWgc.made[0].live = FakeWgc.live_from_start = False     # stuck, and so are the next ones at first
+        self.until(C.WGC_STALE - 0.5)
+        self.assertEqual(len(FakeWgc.made), 1)
+        self.until(1)
+        self.assertTrue(FakeWgc.made[0].stopped)
+        self.rounds(1)
+        self.assertEqual(len(FakeWgc.made), 2)
+        self.assertEqual(sum(n == C.WGC_STALE_NOTE for n in self.notes), 1)
+        self.until(C.WGC_STALE + 1)                                # still nothing: again, without saying it again
+        self.assertEqual(len(FakeWgc.made), 3)
+        self.assertEqual(sum(n == C.WGC_STALE_NOTE for n in self.notes), 1)
+        FakeWgc.made[2].live = True                                # the new one shows pictures ...
+        self.rounds(2)
+        FakeWgc.made[2].live = False                               # ... and gets stuck later: said again
+        self.until(C.WGC_STALE + 1)
+        self.assertEqual(sum(n == C.WGC_STALE_NOTE for n in self.notes), 2)
+        self.assertEqual(len(FakeWgc.made), 4)
+
+    def test_gdi_is_not_affected(self):
+        self.loop.capture_wanted = self.loop.capture = "gdi"
+        self.win = Window(**{**self.win.__dict__, "minimized": True})
+        self.rounds(2)
+        self.win = Window(**{**self.win.__dict__, "minimized": False})
+        self.until(C.WGC_STALE + 1)
+        self.assertEqual(FakeWgc.made, [])
 
 
 if __name__ == "__main__":

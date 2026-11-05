@@ -63,6 +63,9 @@ MARGIN = 16                                      # pixels read around the frame'
 SETTLE = 0.5                                     # the window counts as moved / resized once its geometry held this long
 WINDOW_POLL = 2.0                                # seconds between looks for the game window while there is none
 WINDOW_SEARCH = 1.0                              # seconds between searches for it while it is there (the topmost of two)
+WGC_STALE = 5.0                                  # seconds without a new WGC picture of a window that is not minimized
+                                                 # before the capture starts again (the game draws all the time)
+WGC_STALE_NOTE = f"WGC showed nothing new for {WGC_STALE:.0f} s: starting the capture again"
 
 
 def log(*a):
@@ -137,6 +140,7 @@ class CompanionLoop:
         self.pid = None                              # the game process the Companion knows: (pid, start)
         self.said = set()
         self.wgc, self.wgc_seq, self.wgc_failed = None, 0, None   # wgc_failed: the window WGC refused (GDI for it)
+        self.wgc_fresh = None                        # when WGC last showed a new picture (or started)
         self.roi, self.misses = ROI_SMALL, 0
         self.roi_at, self.last_search = (0, 0), 0.0  # where the region read starts (the player may move the frame)
         self.search_fails = 0                        # searches of the whole window in a row that found no frame
@@ -315,6 +319,11 @@ class CompanionLoop:
             self.log(f"window restored after {now - self.minimized_since:.1f} s minimized")
             self.minimized_since, self.moving_since, self.relock_from, self.failed_since, self.geom = None, None, now, 0, None
             self._window_changed()
+            if self.wgc is not None:
+                # a capture that ran while the window was minimized may show nothing new after it comes back (on
+                # 1.60.1.70790 / Windows 10 the link stayed down until a resize or a new capture): a new one, below
+                self.wgc.stop()
+                self.wgc = None
             self.changes.append(dict(at=round(now, 3), client=[win.w, win.h], origin=[win.x, win.y], dpi=win.dpi,
                                      changing=0, restored=True, relock=None, failed=0))
         g = (win.x, win.y, win.w, win.h, win.dpi)
@@ -338,7 +347,7 @@ class CompanionLoop:
             if self.wgc is not None:
                 self.wgc.stop()
             try:
-                self.wgc, self.wgc_seq = WgcSource(win.hwnd, *ROI_FULL), 0
+                self.wgc, self.wgc_seq, self.wgc_fresh = WgcSource(win.hwnd, *ROI_FULL), 0, now
                 self.log(f"WGC capture of window {win.hwnd} started")
             except Exception as e:                  # an old Windows, no graphics device, or the capture refused
                 self.log(f"WGC unavailable ({e}); reading the screen with GDI instead")
@@ -363,10 +372,15 @@ class CompanionLoop:
                 self._wait(0.5)
                 return
             if img is None or seq == self.wgc_seq:  # the window has shown nothing new since the last read
+                if self.wgc_fresh is not None and now - self.wgc_fresh >= WGC_STALE:
+                    self._once(WGC_STALE_NOTE)          # said again only after new pictures came
+                    self.wgc.stop()
+                    self.wgc = None
                 comp.tick()
                 self._wait(self._rate())
                 return
-            self.wgc_seq = seq
+            self.said.discard(WGC_STALE_NOTE)
+            self.wgc_seq, self.wgc_fresh = seq, now
         else:
             try:
                 img = grab_client(win, *region, *self.roi_at, reader=self.gdi)
