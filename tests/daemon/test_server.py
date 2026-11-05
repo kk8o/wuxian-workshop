@@ -418,6 +418,13 @@ class LiveDaemon(unittest.TestCase):
         self.assertEqual(res["capture"], "gdi")
         status, res = self.call("POST", "/api/settings", {"capture": "x11"})
         self.assertEqual(status, 400)
+        self.assertEqual(self.call("GET", "/api/settings")[1]["font_scale"], 100)          # the page's size, in per cent
+        status, res = self.call("POST", "/api/settings", {"font_scale": "125"})              # a select's value is text
+        self.assertEqual((status, res["font_scale"]), (200, 125))
+        self.assertEqual(json.loads((self.home / "state" / "settings.json").read_text(encoding="utf-8"))["font_scale"], 125)
+        for bad in (120, "big", True, None):
+            self.assertEqual(self.call("POST", "/api/settings", {"font_scale": bad})[0], 400)
+        self.assertEqual(self.call("GET", "/api/settings")[1]["font_scale"], 125)
         status, res = self.call("POST", "/api/show")
         self.assertEqual((status, res), (200, {"shown": False}))
 

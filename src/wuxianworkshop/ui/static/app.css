@@ -16,6 +16,7 @@
   --body: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   --mono: "IBM Plex Mono", Consolas, "Cascadia Mono", monospace;
   --side-w: 176px; --top-h: 42px; --status-h: 26px;
+  --zoom: 1;                     /* the settings' font size: zoom on the root (app.js applyScale) also scales vh / vw */
   color-scheme: dark;
 }
 
@@ -51,7 +52,7 @@ svg.ico { width: 16px; height: 16px; flex: none; display: block; }
 svg.inf { width: 40px; height: 22px; overflow: visible; color: var(--gold-d); display: block; flex: none; }
 
 /* the frame of the window ---------------------------------------------------------------------------------------- */
-.app { display: grid; height: 100vh; grid-template-columns: var(--side-w) minmax(0, 1fr);
+.app { display: grid; height: calc(100vh / var(--zoom)); container: app / inline-size; grid-template-columns: var(--side-w) minmax(0, 1fr);
        grid-template-rows: var(--top-h) minmax(0, 1fr) var(--status-h); grid-template-areas: "top top" "side main" "status status"; }
 
 .topbar { grid-area: top; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 12px; background: var(--chrome);
@@ -197,7 +198,7 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 
 /* the dialog (新建插件) */
 .modal-back { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: rgba(8, 8, 12, .6); }
-.modal { width: min(560px, calc(100vw - 40px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; background: var(--panel);
+.modal { width: min(560px, calc(100vw / var(--zoom) - 40px)); max-height: calc(100vh / var(--zoom) - 80px); display: flex; flex-direction: column; background: var(--panel);
          border: 1px solid var(--gold-d); border-radius: 8px; box-shadow: 0 18px 60px rgba(0, 0, 0, .6); }
 .modal-head { display: flex; align-items: center; height: 40px; padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); font-weight: 600; color: var(--gold); }
 .modal-head .x { margin-left: auto; font: inherit; color: var(--muted); background: transparent; border: 0; width: 28px; height: 28px; border-radius: 5px; cursor: pointer; }
@@ -270,12 +271,12 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .feed .k-RUN .fk, .feed .k-RELOAD .fk, .feed .k-SNAP .fk, .feed .k-WATCH .fk { color: var(--sky); }
 .feed .ft { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-feed .empty { padding: 18px 0; }
-@media (max-width: 1080px) {
+@container app (max-width: 1080px) {
   .ov-vitals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .vital:nth-child(4) { border-left: 0; }
   .vital:nth-child(n+4) { border-top: 1px solid var(--line2); }
 }
-@media (max-width: 860px) {
+@container app (max-width: 860px) {
   .pagebody.overview { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
 }
 
@@ -574,7 +575,7 @@ details.snippet pre.code { margin-top: 6px; }
 
 /* 设置 */
 .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
-@media (max-width: 1000px) { .settings-grid { grid-template-columns: 1fr; } }
+@container app (max-width: 1000px) { .settings-grid { grid-template-columns: 1fr; } }
 .about { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
 .about img { width: 44px; height: 44px; }
 .about-name { font-size: 15px; font-weight: 600; color: var(--gold); }
@@ -612,7 +613,7 @@ ol.steps li { margin: 6px 0; }
          pointer-events: none; z-index: 50; }
 
 /* a narrower window: the lists and the tools give up some width */
-@media (max-width: 1100px) {
+@container app (max-width: 1100px) {
   .master-detail { grid-template-columns: 250px minmax(0, 1fr); }
   .master-detail.api { grid-template-columns: 320px minmax(0, 1fr); }
   .dev-split { grid-template-columns: minmax(0, 1fr) 330px; }

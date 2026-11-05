@@ -5,7 +5,7 @@
      GET  /api/session                 -> {token, port, url, mcp_url, version}: taken once at load, then every request
                                           carries Authorization: Bearer <token>
      GET  /api/status                  -> daemon / game / link / watch / reload_pending / mcp_url (status and connect pages)
-     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language}; the app is the
+     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language, font_scale}; the app is the
                                           development environment only: a "player" mode left in old settings is switched
                                           back to "developer" once (migrateMode)
      GET  /api/logs?since=&limit=      -> {entries, next}: the backlog at load; then
@@ -170,8 +170,8 @@ function appState() {
     token: null,
     status: null, statusAt: 0, daemonStarted: null,
     session_: null,
-    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto' },
-    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto' },
+    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto', font_scale: 100 },
+    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto', font_scale: '100' },
     settingsNote: '', settingsLoaded: false,
     logs: [], lastId: 0,
     kinds: Object.fromEntries(KINDS.map(k => [k, true])),
@@ -1740,8 +1740,16 @@ function appState() {
       if (!s) return;
       this.settings = Object.assign({}, this.settings, s, { game_dir: s.game_dir || '' });
       this.form = { capture: this.settings.capture, game_dir: this.settings.game_dir,
-                    autostart: !!this.settings.autostart, language: this.settings.language || 'auto' };
+                    autostart: !!this.settings.autostart, language: this.settings.language || 'auto',
+                    font_scale: String(this.settings.font_scale || 100) };
       this.applyLang(this.settings.language);
+      this.applyScale(this.settings.font_scale);
+    },
+    applyScale(pct) {                          // the whole page in proportion (app.css --zoom): text, icons and spacing
+      const z = [90, 100, 110, 125, 150].includes(Number(pct)) ? Number(pct) / 100 : 1;
+      const root = document.documentElement;
+      root.style.zoom = z === 1 ? '' : String(z);
+      root.style.setProperty('--zoom', String(z));
     },
     applyLang(setting) {                       // the page's words follow the setting at once
       const v = langOf(setting);

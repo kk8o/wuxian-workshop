@@ -82,7 +82,7 @@ class Fake:
         self.last_job = 1700000
         self.subscribers = set()
         self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR, "autostart": False,
-                         "language": "auto", "onboarded": False}   # the daemon's shape (daemon/service.py settings())
+                         "language": "auto", "font_scale": 100, "onboarded": False}   # the daemon's shape (daemon/service.py settings())
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
         # connected, no Cursor and no international Trae
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
@@ -564,7 +564,7 @@ class Fake:
                 "addons_dir": GAME_DIR + r"\Interface\AddOns", "available": True}
 
     def update_settings(self, changes):
-        """POST /api/settings as the daemon takes it: mode, capture, game_dir, autostart, language (unknown keys ignored)"""
+        """POST /api/settings as the daemon takes it: mode, capture, game_dir, autostart, language, font_scale (unknown keys ignored)"""
         if "capture" in changes and changes["capture"] not in ("gdi", "wgc"):
             raise ValueError('capture: "gdi" or "wgc"')
         if "mode" in changes and changes["mode"] not in ("player", "developer"):
@@ -577,6 +577,12 @@ class Fake:
         if "language" in changes:                       # the daemon's words follow, as in daemon/service.py
             from wuxianworkshop import i18n
             i18n.set_language(self.settings["language"])
+        if "font_scale" in changes:
+            scale = changes["font_scale"]
+            scale = int(scale) if isinstance(scale, str) and scale.isdigit() else scale
+            if isinstance(scale, bool) or scale not in (90, 100, 110, 125, 150):
+                raise ValueError("font_scale: 90, 100, 110, 125 or 150")
+            self.settings["font_scale"] = scale
         if "autostart" in changes:
             self.settings["autostart"] = bool(changes["autostart"])
         if "onboarded" in changes:

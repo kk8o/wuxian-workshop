@@ -40,6 +40,7 @@ OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities")   # what Wuxian
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
+FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's size in per cent (app.js applyScale)
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
 PIECE_KEPT = 280.0           # seconds after its first piece that the game still keeps an answer (it keeps 300)
@@ -1667,8 +1668,8 @@ class Service:
         return data if isinstance(data, dict) else {}
 
     async def settings(self, update=None):
-        """GET: the settings; POST: change some (mode, capture, game_dir, autostart, language, onboarded: the 开始 page's
-        steps were done or put off) and keep them. A change of
+        """GET: the settings; POST: change some (mode, capture, game_dir, autostart, language, font_scale: the page's size
+        in per cent, onboarded: the 开始 page's steps were done or put off) and keep them. A change of
         mode also installs what that mode needs (developer: WoWBridge and its mailbox; player: removes them); the
         answer then carries that install's result as `install`"""
         stored = self.stored_settings()
@@ -1682,6 +1683,13 @@ class Service:
                 raise ApiError(400, "bad_request", 'mode: "player" or "developer"')
             if "language" in update and update["language"] not in ("auto", "zh-CN", "en"):
                 raise ApiError(400, "bad_request", 'language: "auto", "zh-CN" or "en"')
+            if "font_scale" in update:                   # the page sends a select's value: "125" or 125
+                scale = update["font_scale"]
+                if isinstance(scale, str) and scale.isdigit():
+                    scale = int(scale)
+                if isinstance(scale, bool) or scale not in FONT_SCALES:
+                    raise ApiError(400, "bad_request", "font_scale: " + ", ".join(map(str, FONT_SCALES)))
+                update = dict(update, font_scale=scale)
             if "game_dir" in update and update["game_dir"] is not None and not isinstance(update["game_dir"], str):
                 raise ApiError(400, "bad_request", "game_dir: the client folder, or null")
             if "capture" in update:
@@ -1691,7 +1699,7 @@ class Service:
                 self.worker.link = update["mode"] == "developer"
             if "game_dir" in update:
                 self.game_dir = update["game_dir"] or None
-            for key in ("autostart", "language", "onboarded"):
+            for key in ("autostart", "language", "font_scale", "onboarded"):
                 if key in update:
                     stored[key] = update[key]
             if "language" in update:                     # what the program says from now on (i18n.py)
@@ -1704,7 +1712,8 @@ class Service:
             self.journal.add("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in update.items()))
         answer = dict(mode=self.mode, capture=self.worker.capture_wanted, capture_in_use=self.worker.capture,
                       game_dir=self.game_dir, autostart=bool(stored.get("autostart", False)),
-                      language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)))
+                      language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)),
+                      font_scale=stored["font_scale"] if stored.get("font_scale") in FONT_SCALES else 100)
         if update and self.mode != mode_before:
             try:
                 answer["install"] = await self.install()

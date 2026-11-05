@@ -122,7 +122,8 @@ class Endpoints(unittest.TestCase):
 
     def test_settings(self):
         s = self.client.get("/api/settings", headers=AUTH).json()
-        self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "autostart", "language", "onboarded"})
+        self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "autostart", "language", "font_scale",
+                                  "onboarded"})
         self.assertIs(s["onboarded"], False)                     # the 开始 page opens first
         self.assertIs(self.client.post("/api/settings", json={"onboarded": True}, headers=AUTH).json()["onboarded"], True)
         r = self.client.post("/api/settings", json={"mode": "player", "capture": "gdi"}, headers=AUTH).json()
@@ -131,6 +132,8 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(self.client.post("/api/settings", json={"developer": True}, headers=AUTH).json()["mode"], "developer")
         self.assertEqual(self.client.post("/api/settings", json={"capture": "x"}, headers=AUTH).status_code, 400)
         self.assertEqual(self.client.post("/api/settings", json={"mode": "x"}, headers=AUTH).status_code, 400)
+        self.assertEqual(self.client.post("/api/settings", json={"font_scale": "110"}, headers=AUTH).json()["font_scale"], 110)
+        self.assertEqual(self.client.post("/api/settings", json={"font_scale": 120}, headers=AUTH).status_code, 400)
 
     def test_agents(self):
         """agents.py's shapes, which the 开始 and 接入 Agent pages read"""
