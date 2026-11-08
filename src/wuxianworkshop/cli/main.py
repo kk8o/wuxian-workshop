@@ -13,7 +13,7 @@
     wuxian trace [seconds] [--events BAG_*]   the events the game fires meanwhile (names, arguments, counts)
     wuxian inspect <lua expr> | --mouse       a frame of the running UI (place, size, anchors, children)
     wuxian api-scan --out FILE                what the running game has, for the API manual's content pack
-    wuxian events [--addon A] [--topic T] [--follow]   what addons sent with WoWBridge's Emit (their events)
+    wuxian events [--addon A] [--topic T] [--follow | --once [--max S]]   what addons sent with WoWBridge's Emit
     wuxian call <addon> <name> [json args]    call a function an addon exposed with WoWBridge's Expose
     wuxian addon-api [addon]                  what addons expose (functions) and emit (event topics)
     wuxian respond <request> [json data]      answer an addon's question (an event of `events` with a request id)
@@ -121,6 +121,11 @@ def build_parser():
     p.add_argument("--topic", help="only these topics (a name or a glob: scan.*)")
     p.add_argument("--since", type=int, default=0, help="from this entry id on (the next of the last call; -1: only new ones)")
     p.add_argument("--follow", "-f", action="store_true", help="keep printing new ones (Ctrl+C ends it)")
+    p.add_argument("--once", action="store_true",
+                   help="wait for the first ones, print them and NEXT <id>, then exit (an agent runs it in the background "
+                        "to be woken)")
+    p.add_argument("--max", type=float, default=1500,
+                   help="with --once: give up after this many seconds (prints NEXT <id> and TIMEOUT)")
     p.add_argument("--json", action="store_true", help="print JSON")
     p = sub.add_parser("call", help="call a function an addon exposed with WoWBridge's Expose")
     p.add_argument("addon", help="the addon's folder name")
@@ -395,6 +400,8 @@ def show_event(e):
 
 def cmd_events(client, args):
     since = args.since
+    if args.once:
+        return events_once(client, args)
     while True:
         res = client.addon_events(args.addon, args.topic, since, 1000, 25 if args.follow else 0)
         for e in res["events"]:
@@ -406,6 +413,28 @@ def cmd_events(client, args):
         if not args.follow:
             if not res["events"] and not args.json:
                 print("no events (an addon sends them with WB:Emit(topic, data), WB = WoWBridge.Bind(addonName))")
+            return 0
+
+
+def events_once(client, args):
+    """--once: the first events from --since on (waiting up to --max seconds), then the id to go on from; exit 0 either
+    way, the last line says which (NEXT <id> after events, NEXT <id> and TIMEOUT without)"""
+    since, deadline = args.since, time.monotonic() + max(1.0, args.max)
+    while True:
+        left = deadline - time.monotonic()
+        res = client.addon_events(args.addon, args.topic, since, 1000, max(0.0, min(25.0, left)))
+        since = res["next"]
+        if res["events"]:
+            for e in res["events"]:
+                if args.json:
+                    print(json.dumps(e, ensure_ascii=False))
+                else:
+                    show_event(e)
+            print(f"NEXT {since}")
+            return 0
+        if left <= 0:
+            print(f"NEXT {since}")
+            print("TIMEOUT")
             return 0
 
 

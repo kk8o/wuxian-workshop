@@ -64,6 +64,33 @@ class Parser(unittest.TestCase):
             cli.cmd_logs(Client(), ns)
         self.assertTrue(out.getvalue().splitlines()[-1].endswith("line 2599"))      # past the first 1000
 
+    def test_events_once_wakes_on_the_first_and_says_where_to_go_on(self):
+        """`wuxian events --once`: waits (25 s a request) until events come, prints them and NEXT <id>, exits; without any
+        until --max it prints NEXT and TIMEOUT"""
+        class Client:
+            def __init__(self, pages):
+                self.pages, self.calls = pages, []
+
+            def addon_events(self, addon, topic, since, limit, wait):
+                self.calls.append((addon, topic, since, wait))
+                return self.pages.pop(0) if self.pages else {"events": [], "next": since}
+
+        e = {"t": 0, "addon": "WuxianKit", "topic": "guild.chat", "data": {"reason": "urgent", "items": []}}
+        c = Client([{"events": [], "next": 7}, {"events": [e], "next": 9}])
+        ns, _ = self.parse("events", "--addon", "WuxianKit", "--topic", "guild.chat", "--since", "-1", "--once", "--json")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_events(c, ns), 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual((json.loads(lines[0])["topic"], lines[-1]), ("guild.chat", "NEXT 9"))
+        self.assertEqual([x[2] for x in c.calls], [-1, 7])
+        self.assertTrue(all(0 < x[3] <= 25 for x in c.calls))
+        ns, _ = self.parse("events", "--since", "3", "--once", "--max", "0")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_events(Client([]), ns), 0)
+        self.assertEqual(out.getvalue().splitlines()[-2:], ["NEXT 3", "TIMEOUT"])
+
     def test_programs_keep_their_own_arguments(self):
         ns, rest = self.parse("serve", "--mode", "player", "--capture", "gdi")
         self.assertEqual((ns.command, rest), ("serve", ["--mode", "player", "--capture", "gdi"]))
