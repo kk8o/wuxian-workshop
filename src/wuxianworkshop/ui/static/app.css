@@ -541,19 +541,22 @@ pre.diff .hunk { color: var(--sky); }
 .xp-notes { margin: 0; padding: 10px 14px; border-left: 2px solid var(--gold-d); border-radius: 0 6px 6px 0; background: var(--field);
   color: var(--fg); font-size: 12.5px; line-height: 1.7; white-space: pre-line; max-width: 820px; }
 .xp-small { margin: 8px 0 0; }
-/* 程序: the list and detail of 插件. The list: a state dot before each name, the state under it in its colour. The detail: the
-   facts on top, the output filling the rest, in the logs' monospace */
+/* 扩展 · 本机: the detail's facts and check on 概况, the options as a form on 设置, the log filling the rest on 日志, in the
+   logs' monospace */
 .dot.d-bad { background: var(--bad); }
 .mitem-top .dot { margin: 0 1px; }
-.prog-sub.s-ok { color: var(--ok); }
-.prog-sub.s-warn { color: var(--gold-l); }
-.prog-sub.s-bad { color: var(--bad); }
-.prog-facts { flex: none; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-.prog-facts .kv { font-size: 12.5px; }
-.prog-out-bar { flex: none; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--line2); background: var(--chrome); }
-.prog-out-bar b { font-size: 12px; font-weight: 600; color: var(--gold); letter-spacing: .04em; }
-.prog-out { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
-.prog-out pre { margin: 0; padding: 8px 16px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.lx-opts { max-width: 640px; }
+.lx-opts .field { grid-template-columns: 140px minmax(0, 1fr); }
+.lx-opt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.lx-problems { margin: 0; max-width: 820px; }
+.lx-problems .check { padding: 7px 0; align-items: flex-start; }
+.lx-problems .check-body { display: grid; gap: 2px; }
+.lx-test-out { margin: 8px 0 0; padding: 8px 12px; max-height: 240px; overflow: auto; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: var(--field); border-radius: 6px; }
+.lx-out-bar { flex: none; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--line2); background: var(--chrome); }
+.lx-out-bar b { font-size: 12px; font-weight: 600; color: var(--gold); letter-spacing: .04em; }
+.lx-out { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+.lx-out pre { margin: 0; padding: 8px 16px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
 .checks { list-style: none; margin: 0; padding: 0; }
 .check { display: flex; gap: 12px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line2); }

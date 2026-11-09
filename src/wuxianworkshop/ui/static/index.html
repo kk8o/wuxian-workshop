@@ -29,7 +29,6 @@
     <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.5C10.3 5.2 7.8 4.8 4.5 5v13c3.3-.2 5.8.2 7.5 1.5 1.7-1.3 4.2-1.7 7.5-1.5V5c-3.3-.2-5.8.2-7.5 1.5Zm0 0v13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4M15 3.5v4M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0v-3ZM12 16v4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4.3 3 7.7 7 9 4-1.3 7-4.7 7-9V6l-7-2.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m8.8 12 2.2 2.2 4.3-4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-program" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 8.5h17" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 11.5v5l4.2-2.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
     <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M5 8.5h3.5V7a2 2 0 1 1 4 0v1.5H16V12h1.5a2 2 0 1 1 0 4H16v3.5H5V16h1.5a2 2 0 1 0 0-4H5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 20.5V4m0 .5h10.5l-2 3.5 2 3.5H6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.5v2.3M12 18.2v2.3M3.5 12h2.3M18.2 12h2.3M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
@@ -683,130 +682,15 @@
       </div>
     </section>
 
-    <!-- 程序：插件页的列表 + 详情，加载的是游戏外的程序。左边：每个登记的程序和它的状态点；右边：选中的程序——状态、开始时间、退出码、
-         命令、文件夹、驱动的应用，标题右边开始 / 停止 / 重启 / 移除，下面是输出（最近几百行，运行中每秒增量读取，在底部时跟随） -->
-    <section class="page" x-t x-show="page === 'programs'">
-      <div class="pagebar">
-        <h1>程序</h1>
-        <span class="muted" x-text="progSummary"></span>
-        <div class="spacer"></div>
-        <button class="btn primary" @click="progAddOpen()"><svg class="ico"><use href="#i-plus"/></svg>登记程序</button>
-        <button class="btn" @click="loadPrograms()" :disabled="progs.loading"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
-      </div>
-      <div class="pagebody fill master-detail">
-        <div class="master">
-          <div class="loader" role="status" x-show="progs.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在读取…</div>
-          <p class="small bad-text pad" x-show="progs.error" x-text="progs.error"></p>
-          <ul class="mlist">
-            <template x-for="r in (progs.list || [])" :key="r.id">
-              <li class="mitem" :class="{ active: progs.sel === r.id }" @click="progSelect(r.id)">
-                <div class="mitem-top">
-                  <span class="dot" :class="'d-' + progState(r).cls"></span>
-                  <span class="mitem-title" x-text="progTitle(r)"></span>
-                  <span class="mono mitem-aside" x-text="r.id"></span>
-                </div>
-                <div class="mitem-sub prog-sub" :class="'s-' + progState(r).cls" x-text="progSub(r)"></div>
-              </li>
-            </template>
-          </ul>
-        </div>
-
-        <div class="detail">
-          <div class="detail-inner" x-show="selProg">
-            <div class="detail-head">
-              <div class="grow">
-                <div class="detail-title"><span x-text="progTitle(progCur)"></span></div>
-                <div class="muted small mono" x-text="progCur.id"></div>
-              </div>
-              <div class="xp-acts">
-                <button class="btn primary" x-show="progCur.state !== 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'start')"
-                        x-text="progBusy(progCur, 'start') ? t('开始中…') : t('开始')"></button>
-                <button class="btn" x-show="progCur.state === 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'restart')"
-                        x-text="progBusy(progCur, 'restart') ? t('重启中…') : t('重启')"></button>
-                <button class="btn" x-show="progCur.state === 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'stop')"
-                        x-text="progBusy(progCur, 'stop') ? t('停止中…') : t('停止')"></button>
-                <button class="btn" x-show="progCur.state !== 'running' && progs.confirm !== progCur.id" :disabled="progs.busy !== ''"
-                        @click="progAct(progCur, 'remove')">移除</button>
-              </div>
-            </div>
-            <div class="xp-confirm" x-show="progs.confirm && progs.confirm === progCur.id">
-              <span class="grow">从列表移除，不再由无限工坊加载；程序文件夹保留。</span>
-              <button class="btn confirm small" :disabled="progs.busy !== ''" @click="progAct(progCur, 'remove')"
-                      x-text="progBusy(progCur, 'remove') ? t('移除中…') : t('确认移除')"></button>
-              <button class="btn small" @click="progs.confirm = ''">取消</button>
-            </div>
-            <div class="xp-note bad" x-show="progCur.error" x-text="t('清单有错：{e}', { e: progCur.error })"></div>
-            <div class="xp-note" :class="{ bad: progs.note && progs.note.bad }" x-show="progs.note" x-text="progs.note && progs.note.text"></div>
-            <div class="prog-facts">
-              <dl class="kv">
-                <dt>状态</dt>
-                <dd><span class="xp-state" :class="progState(progCur).cls"><span class="xp-dot"></span><span x-text="progState(progCur).text"></span></span>
-                  <span class="muted" x-show="progCur.state === 'running' && progCur.pid" x-text="t('进程 {pid}', { pid: progCur.pid })"></span></dd>
-                <dt x-show="progCur.started">开始于</dt>
-                <dd x-show="progCur.started" x-text="progStarted(progCur)"></dd>
-                <dt x-show="progCur.state === 'exited'">退出码</dt>
-                <dd x-show="progCur.state === 'exited'">
-                  <span class="pill" :class="progCur.exit_code === 0 ? 'ok' : progCur.exit_code == null ? 'off' : 'bad'" x-text="progCode(progCur.exit_code)"></span>
-                  <span class="muted" x-text="t('{t} 退出', { t: progTime(progCur.exited_at) }) + (progRan(progCur) ? ' · ' + t('运行了 {d}', { d: progRan(progCur) }) : '')"></span></dd>
-                <dt>命令</dt><dd class="mono selectable" x-text="progCommand(progCur)"></dd>
-                <dt>文件夹</dt><dd class="mono selectable" x-text="progCur.path || '—'"></dd>
-                <dt>驱动的应用</dt><dd class="mono" x-text="progCur.app ? progCur.id : '—'"></dd>
-              </dl>
-            </div>
-            <div class="toolbar prog-out-bar">
-              <b>输出</b>
-              <span class="muted small" x-text="progOutLine"></span>
-              <div class="spacer"></div>
-              <label class="check-inline"><input type="checkbox" x-model="pout.follow" @change="pout.follow && progScrollEnd()"> 跟随</label>
-              <button class="btn small" :disabled="!pout.count" @click="copy(pout.text, t('输出'))">复制</button>
-            </div>
-            <div class="prog-out selectable" x-ref="progout" @scroll="onProgOutScroll($event)">
-              <div class="loader" role="status" x-show="pout.busy && !pout.loaded"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取输出…</div>
-              <pre x-show="pout.count" x-text="pout.text"></pre>
-              <div class="empty" x-show="progOutEmpty" x-text="progOutEmpty"></div>
-            </div>
-          </div>
-
-          <div class="empty intro detail-empty" x-show="progs.list && !progs.list.length && !progs.error">
-            <b>还没有程序</b>
-            <span>让 Agent 用 new_program 新建一个，或点「登记程序」选一个含 wuxian-program.json 的文件夹。</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 登记程序（对话框） -->
-      <div class="modal-back" x-show="progs.add.open" x-transition.opacity @keydown.escape.window="progs.add.open = false" @click.self="progs.add.open = false">
-        <div class="modal">
-          <div class="modal-head"><span>登记程序</span><button x-t class="x" @click="progs.add.open = false" title="关闭（Esc）">✕</button></div>
-          <div class="modal-body">
-            <form class="form" @submit.prevent="progAdd()">
-              <div class="field"><span>程序文件夹</span>
-                <div class="row tight">
-                  <input x-t class="input mono" x-ref="progpath" x-model="progs.add.path" placeholder="含 wuxian-program.json 的文件夹，或清单文件">
-                  <button class="btn" type="button" x-show="canPick" @click="progPick()">浏览…</button>
-                </div>
-              </div>
-              <div class="row end">
-                <span class="small bad-text" x-text="progs.add.error"></span>
-                <div class="spacer"></div>
-                <button class="btn" type="button" @click="progs.add.open = false">取消</button>
-                <button class="btn primary" type="submit" :disabled="progs.add.busy || !progs.add.path.trim()" x-text="progs.add.busy ? t('登记中…') : t('登记')"></button>
-              </div>
-            </form>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <!-- 扩展：插件页的列表 + 详情。左边：扩展框架，它带的系统扩展，自定义扩展（网站扩展目录里的包与游戏里由它运行的扩展合成一行），
-         底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
+         本机扩展（无限工坊在这台电脑上运行的扩展），底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
          或会话表。扩展的版本跟程序的分开 -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
         <span class="muted" x-text="extSummary"></span>
         <div class="spacer"></div>
-        <button class="btn" @click="loadExtensions(true); loadAccess(true)" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' || access.busy ? t('读取中…') : t('刷新')"></span></button>
+        <button class="btn" @click="loadExtensions(true); loadAccess(true); loadLocal()" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' || access.busy ? t('读取中…') : t('刷新')"></span></button>
       </div>
       <div class="pagebody fill master-detail xp">
         <div class="master">
@@ -850,6 +734,22 @@
                 </li>
               </template>
             </ul>
+            <div class="mgroup"><span>本机扩展</span><span>在这台电脑上运行</span></div>
+            <ul class="mlist">
+              <template x-for="r in (lx.list || [])" :key="r.id">
+                <li class="mitem line" :class="{ active: xp.sel === 'l:' + r.id }" @click="xpSelect('l:' + r.id)">
+                  <div class="mitem-top">
+                    <span class="mitem-title" x-text="lxTitle(r)"></span>
+                    <span class="mono mitem-aside" x-text="r.id"></span>
+                    <span class="pill tiny" :class="lxPill(r)" x-text="lxState(r).text"></span>
+                    <span class="mitem-badge" x-show="(r.capabilities || []).length" :title="t('{n} 个能力', { n: (r.capabilities || []).length })" x-text="(r.capabilities || []).length"></span>
+                  </div>
+                </li>
+              </template>
+            </ul>
+            <div class="loader" role="status" x-show="lx.list === null && !lx.error"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取本机扩展…</div>
+            <p class="small bad-text pad" x-show="lx.error" x-text="lx.error"></p>
+            <p class="small muted pad" x-show="lx.list && !lx.list.length && !lx.error">暂无本机扩展。可让 Agent 用 new_extension 新建。</p>
           </div>
           <div class="master-foot">
             <a href="#" class="mfoot-item" :class="{ active: xp.sel === 'sessions' }" @click.prevent="xpSelect('sessions')">
@@ -866,7 +766,7 @@
           </div>
 
           <!-- 扩展框架、一个系统扩展或自定义扩展 -->
-          <div class="detail-inner" x-show="xpSel.kind !== 'sessions'">
+          <div class="detail-inner" x-show="xpSel.kind !== 'sessions' && xpSel.kind !== 'local'">
             <div class="detail-head">
               <div class="grow">
                 <div class="detail-title"><span x-text="xpSel.title"></span><span class="xp-tag" :class="xpSel.kind" x-show="xpSel.tag" x-text="xpSel.tag"></span></div>
@@ -924,6 +824,119 @@
                 </table>
               </div>
               <p class="xp-notes" x-show="xpTab === 'notes'" x-text="xpSel.notes"></p>
+            </div>
+          </div>
+
+          <!-- 本机扩展：状态、启用、载入 / 停止 / 检查（标题右边），概况（含检查结果）、设置（按选项规格生成）、能力、日志 -->
+          <div class="detail-inner" x-show="xpSel.kind === 'local'">
+            <div class="detail-head">
+              <div class="grow">
+                <div class="detail-title"><span x-text="lxTitle(lxCur)"></span><span class="xp-tag">本机扩展</span></div>
+                <div class="muted small mono" x-text="lxLine(lxCur)"></div>
+              </div>
+              <div class="xp-acts">
+                <label class="check-inline"><input type="checkbox" :checked="lxCur.enabled" :disabled="lx.busy !== ''" @change="lxEnable(lxCur, $event.target.checked)"> 启用</label>
+                <button class="btn primary" :disabled="lx.busy !== '' || !lxCur.enabled" @click="lxAct(lxCur, 'load')"
+                        x-text="lxBusy(lxCur, 'load') ? t('载入中…') : lxRunning(lxCur) ? t('重新载入') : t('载入')"></button>
+                <button class="btn" x-show="lxRunning(lxCur)" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'stop')"
+                        x-text="lxBusy(lxCur, 'stop') ? t('停止中…') : t('停止')"></button>
+                <button class="btn" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'check')"
+                        x-text="lxBusy(lxCur, 'check') ? t('检查中…') : t('检查')"></button>
+              </div>
+            </div>
+            <div class="xp-note bad" x-show="lxCur.error" x-text="lxCur.error"></div>
+            <div class="xp-note" :class="{ bad: lx.note && lx.note.bad }" x-show="lx.note" x-text="lx.note && lx.note.text"></div>
+            <div class="tabs">
+              <button class="tab" :class="{ on: xpTab === 'info' }" @click="lxTab('info')">概况</button>
+              <button class="tab" x-show="(lxCur.options || []).length" :class="{ on: xpTab === 'opts' }" @click="lxTab('opts')">设置</button>
+              <button class="tab" :class="{ on: xpTab === 'caps' }" @click="lxTab('caps')">能力<span class="tab-count" x-text="(lxCur.capabilities || []).length || ''"></span></button>
+              <button class="tab" :class="{ on: xpTab === 'logs' }" @click="lxTab('logs')">日志</button>
+            </div>
+            <div class="detail-scroll" x-show="xpTab !== 'logs'">
+              <div x-show="xpTab === 'info'">
+                <dl class="kv">
+                  <dt>状态</dt>
+                  <dd><span class="xp-state" :class="lxState(lxCur).cls"><span class="xp-dot"></span><span x-text="lxState(lxCur).text"></span></span>
+                    <span class="muted" x-show="lxRunning(lxCur) && lxCur.pid" x-text="t('进程 {pid}', { pid: lxCur.pid })"></span></dd>
+                  <dt>版本</dt><dd class="mono" x-text="lxCur.version || '—'"></dd>
+                  <dt>启动方式</dt><dd x-text="lxStart(lxCur)"></dd>
+                  <dt x-show="lxCur.started">开始于</dt><dd x-show="lxCur.started" x-text="lxStarted(lxCur)"></dd>
+                  <dt x-show="lxCur.exit_code != null && !lxRunning(lxCur)">退出码</dt>
+                  <dd x-show="lxCur.exit_code != null && !lxRunning(lxCur)"><span class="pill" :class="lxCur.exit_code === 0 ? 'ok' : 'bad'" x-text="lxCode(lxCur.exit_code)"></span></dd>
+                  <dt>能力</dt><dd x-text="(lxCur.capabilities || []).length ? t('{n} 个', { n: lxCur.capabilities.length }) : t('运行后可查看')"></dd>
+                  <dt x-show="(lxCur.sources || []).length">事件来源</dt><dd x-show="(lxCur.sources || []).length" class="mono" x-text="(lxCur.sources || []).map((n) => lxCur.id + ':' + n).join('  ')"></dd>
+                  <dt x-show="(lxCur.apps || []).length">应用</dt><dd x-show="(lxCur.apps || []).length" class="mono" x-text="(lxCur.apps || []).join('  ')"></dd>
+                  <dt x-show="(lxCur.skills || []).length">Agent 技能</dt><dd x-show="(lxCur.skills || []).length" class="mono" x-text="(lxCur.skills || []).join('  ')"></dd>
+                  <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
+                </dl>
+                <div x-show="lxCheck">
+                  <h3 class="xp-h">检查结果<span class="muted" x-text="lxCheck ? lxCheck.summary : ''"></span></h3>
+                  <ul class="checks lx-problems">
+                    <template x-for="(p, i) in (lxCheck ? lxCheck.problems : [])" :key="i">
+                      <li class="check" :class="p.level === 'error' ? 'bad' : 'skip'">
+                        <span class="mark" x-text="p.level === 'error' ? '✕' : '!'"></span>
+                        <div class="check-body small">
+                          <span class="mono muted" x-show="p.where" x-text="p.where"></span>
+                          <span class="selectable" x-text="p.message"></span>
+                          <span class="muted" x-show="p.hint" x-text="p.hint"></span>
+                        </div>
+                      </li>
+                    </template>
+                  </ul>
+                  <p class="small muted xp-small" x-show="lxCheck && lxCheck.tests" x-text="lxCheck ? lxCheck.tests : ''"></p>
+                  <pre class="lx-test-out selectable" x-show="lxCheck && lxCheck.output" x-text="lxCheck ? lxCheck.output : ''"></pre>
+                </div>
+              </div>
+              <div x-show="xpTab === 'opts'">
+                <form class="form lx-opts" @submit.prevent>
+                  <template x-for="o in (lxCur.options || [])" :key="lxCur.id + ':' + o.name">
+                    <div class="field">
+                      <span x-text="loc(o.title) || o.name"></span>
+                      <div class="lx-opt">
+                        <template x-if="o.kind === 'boolean'">
+                          <label class="check-inline"><input type="checkbox" :checked="!!lxValue(o)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.checked)"> <span x-text="t('开启')"></span></label>
+                        </template>
+                        <template x-if="o.kind === 'choice'">
+                          <select class="input small" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)">
+                            <template x-for="c in (o.choices || [])" :key="String(c.value)">
+                              <option :value="String(c.value)" :selected="String(c.value) === String(lxValue(o))" x-text="loc(c.label) || String(c.value)"></option>
+                            </template>
+                          </select>
+                        </template>
+                        <template x-if="o.kind === 'number'">
+                          <span class="row tight"><input class="input tiny" type="number" :min="o.min" :max="o.max" :step="o.step || 'any'" :value="lxValue(o)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)"><span class="muted" x-show="o.unit" x-text="o.unit"></span></span>
+                        </template>
+                        <template x-if="o.kind === 'text'">
+                          <input class="input" :value="lxValue(o) == null ? '' : lxValue(o)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)">
+                        </template>
+                        <span class="small muted" x-show="o.hint" x-text="loc(o.hint)"></span>
+                      </div>
+                    </div>
+                  </template>
+                </form>
+                <p class="small muted xp-small">改动即时保存；扩展运行中会立刻收到新设置。</p>
+              </div>
+              <div x-show="xpTab === 'caps'">
+                <p class="xp-toolhint" x-text="(lxCur.capabilities || []).length ? t('每个能力是一个 Agent 工具，在这台电脑上运行，不需要游戏') : t('运行后可查看')"></p>
+                <table class="table xp-tools" x-show="(lxCur.capabilities || []).length">
+                  <tr><th>名称</th><th>类型</th><th>工具</th></tr>
+                  <template x-for="c in lxCaps(lxCur)" :key="c.id">
+                    <tr><td x-text="c.title || c.id"></td><td><span class="pill tiny off" x-text="lxKind(c.kind)"></span></td><td class="mono muted" x-text="c.name"></td></tr>
+                  </template>
+                </table>
+              </div>
+            </div>
+            <div class="toolbar lx-out-bar" x-show="xpTab === 'logs'">
+              <b>日志</b>
+              <span class="muted small" x-text="lxOutLine"></span>
+              <div class="spacer"></div>
+              <label class="check-inline"><input type="checkbox" x-model="lout.follow" @change="lout.follow && lxScrollEnd()"> 跟随</label>
+              <button class="btn small" :disabled="!lout.count" @click="copy(lout.text, t('日志'))">复制</button>
+            </div>
+            <div class="lx-out selectable" x-show="xpTab === 'logs'" x-ref="lxout" @scroll="onLxOutScroll($event)">
+              <div class="loader" role="status" x-show="lout.busy && !lout.loaded"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取日志…</div>
+              <pre x-show="lout.count" x-text="lout.text"></pre>
+              <div class="empty" x-show="lxOutEmpty" x-text="lxOutEmpty"></div>
             </div>
           </div>
 
@@ -1320,7 +1333,6 @@
               <div x-t class="agent-row app-row" :class="a.on === true ? 'st-ok' : ''">
                 <div class="agent-main">
                   <div class="agent-head"><b x-text="appTitle(a)"></b><span class="pill" x-show="appPill(a)" :class="appPill(a) && appPill(a)[0]" x-text="appPill(a) && appPill(a)[1]"></span></div>
-                  <p class="small muted" x-show="appDriver(a) === 'program'" x-text="appDriverText(a)"></p>
                   <p class="small warn-text" x-show="a.blocked" x-text="a.blocked"></p>
                   <ul class="checks mini">
                     <template x-for="c in appChecks(a)" :key="c.id">
@@ -1332,8 +1344,7 @@
                   </ul>
                 </div>
                 <div class="agent-acts">
-                  <button class="btn primary" x-show="appDriver(a) !== 'program'" @click="copy(a.start, t('启动语'))">复制启动语</button>
-                  <button class="btn" x-show="appProgram(a)" @click="goProgram(a.id)">查看程序</button>
+                  <button class="btn primary" @click="copy(a.start, t('启动语'))">复制启动语</button>
                 </div>
               </div>
             </template>

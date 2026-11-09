@@ -9,8 +9,8 @@
                                           development environment only: a "player" mode left in old settings is switched
                                           back to "developer" once (migrateMode)
      GET  /api/logs?tail=1&limit=      -> {entries, next, truncated}: the newest of the backlog at load; then
-     GET  /api/events?token=&since=    -> SSE "log" / "status" events, and "programs" (no data: the programs' states
-                                          changed, read them again); reconnects itself with since=<last id>
+     GET  /api/events?token=&since=    -> SSE "log" / "status" events, and "local" ({revision, extensions}: the local
+                                          extensions' rows, whenever they change); reconnects itself with since=<last id>
      POST /api/run {code, timeout_ms}  -> {ok, job, values, ms, chunk} or {ok:false, job, error, stack}; 504 = timeout
      POST /api/snap {max_width}        -> {path, width, height, url}; the PNG is fetched from url with the Bearer header
      POST /api/reload {reason}         -> {requested, nonce}
@@ -32,17 +32,21 @@
                                           answers that host again, with verify:{ok, text} when checked; ?server=wuxianwow
                                           (GET) and server: 'wuxianwow' (POST) say the same of 无限图鉴's MCP server
                                           (https://wuxianwow.com/mcp) instead of this program
-     GET  /api/kit/apps                -> {online, apps:[{id, title, by, addon, prompt, driver, temp, start, on, blocked,
+     GET  /api/kit/apps                -> {online, apps:[{id, title, by, addon, prompt, temp, start, on, blocked,
                                           extension:{id, title, on} | null, skill:{name, title, description, needs,
                                           mcp:[{name, url}]} | null}]}: WuxianKit's apps (the kept manifest while the game is
-                                          away: on and blocked null); 接入 Agent copies a prompt app's start (its 启动语) and
-                                          checks what it needs; a program app (driver "program") links to its program
-     GET  /api/programs                -> [row] (or {programs: [row]}): the programs this workshop loads outside the game
-                                          (programs.py), row {id, title, path, manifest, app, state: stopped | running |
-                                          exited, pid, started, exit_code, exited_at, command, error}; POST
-                                          /api/programs/add {path}, /start {id, restart}, /stop {id} answer the row,
-                                          /remove {id} {removed}; GET /api/programs/logs?id=&since=&limit= -> {lines:[{n,
-                                          text}], next, row}: the output from the cursor since on, next the one to ask next
+                                          away: on and blocked null); 接入 Agent copies an app's start (its 启动语) and
+                                          checks what it needs
+     GET  /api/local                   -> {revision, extensions:[row]}: the local extensions this workshop runs on this
+                                          computer (local/), row {id, title, version, path, enabled, start: use | workshop,
+                                          state: off | stopped | starting | running | exited | failed, pid, started,
+                                          exit_code, error, capabilities:[id], sources:[name], options:[{name, kind, title,
+                                          default, hint, choices, min, max, step, unit, value}], apps, skills}; GET
+                                          /api/local/manifest -> {revision, extensions:[{id, capabilities:[{id, kind, title,
+                                          doc, args}] ...}]} (the agents' tools); POST /api/local/set {id, enabled?,
+                                          options?}, /load {id} -> {row, check}, /stop {id}, /check {id} -> {ok,
+                                          problems:[{level, where, message, hint}], capabilities, tests?}; GET
+                                          /api/local/logs?id=&since=&limit= -> {lines:[{n, text}], next, cut}
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -69,7 +73,6 @@ const PAGES = [                                // the navigation, in its order o
   { id: 'status', label: '概览', icon: 'i-home' },
   { id: 'dev', label: '开发台', icon: 'i-console' },
   { id: 'addons', label: '插件', icon: 'i-addons' },
-  { id: 'programs', label: '程序', icon: 'i-program' },
   { id: 'extensions', label: '扩展', icon: 'i-puzzle' },
   { id: 'api', label: 'API 手册', icon: 'i-book' },
   { id: 'connect', label: '接入 Agent', icon: 'i-plug' },
@@ -157,11 +160,12 @@ const LOG_ROWS = 300;                          // 开发台 renders the last thi
 const LOAD_LOGS = 1000;                        // the backlog asked for at load (the daemon answers at most 1000)
 const LOG_IDLE_MS = 250;                       // queued entries land on this timer while the window is hidden (no frames)
 const RECONNECT_MS = 2000;
-const PROG_LIMIT = 500;                        // 程序's output: the lines asked for at a time
-const PROG_KEEP = 500;                         // … and kept, the newest
-const PROG_PAGES = 20;                         // the requests of one catch-up at most (the rest comes with the next second)
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a program's output
-const NO_PROG = Object.freeze({ id: '', title: '', state: 'stopped', app: false, path: '', command: null, error: null });
+const LX_LIMIT = 200;                          // 本机扩展's log: the lines asked for at a time
+const LX_KEEP = 500;                           // … and kept, the newest
+const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
+const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
+                              apps: [], skills: [], error: null });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -178,7 +182,7 @@ const CLI_HELP = [                             // `wuxian` and what each command
   ['wuxian doctor', '自检'],
   ['wuxian addons', '已装插件（版本、Interface、启用、报错数）'],
   ['wuxian errors [插件]', '平台插件收集到的报错（截至上次登出或重载）'],
-  ['wuxian program list|add|start|stop|logs', '游戏外的程序：列出、登记、开始、停止、看输出'],
+  ['wuxian ext list|add|load|stop|check|logs', '本机扩展：列出、登记、载入、停止、检查、看日志'],
   ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量、缺少的参数、机密值误用'],
   ['wuxian history [插件] [编号]', '插件的历史版本；带编号是那一版和现在的差异'],
   ['wuxian checkpoint <插件> [说明]', '给插件存一份'],
@@ -230,7 +234,7 @@ function appState() {
   const book = new LogBook();
   let logView = { key: null, view: NO_LOGS };  // 开发台's rows, kept until the entries or the filters change
   let logFrame = 0, logTimer = 0;
-  let progLines = [];                          // 程序: the output of the program shown, [{n, text}] (pout.text is it joined)
+  let lxLines = [];                            // 本机扩展: the log of the one shown, [{n, text}] (lout.text is it joined)
   return {
     PAGES, NAV, KINDS, API_KINDS, KIND_TEXT,
     page: 'status',
@@ -269,10 +273,10 @@ function appState() {
     agents: { list: null, program: null, manual: {}, busy: '', note: {} },
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
-    progs: { list: null, error: '', loading: false, again: false, sel: null, busy: '', confirm: '', note: null,
-             add: { open: false, path: '', busy: false, error: '' } },   // 程序: the list, the one shown, 登记程序
-    pout: { id: null, run: null, next: 0, gen: 0, text: '', count: 0, busy: false, again: false, loaded: false, error: '',
-            follow: true, after: 0 },          // 程序: the output of the one shown (its lines are progLines)
+    lx: { list: null, revision: null, caps: null, error: '', loading: false, again: false, busy: '', note: null,
+          check: null },                       // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data}
+    lout: { id: null, run: null, next: 0, gen: 0, text: '', count: 0, busy: false, again: false, loaded: false, error: '',
+            follow: true, after: 0 },          // 扩展 · 本机: the log of the one shown (its lines are lxLines)
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
              first: { name: 'MyFirstAddon', title: '我的第一个插件', busy: false, error: '', result: null, loaded: false, fromId: 0 } },
     canPick: false,
@@ -302,11 +306,11 @@ function appState() {
       }
       if (!this.timers) {                      // once: init() runs again while the daemon is not up yet
         this.timers = true;
-        setInterval(() => { this.now = Date.now(); this.progTick(); }, 1000);
+        setInterval(() => { this.now = Date.now(); this.lxTick(); }, 1000);
         setInterval(() => {
-          if (this.sseState !== 'open') {                      // no stream: no status events, no programs events
+          if (this.sseState !== 'open') {                      // no stream: no status events, no local events
             this.refreshStatus();
-            if (this.page === 'programs' && !document.hidden) this.loadPrograms(true);
+            if (this.page === 'extensions' && !document.hidden) this.loadLocal(true);
           }
         }, 5000);
         setInterval(() => { if (this.page === 'extensions' && !document.hidden && !this.access.busy) this.loadAccess(); }, 20000);
@@ -331,9 +335,9 @@ function appState() {
 
     // ---- navigation: the page is also in the address (#dev), so that a reload or a link opens it
     openLink(link) {                           // #api/UnitHealth: the manual, looked up; #addons/new: the 新建插件 form;
-      const [id, arg] = String(link).split('/');   // #programs/companion: that program
-      if (id === 'programs' && arg) { this.goProgram(decodeURIComponent(arg)); return; }
+      const [id, arg] = String(link).split('/');   // #extensions/local/voice: that local extension
       this.go(id);
+      if (id === 'extensions' && arg === 'local' && link.split('/')[2]) this.xpSelect('l:' + decodeURIComponent(link.split('/')[2]));
       if (id === 'api' && arg) {
         this.docs.q = decodeURIComponent(arg);
         this.docsSearch().then(() => { if (this.docs.results.length) this.docsOpen(this.docs.results[0]); });
@@ -346,9 +350,8 @@ function appState() {
       if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
       if (id === 'doctor' && !this.doctor.checks.length) this.runDoctor();
       if (id === 'addons' && this.addons.list === null) this.loadAddons();
-      if (id === 'programs') this.progsShow();
       if (id === 'extensions' && this.ext.list === null) this.loadExtensions();
-      if (id === 'extensions') this.loadAccess();
+      if (id === 'extensions') { this.loadAccess(); this.loadLocal(); }
       if (id === 'dev') this.scrollLogs(true);
       if (id === 'api') this.docsInit();
       if (id === 'start') this.startInit();
@@ -599,7 +602,7 @@ function appState() {
       es.onopen = () => { this.sseState = 'open'; this.daemonError = ''; };
       es.addEventListener('log', ev => { try { this.pushLog(JSON.parse(ev.data)); } catch (e) { /* ignore a bad line */ } });
       es.addEventListener('status', ev => { try { this.applyStatus(JSON.parse(ev.data)); } catch (e) { /* ignore */ } });
-      es.addEventListener('programs', () => this.onPrograms());
+      es.addEventListener('local', ev => this.onLocal(ev.data));
       es.onerror = () => {
         es.close();
         if (this.sse !== es) return;
@@ -783,9 +786,12 @@ function appState() {
     xpVersionOf(c) {
       return c.pkg ? this.xpVersion(c.pkg) : (c.mod && c.mod.version) || '';
     },
-    get xpSel() {                              // what the detail shows (xp.sel: kit, x:<id>, c:<package id>, m:<id>, sessions)
-      const s = this.xp.sel;
+    get xpSel() {                              // what the detail shows (xp.sel: kit, x:<id>, c:<package id>, m:<id>, l:<local
+      const s = this.xp.sel;                   //   extension id>, sessions)
       if (s === 'sessions') return { kind: 'sessions' };
+      const l = this.selLx;
+      if (l) return { kind: 'local', title: this.lxTitle(l), tag: t('本机扩展'), line: this.lxLine(l), pkg: null, mod: null,
+        count: 0, confirm: 0, tools: null, notes: '' };
       const m = s.startsWith('x:') && this.xpSys.find((x) => 'x:' + x.id === s);
       if (m) return { kind: 'sys', title: m.title, tag: t('系统扩展'), line: m.id + (m.version ? ' · ' + m.version : ''),
         pkg: null, mod: m, count: m.count, confirm: m.confirm, tools: m.tools, notes: '' };
@@ -804,6 +810,11 @@ function appState() {
     },
     get xpTab() {                              // the tab shown: the one chosen while the selection has it, else 概况
       const tab = this.xp.tab, sel = this.xpSel;
+      if (sel.kind === 'local') {
+        if (tab === 'opts' && !(this.lxCur.options || []).length) return 'info';
+        return ['info', 'opts', 'caps', 'logs'].includes(tab) ? tab : 'info';
+      }
+      if (['opts', 'caps', 'logs'].includes(tab)) return 'info';
       if (tab === 'tools' && !(sel.tools && sel.tools.length)) return 'info';
       if (tab === 'notes' && !sel.notes) return 'info';
       return tab;
@@ -812,6 +823,7 @@ function appState() {
       this.xp.sel = key;
       this.xp.tab = 'info';
       this.ext.confirm = '';
+      if (key.startsWith('l:')) this.lxShow(key.slice(2));
     },
     get xpState() {                            // the 状态 of the one selected: { cls, text }
       const sel = this.xpSel;
@@ -918,6 +930,7 @@ function appState() {
       const parts = [t('扩展框架') + (this.xpKitVersion ? ' ' + this.xpKitVersion : '')];
       if (this.xpKitBadge) parts.push(this.xpKitBadge.text);
       if (this.xpRunning) parts.push(t('{n} 个扩展', { n: this.xpMods.length }), t('{n} 个 Agent 工具', { n: this.xpTools.n }));
+      if (this.lxSummary) parts.push(this.lxSummary);
       return parts.join(' · ');
     },
     get extCatalogLine() {
@@ -1237,244 +1250,273 @@ function appState() {
     reportText(r) { return t(r === true ? '开' : r === false ? '关' : '未设置'); },
     enabledText(a) { return a.enabled === true ? t('已启用') : a.enabled === false ? t('已禁用') : t('{n} 个角色禁用', { n: a.disabled_in }); },
 
-    // ---- 程序 (programs.py through /api/programs): what this program loads outside the game, as 插件 is what runs in it. The
-    //      list with a state dot each; the one selected: its state, command, folder, exit code, 开始 / 停止 / 重启 / 移除, and
-    //      its output (the newest PROG_KEEP lines, asked for from a cursor every second while it runs and the page shows, once
-    //      more after it stopped). The stream's `programs` event says a state changed: the list is read again
-    async loadPrograms(quiet) {                // quiet: a failure leaves the list as it was, unsaid (接入 Agent, the timer)
-      if (this.progs.loading) { this.progs.again = true; return; }   // one read at a time; a change meanwhile: once more
-      this.progs.loading = true;
+    // ---- 扩展 · 本机 (local/ through /api/local): the extensions this program runs on this computer, the same model as the
+    //      game's (capabilities as wk_ tools, sources, options) with another runtime. A row each in the 扩展 list; the one
+    //      selected (xp.sel 'l:<id>'): its state, 启用, 载入 / 停止 / 检查, its options as a form, its capabilities, its
+    //      log (the newest LX_KEEP lines, from a cursor every second while it runs and the tab shows, twice more after it
+    //      stopped). The stream's `local` event carries the rows ({revision, extensions}); without the stream they are read
+    //      every five seconds while the page shows
+    async loadLocal(quiet) {                   // quiet: a failure leaves the list as it was, unsaid (the timer, the stream)
+      if (this.lx.loading) { this.lx.again = true; return; }   // one read at a time; a change meanwhile: once more
+      this.lx.loading = true;
       try {
         do {
-          this.progs.again = false;
-          this.progsApply(progRows(await this.api('/api/programs')));
-          this.progs.error = '';
-        } while (this.progs.again);
+          this.lx.again = false;
+          this.lxApply(await this.api('/api/local'));
+          this.lx.error = '';
+        } while (this.lx.again);
       } catch (e) {
-        if (!quiet) {
-          this.progs.error = t('读取程序失败：') + errText(e);
-          if (this.progs.list === null) this.progs.list = [];
-        }
+        if (!quiet || this.lx.list === null) this.lx.error = t('读取本机扩展失败：') + errText(e);
+        if (this.lx.list === null) this.lx.list = [];
       } finally {
-        this.progs.loading = false;
+        this.lx.loading = false;
       }
     },
-    progsShow() {                              // the page opened: the list read again, the output shown caught up
-      this.loadPrograms();
-      if (this.selProg && this.pout.id === this.selProg.id) this.loadProgOut();
+    onLocal(data) {                            // the stream's `local`: the rows as they are now; without them, read again
+      let d = null;
+      try { d = typeof data === 'string' && data ? JSON.parse(data) : data; } catch (e) { d = null; }
+      if (d && Array.isArray(d.extensions)) this.lxApply(d);
+      else if (this.page === 'extensions') this.loadLocal(true);
     },
-    onPrograms() {                             // the stream's word that the programs changed
-      if (this.page === 'programs') this.loadPrograms();
-      else if (this.page === 'connect' && this.progs.list !== null) this.loadPrograms(true);
+    lxApply(d) {                               // a new list: the capabilities read again when the revision changed
+      const old = this.lx.list || [];
+      this.lx.list = lxRows(d);
+      const rev = d && d.revision != null ? d.revision : null;
+      if (rev !== this.lx.revision || this.lx.caps === null) {
+        this.lx.revision = rev;
+        this.loadLocalCaps();
+      }
+      const sel = this.selLx;
+      if (sel) this.lxSeen(sel, old.find((r) => r.id === sel.id));
     },
-    progsApply(list) {                         // a new list: the selection kept while its program is there, else the first
-      const old = this.progs.list || [];
-      this.progs.list = list;
-      if (this.progs.sel && !list.some((r) => r.id === this.progs.sel)) this.progs.sel = null;
-      const sel = this.selProg;
-      if (sel) this.progSeen(sel, old.find((r) => r.id === sel.id));
-      else if (list.length && this.page === 'programs') this.progSelect(list[0].id);
-    },
-    progRow(row) {                             // one row the daemon answered (an action's, the output's) into the list
+    lxRow(row) {                               // one row the daemon answered (an action's) into the list
       if (!row || !row.id) return;
-      const list = this.progs.list || [];
+      const list = this.lx.list || [];
       const old = list.find((r) => r.id === row.id);
-      this.progs.list = old ? list.map((r) => (r.id === row.id ? row : r)) : list.concat([row]);
-      this.progSeen(row, old);
+      this.lx.list = old ? list.map((r) => (r.id === row.id ? row : r)) : list.concat([row]);
+      if (this.selLx && this.selLx.id === row.id) this.lxSeen(row, old);
     },
-    progSeen(row, old) {                       // the shown program's row anew: a new run's output starts afresh; a run that
-      if (row.id !== this.pout.id) return;     // ended has its last lines read once more
-      if (row.started && row.started !== this.pout.run) {
-        this.progOutReset(row);
-        if (this.page === 'programs') this.loadProgOut();
-      } else if (old && old.state === 'running' && row.state !== 'running') this.pout.after = 2;
+    lxSeen(row, old) {                         // the shown extension's row anew: a new run's log starts afresh
+      if (this.lout.id !== row.id) return;
+      if ((row.started || null) !== this.lout.run && (!old || row.started !== old.started)) {
+        this.lxOutReset(row);
+        if (this.page === 'extensions' && this.xpTab === 'logs') this.loadLxOut();
+      }
     },
-    get selProg() { return (this.progs.list || []).find((r) => r.id === this.progs.sel) || null; },
-    get progCur() { return this.selProg || NO_PROG; },   // the detail's program: never null (the detail stays in the page)
-    progSelect(id) {
-      this.progs.sel = id;
-      this.progs.confirm = '';
-      this.progs.note = null;
-      this.progOutReset(this.selProg || { id });
-      this.loadProgOut();
+    async loadLocalCaps() {                    // the capabilities' kinds and titles: the manifest the agents' tools come from
+      try {
+        const m = await this.api('/api/local/manifest');
+        const caps = {};
+        for (const e of (m && m.extensions) || []) for (const c of e.capabilities || []) if (c && c.id) caps[c.id] = c;
+        this.lx.caps = caps;
+      } catch (e) {
+        if (this.lx.caps === null) this.lx.caps = {};
+      }
     },
-    goProgram(id) {                            // 查看程序 (接入 Agent), #programs/<id>
-      this.go('programs');
-      this.progSelect(id);
+    get selLx() {
+      const s = this.xp.sel;
+      return s.startsWith('l:') ? (this.lx.list || []).find((r) => r.id === s.slice(2)) || null : null;
     },
-    progTitle(r) { return r ? this.loc(r.title) || r.id : ''; },
-    progState(r) {                             // {key, cls (ok / warn / bad / ''), text}: 运行中 first, then a manifest
-      if (!r) return { key: '', cls: '', text: '' };   // that cannot be read, then how the last run ended
+    get lxCur() { return this.selLx || NO_LX; },   // the detail's extension: never null (the detail stays in the page)
+    lxShow(id) {                               // selected in the list
+      this.lx.note = null;
+      this.lxOutReset(this.selLx || { id });
+    },
+    lxTitle(r) { return r ? this.loc(r.title) || r.id : ''; },
+    lxLine(r) { return r.id + (r.version ? ' · ' + r.version : ''); },
+    lxRunning(r) { return !!r && (r.state === 'running' || r.state === 'starting'); },
+    lxState(r) {                               // {key, cls (ok / warn / bad / ''), text}
+      if (!r || !r.state) return { key: '', cls: '', text: '' };
+      if (r.state === 'off' || r.enabled === false) return { key: 'off', cls: '', text: t('已停用') };
       if (r.state === 'running') return { key: 'running', cls: 'ok', text: t('运行中') };
-      if (r.error) return { key: 'error', cls: 'warn', text: t('清单有错') };
-      if (r.state === 'exited') return r.exit_code && r.exit_code !== 0 ? { key: 'failed', cls: 'bad', text: t('失败') }
+      if (r.state === 'starting') return { key: 'starting', cls: 'warn', text: t('启动中') };
+      if (r.state === 'failed') return { key: 'failed', cls: 'bad', text: t('启动失败') };
+      if (r.state === 'exited') return r.exit_code ? { key: 'crashed', cls: 'bad', text: t('异常退出') }
         : { key: 'exited', cls: '', text: t('已退出') };
       return { key: 'stopped', cls: '', text: t('未运行') };
     },
-    progSub(r) {                               // the list's second line: the state, and how long it runs or how it ended
-      const s = this.progState(r);
-      if (s.key === 'running' && r.started) return s.text + ' · ' + this.upFor(progSecs(r.started));
-      if (s.key === 'failed') return s.text + ' · ' + t('退出码 {c}', { c: progCode(r.exit_code, true) });
-      return s.text;
-    },
-    get progSummary() {                        // the page bar
-      const list = this.progs.list;
-      if (!list || !list.length) return '';
-      const n = list.filter((r) => r.state === 'running').length;
-      return t('{n} 个程序', { n: list.length }) + (n ? ' · ' + t('{n} 个运行中', { n }) : '');
-    },
-    progCommand(r) {                           // the command line: argv joined, the arguments with spaces quoted
-      const c = r && r.command;
-      if (!c) return '—';
-      return Array.isArray(c) ? c.map((a) => (/\s/.test(String(a)) ? '"' + a + '"' : String(a))).join(' ') : String(c);
-    },
-    progCode(c) { return progCode(c); },
-    progTime(v) {                              // a time of a run: today's to the second, an older one with its date
-      const s = progSecs(v);
+    lxPill(r) { return this.lxState(r).cls || 'off'; },
+    lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
+    lxCode(c) { return exitCode(c); },
+    lxStarted(r) {                             // 开始于: when, and while it runs for how long
+      const s = secsOf(r.started);
       if (!s) return '—';
-      return new Date(s * 1000).toDateString() === new Date(this.now).toDateString() ? this.fmtTime(s) : this.fmtStamp(s);
+      const at = new Date(s * 1000).toDateString() === new Date(this.now).toDateString() ? this.fmtTime(s) : this.fmtStamp(s);
+      return this.lxRunning(r) ? at + ' · ' + t('已运行 {d}', { d: this.upFor(s) }) : at;
     },
-    progStarted(r) {                           // 开始于: when, and while it runs for how long
-      const s = this.progTime(r.started);
-      return r.state === 'running' && r.started ? s + ' · ' + t('已运行 {d}', { d: this.upFor(progSecs(r.started)) }) : s;
+    lxCaps(r) {                                // its capabilities with what the manifest says of them
+      const caps = this.lx.caps || {};
+      return (r.capabilities || []).map((id) => {
+        const c = caps[id] || {};
+        return { id, name: 'wk_' + String(id).replace(/\./g, '_'), title: this.loc(c.title) || '', kind: c.kind || '' };
+      });
     },
-    progRan(r) {                               // how long the last run ran: '' when not known
-      const a = progSecs(r.started), b = progSecs(r.exited_at);
-      return a && b && b >= a ? this.fmtDuration(b - a) : '';
+    lxKind(k) { return t({ see: '读取', keep: '存储', point: '指引' }[k] || '—'); },
+    get lxSummary() {                          // the page bar's part
+      const list = this.lx.list || [];
+      if (!list.length) return '';
+      const n = list.filter((r) => r.state === 'running').length;
+      return t('{n} 个本机扩展', { n: list.length }) + (n ? ' · ' + t('{n} 个运行中', { n }) : '');
     },
-    async progAct(r, action) {                 // 开始 / 停止 / 重启 / 移除 (移除 wants a second click)
-      if (!r || !r.id || this.progs.busy) return;
-      if (action === 'remove' && this.progs.confirm !== r.id) { this.progs.confirm = r.id; return; }
-      this.progs.confirm = '';
-      this.progs.busy = r.id + ':' + action;
-      this.progs.note = null;
-      const name = this.progTitle(r);
+    lxBusy(r, action) { return !!r && this.lx.busy === r.id + ':' + action; },
+    async lxPost(r, action, body, failed) {    // a POST of the 本机 part: the row it answers taken in, else the list read again
+      if (!r || !r.id || this.lx.busy) return null;
+      this.lx.busy = r.id + ':' + action;
+      this.lx.note = null;
       try {
-        if (action === 'remove') {
-          await this.api('/api/programs/remove', { body: { id: r.id } });
-          if (this.progs.sel === r.id) { this.progs.sel = null; this.progOutReset(null); }
-          this.say(t('已移除 {name}', { name }));
-          await this.loadPrograms();
-          return;
+        const d = await this.api('/api/local/' + action, { body: Object.assign({ id: r.id }, body || {}) });
+        const row = lxRowOf(d);
+        if (row) this.lxRow(row);
+        else await this.loadLocal(true);
+        return d || {};
+      } catch (e) {
+        this.lx.note = { bad: true, text: failed + errText(e) };
+        if (action === 'set') await this.loadLocal(true);      // the form shows the values in force again
+        return null;
+      } finally {
+        this.lx.busy = '';
+      }
+    },
+    async lxAct(r, action) {                   // 载入 / 停止 / 检查
+      const name = this.lxTitle(r);
+      if (action === 'load') {
+        const d = await this.lxPost(r, 'load', null, t('载入失败：'));
+        if (!d) return;
+        if (d.check) this.lx.check = { id: r.id, data: d.check };
+        const bad = d.check && d.check.ok === false;
+        if (bad) this.xp.tab = 'info';
+        this.say(bad ? t('{name} 检查未通过', { name }) : t('已载入 {name}', { name }));
+        if (this.lout.id === r.id) this.lout.after = 2;
+      } else if (action === 'stop') {
+        if (await this.lxPost(r, 'stop', null, t('停止失败：'))) {
+          if (this.lout.id === r.id) this.lout.after = 2;
+          this.say(t('已停止 {name}', { name }));
         }
-        const d = await this.api(action === 'stop' ? '/api/programs/stop' : '/api/programs/start',
-                                 { body: action === 'restart' ? { id: r.id, restart: true } : { id: r.id } });
-        this.progRow(progRowOf(d));              // a new run (started changed) starts the output afresh
-        if (action === 'stop' && this.pout.id === r.id) this.pout.after = 2;
-        this.say(t({ start: '已开始 {name}', stop: '已停止 {name}', restart: '已重启 {name}' }[action], { name }));
-      } catch (e) {
-        this.progs.note = { bad: true, text: t({ start: '开始失败：', stop: '停止失败：', restart: '重启失败：',
-                                                 remove: '移除失败：' }[action]) + errText(e) };
-      } finally {
-        this.progs.busy = '';
+      } else if (action === 'check') {
+        const d = await this.lxPost(r, 'check', null, t('检查失败：'));
+        if (!d) return;
+        this.lx.check = { id: r.id, data: d };
+        this.xp.tab = 'info';
       }
     },
-    progBusy(r, action) { return !!r && this.progs.busy === r.id + ':' + action; },
-    progAddOpen() {
-      Object.assign(this.progs.add, { open: true, busy: false, error: '' });
-      this.$nextTick(() => { const el = this.$refs.progpath; if (el) el.focus(); });
-    },
-    async progAdd() {                          // 登记程序: a folder with wuxian-program.json, or the manifest itself
-      const a = this.progs.add;
-      const path = a.path.trim();
-      if (!path || a.busy) return;
-      a.busy = true;
-      a.error = '';
-      try {
-        const row = progRowOf(await this.api('/api/programs/add', { body: { path } }));
-        await this.loadPrograms();
-        if (row) { this.progRow(row); this.progSelect(row.id); }
-        Object.assign(a, { open: false, path: '' });
-        this.say(t('已登记 {name}', { name: row ? this.progTitle(row) : path }));
-      } catch (e) {
-        a.error = errText(e);
-      } finally {
-        a.busy = false;
+    async lxEnable(r, on) {                    // 启用: on starts nothing by itself (a call or 载入 does); off stops it
+      if (await this.lxPost(r, 'set', { enabled: !!on }, t('设置失败：'))) {
+        this.say(t(on ? '已启用 {name}' : '已停用 {name}', { name: this.lxTitle(r) }));
       }
     },
-    async progPick() {                         // the App window's folder dialog (ui/shell.py pick_folder)
-      try {
-        const p = await window.pywebview.api.pick_folder(this.progs.add.path.trim());
-        if (p) this.progs.add.path = p;
-      } catch (e) { this.say(t('选择文件夹：') + errText(e)); }
+    lxValue(o) { return o.value !== undefined && o.value !== null ? o.value : o.default; },
+    lxChoice(o, raw) {                         // a <select>'s text back into the choice's own value (a number stays one)
+      const c = (o.choices || []).find((x) => String(x.value) === String(raw));
+      return c ? c.value : raw;
+    },
+    async lxSet(r, o, raw) {                   // one option changed in the form: POST /api/local/set with it alone
+      let v = raw;
+      if (o.kind === 'number') {
+        v = raw === '' || raw == null ? NaN : Number(raw);
+        if (!Number.isFinite(v)) { this.lx.note = { bad: true, text: t('「{o}」需要数字', { o: this.loc(o.title) || o.name }) }; return; }
+      } else if (o.kind === 'boolean') v = !!raw;
+      else if (o.kind === 'choice') v = this.lxChoice(o, raw);
+      if (await this.lxPost(r, 'set', { options: { [o.name]: v } }, t('保存设置失败：'))) {
+        this.say(t('已保存 {o}', { o: this.loc(o.title) || o.name }));
+      }
+    },
+    get lxCheck() {                            // the last check of the one shown: {ok, problems, summary, tests} | null
+      const c = this.lx.check;
+      if (!c || c.id !== this.lxCur.id || !c.data) return null;
+      const d = c.data, problems = Array.isArray(d.problems) ? d.problems : [];
+      const errors = problems.filter((p) => p && p.level === 'error').length, warnings = problems.length - errors;
+      const parts = [d.ok ? t('检查通过') : errors ? t('{n} 个错误', { n: errors }) : t('检查未通过')];
+      if (warnings) parts.push(t('{n} 个警告', { n: warnings }));
+      if (Array.isArray(d.capabilities)) parts.push(t('{n} 个能力', { n: d.capabilities.length }));
+      const tests = d.tests && typeof d.tests === 'object'
+        ? (d.tests.failed ? t('测试 {n} 个，{f} 个失败', { n: d.tests.ran || 0, f: d.tests.failed }) : t('测试 {n} 个，全部通过', { n: d.tests.ran || 0 }))
+        : '';
+      return { ok: !!d.ok, problems, summary: parts.join(' · '), tests, output: d.tests && d.tests.failed ? String(d.tests.output || '') : '' };
+    },
+    lxTab(tab) {                               // a tab of the 本机 detail; 日志 reads the log
+      this.xp.tab = tab;
+      if (tab !== 'logs') return;
+      const r = this.lxCur;
+      if (this.lout.id !== r.id) this.lxOutReset(r);
+      this.loadLxOut();
+      this.lxScrollEnd();
     },
 
-    // ---- 程序 · 输出: /api/programs/logs from the cursor next on (whatever the daemon hands back as next); a line at or
-    //      below the newest one had is not added again; a new run (row.started changed) starts afresh from 0. gen tells
-    //      an answer for an output since reset
-    progOutReset(row) {
-      progLines = [];
-      Object.assign(this.pout, { id: row ? row.id : null, run: (row && row.started) || null, next: 0, gen: this.pout.gen + 1,
+    // ---- 本机 · 日志: /api/local/logs from the cursor next on (whatever the daemon hands back as next); a line at or below
+    //      the newest one had is not added again; a new run (row.started changed) starts afresh from 0. gen tells an
+    //      answer for a log since reset
+    lxOutReset(row) {
+      lxLines = [];
+      Object.assign(this.lout, { id: row ? row.id : null, run: (row && row.started) || null, next: 0, gen: this.lout.gen + 1,
                                  text: '', count: 0, loaded: false, error: '', follow: true, after: 0 });
     },
-    async loadProgOut() {
-      const id = this.pout.id;
+    async loadLxOut() {
+      const id = this.lout.id;
       if (!id) return;
-      if (this.pout.busy) { this.pout.again = true; return; }
-      this.pout.busy = true;
+      if (this.lout.busy) { this.lout.again = true; return; }
+      this.lout.busy = true;
       let changed = false;
       try {
-        for (let i = 0; i < PROG_PAGES; i++) {
-          const gen = this.pout.gen, since = this.pout.next;
-          const d = await this.api('/api/programs/logs?id=' + encodeURIComponent(id) + '&since=' + since + '&limit=' + PROG_LIMIT);
-          if (this.pout.id !== id) return;
-          if (d && d.row) this.progRow(d.row);   // a new run resets the output: read it from the start
-          if (this.pout.gen !== gen) { changed = true; continue; }
+        for (let i = 0; i < LX_PAGES; i++) {
+          const gen = this.lout.gen, since = this.lout.next;
+          const d = await this.api('/api/local/logs?id=' + encodeURIComponent(id) + '&since=' + since + '&limit=' + LX_LIMIT);
+          if (this.lout.id !== id) return;
+          if (this.lout.gen !== gen) { changed = true; continue; }
           const lines = Array.isArray(d && d.lines) ? d.lines : [];
-          let top = progLines.length ? progLines[progLines.length - 1].n : -Infinity;
+          let top = lxLines.length ? lxLines[lxLines.length - 1].n : -Infinity;
           for (const l of lines) {
             const n = l && typeof l.n === 'number' ? l.n : null;
             if (n !== null && n <= top) continue;
-            progLines.push({ n: n === null ? top : n, text: progText(l) });
+            lxLines.push({ n: n === null ? top : n, text: logText(l) });
             if (n !== null) top = n;
             changed = true;
           }
-          this.pout.next = d && d.next != null ? d.next : (Number.isFinite(top) ? top : since);
-          this.pout.loaded = true;
-          this.pout.error = '';
-          if (lines.length < PROG_LIMIT || this.pout.next === since) break;
+          this.lout.next = d && d.next != null ? d.next : (Number.isFinite(top) ? top : since);
+          this.lout.loaded = true;
+          this.lout.error = '';
+          if (lines.length < LX_LIMIT || this.lout.next === since) break;
         }
-      } catch (e) {                            // a 404: no output yet (never run), said as such, not as a failure
-        if (this.pout.id === id) { this.pout.error = e.status === 404 ? '' : errText(e); this.pout.loaded = true; }
+      } catch (e) {                            // a 404: no log yet (never run), said as such, not as a failure
+        if (this.lout.id === id) { this.lout.error = e.status === 404 ? '' : errText(e); this.lout.loaded = true; }
       } finally {
-        this.pout.busy = false;
-        if (changed && this.pout.id === id) {
-          if (progLines.length > PROG_KEEP) progLines = progLines.slice(-PROG_KEEP);
-          this.progOutChanged();
+        this.lout.busy = false;
+        if (changed && this.lout.id === id) {
+          if (lxLines.length > LX_KEEP) lxLines = lxLines.slice(-LX_KEEP);
+          this.lxOutChanged();
         }
-        if (this.pout.again) { this.pout.again = false; this.loadProgOut(); }
+        if (this.lout.again) { this.lout.again = false; this.loadLxOut(); }
       }
     },
-    progOutChanged() {                         // the text after new lines, the end followed
-      this.pout.text = progLines.map((l) => l.text).join('\n');
-      this.pout.count = progLines.length;
-      if (this.pout.follow) this.progScrollEnd();
+    lxOutChanged() {                           // the text after new lines, the end followed
+      this.lout.text = lxLines.map((l) => l.text).join('\n');
+      this.lout.count = lxLines.length;
+      if (this.lout.follow) this.lxScrollEnd();
     },
-    progScrollEnd() {
-      this.$nextTick(() => { const b = this.$refs.progout; if (b) b.scrollTop = b.scrollHeight; });
+    lxScrollEnd() {
+      this.$nextTick(() => { const b = this.$refs.lxout; if (b) b.scrollTop = b.scrollHeight; });
     },
-    onProgOutScroll(ev) {                      // up: the end is no longer followed; back at the end: followed again
+    onLxOutScroll(ev) {                        // up: the end is no longer followed; back at the end: followed again
       const b = ev.target;
       const atBottom = b.scrollHeight - b.scrollTop - b.clientHeight < 12;
-      if (atBottom && !this.pout.follow) this.pout.follow = true;
-      else if (!atBottom && this.pout.follow && b.scrollHeight > b.clientHeight) this.pout.follow = false;
+      if (atBottom && !this.lout.follow) this.lout.follow = true;
+      else if (!atBottom && this.lout.follow && b.scrollHeight > b.clientHeight) this.lout.follow = false;
     },
-    progTick() {                               // every second: the shown program's output while it runs, and a last read
-      if (this.page !== 'programs' || document.hidden || !this.token) return;
-      const r = this.selProg;
-      if (!r || r.id !== this.pout.id || this.pout.busy) return;
-      if (r.state === 'running') this.loadProgOut();
-      else if (this.pout.after > 0) { this.pout.after--; this.loadProgOut(); }
+    lxTick() {                                 // every second: the shown extension's log while it runs, and a last read
+      if (this.page !== 'extensions' || this.xpTab !== 'logs' || document.hidden || !this.token) return;
+      const r = this.selLx;
+      if (!r || r.id !== this.lout.id || this.lout.busy) return;
+      if (this.lxRunning(r)) this.loadLxOut();
+      else if (this.lout.after > 0) { this.lout.after--; this.loadLxOut(); }
     },
-    get progOutLine() {                        // over the output: how many lines
-      const n = this.pout.count;
+    get lxOutLine() {                          // over the log: how many lines
+      const n = this.lout.count;
       if (!n) return '';
-      return n >= PROG_KEEP ? t('最近 {n} 行', { n }) : t('{n} 行', { n });
+      return n >= LX_KEEP ? t('最近 {n} 行', { n }) : t('{n} 行', { n });
     },
-    get progOutEmpty() {                       // in place of the output: why there is none
-      if (this.pout.error) return t('读取输出失败：') + this.pout.error;
-      if (!this.pout.loaded || this.pout.count) return '';
-      return this.progCur.state === 'stopped' && !this.progCur.started ? t('还没有运行过') : t('没有输出');
+    get lxOutEmpty() {                         // in place of the log: why there is none
+      if (this.lout.error) return t('读取日志失败：') + this.lout.error;
+      if (!this.lout.loaded || this.lout.count) return '';
+      return this.lxCur.started ? t('没有日志') : t('还没有运行过');
     },
 
     // ---- the API manual (apidocs.py through /api/apidocs): the search, with what an addon may do with each result (call: ok /
@@ -1905,8 +1947,8 @@ function appState() {
         this.say(t('读取 Agent 失败：') + errText(e));
       }
     },
-    async loadConnect() {                      // the 接入 Agent page: both servers' agents, the apps, and the programs that
-      await Promise.all([this.loadAgents(), this.loadWxw(), this.loadApps(), this.loadPrograms(true)]);   // drive apps
+    async loadConnect() {                      // the 接入 Agent page: both servers' agents and the apps
+      await Promise.all([this.loadAgents(), this.loadWxw(), this.loadApps()]);
     },
     async loadWxw() {                          // 无限图鉴 (server=wuxianwow): the same hosts, the same shape
       try {
@@ -1953,9 +1995,8 @@ function appState() {
       return p ? [p.command].concat(p.args || []).join(' ') : '—';
     },
 
-    // ---- 接入 Agent · 应用 (/api/kit/apps): a prompt app's 启动语 to hand an agent, and what the app needs before it; a
-    //      program app says so, with its program on the 程序 page when one of that id is registered. Temporary apps (an
-    //      agent's listening while it debugs) are not handed to anyone: not listed
+    // ---- 接入 Agent · 应用 (/api/kit/apps): an app's 启动语 to hand an agent, and what the app needs before it. Temporary
+    //      apps (an agent's listening while it debugs) are not handed to anyone: not listed
     async loadApps() {
       try {
         this.apps.data = await this.api('/api/kit/apps');
@@ -1965,16 +2006,7 @@ function appState() {
       }
     },
     get appsShown() {
-      return ((this.apps.data && this.apps.data.apps) || []).filter(a => a && !a.temp && (a.start || this.appDriver(a) === 'program'));
-    },
-    appDriver(a) { return a.driver || (a.prompt ? 'prompt' : null); },   // what drives it: prompt (an agent) or program
-    appProgram(a) {                            // the registered program of a program app: the one of its id
-      if (this.appDriver(a) !== 'program') return null;
-      return (this.progs.list || []).find(p => p.id === a.id) || null;
-    },
-    appDriverText(a) {
-      const p = this.appProgram(a);
-      return p ? t('由程序「{name}」驱动', { name: this.progTitle(p) }) : t('由程序驱动');
+      return ((this.apps.data && this.apps.data.apps) || []).filter(a => a && !a.temp && a.start);
     },
     get appsEmpty() {                          // the line in place of the rows: '' while there are rows
       const d = this.apps.data;
@@ -1997,7 +2029,6 @@ function appState() {
                    text: x.on === true ? t('扩展「{x}」已开启', { x: name }) : x.on === false ? t('扩展「{x}」未开启', { x: name })
                                        : t('扩展「{x}」：进入游戏后确认', { x: name }) });
       }
-      if (this.appDriver(a) === 'program') return out;   // its program, not an agent, runs it
       const mine = this.agentsOk('wuxian');
       out.push({ id: 'wuxian', ok: mine.length > 0, go: mine.length ? '' : 'connect-wuxian',
                  text: mine.length ? t('已接入无限工坊：{list}', { list: mine.map(h => h.title).join(t('、')) })
@@ -2378,28 +2409,28 @@ function apiMessage(data, r) {
   return 'HTTP ' + r.status;
 }
 
-/* 程序: the daemon's answers in the shapes the page takes — the list as [row] or {programs: [row]}, one row as the row,
-   {row} or {program}; a time as Unix seconds (milliseconds and ISO text taken too); an exit code past 16 bits with its hex
-   (a Windows status such as 0xC0000005); an output line's text without a terminal's escapes */
-function progRows(d) {
-  return Array.isArray(d) ? d : d && Array.isArray(d.programs) ? d.programs : [];
+/* 本机扩展: the daemon's answers in the shapes the page takes — the list as {extensions: [row]} or [row], one row as the row
+   or {row}; a time as Unix seconds (milliseconds and ISO text taken too); an exit code past 16 bits with its hex (a Windows
+   status such as 0xC0000005); a log line's text without a terminal's escapes */
+function lxRows(d) {
+  return Array.isArray(d) ? d : d && Array.isArray(d.extensions) ? d.extensions : [];
 }
-function progRowOf(d) {
+function lxRowOf(d) {
   if (d && typeof d.id === 'string') return d;
-  return (d && ((d.row && d.row.id && d.row) || (d.program && d.program.id && d.program))) || null;
+  return (d && d.row && typeof d.row.id === 'string' && d.row) || null;
 }
-function progSecs(v) {
+function secsOf(v) {
   if (typeof v === 'number') return v > 1e12 ? v / 1000 : v;
   if (typeof v === 'string' && v) { const ms = Date.parse(v); return Number.isFinite(ms) ? ms / 1000 : null; }
   return null;
 }
-function progCode(c, short) {                    // short (the list): such a status as its hex alone
+function exitCode(c, short) {                    // short (the list): such a status as its hex alone
   if (c == null) return '—';
   if (!(c > 0xffff || c < -0xffff)) return String(c);
   const hex = '0x' + (c >>> 0).toString(16).toUpperCase();
   return short ? hex : c + ' (' + hex + ')';
 }
-function progText(l) {
+function logText(l) {
   const s = typeof l === 'string' ? l : l && l.text != null ? String(l.text) : '';
   return s.replace(ANSI, '').replace(/\r$/, '');
 }
