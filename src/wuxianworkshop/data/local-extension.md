@@ -102,7 +102,8 @@ again, all of them, whenever the player changes one.
 
 `apps` in the manifest declares WuxianKit apps (the fields of `kit.app.open`: `app`, `title`, `prompt`, `hear`,
 `see`, `controls`, `say`, `pace`, `minutes`, ...; not `temp`, `driver` or `launch`). The workshop declares them in the
-game, where each gets a card with 交给 AI (Hand to AI). `prompt` names a skill in `skills/`: the steps an agent
+game, where each gets a card with 交给 AI (Hand to AI) that says it comes with this extension (the workshop adds
+`local`; the player cannot remove it there: it goes when the extension is turned off or removed). `prompt` names a skill in `skills/`: the steps an agent
 follows to run the app: check, open the app, prepare, set reactions, wait for wakes, act through the extension's tools,
 stop. A skill's front matter is `name`, `title`, `description`, `arguments`, and `needs: shell` when it runs commands
 in the background. An app is the finished product built on parts; an extension that is only a part declares no app.

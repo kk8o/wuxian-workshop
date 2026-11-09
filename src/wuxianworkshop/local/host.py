@@ -634,14 +634,16 @@ class Host:
         return dict(revision=int(data.get("revision") or 0), extensions=out)
 
     def declarations(self):
-        """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps"""
+        """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
+        with (local {id, title}: its card in the game has no remove button)"""
         out = []
         for e in self.load()["extensions"]:
             if not e["enabled"]:
                 continue
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] == e["id"]:
-                out += [(e["id"], dict(a)) for a in m["apps"]]
+                here = {"id": e["id"], "title": m.get("title") or e["id"]}
+                out += [(e["id"], dict(a, local=dict(here))) for a in m["apps"]]
         return out
 
     def capability(self, cap_id):

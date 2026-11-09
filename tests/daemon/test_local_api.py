@@ -228,8 +228,10 @@ class LocalApi(unittest.TestCase):
         self.assertTrue(self.events("local.changed"))
 
     def test_apps_declared(self):
-        app = {"app": "companion", "title": "无限陪玩", "prompt": "companion", "hear": ["game:combat"]}
-        self.add(apps=[app])
+        app = {"app": "companion", "title": "语音搭子", "prompt": "companion", "hear": ["game:combat"]}
+        _, folder = self.add(apps=[app])
+        title = json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8"))["title"]
+        app = dict(app, local={"id": "fx", "title": title})          # the extension it comes with
         self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")))
         self.assertEqual(self.kit.asked("kit.app.declare"), [app])
         self.kit.calls.clear()
