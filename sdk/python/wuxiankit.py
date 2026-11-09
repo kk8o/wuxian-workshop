@@ -29,6 +29,12 @@ on this computer, and the WuxianKit addon in the game:
                         controls=["mute", "unmute", "less", "more"]):
         ...                                            # {app, reason, items, skipped, pace?, quiet?}
 
+A program 无限工坊 loads (its folder has wuxian-program.json; the workshop starts, stops and shows its output) reads
+the app it drives from that manifest:
+
+    for wake in Client().app(*program_app()):          # (id, decl): the manifest's app, title, driver "program"
+        ...
+
 Client.app opens the app (kit.app.open with the declaration, WuxianKit ARCHITECTURE.md section 10), sends the
 heartbeat (kit.app.status) so the app is not taken for gone, long-polls its wakes, opens it again after a UI reload
 (kit.ready), a restart of the daemon or a failed open, drops items it gave already, and ends when the app stops for
@@ -53,8 +59,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
-__version__ = "0.6.0"
-__all__ = ["Client", "AppStream", "WuxianError", "daemon_json_path", "read_daemon_json", "cover_glob", "FINAL"]
+__version__ = "0.6.1"
+__all__ = ["Client", "AppStream", "WuxianError", "daemon_json_path", "read_daemon_json", "cover_glob", "program_app",
+           "FINAL"]
 
 ADDON = "WuxianKit"
 FINAL = frozenset({"done", "failed", "declined", "expired", "undone"})     # a proposal's end states
@@ -64,6 +71,8 @@ POLL_WAIT = 25.0                       # seconds one long-poll waits at most
 ASK_EVERY = 15.0                       # wait(): seconds it waits for kit.proposal before it asks the game itself
 LEASE = 600                            # an app's lease when the open answer gives none
 SEEN_KEPT = 1000                       # item ids remembered to drop repeats
+MANIFEST = "wuxian-program.json"       # a program's manifest (无限工坊's program loader)
+MANIFEST_ENV = "WUXIAN_PROGRAM_MANIFEST"   # where the loader says it is
 
 
 def daemon_json_path(override: Union[str, os.PathLike, None] = None) -> Path:
@@ -100,6 +109,37 @@ class WuxianError(Exception):
 
     def __repr__(self):
         return f"WuxianError({self.reason!r}, {self.code!r}, {self.status})"
+
+
+def program_app(path: Union[str, os.PathLike, None] = None) -> tuple[str, dict]:
+    """the app a program drives, from its manifest (wuxian-program.json, read by 无限工坊's program loader):
+    (id, decl) for Client.app, decl being the manifest's app with its title and driver "program":
+    `for wake in Client().app(*program_app())`. path: the manifest or its folder; default $WUXIAN_PROGRAM_MANIFEST
+    (the loader sets it when it starts the program), else wuxian-program.json in the current folder. WuxianError
+    code no_manifest (none there), bad_manifest (not JSON, no id), no_app (the manifest declares no app)"""
+    if path is None:
+        path = os.environ.get(MANIFEST_ENV) or MANIFEST
+    p = Path(path)
+    if p.is_dir():
+        p = p / MANIFEST
+    try:
+        manifest = json.loads(p.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        raise WuxianError(f"no program manifest at {p.resolve()} (无限工坊 gives its path in {MANIFEST_ENV} when it "
+                          f"starts the program)", "no_manifest") from None
+    except (OSError, ValueError) as e:
+        raise WuxianError(f"{p}: not a readable JSON manifest ({e})", "bad_manifest") from None
+    pid = manifest.get("id") if isinstance(manifest, dict) else None
+    if not isinstance(pid, str) or not pid:
+        raise WuxianError(f"{p}: a manifest is a JSON object with an id", "bad_manifest")
+    app = manifest.get("app")
+    if not isinstance(app, dict):
+        raise WuxianError(f"{p}: the program {pid} declares no app (add \"app\": {{\"hear\": [...], ...}} to its "
+                          f"manifest to drive a WuxianKit app)", "no_app")
+    title = manifest.get("title")
+    decl = dict(app, title=title if isinstance(title, str) and title.strip() else pid, driver="program")
+    decl.pop("app", None)
+    return pid, decl
 
 
 GLOB_CHARS = "*?["
@@ -317,13 +357,19 @@ class Client:
 
     # ---- apps
 
-    def app(self, app_id: str, *, wait: Optional[float] = None, yield_timeouts: bool = False, **decl) -> "AppStream":
+    def app(self, app_id: str, decl: Optional[dict] = None, *, wait: Optional[float] = None,
+            yield_timeouts: bool = False, **more) -> "AppStream":
         """an AI app's wakes (ARCHITECTURE.md section 10): opens it with kit.app.open {app, **decl} and iterates over
-        its wakes {app, reason, items, skipped, pace?, quiet?}. decl: title, hear, digest, pace, urgent, controls,
-        say, me, lease, minutes, options, prompt (None values are left out; an app opened before needs none).
-        wait: seconds one next() blocks at most (None: until a wake); after it, next() gives None with
-        yield_timeouts=True, else the iteration stops (the stream stays open: iterate again to go on)"""
-        return AppStream(self, app_id, {k: v for k, v in decl.items() if v is not None}, wait=wait,
+        its wakes {app, reason, items, skipped, pace?, quiet?}. decl (a dict, and the keywords, which win over it):
+        title, hear, digest, pace, urgent, controls, say, me, lease, minutes, options, prompt, driver (None values are
+        left out; an app opened before needs none). A program the workshop loads writes
+        `kit.app(*program_app())`. wait: seconds one next() blocks at most (None: until a wake); after it, next()
+        gives None with yield_timeouts=True, else the iteration stops (the stream stays open: iterate again to go on)"""
+        if decl is not None and not isinstance(decl, dict):
+            raise TypeError("decl: the app's declaration as a dict (or keywords)")
+        merged = dict(decl or {}, **more)
+        merged.pop("app", None)
+        return AppStream(self, app_id, {k: v for k, v in merged.items() if v is not None}, wait=wait,
                          yield_timeouts=yield_timeouts)
 
 

@@ -175,6 +175,28 @@ class DaemonClient:
     def new_addon(self, name, title=None, notes="", template="basic"):
         return self.post("/api/new_addon", name=name, title=title, notes=notes, template=template)
 
+    def programs(self):
+        return self.get("/api/programs")
+
+    def program_add(self, path):
+        return self.request("POST", "/api/programs/add", body=dict(path=path), timeout=60)   # post(path=...) is the route
+
+    def program_remove(self, id):
+        return self.post("/api/programs/remove", id=id, timeout=60)
+
+    def program_start(self, id, restart=False):
+        # a restart may wait for the program to end by itself (service.STOP_GRACE), then for its tree to be ended
+        return self.post("/api/programs/start", id=id, restart=restart, timeout=60)
+
+    def program_stop(self, id):
+        return self.post("/api/programs/stop", id=id, timeout=60)
+
+    def program_logs(self, id, since=0, limit=200):
+        return self.get("/api/programs/logs", id=id, since=since, limit=limit)
+
+    def new_program(self, path, id, title=None, app=True):
+        return self.request("POST", "/api/programs/new", body=dict(path=path, id=id, title=title, app=app), timeout=60)
+
     def update(self, action=None, background=False):
         if action is None:
             return self.get("/api/update")

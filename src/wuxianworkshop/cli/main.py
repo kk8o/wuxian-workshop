@@ -30,6 +30,8 @@
     wuxian install [--no-clean] [--game DIR]  install the addon
     wuxian update [check|download|apply]      the program's updates (an installed copy; apply restarts it)
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
+    wuxian program list | add <path> | remove <id> | start <id> [--restart] | stop <id> | logs <id> [-f]
+                                              programs outside the game, loaded by the program loader
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
     wuxian quit                               stop the daemon
     wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
@@ -198,6 +200,26 @@ def build_parser():
     p.add_argument("--title", help="the name shown in the game (default: the folder name)")
     p.add_argument("--notes", default="", help="one line about it")
     p.add_argument("--template", choices=("basic", "window"), default="basic")
+    p = sub.add_parser("program", help="programs outside the game (the program loader): list, add, remove, start, stop, "
+                                        "logs")
+    act = p.add_subparsers(dest="action", metavar="<action>", required=True)
+    q = act.add_parser("list", help="the registered programs and their state")
+    q.add_argument("--json", action="store_true", help="print JSON")
+    q = act.add_parser("add", help="register a program: its folder (or its wuxian-program.json)")
+    q.add_argument("path")
+    q = act.add_parser("remove", help="take a program off the registry (a running one is stopped first)")
+    q.add_argument("id", help="its id (or its folder)")
+    q = act.add_parser("start", help="start a program")
+    q.add_argument("id")
+    q.add_argument("--restart", action="store_true", help="stop it first when it runs")
+    q = act.add_parser("stop", help="stop a program (its app first, then its process tree)")
+    q.add_argument("id")
+    q = act.add_parser("logs", help="a program's output (stdout and stderr) and how it ended")
+    q.add_argument("id")
+    q.add_argument("--follow", "-f", action="store_true", help="keep printing new lines, across restarts (Ctrl+C ends it)")
+    q.add_argument("--since", type=int, default=0, help="from this line on (default: from the first; the last --limit "
+                                                                 "lines when there are more)")
+    q.add_argument("--limit", type=int, default=200, help="at most this many lines (default 200)")
     p = sub.add_parser("api", help="this client's API manual: search, one entry, the manual's topics")
     p.add_argument("words", nargs="*", help="what to search for")
     p.add_argument("--get", metavar="NAME", help="one function, event or table in full")
@@ -776,6 +798,96 @@ def cmd_new(client, args):
     return 0
 
 
+def program_line(r):
+    """one program for `wuxian program list` and the answers of add / start / stop"""
+    if r["state"] == "running":
+        state = f"running (pid {r['pid']})"
+    elif r["state"] == "exited":
+        state = "exited" + (f" with code {r['exit_code']}" if r.get("exit_code") is not None else "")
+    else:
+        state = "stopped"
+    return f"{r['id']:<16} {state:<22} {r['title']}" + ("  [app]" if r.get("app") else "") + f"  {r['path']}"
+
+
+def program_end(r):
+    """how a program that does not run ended, for the end of `wuxian program logs` (None while it runs)"""
+    if r["state"] == "running":
+        return None
+    if r["state"] == "exited":
+        code = r.get("exit_code")
+        return f"-- exited with code {code if code is not None else '?'}" + (
+            f" at {fmt_time(r['exited_at'])}" if r.get("exited_at") else "")
+    if not r.get("started"):
+        return "-- it has not run yet"
+    return "-- stopped" + (f" at {fmt_time(r['exited_at'])}" if r.get("exited_at") else "")
+
+
+def cmd_program(client, args):
+    a = args.action
+    if a == "list":
+        rows = client.programs()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for r in rows:
+            print(program_line(r))
+            if r.get("error"):
+                print(f"    {r['error']}")
+        if not rows:
+            print("no programs registered: `wuxian program add <folder>` (a folder with a wuxian-program.json)")
+        return 0
+    if a == "add":
+        r = client.program_add(str(Path(args.path).resolve()))
+        print(f"registered: {program_line(r)}")
+        if r.get("declared") not in (None, "ok"):
+            print(f"WuxianKit did not take its app: {r['declared']}", file=sys.stderr)
+        return 0
+    if a == "remove":
+        res = client.program_remove(args.id)
+        print(f"{res['id']} is no longer registered ({res['path']}; its files stay)")
+        return 0
+    if a == "start":
+        r = client.program_start(args.id, args.restart)
+        print(f"started {r['id']}, pid {r['pid']}: {' '.join(r['command'] or [])}")
+        return 0
+    if a == "stop":
+        r = client.program_stop(args.id)
+        print(program_line(r))
+        return 0
+    return program_logs(client, args)
+
+
+def program_logs(client, args):
+    """`wuxian program logs`: the lines, then how it ended; with --follow the new ones as they come, and a new start's
+    from its first line"""
+    since, limit, started = max(0, args.since), max(1, min(args.limit, 2000)), None
+    try:
+        while True:
+            res = client.program_logs(args.id, since, limit)
+            row = res["row"]
+            if started is not None and row.get("started") != started:
+                print(f"-- started again at {fmt_time(row['started'])}" if row.get("started") else "--", flush=True)
+                if since != 1 and not res["reset"]:
+                    res = client.program_logs(args.id, 1, limit)
+                    row = res["row"]
+            started = row.get("started")
+            if res.get("cut"):
+                print(f"-- its last {len(res['lines'])} of {res['total']} lines (--since 1: from the first)",
+                      file=sys.stderr, flush=True)
+            for line in res["lines"]:
+                print(line["text"], flush=True)
+            since = res["next"]
+            if not args.follow:
+                end = program_end(row)
+                if end:
+                    print(end, file=sys.stderr)
+                return 0
+            if not res["lines"]:
+                time.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+
+
 def pad(text, width):
     """text padded to width columns of the terminal (a CJK character takes two)"""
     cols = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
@@ -1035,6 +1147,7 @@ CLIENT_COMMANDS = dict(status=cmd_status, run=cmd_run, load=cmd_load, watch=cmd_
                        restore=cmd_restore,
                        logs=cmd_logs, say=cmd_say, doctor=cmd_doctor, addons=cmd_addons, errors=cmd_errors,
                        install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, listen=cmd_listen,
+                       program=cmd_program,
                        call=cmd_call, respond=cmd_respond,
                        **{"addon-api": cmd_addon_api})
 

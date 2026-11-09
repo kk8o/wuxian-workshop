@@ -1,9 +1,13 @@
 """新建插件 (wuxianworkshop/scaffold.py): the files it makes, its refusals, and both templates run in the mock client:
 loaded, logged in, the slash command, then a hot reload the way WoWBridge's Agent.lua does it (OnUnload, the files
-again with the same namespace, OnReload with what OnUnload returned)."""
+again with the same namespace, OnReload with what OnUnload returned). 新建程序 (create_program): its files (the
+manifest the loader reads, main.py, a copy of the SDK) and its refusals; tests/daemon/test_programs_api.py runs both
+main.py templates."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support.wowmock import Session, lupa, toc_files
 from wuxianworkshop import scaffold
@@ -95,6 +99,61 @@ class Templates(unittest.TestCase):
             self.assertIn(why, str(cm.exception), name)
         with self.assertRaises(scaffold.ScaffoldError):
             scaffold.create(self.addons / "missing", "Fine")
+
+
+class Programs(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_with_an_app(self):
+        from wuxianworkshop.programs import read_manifest
+        res = scaffold.create_program(self.root / "talk", "talk", title="解说")
+        folder = self.root / "talk"
+        self.assertEqual(res, dict(id="talk", path=str(folder), manifest=str(folder / "wuxian-program.json"),
+                                   files=["wuxian-program.json", "main.py", "wuxiankit.py", "AGENTS.md", "CLAUDE.md"]))
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(res["files"]))
+        self.assertEqual(read_manifest(folder / "wuxian-program.json"),        # what the loader takes
+                         dict(id="talk", title="解说", run=["python", "main.py"], cwd=".", env={},
+                              app={"hear": [], "say": True, "controls": ["stop"]}))
+        main = (folder / "main.py").read_text(encoding="utf-8")
+        compile(main, "main.py", "exec")
+        self.assertIn("Client().app(*program_app())", main)
+        self.assertEqual((folder / "wuxiankit.py").read_bytes(), scaffold.sdk_file().read_bytes())
+        self.assertIn("talk", (folder / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertEqual((folder / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n")
+
+    def test_without_an_app_and_in_english(self):
+        with mock.patch.object(scaffold, "language", return_value="en"):
+            scaffold.create_program(self.root / "plain", "plain", app=False)
+        folder = self.root / "plain"
+        manifest = json.loads((folder / "wuxian-program.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest, {"id": "plain", "title": "plain", "run": ["python", "main.py"], "cwd": ".", "env": {}})
+        main = (folder / "main.py").read_text(encoding="utf-8")
+        compile(main, "main.py", "exec")
+        self.assertIn('kit.call("sense.character")', main)
+        self.assertNotIn("program_app", main)
+        agents = (folder / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertTrue(agents.startswith("# plain (plain) · notes for the agent"), agents[:80])
+
+    def test_refusals(self):
+        (self.root / "full").mkdir()
+        (self.root / "full" / "x.txt").write_text("x", encoding="utf-8")
+        for args, code in (((Path("relative"), "ok"), "bad_request"), ((self.root / "a", "Bad"), "bad_request"),
+                           ((self.root / "a", "1abc"), "bad_request"), ((self.root / "a", "a" * 25), "bad_request"),
+                           ((self.root / "full", "ok"), "folder_not_empty")):
+            with self.assertRaises(scaffold.ScaffoldError) as cm:
+                scaffold.create_program(*args)
+            self.assertEqual(cm.exception.code, code, args)
+        with self.assertRaises(scaffold.ScaffoldError) as cm:
+            scaffold.create_program(self.root / "a", "ok", title="长" * 17)
+        self.assertEqual(cm.exception.code, "bad_request")
+        with mock.patch.object(scaffold, "sdk_file", return_value=self.root / "none.py"):
+            with self.assertRaises(scaffold.ScaffoldError) as cm:
+                scaffold.create_program(self.root / "a", "ok")
+        self.assertEqual(cm.exception.code, "no_sdk")
+        self.assertFalse((self.root / "a").exists())                            # nothing made
 
 
 if __name__ == "__main__":

@@ -134,6 +134,52 @@ class Parser(unittest.TestCase):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("watch", "begin")
 
+    def test_program(self):
+        ns, _ = self.parse("program", "list", "--json")
+        self.assertEqual((ns.command, ns.action, ns.json), ("program", "list", True))
+        ns, _ = self.parse("program", "add", r"C:\p\talk")
+        self.assertEqual((ns.action, ns.path), ("add", r"C:\p\talk"))
+        ns, _ = self.parse("program", "start", "talk", "--restart")
+        self.assertEqual((ns.action, ns.id, ns.restart), ("start", "talk", True))
+        ns, _ = self.parse("program", "stop", "talk")
+        self.assertEqual((ns.action, ns.id), ("stop", "talk"))
+        ns, _ = self.parse("program", "remove", "talk")
+        self.assertEqual((ns.action, ns.id), ("remove", "talk"))
+        ns, _ = self.parse("program", "logs", "talk", "-f", "--since", "5", "--limit", "50")
+        self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "talk", True, 5, 50))
+        ns, _ = self.parse("program", "logs", "talk")
+        self.assertEqual((ns.follow, ns.since, ns.limit), (False, 0, 200))
+        for argv in (("program",), ("program", "begin"), ("program", "start")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.parse(*argv)
+
+    def test_program_logs_follow_a_new_start(self):
+        """`wuxian program logs -f`: the new lines as they come; another start's from its first line, said once"""
+        row = dict(id="talk", state="running", started=100.0, exit_code=None, exited_at=None)
+        answers = [
+            dict(lines=[dict(n=1, text="a"), dict(n=2, text="b")], next=3, total=2, reset=False, cut=False, row=row),
+            dict(lines=[dict(n=3, text="c")], next=4, total=3, reset=False, cut=False, row=row),
+            dict(lines=[], next=1, total=0, reset=False, cut=False, row=dict(row, started=200.0)),   # started again
+            dict(lines=[dict(n=1, text="new")], next=2, total=1, reset=False, cut=False, row=dict(row, started=200.0)),
+        ]
+        asked = []
+
+        class Client:
+            def program_logs(self, pid, since, limit):
+                asked.append((pid, since, limit))
+                if not answers:
+                    raise KeyboardInterrupt                   # Ctrl+C ends it
+                return answers.pop(0)
+
+        ns, _ = self.parse("program", "logs", "talk", "-f")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(cli.time, "sleep"):
+            self.assertEqual(cli.cmd_program(Client(), ns), 0)
+        self.assertEqual(out.getvalue().splitlines()[:3], ["a", "b", "c"])
+        self.assertTrue(out.getvalue().splitlines()[3].startswith("-- started again at "))
+        self.assertEqual(out.getvalue().splitlines()[4:], ["new"])
+        self.assertEqual([since for _, since, _ in asked], [0, 3, 4, 1, 2])
+
     def test_app_goes_to_the_shell(self):
         with mock.patch.object(cli, "run_shell", return_value=0) as shell:
             self.assertEqual(cli.main(["app", "--background", "--capture", "gdi"]), 0)

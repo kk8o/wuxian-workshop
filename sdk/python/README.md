@@ -59,6 +59,32 @@ print("应用停了：", app.ended)                        # player、left、exp
 
 `app` 不会因为无限工坊没开、游戏没连上而抛异常：它按 1、2、5、10 秒退避重试，`app.state` 说明在等什么。玩家停了应用（`/wk` 的应用页、`stop` 指令），`app.ended` 就是原因，循环结束。程序退出时 `app.close(stop=True)` 顺便在游戏里停掉它；`close()` 只是不再听，应用到租期（`lease`）自己停。
 
+## 程序：交给无限工坊加载
+
+程序在游戏外跑，无限工坊的程序加载器负责启动、停止、看输出与退出码（插件在游戏里跑，工坊管热加载；两边都让 Agent 自己写、自己调试）。程序文件夹放一份清单 `wuxian-program.json`：
+
+```json
+{
+  "id": "companion",
+  "title": "无限陪玩",
+  "run": ["python", "main.py"],
+  "app": { "hear": ["game:combat"], "me": true, "controls": ["mute", "unmute", "stop"] }
+}
+```
+
+`run` 的第一项含 `/` 或 `\` 时相对程序文件夹，否则在 PATH 里找（写 `python` 就要本机装了 Python 3.10 以上）；可选 `cwd`、`env`。`app` 是这个程序驱动的应用（`kit.app.open` 的字段，不写 `app`、`title`、`driver`）。工坊启动它时给环境变量 `WUXIAN_PROGRAM`、`WUXIAN_PROGRAM_MANIFEST`（清单的完整路径）、`WUXIAN_HOME`、`PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8`。
+
+```python
+from wuxiankit import Client, program_app
+
+for wake in Client().app(*program_app()):             # (id, decl)：清单的 app 加 title 与 driver "program"
+    ...
+```
+
+`program_app(path=None)` 默认读 `WUXIAN_PROGRAM_MANIFEST`，没有时读当前文件夹的 `wuxian-program.json`（自己在命令行跑也行）；清单没有 `app` 时报 `WuxianError`（`no_app`）。`Client.app(app_id, decl=None, **关键字)`：`decl` 和关键字合并，关键字优先。
+
+登记与调试经无限工坊（MCP 工具或命令行）：`new_program` 建一个模板并登记，`program_add` 登记已有的文件夹，`program_start`（改完代码加 `restart: true`）、`program_logs` 看输出与退出码、`program_stop`；命令行是 `wuxian program list | add | remove | start [--restart] | stop | logs [-f]`。程序崩了不会自动重启。清单里有 `app` 时，游戏里 `/wk` 的应用卡片有「开始」，玩家点了工坊就启动它。
+
 ## Agent 式：听到就想，想好就提案
 
 ```python

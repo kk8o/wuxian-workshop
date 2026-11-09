@@ -10,6 +10,9 @@ Before an addon's code goes to the game (load, the start of a watch, a watched f
 checked first (agent/lint.py): a syntax error keeps it out of the game (load answers 422 check_failed, a watched save is
 not loaded), the other findings come with load's answer; check() is the whole report, the running game asked about the
 names it could not settle.
+Programs (programs.py, the program loader) run outside the game: registered, started, stopped, their output read here,
+over the same HTTP and MCP. A program that drives a WuxianKit app has it declared (kit.app.declare, launch true) after
+every UI session's kit.ready, so that the player's 开始 in the game (the event kit.app.launch) starts it.
 """
 import asyncio
 import fnmatch
@@ -26,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
+from .. import programs as loader_lib
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
 from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
@@ -54,6 +58,10 @@ POUR_QUIET = 60.0            # ... and before the answer is given up
 POUR_NOTE = 10.0             # seconds between the journal's notes on how far a long answer has come
 POUR_POLL = 0.25             # seconds between a pour's looks at how far it is (a segment that comes wakes it at once)
 _now = time.monotonic        # the clock of a pour's waits (a test's mock client puts the game's, and POUR_POLL 0)
+STOP_GRACE = 10.0            # seconds a program whose app was stopped (kit.app.stop) has to end by itself
+DECLARE_EVERY = 5.0          # seconds between looks for a UI session whose programs' apps are not declared yet ...
+DECLARE_GRACE = 15.0         # ... and how long it is there first (its kit.ready may still come: a login, a reload)
+ABSENT = "absent"            # declare(): the game's WuxianKit has no kit.app.declare
 
 
 def short_list(numbers, most=12):
@@ -148,6 +156,10 @@ class Service:
         self.tracing = asyncio.Lock()         # one trace at a time: they share the game-side frame
         self.history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wuxian-history")
         self.history_big = set()             # addons too big to keep: said once
+        self.loader = loader_lib.Programs(note=lambda text: self.journal.add("INFO", text))   # programs.py
+        self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
+        self.declared = None                 # the UI session whose programs' apps WuxianKit was told of
+        self.declaring = None                # an asyncio.Lock: one round of declarations at a time
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
             self.worker.on_session = self.session_started
@@ -166,6 +178,8 @@ class Service:
         self.content_checks = Scheduler(self.content.check, first=40, name="wuxian-content").start()
         if self.sync_addons_on:
             self.addon_sync = Scheduler(self.sync_addons, first=8, every=30, name="wuxian-addons").start()
+        self.loader.adopt()                  # programs still running from before this daemon: taken back
+        self.soon(self.programs_watch())
 
     def close(self):
         """stop the worker; whoever waits for a job hears that the daemon is going"""
@@ -183,6 +197,7 @@ class Service:
             except RuntimeError:
                 pass
         self.pending.clear()
+        self.loader.close()                  # the programs it started (or took back) end with it
         self.journal.close()
 
     def on_debug(self, kind, text):
@@ -193,6 +208,7 @@ class Service:
             self.tells.append((kind, text))
         if kind == "EVENT" and entry.get("addon") == KIT:
             self.kit_cache.heard(entry.get("topic"), entry.get("data"))
+            self.kit_event(entry.get("topic"), entry.get("data"))
         if kind == "RUN" and entry["job"] is not None:
             waiter = self.pending.pop(entry["job"], None)
             if waiter is not None:
@@ -1420,6 +1436,186 @@ class Service:
                     client=client, protocol=agent.get("protocol"), first=agent.get("first"), last=agent.get("last"),
                     calls=agent.get("calls") or 0, listed=agent.get("listed"), tools=(got or {}).get("tools"),
                     revision=(got or {}).get("revision"), state=state)
+
+    # --- programs (programs.py): loaded and debugged outside the game, as addons are in it --------------------------
+
+    def soon(self, coro):
+        """(any thread) a coroutine on the server's loop; dropped when there is none (a Service without a server)"""
+        loop = self.loop
+        if loop is None or self.closed:
+            coro.close()
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:                  # the loop has closed: the daemon stops
+            coro.close()
+
+    def kit_event(self, topic, data):
+        """(worker thread) WuxianKit's events for the programs: kit.ready (a login or a reload: the programs' apps are
+        declared again, launch living in WuxianKit's memory only), kit.app.launch (the player's 开始 of a program's app)"""
+        if topic == "kit.ready":
+            self.declared = None
+            self.soon(self.declare_programs())
+        elif topic == "kit.app.launch" and isinstance(data, dict) and isinstance(data.get("app"), str):
+            self.soon(self.program_launch(data["app"]))
+
+    async def declare(self, pid, decl):
+        """kit.app.declare of one program's app: "ok"; None when not now (the game away); ABSENT when the game's
+        WuxianKit has no kit.app.declare (or no WuxianKit runs); else WuxianKit's refusal, journaled"""
+        if not self.link_is_up():
+            return None
+        try:
+            await self.call_exposed(KIT, "kit.app.declare", decl, 10000)
+        except ApiError as e:
+            text = str(e.message)
+            if e.code != "call_failed":
+                return None
+            if "has no kit.app.declare" in text or "has no WoWBridge handle" in text:
+                return ABSENT
+            first = text.splitlines()[0][:300] if text else "refused"
+            self.journal.add("INFO", f"program {pid}: WuxianKit did not take its app: {first}")
+            return first
+        return "ok"
+
+    async def declare_programs(self):
+        """every program's app told to WuxianKit (kit.app.declare with launch true: its card offers 开始), once per UI
+        session: after kit.ready, or (programs_watch) a while into a session joined without one"""
+        if self.declaring is None:
+            self.declaring = asyncio.Lock()
+        try:
+            async with self.declaring:
+                sid = self.ui_session()
+                if sid is None or sid == self.declared or not self.link_is_up():
+                    return
+                for pid, decl in await asyncio.to_thread(self.loader.declarations):
+                    result = await self.declare(pid, decl)
+                    if result == ABSENT:
+                        break                 # a WuxianKit before declare: none of them
+                    if result is None:
+                        return                # the game went away: at the next kit.ready
+                self.declared = sid
+        except Exception as e:                # a bug: said, and the daemon goes on
+            self.journal.add("INFO", f"programs: declaring their apps failed: {e!r}")
+
+    async def programs_watch(self):
+        """(the server's loop, while the daemon runs) a UI session the daemon joined without its kit.ready (it started
+        while the game ran): the programs' apps are declared once it has been there DECLARE_GRACE seconds"""
+        seen = None
+        while not self.closed:
+            await asyncio.sleep(DECLARE_EVERY)
+            sid = self.ui_session()
+            if sid is None or sid == self.declared or not self.link_is_up():
+                continue
+            if seen is None or seen[0] != sid:
+                seen = (sid, time.monotonic())
+            elif time.monotonic() - seen[1] >= DECLARE_GRACE:
+                await self.declare_programs()
+
+    async def program_launch(self, app):
+        """WuxianKit's kit.app.launch {app}: the player clicked 开始 on a program's app in the game: that program starts
+        (a line in the log when there is none, or it runs already)"""
+        if not loader_lib.ID.match(app):
+            return
+        try:
+            e, run = await asyncio.to_thread(self.loader.run_of, app)
+        except ApiError:
+            self.journal.add("INFO", f"kit.app.launch {app}: no program {app} is registered here (wuxian program list)")
+            return
+        if e.error or e.manifest["app"] is None:
+            self.journal.add("INFO", f"program {app}: not started for the game's 开始: "
+                                     + (e.error or "its manifest declares no app"))
+            return
+        if run is not None and run.running:
+            self.journal.add("INFO", f"program {app}: the game's 开始, but it runs already (pid {run.pid})")
+            return
+        try:
+            await asyncio.to_thread(self.loader.start, app, "the player's 开始 in the game")
+        except ApiError as ex:
+            self.journal.add("INFO", f"program {app}: could not start for the game's 开始: {ex.message}")
+
+    async def programs(self):
+        """the registered programs: [row] (programs.Programs.row)"""
+        return await asyncio.to_thread(self.loader.rows)
+
+    async def declare_row(self, row):
+        """a program just registered: its app told to WuxianKit now while the game is online (else at the next
+        kit.ready): "ok", WuxianKit's refusal, or None (not now)"""
+        if not row.get("app") or row.get("error"):
+            return None
+        decl = next((d for pid, d in await asyncio.to_thread(self.loader.declarations) if pid == row["id"]), None)
+        result = await self.declare(row["id"], decl) if decl is not None else None
+        return None if result == ABSENT else result
+
+    async def program_add(self, path):
+        """registers a program by its folder or its manifest (an absolute path): its row, with declared (its app told
+        to WuxianKit: "ok", WuxianKit's refusal, None: not now)"""
+        row = await asyncio.to_thread(self.loader.add, path)
+        return dict(row, declared=await self.declare_row(row))
+
+    async def program_remove(self, id):
+        """takes a program off the registry (id, or its folder); a running one is stopped first. Its folder stays"""
+        e, run = await asyncio.to_thread(self.loader.run_of, id)
+        if run is not None and run.running:
+            await self.stop_run(run)
+        result = await asyncio.to_thread(self.loader.remove, str(e.folder))
+        if e.error is None and e.manifest["app"] is not None:     # its card no longer offers 开始
+            await self.declare(e.id, loader_lib.declaration(e.manifest, launch=False))
+        return result
+
+    async def program_start(self, id, restart=False):
+        """starts a program: its row. restart: one that runs is stopped first (program_stop's way); without it a
+        running one is an error (409 running)"""
+        if restart not in (True, False, None):
+            raise ApiError(400, "bad_request", "restart: true (stop it first when it runs) or false")
+        if restart:
+            e, run = await asyncio.to_thread(self.loader.run_of, id)
+            if run is not None and run.running:
+                await self.stop_run(run)
+        return await asyncio.to_thread(self.loader.start, id)
+
+    async def program_stop(self, id):
+        """stops a program (stop_run): its row; one that does not run is left as it is"""
+        e, run = await asyncio.to_thread(self.loader.run_of, id)
+        if run is not None and run.running:
+            await self.stop_run(run)
+        return await asyncio.to_thread(self.loader.get, str(e.folder))
+
+    async def stop_run(self, run):
+        """a program that drives an app, with the game online: its app is stopped first (kit.app.stop: the program sees
+        it end and exits by itself) and it has STOP_GRACE seconds; then (and for any other) its process tree is ended"""
+        run.stop_asked = True
+        if run.app and self.link_is_up():
+            try:
+                await self.call_exposed(KIT, "kit.app.stop", {"app": run.id}, 5000)
+            except ApiError:
+                pass
+            else:
+                if await asyncio.to_thread(run.done.wait, STOP_GRACE):
+                    return
+        await asyncio.to_thread(self.loader.kill, run)
+
+    async def program_logs(self, id, since=0, limit=200):
+        """a program's output by line (programs.Programs.logs): {lines: [{n, text}], next, total, reset, cut, row}"""
+        return await asyncio.to_thread(self.loader.logs, id, since, limit)
+
+    async def new_program(self, path, id, title=None, app=True):
+        """a new program from the template (scaffold.create_program) in the folder `path` (new or empty), registered:
+        its row, with files and declared"""
+        if not isinstance(path, str) or not path.strip():
+            raise ApiError(400, "bad_request", "path: the full path of the new program's folder (new or empty)")
+        if app not in (True, False, None):
+            raise ApiError(400, "bad_request", "app: true (it drives a WuxianKit app, the default) or false")
+        if title is not None and not isinstance(title, str):
+            raise ApiError(400, "bad_request", "title: text")
+        try:
+            made = await asyncio.to_thread(scaffold.create_program, path.strip(), id, title, app is not False)
+        except scaffold.ScaffoldError as e:
+            raise ApiError(409 if e.code == "folder_not_empty" else 400, e.code, str(e)) from None
+        self.journal.add("INFO", f"new program {made['id']} in {made['path']}")
+        row = await self.program_add(made["path"])
+        return dict(row, files=made["files"],
+                    hint=f"read its AGENTS.md; program_start {{\"id\": \"{made['id']}\"}} starts it (Python 3.10+ on PATH "
+                         f"runs main.py, else put a python.exe in its manifest's run), program_logs shows its output")
 
     async def history(self, addon=None, vid=None, against="now"):
         """kept versions (agent/history.py): no addon = the addons that have some; an addon = its versions, newest
