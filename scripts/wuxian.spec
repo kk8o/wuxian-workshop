@@ -36,6 +36,9 @@ if static.is_dir():
 packs = SRC / "wuxianworkshop" / "data"                      # the content packs the program carries (content.py)
 if packs.is_dir():
     datas.append((str(packs), "wuxianworkshop/data"))
+sdk = ROOT / "sdk" / "python" / "wuxiankit.py"               # the program template copies it (scaffold.sdk_file)
+if sdk.is_file():
+    datas.append((str(sdk), "sdk"))
 
 a = Analysis(
     [str(ROOT / "scripts" / "wuxian_entry.py")],          # imports wuxianworkshop.cli.main (relative imports: not runnable as a script)
