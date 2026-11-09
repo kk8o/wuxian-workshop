@@ -1743,8 +1743,8 @@ class Service:
             return
         if not self.link_is_up():
             return
-        decl = dict(app=REACTIONS_APP, title="反射", hear=list(self.reaction_hears), temp=True, digest=False, lease=0,
-                    minutes=REACTIONS_MINUTES)
+        decl = dict(app=REACTIONS_APP, title="反射", hear=list(self.reaction_hears), temp=True, hidden=True,   # plumbing
+                    digest=False, lease=0, minutes=REACTIONS_MINUTES)
         try:
             await self.call_exposed(KIT, "kit.app.open", decl, 10000)
         except ApiError as e:

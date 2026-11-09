@@ -250,7 +250,7 @@ class LocalApi(unittest.TestCase):
         self.assertTrue(until(lambda: self.kit.asked("kit.app.open")))
         opened = self.kit.asked("kit.app.open")[-1]
         self.assertEqual(opened, {"app": "reactions", "title": "反射", "hear": ["game:combat"], "temp": True,
-                                  "digest": False, "lease": 0, "minutes": 720})
+                                  "hidden": True, "digest": False, "lease": 0, "minutes": 720})
         self.ok("POST", "/api/reactions/set", {"id": "l", "hear": "fx:said", "call": "fx.echo", "args": {"text": "本机"},
                                                "cooldown": 0})
         self.assertEqual(self.kit.asked("kit.app.open")[-1]["hear"], ["game:combat"])   # a local source: not the game's
