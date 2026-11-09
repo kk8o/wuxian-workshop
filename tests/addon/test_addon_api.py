@@ -808,6 +808,58 @@ class KitTools(unittest.TestCase):
         self.assertTrue(text.endswith("Listen for 2 hours."))
         self.assertIn("grants nothing", text)
 
+    def test_what_a_skill_needs(self):
+        """a skill's needs (the client's abilities, unknown words kept) and mcp (other servers it uses: `<name> <https
+        URL>`, an item of another shape left out); the overview says them with the arguments"""
+        from wuxianworkshop.mcp import kit
+
+        addons = Path(self.home.name) / "AddOns"
+        folder = addons / "WuxianKit/Extensions/Chat/skills"
+        folder.mkdir(parents=True)
+        (folder / "guild-chat.md").write_text(
+            "---\nname: guild-chat\ndescription: Chat\narguments: hours?, mood\nneeds: shell, , Shell2, two words, shell\n"
+            "mcp: wuxianwow https://wuxianwow.com/mcp, plain http://x.example/mcp, onlyname, bad name https://y.example, "
+            "a https://a.example/mcp extra, wuxianwow https://dup.example/mcp, b https://b.example:8443/m?x=1\n---\nBody.\n",
+            encoding="utf-8")
+        (folder / "plain.md").write_text("---\nname: plain\n---\nNo needs.\n", encoding="utf-8")
+        skills = {s["name"]: s for s in kit.skills_in(addons, "WuxianKit/Extensions/Chat")}
+        self.assertEqual(skills["guild-chat"]["needs"], ["shell", "Shell2"])
+        self.assertEqual(skills["guild-chat"]["mcp"], [{"name": "wuxianwow", "url": "https://wuxianwow.com/mcp"},
+                                                       {"name": "b", "url": "https://b.example:8443/m?x=1"}])
+        self.assertEqual((skills["plain"]["needs"], skills["plain"]["mcp"]), ([], []))
+        self.assertEqual(kit.needs_of(None), [])
+        self.assertEqual(kit.servers_of("x javascript:alert(1)"), [])
+        overview = asyncio.run(kit.KitTools(self.backend(self.manifest(), addons=addons), store=False).overview())
+        self.assertIn("- `guild-chat` (chat): Chat (arguments hours?, mood; needs shell, Shell2; uses the MCP servers "
+                      "wuxianwow (https://wuxianwow.com/mcp), b (https://b.example:8443/m?x=1))", overview)
+        line = next(l for l in overview.splitlines() if l.startswith("- `plain`"))
+        self.assertEqual(line.rstrip(), "- `plain` (chat):")                    # nothing to say of it
+
+    def test_wk_docs_fills_a_skills_arguments(self):
+        """wk_docs {skill, arguments}: the arguments go into the steps as the MCP prompt has them; one left out reads
+        (not given), a value of another type its JSON; arguments that are no object are refused"""
+        from wuxianworkshop.mcp.server import build_server
+
+        addons = Path(self.home.name) / "AddOns"
+        (addons / "WuxianKit/Extensions/Chat/skills").mkdir(parents=True)
+        (addons / "WuxianKit/Extensions/Chat/skills/guild-chat.md").write_text(
+            "---\nname: guild-chat\narguments: hours?, quiet?, mood?, tags?\n---\n{{hours}} h, quiet {{quiet}}, "
+            "{{mood}}, {{tags}}, {{other}}.\n", encoding="utf-8")
+        mcp = build_server(self.backend(self.manifest(), addons=addons))
+        docs = {t.name: t for t in asyncio.run(mcp.list_tools())}["wk_docs"]
+        self.assertEqual(docs.input_schema["properties"]["arguments"]["type"], "object")
+        self.assertIn('"arguments": {"hours": 2}', docs.description)
+        call = lambda a: asyncio.run(mcp.call_tool("wk_docs", a)).content[0].text   # noqa: E731
+        self.assertTrue(call({"skill": "guild-chat", "arguments": {"hours": 2, "quiet": True, "tags": ["a", "公会"],
+                                                                    "unknown": 1}})
+                        .endswith("2 h, quiet true, (not given), [\"a\", \"公会\"], {{other}}."))
+        self.assertTrue(call({"skill": "guild-chat"}).endswith("(not given) h, quiet (not given), (not given), "
+                                                               "(not given), {{other}}."))
+        prompt = asyncio.run(mcp.get_prompt("guild-chat", {"hours": "3"})).messages[0].content.text
+        self.assertTrue(prompt.endswith("3 h, quiet (not given), (not given), (not given), {{other}}."))
+        with self.assertRaises(ToolError):
+            call({"skill": "guild-chat", "arguments": [2]})
+
     def test_a_later_protocol_gets_the_docs_only(self):
         """a WuxianKit newer than this 无限工坊 knows: wk_docs alone (saying to update), no prompts, the other tools
         refused with the same words"""

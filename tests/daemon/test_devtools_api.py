@@ -155,6 +155,46 @@ class DevTools(unittest.TestCase):
             self.assertNotIn("wuxian", (home / ".codex" / "config.toml").read_text(encoding="utf-8"))
         self.assertTrue(any("agents: connect codex -> ok" in e["text"] for e in self.get("/api/logs")["entries"]))
 
+    def test_wuxianwow_over_http_and_the_command_line(self):
+        """/api/agents?server=wuxianwow, POST {action, host, server} and `wuxian agents ... --server wuxianwow`: 无限图鉴
+        by its URL, beside wuxian's entry"""
+        import json
+        root = Path(self.tmp.name) / "web"
+        home, empty = root / "home", root / "bin"
+        for d in (home / ".cursor", home / ".codex", empty):
+            d.mkdir(parents=True)
+        env = {"USERPROFILE": str(home), "PATH": str(empty), "CLAUDE_CONFIG_DIR": str(root / "claude"),
+               "APPDATA": str(home / "AppData" / "Roaming"), "LOCALAPPDATA": str(home / "AppData" / "Local"),
+               "PROGRAMFILES": str(root / "Program Files")}
+        url = "https://wuxianwow.com/mcp"
+        with mock.patch.dict(os.environ, env):
+            out = self.get("/api/agents?server=wuxianwow")
+            self.assertEqual((out["server"], out["program"]), ("wuxianwow", {"name": "wuxianwow", "url": url}))
+            self.assertEqual({h["id"]: h["state"] for h in out["hosts"]},
+                             {"claude": "missing", "codex": "absent", "cursor": "absent", "trae-cn": "missing",
+                              "trae": "missing", "workbuddy": "missing", "workbuddy-ai": "missing"})
+            self.assertEqual(self.get("/api/agents")["server"], "wuxian")
+            made = request(self.handle, "POST", "/api/agents", {"action": "connect", "host": "cursor", "server": "wuxianwow"})
+            self.assertEqual((made["state"], made["server"], made["entry"]), ("ok", "wuxianwow", "wuxianwow"))
+            self.assertEqual(json.loads((home / ".cursor" / "mcp.json").read_text(encoding="utf-8")),
+                             {"mcpServers": {"wuxianwow": {"url": url}}})
+            self.assertEqual(self.refused("POST", "/api/agents", {"action": "connect", "host": "cursor", "server": "x"}), 400)
+            self.assertEqual(self.refused("GET", "/api/agents?server=x"), 400)
+            states = {h["id"]: h["state"] for h in self.get("/api/agents")["hosts"]}
+            self.assertEqual(states["cursor"], "absent")                                  # wuxian's: another entry
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                self.assertEqual(cli.main(["agents", "connect", "codex", "--server", "wuxianwow"]), 0)
+                self.assertEqual(cli.main(["agents", "--server", "wuxianwow"]), 0)
+                self.assertEqual(cli.main(["agents", "disconnect", "cursor", "--server", "wuxianwow", "--json"]), 0)
+            text = printed.getvalue()
+            self.assertIn(f"已接入：{url}", text)
+            self.assertIn(f"the server: wuxianwow {url}", text)
+            self.assertEqual(json.loads(text[text.index("{"):])["hosts"][0]["state"], "absent")
+            self.assertIn("[mcp_servers.wuxianwow]", (home / ".codex" / "config.toml").read_text(encoding="utf-8"))
+            self.assertEqual(json.loads((home / ".cursor" / "mcp.json").read_text(encoding="utf-8")), {"mcpServers": {}})
+        self.assertTrue(any("agents: connect cursor wuxianwow -> ok" in e["text"] for e in self.get("/api/logs")["entries"]))
+
 
 if __name__ == "__main__":
     unittest.main()

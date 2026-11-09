@@ -453,7 +453,8 @@ class AppStream:
         ans = c.call("kit.app.open", dict(self.decl, app=self.id))
         ans = ans if isinstance(ans, dict) else {}
         if ans.get("on") is False:
-            raise WuxianError(str(ans.get("why") or ans.get("error") or f"the app {self.id} did not start"),
+            raise WuxianError(str(ans.get("blocked") or ans.get("why") or ans.get("error")         # blocked: it cannot start now
+                                  or f"the app {self.id} did not start"),
                               "not_started")
         self.status = ans
         self._need_open = False

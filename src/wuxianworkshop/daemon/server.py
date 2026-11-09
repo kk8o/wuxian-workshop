@@ -502,9 +502,9 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def agents_(request):
         if request.method != "POST":
-            return await service.agents()
+            return await service.agents(server=request.query_params.get("server") or None)
         b = await body_of(request)
-        return await service.agents(b.get("action"), b.get("host"))
+        return await service.agents(b.get("action"), b.get("host"), b.get("server"))
 
     @api
     async def try_(request):
@@ -527,6 +527,10 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def agent_access(request):
         return await service.agent_access(request.query_params.get("refresh") in ("1", "true"))
+
+    @api
+    async def kit_apps(request):
+        return await service.kit_apps(request.query_params.get("refresh") in ("1", "true"))
 
     @api
     async def mcp_report(request):
@@ -582,6 +586,7 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/history", history_, methods=["GET", "POST"]),
         Route("/api/extensions", extensions_, methods=["GET", "POST"]),
         Route("/api/agent_access", agent_access, methods=["GET"]),
+        Route("/api/kit/apps", kit_apps, methods=["GET"]),
         Route("/api/mcp/report", mcp_report, methods=["POST"]),
         Route("/api/check", check, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),

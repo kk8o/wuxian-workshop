@@ -35,7 +35,7 @@
     wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
                                               with those hosts
     wuxian agents [connect|disconnect|verify] [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai|all]   register
-                                              this program with the agents
+                  [--server wuxian|wuxianwow] this program (or 无限图鉴, wuxianwow) with the agents
     wuxian mcp                                the MCP server on stdio (for hosts that start it themselves)
     wuxian companion [...]                    the link alone, without the daemon;  wuxian monitor: print every frame
 
@@ -217,6 +217,8 @@ def build_parser():
     p.add_argument("action", nargs="?", choices=("connect", "disconnect", "verify"), help="nothing: every agent's state")
     p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor, trae-cn, trae, workbuddy, workbuddy-ai or all "
                                                           "(default)")
+    p.add_argument("--server", choices=("wuxian", "wuxianwow"), default="wuxian",
+                   help="the MCP server: wuxian (this program, the default) or wuxianwow (无限图鉴, https://wuxianwow.com/mcp)")
     p.add_argument("--json", action="store_true", help="print JSON")
     return ap
 
@@ -472,7 +474,9 @@ def events_once(client, args):
 
 KIT = "WuxianKit"
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
-RETRY = 5.0                 # seconds between tries to open an app (the game away, WuxianKit refusing) and after a failure
+RETRY = 5.0                 # seconds between tries to open an app (the game away) and after a failure
+BLOCKED_RETRY = 60.0        # ... when WuxianKit said it cannot start (not in a guild, an extension off): a login, a reload
+                            # (kit.ready) tries at once; an older WuxianKit's refusal is an error the player sees in red
 clock, sleep = time.monotonic, time.sleep       # tests replace them
 
 
@@ -481,8 +485,9 @@ def cmd_listen(client, args):
     line {id, t, topic, data}, NEXT <id> after each batch of them. OPEN <status> when it opened (again after a login or
     a reload: kit.ready), END <why> when it stopped (kit.app with on = false; a replaced one goes on), NEXT <id> and
     TIMEOUT after --max. While it runs, kit.app.status is its heartbeat every max(30, lease / 3) s. Failures go to
-    stderr (each once until it changes) and are tried again every RETRY s. With --since N what came after N is read
-    first, so that an app stopped since then ends (END) instead of being opened again"""
+    stderr (each once until it changes) and are tried again every RETRY s; that it cannot start (WuxianKit's blocked:
+    its check, an extension off) every BLOCKED_RETRY s, and at once after a login or a reload. With --since N what came
+    after N is read first, so that an app stopped since then ends (END) instead of being opened again"""
     app = args.app
     if not APP_ID.match(app):
         say_error("app: lowercase letters, digits and _, at most 24 (the id WuxianKit knows it by)")
@@ -522,7 +527,8 @@ def cmd_listen(client, args):
         return (client.call_exposed(KIT, name, call_args) or {}).get("result")
 
     def ensure():
-        """the app's status once it runs: joined when it runs (unless --replace), else opened; None when that failed"""
+        """the app's status once it runs: joined when it runs (unless --replace), else opened; None when that failed,
+        False when WuxianKit said it cannot start now"""
         nonlocal replace
         if not replace:
             try:
@@ -538,10 +544,12 @@ def cmd_listen(client, args):
             status = kit("kit.app.open", decl)
         except ApiError as e:
             failed("kit.app.open", e)
-            return None
+            return False if e.code == "call_failed" and "cannot start:" in str(e.message) else None   # WuxianKit 0.6.0
         if isinstance(status, dict) and status.get("on") is False:      # it did not start (its check said why)
-            failed("kit.app.open", f"it did not start: {json.dumps(status, ensure_ascii=False)}")
-            return None
+            why = status.get("blocked")
+            failed("kit.app.open", f"it cannot start: {why}" if why else
+                   f"it did not start: {json.dumps(status, ensure_ascii=False)}")
+            return False
         replace = False                              # once: after a reload it joins what runs
         return status if isinstance(status, dict) else {"app": app}
 
@@ -570,8 +578,8 @@ def cmd_listen(client, args):
                 since = ask(-1, 0)["next"]
             if not opened and caught_up and now >= retry:
                 status = ensure()
-                if status is None:
-                    retry = clock() + RETRY
+                if status is None or status is False:
+                    retry = clock() + (BLOCKED_RETRY if status is False else RETRY)
                 else:
                     opened, said = True, None
                     out("OPEN " + json.dumps(status, ensure_ascii=False))
@@ -775,12 +783,13 @@ def pad(text, width):
 
 
 def cmd_agents(args):
-    """the agents' connection to this program's MCP server (agents.py), done here (no daemon)"""
+    """the agents' connection to this program's MCP server, or 无限图鉴's (--server wuxianwow) (agents.py), done here
+    (no daemon)"""
     from .. import agents
     if args.host != "all" and args.host not in agents.HOSTS:
         say_error(f"host: one of {', '.join(agents.HOSTS)} or all")
         return 2
-    out = agents.status()
+    out = agents.status(server=args.server)
     rows = [h for h in out["hosts"] if args.host in ("all", h["id"])]
     failed = 0
     if args.action is not None:
@@ -790,7 +799,7 @@ def cmd_agents(args):
             if args.host == "all" and h["state"] == "missing":
                 continue                                  # all: the agents that are not here are left out
             try:
-                done.append(fn(h["id"]))
+                done.append(fn(h["id"], server=args.server))
             except agents.AgentError as e:
                 say_error(f"{h['id']}: {e}")
                 failed += 1
@@ -807,7 +816,9 @@ def cmd_agents(args):
             print(f"     {h['where']}")
     if args.action is None:
         print()
-        print(f"the command they start: {out['program']['command']} {' '.join(out['program']['args'])}")
+        what = out["program"]
+        print(f"the command they start: {what['command']} {' '.join(what['args'])}" if "command" in what
+              else f"the server: {what['name']} {what['url']}")
     return 1 if failed else 0
 
 

@@ -289,12 +289,32 @@ class Listen(unittest.TestCase):
         self.assertEqual((code, lines), (0, ["NEXT 100", "TIMEOUT"]))
         self.assertEqual(len(game.calls), 12)                          # at 1000, 1005 ... 1055
         self.assertEqual(err.count("\n"), 1)
-        game = Game()                                                  # its check refuses: no OPEN, tried again
+        game = Game()                                                  # it did not start (no why): no OPEN, tried again
         game.call_exposed = lambda addon, name, args=None, timeout_ms=10000: (
-            game.calls.append(name) or {"result": {"app": "guild", "on": False, "why": "你还没有加入公会"}})
-        code, lines, err = self.listen(game, "guild", "--max", "12")
+            game.calls.append(name) or {"result": {"app": "guild", "on": False}})
+        code, lines, err = self.listen(game, "guild", "--max", "130")
         self.assertEqual((code, lines, game.calls.count("kit.app.open")), (0, ["NEXT 100", "TIMEOUT"], 3))
         self.assertIn("kit.app.open: it did not start:", err)
+
+    def test_it_cannot_start(self):
+        """WuxianKit says it cannot start (blocked: not in a guild): tried again every 60 s, not 5 (an older WuxianKit's
+        refusal is an error the player sees in red each time), and at once after a login or a reload (kit.ready)"""
+        for refuse in ("status", "error"):
+            game = Game([(90, "kit.ready", {})])
+            def call(addon, name, args=None, timeout_ms=10000, game=game, refuse=refuse):
+                game.calls.append((name, args, game.now))
+                if name == "kit.app.status":
+                    raise ApiError(400, "call_failed", "no app guild")
+                if refuse == "error":                                    # WuxianKit 0.6.0
+                    raise ApiError(400, "call_failed", "app guild cannot start: 你还没有加入公会")
+                return {"result": {"app": "guild", "on": False, "blocked": "你还没有加入公会"}}
+            game.call_exposed = call
+            code, lines, err = self.listen(game, "guild", "--max", "130")
+            self.assertEqual((code, lines), (0, ["NEXT 101", "TIMEOUT"]), refuse)
+            opens = [t - 1000 for name, _, t in game.calls if name == "kit.app.open"]
+            self.assertEqual(opens, [0, 60, 90], refuse)                 # 90: the reload
+            self.assertEqual(len(err.splitlines()), 1, refuse)           # said once
+            self.assertIn("你还没有加入公会", err)
 
     def test_a_daemon_without_lists_of_topics(self):
         """a daemon before 0.9.13 refuses a list (400 bad_request "topic: ..."): all of WuxianKit's events, picked here"""

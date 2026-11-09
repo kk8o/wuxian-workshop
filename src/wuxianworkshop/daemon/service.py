@@ -38,7 +38,7 @@ from .api import ApiError, chunk_file, parse_run
 from .journal import REQUEST_ID
 from .kitcache import KIT, SHARED, KitCache
 
-OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities")   # what WuxianKit's views read of it for themselves
+OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities", "kit.apps")   # what WuxianKit's views read of it for themselves
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
@@ -1107,23 +1107,28 @@ class Service:
         tail = "" if out["complete"] else " (not all of the game's output came in time: some may be missing, see logs)"
         return f"{head}; then in {out['seconds']:g} s: " + ", ".join(parts) + tail
 
-    async def agents(self, action=None, host=None):
-        """the coding agents and this MCP server (agents.py): no action = every agent's state; "connect" registers this
-        program with one (and checks that the agent can use it), "disconnect" removes it, "verify" checks again"""
+    async def agents(self, action=None, host=None, server=None):
+        """the coding agents and an MCP server (agents.py; server: "wuxian", this program, the default, or "wuxianwow",
+        无限图鉴): no action = every agent's state; "connect" registers it with one (and checks that the agent can use
+        it), "disconnect" removes it, "verify" checks again"""
+        server = server or agents.NAME
+        if server not in agents.SERVERS:
+            raise ApiError(400, "bad_request", f"server: one of {', '.join(agents.SERVERS)}")
         if action in (None, "", "status"):
-            return await asyncio.to_thread(agents.status)
+            return await asyncio.to_thread(agents.status, server=server)
         actions = {"connect": agents.connect, "disconnect": agents.disconnect, "verify": agents.verify}
         if action not in actions:
             raise ApiError(400, "bad_request", 'action: "connect", "disconnect" or "verify"')
         if host not in agents.HOSTS:
             raise ApiError(400, "bad_request", f"host: one of {', '.join(agents.HOSTS)}")
+        what = host if server == agents.NAME else f"{host} {server}"
         try:
-            result = await asyncio.to_thread(actions[action], host)
+            result = await asyncio.to_thread(actions[action], host, server=server)
         except agents.AgentError as e:
-            self.journal.add("INFO", f"agents: {action} {host} failed: {e}")
+            self.journal.add("INFO", f"agents: {action} {what} failed: {e}")
             raise ApiError(409, "agent_failed", str(e)) from None
         check = result.get("verify")
-        self.journal.add("INFO", f"agents: {action} {host} -> {result['state']}" + (f" ({check['text']})" if check else ""))
+        self.journal.add("INFO", f"agents: {action} {what} -> {result['state']}" + (f" ({check['text']})" if check else ""))
         return result
 
     # --- the extension catalog (extensions.py): the 扩展 page --------------------------------------------------------
@@ -1264,16 +1269,8 @@ class Service:
         is online, else the manifest kept on disk. An extension's tools are its capabilities'; wk_docs, wk_wait and
         wk_propose go with WuxianKit's own (kit). Asked before /mcp is built, it has it built now and waits: its view of the
         kit is the one to use, and the mcp package is not imported on this loop"""
-        lazy = self.mcp_lazy
-        if lazy is not None and not lazy.built.is_set():
-            lazy.wanted.set()
-            await lazy.built.wait()
         from ..mcp import kit as kit_tools
-        view = getattr(self.local_mcp, "kit_tools", None)
-        if view is None:
-            if self.kit_view is None:
-                self.kit_view = kit_tools.KitTools(self)
-            view = self.kit_view
+        view = await self.page_kit()
         if refresh:
             view.stale = True
         await view.current(wait=True)
@@ -1326,6 +1323,85 @@ class Service:
                 rows.append(self.access_row("http", record, agent, kit))
         rows.sort(key=lambda r: -(r["last"] or 0))
         return dict(kit=kit, kit_state=kit_state, kit_addon=kit_addon, servers=rows, program=self.version, now=time.time())
+
+    async def page_kit(self):
+        """the view of the game's WuxianKit the pages read: /mcp's own (had built now when it is not yet: its view is the
+        one to use, and the mcp package is not imported on this loop), else one of the pages' own"""
+        lazy = self.mcp_lazy
+        if lazy is not None and not lazy.built.is_set():
+            lazy.wanted.set()
+            await lazy.built.wait()
+        from ..mcp import kit as kit_tools
+        view = getattr(self.local_mcp, "kit_tools", None)
+        if view is None:
+            if self.kit_view is None:
+                self.kit_view = kit_tools.KitTools(self)
+            view = self.kit_view
+        return view
+
+    async def kit_read(self, name, args=None):
+        """a read of WuxianKit for the pages (neither counted nor listed in the game): its result"""
+        answer = await self.call_exposed(KIT, name, args, 10000, shared=True)
+        return (answer or {}).get("result")
+
+    async def kit_apps(self, refresh=False):
+        """WuxianKit's apps for the 接入 Agent page: {online, apps: [{id, title, by, addon, prompt, start (the line that
+        hands the app to an agent; None: it has no prompt, or a WuxianKit before it), on, blocked (why it cannot start
+        while off), extension {id, title, on} | None, skill {name, title, description, needs, mcp} | None}]}. online:
+        the game's WuxianKit answered kit.apps; else the apps of the manifest kept on disk (none without one), on and
+        blocked None. blocked comes from kit.apps (WuxianKit 0.6), never from kit.app.status: that is the agent's heartbeat
+        and would keep the app alive. The skill is the app's prompt among the skills of the extensions that are on; the
+        extension, the app's own (kit.apps and the manifest say it) or the one whose skills hold the prompt"""
+        from ..mcp import kit as kit_tools
+        view = await self.page_kit()
+        if refresh:
+            view.stale = True
+        manifest = await view.current(wait=True)
+        live = None
+        if manifest and not view.away:
+            try:
+                live = await self.kit_read("kit.apps")
+            except ApiError:                                 # the game away, or a WuxianKit before its apps
+                live = None
+            if not isinstance(live, list):
+                live = None
+        known = {a["id"]: a for a in kit_tools.apps_of(manifest)}
+        rows = kit_tools.apps_of({"apps": live}) if live is not None else list(known.values())
+        states = {a.get("id"): a for a in live or [] if isinstance(a, dict)}
+        skills = await view.skills() if manifest else []
+        addons = await view.addons_dir()
+        folders = {}                                         # extension id -> the skill names in its docs folder
+
+        def holder(prompt):
+            for eid, ext in view.exts.items():
+                if eid not in folders:
+                    folders[eid] = {s["name"] for s in kit_tools.skills_in(addons, ext.get("docs"))}
+                if prompt in folders[eid]:
+                    return ext
+            return None
+
+        out = []
+        for a in rows:
+            state = states.get(a["id"]) or {}
+            on = state.get("on") if isinstance(state.get("on"), bool) else None
+            blocked = state.get("blocked") if isinstance(state.get("blocked"), str) else None
+            eid = a["extension"] or (known.get(a["id"]) or {}).get("extension")
+            skill = next((s for s in skills if a["prompt"] and s["prompt"] == a["prompt"]), None)
+            ext = view.exts.get(eid) if eid else None
+            if ext is None and skill is not None:
+                ext = skill["ext"]
+            if ext is None and a["prompt"]:
+                ext = await asyncio.to_thread(holder, a["prompt"])
+            start = a["start"] or (known.get(a["id"]) or {}).get("start")
+            out.append(dict(id=a["id"], title=a["title"], by=self.word(a["by"]), addon=a["addon"], prompt=a["prompt"],
+                            start=start, on=on, blocked=blocked,
+                            extension=None if ext is None else dict(
+                                id=ext.get("id"), title=kit_tools.text(ext.get("title")) or ext.get("id"),
+                                on=ext.get("state") == "on"),
+                            skill=None if skill is None else dict(
+                                name=skill["prompt"], title=skill["title"], description=skill["description"],
+                                needs=list(skill["needs"]), mcp=[dict(m) for m in skill["mcp"]])))
+        return dict(online=live is not None, apps=out)
 
     def access_row(self, kind, record, agent, kit):
         """one agent of an MCP server (a Presence record; None: a server no agent has talked to yet), and its state: stale
