@@ -1,6 +1,6 @@
 # WuxianKit Python SDK
 
-`wuxiankit.py`：给本机 AI 应用用的 WuxianKit 客户端。单文件，只用标准库，Python 3.10 起。
+`wuxiankit.py`：给本机 AI 应用用的 WuxianKit 客户端，也是写本机扩展的库。单文件，只用标准库，Python 3.10 起。
 
 它经无限工坊的守护进程连到游戏里的 WuxianKit：调用能力、合成提案并等结果、读事件；`Client.app` 按一份声明打开一个应用（WuxianKit `ARCHITECTURE.md` 第 10 节），逐个交出唤醒。心跳、重载后重开、守护进程重启后续上、断线退避、按条目编号去重都由它做。
 
@@ -59,31 +59,29 @@ print("应用停了：", app.ended)                        # player、left、exp
 
 `app` 不会因为无限工坊没开、游戏没连上而抛异常：它按 1、2、5、10 秒退避重试，`app.state` 说明在等什么。玩家停了应用（`/wk` 的应用页、`stop` 指令），`app.ended` 就是原因，循环结束。程序退出时 `app.close(stop=True)` 顺便在游戏里停掉它；`close()` 只是不再听，应用到租期（`lease`）自己停。
 
-## 程序：交给无限工坊加载
+## 本机扩展：给无限工坊加能力
 
-程序在游戏外跑，无限工坊的程序加载器负责启动、停止、看输出与退出码（插件在游戏里跑，工坊管热加载；两边都让 Agent 自己写、自己调试）。程序文件夹放一份清单 `wuxian-program.json`：
-
-```json
-{
-  "id": "companion",
-  "title": "无限陪玩",
-  "run": ["python", "main.py"],
-  "app": { "hear": ["game:combat"], "me": true, "controls": ["mute", "unmute", "stop"] }
-}
-```
-
-`run` 的第一项含 `/` 或 `\` 时相对程序文件夹，否则在 PATH 里找（写 `python` 就要本机装了 Python 3.10 以上）；可选 `cwd`、`env`。`app` 是这个程序驱动的应用（`kit.app.open` 的字段，不写 `app`、`title`、`driver`）。工坊启动它时给环境变量 `WUXIAN_PROGRAM`、`WUXIAN_PROGRAM_MANIFEST`（清单的完整路径）、`WUXIAN_HOME`、`PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8`。
+本机扩展是游戏外的一个文件夹（清单 `wuxian-extension.json`），和 WuxianKit 在游戏里的扩展同一个模型：能力（读取 `see`、存储 `keep`、指引 `point`）、来源、选项、说明、应用。无限工坊启动它、经 stdin / stdout 和它说话（JSON-RPC，一行一个对象；stderr 是日志），Agent 把它的能力当工具 `wk_<扩展>_<能力>` 用。工坊启动它时把这个文件所在的文件夹放进 `PYTHONPATH`，不用复制。
 
 ```python
-from wuxiankit import Client, program_app
+from wuxiankit import Extension, ExtensionError
 
-for wake in Client().app(*program_app()):             # (id, decl)：清单的 app 加 title 与 driver "program"
-    ...
+ext = Extension()                                      # id 取 WUXIAN_EXTENSION，标题等取清单
+volume = ext.option("volume", kind="number", default=80, min=0, max=100, title="音量")
+said = ext.source("said", title="说完一句", doc="Each line spoken: {text, seconds}.")
+
+@ext.point("say", title="说一句", doc="Speaks text aloud; returns {seconds}.", args={"text": "string", "mood": "calm|happy?"})
+def say(text, mood="calm"):                            # 参数按名字传；没给的可选参数不传
+    if not text.strip():
+        raise ExtensionError("text is empty")          # 执行失败（code 1），消息给 Agent 看
+    seconds = speak(text, mood, volume.get())
+    said.emit({"text": text, "seconds": seconds})
+    return {"seconds": seconds}
+
+ext.run(setup=load_model)                              # setup 在回答 initialize 之前跑；print 自动进 stderr
 ```
 
-`program_app(path=None)` 默认读 `WUXIAN_PROGRAM_MANIFEST`，没有时读当前文件夹的 `wuxian-program.json`（自己在命令行跑也行）；清单没有 `app` 时报 `WuxianError`（`no_app`）。`Client.app(app_id, decl=None, **关键字)`：`decl` 和关键字合并，关键字优先。
-
-登记与调试经无限工坊（MCP 工具或命令行）：`new_program` 建一个模板并登记，`program_add` 登记已有的文件夹，`program_start`（改完代码加 `restart: true`）、`program_logs` 看输出与退出码、`program_stop`；命令行是 `wuxian program list | add | remove | start [--restart] | stop | logs [-f]`。程序崩了不会自动重启。清单里有 `app` 时，游戏里 `/wk` 的应用卡片有「开始」，玩家点了工坊就启动它。
+能力在线程里并发跑（扩展内部自己加锁）；`ext.call("sense.bags")` 经工坊调别的能力；`ext.on_options(fn)` 在玩家改了选项后调用。测试用 `ExtensionTest(ext, setup=..., options=..., answers=...)`：不起进程，在内存里按协议 `initialize`、`call`，收 `event`，给扩展发出的 `call` 回假答。完整的标准（清单、协议、开发循环、规矩）是无限工坊的 `extension_guide`（仓库里 `src/wuxianworkshop/data/local-extension.md`）。
 
 ## Agent 式：听到就想，想好就提案
 
@@ -125,4 +123,4 @@ for wake in app:                                       # 一直等到下一个�
 
 ## 测试
 
-工坊仓库的 `tests/sdk/test_sdk.py`：假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等。
+工坊仓库的 `tests/sdk/test_extension.py`：本机扩展（内存里与真子进程）。`tests/sdk/test_sdk.py`：假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等。

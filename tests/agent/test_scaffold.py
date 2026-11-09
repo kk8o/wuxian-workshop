@@ -1,9 +1,11 @@
 """新建插件 (wuxianworkshop/scaffold.py): the files it makes, its refusals, and both templates run in the mock client:
 loaded, logged in, the slash command, then a hot reload the way WoWBridge's Agent.lua does it (OnUnload, the files
-again with the same namespace, OnReload with what OnUnload returned). 新建程序 (create_program): its files (the
-manifest the loader reads, main.py, a copy of the SDK) and its refusals; tests/daemon/test_programs_api.py runs both
-main.py templates."""
+again with the same namespace, OnReload with what OnUnload returned). 新建扩展 (new_extension_files): its files, its
+refusals, and the extension it makes passes its own tests and answers the workshop's protocol."""
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,59 +103,88 @@ class Templates(unittest.TestCase):
             scaffold.create(self.addons / "missing", "Fine")
 
 
-class Programs(unittest.TestCase):
+class Extensions(unittest.TestCase):
+    """新建扩展 (new_extension_files): the files, the manifest, the refusals, and the tests it makes pass as made"""
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
 
-    def test_with_an_app(self):
-        from wuxianworkshop.programs import read_manifest
-        res = scaffold.create_program(self.root / "talk", "talk", title="解说")
-        folder = self.root / "talk"
-        self.assertEqual(res, dict(id="talk", path=str(folder), manifest=str(folder / "wuxian-program.json"),
-                                   files=["wuxian-program.json", "main.py", "wuxiankit.py", "AGENTS.md", "CLAUDE.md"]))
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(res["files"]))
-        self.assertEqual(read_manifest(folder / "wuxian-program.json"),        # what the loader takes
-                         dict(id="talk", title="解说", run=["python", "main.py"], cwd=".", env={},
-                              app={"hear": [], "say": True, "controls": ["stop"]}))
+    def test_the_files(self):
+        folder = self.root / "greeter"
+        files = scaffold.new_extension_files(folder, "greeter", '问候 "Hi" \\')
+        self.assertEqual(files, ["wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py"])
+        self.assertEqual(sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()),
+                         sorted(files))
+        self.assertEqual(json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8")),
+                         {"id": "greeter", "title": '问候 "Hi" \\', "version": "0.1.0", "run": ["python", "main.py"],
+                          "start": "use"})
         main = (folder / "main.py").read_text(encoding="utf-8")
         compile(main, "main.py", "exec")
-        self.assertIn("Client().app(*program_app())", main)
-        self.assertEqual((folder / "wuxiankit.py").read_bytes(), scaffold.sdk_file().read_bytes())
-        self.assertIn("talk", (folder / "AGENTS.md").read_text(encoding="utf-8"))
-        self.assertEqual((folder / "CLAUDE.md").read_text(encoding="utf-8"), "@AGENTS.md\n")
+        compile((folder / "tests" / "test_main.py").read_text(encoding="utf-8"), "test_main.py", "exec")
+        self.assertIn('@ext.see("hello"', main)
+        self.assertIn("wk_greeter_<name>", main)
+        agent = (folder / "AGENT.md").read_text(encoding="utf-8")
+        self.assertTrue(agent.startswith('# 问候 "Hi" \\ (greeter)'), agent[:40])
+        self.assertIn("`wk_greeter_hello`", agent)
+        self.assertIn("`greeter:greeted`", agent)
+        self.assertNotIn("{{", main + agent)
 
-    def test_without_an_app_and_in_english(self):
+    def test_its_tests_pass(self):
+        folder = self.root / "hello_ext"
+        scaffold.new_extension_files(folder, "hello_ext", "你好")
+        env = dict(os.environ, PYTHONPATH=str(scaffold.sdk_file().parent), WUXIAN_EXTENSION="hello_ext")
+        run = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=folder, env=env,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("Ran 4 tests", run.stderr)
+
+    def test_it_runs(self):
+        """the made extension answers the workshop: initialize, hello, shutdown"""
+        folder = self.root / "runner"
+        scaffold.new_extension_files(folder, "runner", "Runner")
+        env = dict(os.environ, PYTHONPATH=str(scaffold.sdk_file().parent), WUXIAN_EXTENSION="runner",
+                   PYTHONIOENCODING="utf-8")
+        lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocol": 1, "workshop": "test",
+                                                                                "id": "runner", "options": {}}},
+                 {"jsonrpc": "2.0", "id": 2, "method": "call", "params": {"name": "hello", "args": {"name": "Jaina"},
+                                                                          "caller": {"by": "agent"}}},
+                 {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}}]
+        run = subprocess.run([sys.executable, "main.py"], cwd=folder, env=env, timeout=60, capture_output=True,
+                             input="".join(json.dumps(m) + "\n" for m in lines).encode("utf-8"))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        out = [json.loads(line) for line in run.stdout.decode("utf-8").splitlines()]
+        answers = {m["id"]: m for m in out if "id" in m}
+        self.assertEqual([c["name"] for c in answers[1]["result"]["capabilities"]], ["hello"])
+        self.assertEqual(answers[2]["result"], {"text": "Hello, Jaina!"})
+        self.assertEqual(answers[3]["result"], {})
+        self.assertIn({"jsonrpc": "2.0", "method": "event", "params": {"source": "greeted", "data": {
+            "name": "Jaina", "text": "Hello, Jaina!"}}}, out)
+        self.assertIn(b"runner: ready", run.stderr)
+
+    def test_in_english(self):
         with mock.patch.object(scaffold, "language", return_value="en"):
-            scaffold.create_program(self.root / "plain", "plain", app=False)
-        folder = self.root / "plain"
-        manifest = json.loads((folder / "wuxian-program.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest, {"id": "plain", "title": "plain", "run": ["python", "main.py"], "cwd": ".", "env": {}})
-        main = (folder / "main.py").read_text(encoding="utf-8")
-        compile(main, "main.py", "exec")
-        self.assertIn('kit.call("sense.character")', main)
-        self.assertNotIn("program_app", main)
-        agents = (folder / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertTrue(agents.startswith("# plain (plain) · notes for the agent"), agents[:80])
+            scaffold.new_extension_files(self.root / "en", "en_ext")
+        main = (self.root / "en" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('title="Greeting"', main)
+        self.assertIn('"title": "en_ext"', (self.root / "en" / "wuxian-extension.json").read_text(encoding="utf-8"))
 
     def test_refusals(self):
         (self.root / "full").mkdir()
         (self.root / "full" / "x.txt").write_text("x", encoding="utf-8")
+        (self.root / "empty").mkdir()
         for args, code in (((Path("relative"), "ok"), "bad_request"), ((self.root / "a", "Bad"), "bad_request"),
                            ((self.root / "a", "1abc"), "bad_request"), ((self.root / "a", "a" * 25), "bad_request"),
-                           ((self.root / "full", "ok"), "folder_not_empty")):
+                           ((self.root / "a", "sense"), "bad_request"), ((self.root / "a", "wk"), "bad_request"),
+                           ((self.root / "a", "local"), "bad_request"), ((self.root / "a", "ok", "长" * 17), "bad_request"),
+                           ((self.root / "a", "ok", "  "), "bad_request"), ((self.root / "full", "ok"), "folder_not_empty")):
             with self.assertRaises(scaffold.ScaffoldError) as cm:
-                scaffold.create_program(*args)
+                scaffold.new_extension_files(*args)
             self.assertEqual(cm.exception.code, code, args)
-        with self.assertRaises(scaffold.ScaffoldError) as cm:
-            scaffold.create_program(self.root / "a", "ok", title="长" * 17)
-        self.assertEqual(cm.exception.code, "bad_request")
-        with mock.patch.object(scaffold, "sdk_file", return_value=self.root / "none.py"):
-            with self.assertRaises(scaffold.ScaffoldError) as cm:
-                scaffold.create_program(self.root / "a", "ok")
-        self.assertEqual(cm.exception.code, "no_sdk")
         self.assertFalse((self.root / "a").exists())                            # nothing made
+        self.assertEqual(len(scaffold.new_extension_files(self.root / "empty", "ok", "长" * 16)), 4)
+        self.assertIsNone(scaffold.check_extension_id("a" * 24))
 
 
 if __name__ == "__main__":
