@@ -16,7 +16,8 @@ capabilities are called with local_call (which also calls WuxianKit's see / keep
 sources' items go into the journal as events of the addon "local" (topic <extension>.<source>; local.changed when the
 extensions changed). Their apps are declared to WuxianKit (kit.app.declare) after every kit.ready. Reactions
 (local/reactions.py) call a capability when an item is heard: a game source through the temporary app "reactions"
-(kit.app.open), a local source directly.
+(kit.app.open), a local source directly. The wakes of an app that local extensions annotate (their manifest's annotate)
+go into the journal with those extensions' notes (daemon/notes.py).
 """
 import asyncio
 import fnmatch
@@ -47,6 +48,7 @@ from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
 from .journal import REQUEST_ID
 from .kitcache import KIT, SHARED, KitCache
+from .notes import Notes
 
 OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities", "kit.apps")   # what WuxianKit's views read of it for themselves
 
@@ -168,6 +170,8 @@ class Service:
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
                                    note=lambda text: self.journal.add("INFO", text),
                                    local_sources=lambda: set(self.local.ids()))
+        self.notes = Notes(self.annotations, self.local_call, self.wake_heard, self.soon, state=self.extension_state,
+                           note=lambda text: self.journal.add("INFO", text))   # the notes on the apps' wakes
         self.reaction_hears = []             # the game sources the reactions hear (their temporary app's hear)
         self.reactions_open = False          # that app was opened in this UI session
         self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
@@ -196,6 +200,7 @@ class Service:
     def close(self):
         """stop the worker; whoever waits for a job hears that the daemon is going"""
         self.closed = True
+        self.notes.close()                   # the wakes still held for their notes go into the journal
         self.history_pool.shutdown(wait=False, cancel_futures=True)
         for checks in (self.update_checks, self.content_checks, self.addon_sync):
             if checks is not None:
@@ -214,10 +219,13 @@ class Service:
 
     def on_debug(self, kind, text):
         """the Companion's debug output (worker thread): journaled; a RUN result wakes the request waiting for its job;
-        WuxianKit's events tell what is known of it (kitcache)"""
-        entry = self.journal.add(kind, text)
+        WuxianKit's events tell what is known of it (kitcache); an app's wake that local extensions annotate waits for
+        their notes (daemon/notes.py: then wake_heard)"""
         if self.tells is not None:
             self.tells.append((kind, text))
+        if kind == "EVENT" and self.notes.hold(text):
+            return
+        entry = self.journal.add(kind, text)
         if kind == "EVENT" and entry.get("addon") == KIT:
             self.kit_cache.heard(entry.get("topic"), entry.get("data"))
             self.kit_event(entry.get("topic"), entry.get("data"))
@@ -229,6 +237,26 @@ class Service:
                     loop.call_soon_threadsafe(_resolve, fut, parse_run(text))
                 except RuntimeError:          # the loop is gone: nobody waits
                     pass
+
+    def wake_heard(self, text):
+        """(any thread) an app's wake with its notes: journaled, and heard as on_debug hears WuxianKit's events"""
+        entry = self.journal.add("EVENT", text)
+        if entry.get("addon") == KIT:
+            self.kit_cache.heard(entry.get("topic"), entry.get("data"))
+            self.kit_event(entry.get("topic"), entry.get("data"))
+
+    def annotations(self, app):
+        """(any thread) the enabled local extensions' annotations of an app (local/host.py Host.annotations); [] from
+        a host without them"""
+        annotations = getattr(self.local, "annotations", None)
+        return annotations(app) if annotations is not None else []
+
+    def extension_state(self, eid):
+        """(any thread) a local extension's state now (off, stopped, starting, running, ...), None when not there"""
+        try:
+            return self.local.get(eid)["state"]
+        except ApiError:
+            return None
 
     def on_log(self, text):
         """the Companion's and the loop's notes (worker thread)"""
