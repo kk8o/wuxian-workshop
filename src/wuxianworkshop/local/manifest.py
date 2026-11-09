@@ -205,7 +205,7 @@ def check_apps(apps, where, out):
         return []
     if not isinstance(apps, list):
         out.append(problem("error", where, "apps is a list of app declarations",
-                           '[{"app": "companion", "title": "无限陪玩", "prompt": "companion", "hear": [...]}]'))
+                           '[{"app": "companion", "title": "语音搭子", "prompt": "companion", "hear": [...]}]'))
         return []
     kept, seen = [], set()
     for i, a in enumerate(apps):
@@ -229,7 +229,7 @@ def check_apps(apps, where, out):
             continue
         title = text_of(a.get("title") if a.get("title") is not None else aid, TITLE_MAX)
         if title is None:
-            out.append(problem("error", f"{at}.title", "a title is some text of at most 48 bytes", "\"无限陪玩\""))
+            out.append(problem("error", f"{at}.title", "a title is some text of at most 48 bytes", "\"语音搭子\""))
             continue
         if a.get("hear") is not None and (not isinstance(a["hear"], list)
                                           or not all(isinstance(h, str) and h.strip() for h in a["hear"])):
