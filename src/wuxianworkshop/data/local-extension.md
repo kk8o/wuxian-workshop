@@ -252,7 +252,10 @@ reaction (`reaction_set {"hear": "<id>:<name>", "call": "...", ...}`).
 
 - Answer every call within 30 seconds (or the capability's `timeout`). Long work: a capability that starts it in a
   thread and returns at once (`{"job": ...}`), a source item when it is done, and a `see` capability for progress.
-- Logs go to stderr. Nothing but protocol lines on stdout (the Python library sees to that).
+- Logs go to stderr. Nothing but protocol lines on stdout. The Python library sees to that from the start of
+  `ext.run`: it keeps its own copy of stdout and points file descriptor 1 at stderr, so `print`, C libraries (CUDA, a
+  speech engine) and child processes all write to the log. Import and load such libraries in `setup`, not at the top
+  of the module. In another language, do the same before anything else runs.
 - No keys, tokens or passwords in the manifest, the code, `AGENT.md` or an option's default. Read them from the
   player's environment or a file of theirs outside the extension folder, and say in `AGENT.md` where.
 - Never touch the game's window: no key presses, clicks, screenshots or memory reads. Reach the game only through

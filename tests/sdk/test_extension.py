@@ -340,6 +340,10 @@ def child():
 def setup():
     if "--fail" in sys.argv:
         raise RuntimeError("no model")
+    import os
+    os.write(1, b"a C library writes to fd 1 while the model loads\n")    # CUDA, a TTS library ...
+    sys.__stdout__.write("sys.__stdout__ too\n")
+    sys.__stdout__.flush()
     print("ready")
 
 
@@ -455,7 +459,8 @@ class Process(unittest.TestCase):
         self.assertEqual(self.p.wait(5), 0)
         time.sleep(0.2)
         err = b"".join(self.err).decode("utf-8")
-        for words in ("ready", "saying 你好", "from a child process", "raw write to fd 1", "after run"):
+        for words in ("ready", "saying 你好", "from a child process", "raw write to fd 1", "after run",
+                      "a C library writes to fd 1 while the model loads", "sys.__stdout__ too"):
             self.assertIn(words, err)
         self.assertTrue(all(line.startswith(b"{") for line in self.raw))
 

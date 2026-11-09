@@ -938,9 +938,11 @@ class Extension:
 
     def run(self, setup: Optional[Callable[[], Any]] = None) -> None:
         """answers the workshop on stdin / stdout until it says shutdown or closes stdin, then returns (put clean-up
-        after it). setup() runs once, at initialize, before the answer: load models, open files. Once it runs, print()
-        and anything else written to stdout (by libraries, by child processes) goes to stderr, the log. A setup that
-        raises fails initialize and the process exits with 1"""
+        after it). setup() runs once, at initialize, before the answer: load models, open files. First thing, run()
+        keeps a copy of file descriptor 1 for the protocol and points 1 at stderr (os.dup / os.dup2, Windows too), and
+        sys.stdout at sys.stderr: print(), C libraries writing to fd 1 and child processes all go to the log. Output
+        before run() (a library imported at the top of the module) cannot be caught: import such libraries in setup.
+        A setup that raises fails initialize and the process exits with 1"""
         self._setup = setup
         proto_in, proto_out = _take_stdio()
 
