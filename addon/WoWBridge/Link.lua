@@ -33,6 +33,13 @@
 -- (TYPE_ZIP: blocks of its type byte and text, each a 2-byte length (high bit: stored as it is) and its bytes,
 -- Codec.Squeeze); a short body is squeezed in Send, a longer one a block a Step (each about 1 ms), and the link tests
 -- go as they are, so that they still measure the link.
+-- Pours (FEATURES 4, 0.9.13): the rest of a long answer goes up whole, a segment a message (TYPE_POUR: "<key> <i>/<m>\n"
+-- and the segment's bytes as they are; Agent.lua's data call "pour" cuts them), not a piece a call. L.Pour takes what
+-- hands out the segments; a Step queues the next one while fewer than POUR_AHEAD of them wait to go up, so that one is
+-- squeezed while the one before it goes up and the queue never holds the whole answer. They are no RUN results: those
+-- still go first, and the segments go in the window in order as other messages do. With no mailbox packet for
+-- POUR_QUIET seconds (the companion does not read the screen: the game minimized, a loading screen) no new segment is
+-- queued until one comes.
 local _, ns = ...
 local Codec, Mailbox = ns.Codec, ns.Mailbox
 local band, floor, char = bit.band, math.floor, string.char
@@ -43,16 +50,20 @@ L.VERSION = "0.9.12"
 -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
 -- 2 (0.9.7): also takes CALL records (data calls, Agent.lua);
 -- 3 (0.9.9): also inflates the CODE and CALL jobs that come compressed (Agent.lua, Inflate.lua; a client that read the
--- .toc before Inflate.lua came, until the game restarts, does not load it)
-L.FEATURES = ns.Inflate and 3 or 2
+-- .toc before Inflate.lua came, until the game restarts, does not load it);
+-- 4 (0.9.13): also pours a long answer's rest (the data call "pour", TYPE_POUR messages)
+L.FEATURES = ns.Inflate and 4 or 2
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT, L.TYPE_BATCH = 0, 1, 2, 3, 4, 5, 6
 L.TYPE_ZIP = 7                                   -- a squeezed message (0.9.9): the companion unpacks it, then reads it
+L.TYPE_POUR = 8                                  -- a segment of a pour (0.9.13)
 local TYPE_OF = { debug = L.TYPE_DEBUG, run = L.TYPE_RUN, reload = L.TYPE_RELOAD, event = L.TYPE_EVENT,
-	burst = L.TYPE_TEST, long = L.TYPE_TEST, stream = L.TYPE_TEST, test = L.TYPE_TEST }
+	burst = L.TYPE_TEST, long = L.TYPE_TEST, stream = L.TYPE_TEST, test = L.TYPE_TEST, pour = L.TYPE_POUR }
 local URGENT = { run = true, reload = true }     -- shown before everything else, never packed
 local AGAIN_MAX = 120                            -- seconds between a message's passes nobody asked for, at most
+local POUR_AHEAD = 2                             -- segments of pours queued and not shown yet, at most
+local POUR_QUIET = 20                            -- seconds without a mailbox packet after which no segment is queued
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
@@ -78,6 +89,7 @@ local db, Print
 local state = "off"          -- off | hello | online
 local queue = {}             -- messages not acknowledged yet (see Send)
 local Squeeze                -- a block of a long message into its squeeze (defined with Shape)
+local Pouring                -- the next segments of the pours into the queue (defined with L.Pour)
 local nextId                 -- the id the next message gets (1..65535, kept across /reload)
 local frame                  -- what the link has on the bus: { kind, since }
 local lastControl            -- when the last HELLO / HB went up
@@ -89,6 +101,7 @@ local stats = { packets = 0, acked = 0, resent = 0, sum = 0, max = 0, draws = 0,
 local burst                  -- { n, last, t0, acked, sum, max, resent0 }
 local stream                 -- { n, last, t0, acked, sum, max, resent0, ending }
 local handlers = {}          -- companion commands besides ping / reload: name -> function(rest) (L.OnCommand)
+local pours = {}             -- the pours going on, oldest first (L.Pour)
 
 -- a <= b for ids that wrap after 65535
 local function Before(a, b)
@@ -216,6 +229,7 @@ end
 -- what goes on the bus next; runs every 0.05 s, and when a frame's display time is up (Draw)
 function L.Step()
 	if state == "off" then return end
+	if pours[1] then Pouring(GetTime()) end
 	for _, m in ipairs(queue) do               -- a block of the first long message being squeezed
 		if m.squeeze then
 			Squeeze(m)
@@ -346,6 +360,10 @@ local function Acked(m, now)
 	local dt, n = now - (m.firstShown or now), #m.items
 	stats.acked, stats.sum = stats.acked + n, stats.sum + dt * n
 	if dt > stats.max then stats.max = dt end
+	if m.pour then                                -- a segment the companion has: its pour hears so (Agent.lua keeps the answer)
+		local ok, err = pcall(m.pour.Acked)
+		if not ok then geterrorhandler()(err) end
+	end
 	if m.kind == "long" then
 		L.Send(("LONG DONE id=%d bytes=%d parts=%d shown_again=%d time=%.1fs draw=%.1f/%.1fms"):format(m.id, m.size, #m.frags,
 			m.resent, dt, stats.drawSum / math.max(stats.draws, 1), stats.drawMax), "test")
@@ -508,14 +526,14 @@ local function Batch(m)
 	return table.concat(out)
 end
 
--- queue a message of a kind (nil = user text, "debug", "run", "reload", "event" (API.lua), or a link test: "burst",
--- "long", "stream", "test"); returns its id and its number of parts (0 while a long body is being squeezed). With pack
--- on, a message joins the last one of its kind while that one has not gone up and the two still fit one frame (they
--- share the id then)
-function L.Send(text, kind)
+-- queue a message of a kind (nil = user text, "debug", "run", "reload", "event" (API.lua), "pour" (a segment, with the
+-- pour it belongs to), or a link test: "burst", "long", "stream", "test"); returns its id and its number of parts (0
+-- while a long body is being squeezed). With pack on, a message joins the last one of its kind while that one has not
+-- gone up and the two still fit one frame (they share the id then); segments never do
+function L.Send(text, kind, pour)
 	local t = TYPE_OF[kind] or L.TYPE_TEXT
 	local last = queue[#queue]
-	if P.pack and not URGENT[kind] and last and last.kind == kind and not last.firstShown and #last.frags == 1
+	if P.pack and not URGENT[kind] and not pour and last and last.kind == kind and not last.firstShown and #last.frags == 1
 		and not last.zipped then
 		local size = (#last.items == 1 and 4 + #last.items[1] or last.bytes) + 3 + #text
 		if size <= Most(BigW(), P.bigH) then
@@ -528,7 +546,7 @@ function L.Send(text, kind)
 	nextId = nextId % 65535 + 1
 	db.nextData = nextId
 	local m = { id = id, type = t, items = { text }, kind = kind, urgent = URGENT[kind], ok = {}, passEnd = 0, resent = 0,
-		again = 0 }
+		again = 0, pour = pour }
 	local body = char(t) .. text
 	if P.zip and t ~= L.TYPE_TEST and Frames(#body) > 1 then
 		m.squeeze = { body = body, at = 1, out = { char(L.TYPE_ZIP) } }
@@ -545,6 +563,35 @@ function L.Send(text, kind)
 		stats.lost = stats.lost + 1
 	end
 	return id, #m.frags
+end
+
+-- a pour (Agent.lua): p.key, p.Next() (the next segment's text, nil once there is none) and p.Acked() (one of its
+-- segments acknowledged). A pour of the same key asked again takes the place of the one going on
+function L.Pour(p)
+	for i = #pours, 1, -1 do
+		if pours[i].key == p.key then table.remove(pours, i) end
+	end
+	pours[#pours + 1] = p
+end
+
+-- while the companion reads the screen, the next segments into the queue, until POUR_AHEAD of them wait to go up
+function Pouring(now)
+	if state ~= "online" or not lastPacket or now - lastPacket > POUR_QUIET then return end
+	local ahead = 0
+	for _, m in ipairs(queue) do
+		if m.pour and not m.shown then ahead = ahead + 1 end
+	end
+	while ahead < POUR_AHEAD and pours[1] do
+		local p = pours[1]
+		local ok, text = pcall(p.Next)
+		if not ok then geterrorhandler()(text) end
+		if ok and text then
+			L.Send(text, "pour", p)
+			ahead = ahead + 1
+		else
+			table.remove(pours, 1)                -- all of it queued (or broken): the next pour
+		end
+	end
 end
 
 -- how many messages of a kind wait to go up, and their bytes (Debug.lua's and API.lua's caps): while online the ones not
@@ -621,13 +668,14 @@ end
 
 -- drops every message waiting to go up (/wb flush, or the companion's "flush"): the frame goes quiet. The next control
 -- frame says the oldest message (m=), and the companion moves its ack past the ones dropped; a RUN result dropped so is
--- never answered (the agent's call times out). Returns how many messages went
+-- never answered (the agent's call times out), and the pours stop. Returns how many messages went
 function L.Flush()
 	local n = 0
 	for i = #queue, 1, -1 do
 		n = n + #queue[i].items
 		queue[i] = nil
 	end
+	for i = #pours, 1, -1 do pours[i] = nil end   -- the pours stop too
 	lastControl = nil                    -- that control frame goes up next
 	return n
 end

@@ -110,7 +110,8 @@ class Probes(unittest.IsolatedAsyncioTestCase):
     async def test_a_long_answer_comes_in_pieces(self):
         """seen in the game: inspect WoWBridgeConsole, depth 2, answered 16821 bytes, and the RUN result stops at 4000
         (the JSON broke at char 3940). Now the first run brings the first piece and how many there are, the others are
-        asked for probes.BATCH at a time, each its own RUN result; their ", " and " (" are JSON text (api.parse_run)"""
+        asked for probes.WINDOW at a time (an addon that does not pour), each its own RUN result; their ", " and " ("
+        are JSON text (api.parse_run)"""
         frames = [dict(name=f"Row{i}", type="FontString", text=f'第 {i} 行 → a, b (OnUnload ok), "x"\n') for i in range(120)]
         text = json.dumps(dict(screen=[1287, 965], frames=frames), ensure_ascii=False, separators=(",", ":"))
         pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
@@ -122,7 +123,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
             if m:
                 keys.append(m[1])
             else:
-                keys.append(re.search(r'local KEY, PIECE, MOST = "(\w+)"', code)[1])
+                keys.append(re.search(r'local KEY, PIECE, MOST, WHOLE = "(\w+)"', code)[1])
             i = int(m[2]) if m else 1
             flight["now"] += 1
             flight["most"] = max(flight["most"], flight["now"])
@@ -136,7 +137,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.sent), len(pieces))
         self.assertEqual(len(set(keys)), 1)                       # the same answer, kept under one key
         self.assertIn("local ANSWER = (function(...) ", self.sent[0])
-        self.assertEqual(flight["most"], probes.BATCH)          # asked for together: they share mailbox packets
+        self.assertEqual(flight["most"], probes.WINDOW)         # asked for together: they share mailbox packets
 
     async def test_where_the_answer_breaks(self):
         """a broken answer is said with its place: what is wrong, at which character of how many, the text around it"""

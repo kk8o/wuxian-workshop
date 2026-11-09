@@ -152,7 +152,7 @@ class Link(unittest.TestCase):
 
     def test_a_restarted_companion_learns_what_the_addon_does(self):
         """a companion started while the addon runs sees no HELLO: it welcomes the session as an older one, the addon's
-        PONG says f=3, and the next WELCOME sets the lazy acks and packing again; data calls go from then on"""
+        PONG says f=4, and the next WELCOME sets the lazy acks and packing again; data calls and pours go from then on"""
         s = self.start()
         comp2 = link.Companion(s.addons, clock=s.now, log=self.logs.append,
                                on_debug=lambda kind, text: self.got.append((s.now(), kind, text)))
@@ -160,8 +160,8 @@ class Link(unittest.TestCase):
         s.comp = comp2
         s.run(30)
         sess = comp2.sessions[comp2.current]
-        self.assertEqual(sess.features, link.ZIP)
-        self.assertTrue(comp2.data_calls())
+        self.assertEqual(sess.features, link.POUR)
+        self.assertTrue(comp2.data_calls() and comp2.pours())
         P = s.ns[b"Link"][b"P"]
         self.assertEqual((P[b"pack"], P[b"rto"], P[b"win"]), (True, 15, 64))
         for i in range(10):

@@ -51,7 +51,7 @@ class Link099(unittest.TestCase):
 
     def test_a_big_job_goes_compressed(self):
         s = self.start()
-        self.assertEqual(self.session(s).features, link.ZIP)
+        self.assertEqual(self.session(s).features, link.POUR)
         self.assertTrue(s.comp.zipping())
         job = s.comp.code(BIG, "=run")
         heads = self.heads(s)

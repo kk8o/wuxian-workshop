@@ -80,6 +80,8 @@ def build_parser():
     p.add_argument("code", nargs="+", help="the Lua (several words are joined with spaces)")
     p.add_argument("--timeout", type=float, default=10.0, help="seconds to wait for the result (default 10)")
     p.add_argument("--addon", help="the addon whose name and namespace the code gets as ...")
+    p.add_argument("--whole", action="store_true", help="print the whole first value however long (tostring, up to 16 "
+                                                       "MB); --timeout is for the run itself")
     p = sub.add_parser("load", help="hot-load a file or an addon into the game")
     p.add_argument("target", help="a file, an addon folder or an addon name (relative to Interface/AddOns)")
     p.add_argument("--no-reset", action="store_true", help="do not run the addon's OnUnload / OnReload hooks")
@@ -255,7 +257,19 @@ def cmd_status(client, args):
 
 
 def cmd_run(client, args):
-    res = client.run(" ".join(args.code), timeout_ms=int(args.timeout * 1000), addon=args.addon)
+    whole = getattr(args, "whole", False)
+    if whole:
+        res = client.run(" ".join(args.code), timeout_ms=int(args.timeout * 1000), addon=args.addon, whole=True)
+        if res.get("ok") and not res.get("whole"):
+            print("the daemon is older than 0.9.13: this is the run's result, not the whole value (restart the program)",
+                  file=sys.stderr)
+    else:
+        res = client.run(" ".join(args.code), timeout_ms=int(args.timeout * 1000), addon=args.addon)
+    if res.get("ok") and res.get("whole"):
+        sys.stdout.write(res["values"][0])
+        if not res["values"][0].endswith("\n"):
+            sys.stdout.write("\n")
+        return 0
     if res.get("ok"):
         for value in res.get("values") or []:
             print(value)

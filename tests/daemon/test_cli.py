@@ -37,6 +37,37 @@ class Parser(unittest.TestCase):
         ns, _ = self.parse("mcp-config", "codex")
         self.assertEqual(ns.host, "codex")
 
+    def test_a_run_whole(self):
+        """run --whole: the first value whole on stdout (a newline after it), asked for with whole; from a daemon before
+        0.9.13 (no whole in its answer) the run's values, and a word on stderr"""
+        ns, _ = self.parse("run", "--whole", "return", "BIG")
+        self.assertEqual((ns.whole, ns.code), (True, ["return", "BIG"]))
+        self.assertFalse(self.parse("run", "return 1")[0].whole)
+        asked = []
+
+        class Client:
+            def __init__(self, res):
+                self.res = res
+
+            def run(self, code, timeout_ms=10000, addon=None, whole=False):
+                asked.append((code, timeout_ms, whole))
+                return self.res
+        for res, out, err in ((dict(ok=True, whole=True, values=["长\n" * 3], cut=None), "长\n" * 3, ""),
+                              (dict(ok=True, whole=True, values=["x"], cut=None), "x\n", ""),
+                              (dict(ok=True, values=["a", "b"], cut=None), "a\nb\n", "older than 0.9.13")):
+            o, e = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
+                code = cli.cmd_run(Client(res), ns)
+            self.assertEqual((code, o.getvalue()), (0, out))
+            self.assertIn(err, e.getvalue())
+        self.assertEqual(asked[0], ("return BIG", 10000, True))
+        o, e = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
+            code = cli.cmd_run(Client(dict(ok=False, error="the value is 17000 KB, more than the 16384 KB a whole run "
+                                                         "brings back", stack="")), ns)
+        self.assertEqual((code, o.getvalue()), (1, ""))
+        self.assertIn("more than the 16384 KB", e.getvalue())
+
     def test_the_log_tail_pages_to_the_end_with_the_kinds(self):
         """`wuxian logs` without --since: the last 50 of the kinds asked for, however long the journal is"""
         from wuxianworkshop.daemon.journal import Journal

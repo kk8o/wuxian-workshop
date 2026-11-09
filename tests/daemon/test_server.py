@@ -67,6 +67,10 @@ class FakeGame(CompanionLoop):
             self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): 1/1\n{{"tracing":1,"unknown":[]}}')
         elif b"SlashCmdList" in body:                                   # probes.slash_call(): the handler ran
             self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): shown")
+        elif b"local KEY, PIECE, MOST, WHOLE" in body:                  # a whole run (probes.answer_chunk): 2 pieces
+            self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): 1/2\n第一块, ")
+        elif body.startswith(b"local KEY, I = "):                       # its piece 2 (probes.piece_chunk)
+            self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): 2/2\n第二块 (the last)")
         elif b"error(" in body:
             self.comp.on_debug("RUN", f"{job} error {name}: {name}:1: boom\n[string \"{name}\"]:1: in main chunk")
         else:
@@ -273,6 +277,7 @@ class LiveDaemon(unittest.TestCase):
         self.assertIn(s["link"]["state"], ("online", "offline"))
         self.assertEqual(s["link"]["session"], 5)
         self.assertIsInstance(s["link"]["slot_next"], int)
+        self.assertIs(s["link"]["pour"], False)                         # an addon 0.7: no pours
         self.assertEqual(s["mcp_url"], f"{self.base}/mcp")
         self.assertEqual(s["addons_dir"], str(self.addons))
         self.assertIsInstance(s["watch"], list)
@@ -298,6 +303,13 @@ class LiveDaemon(unittest.TestCase):
         self.assertEqual(status, 400)
         status, _ = self.call("POST", "/api/run", None, headers={"Content-Type": "application/json"})
         self.assertEqual(status, 400)
+        status, res = self.call("POST", "/api/run", {"code": "return BIG", "whole": True})   # an addon that does not pour
+        self.assertEqual(status, 200)
+        self.assertEqual((res["ok"], res["whole"], res["cut"], res["values"]), (True, True, None, ["第一块, 第二块 (the last)"]))
+        status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": "yes"})
+        self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
+        status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": False})
+        self.assertEqual((res["values"], "whole" in res), (["42", '"x"'], False))
         status, log = self.call("GET", "/api/logs?kinds=RUN")
         self.assertTrue(any(e["job"] is not None and e["kind"] == "RUN" for e in log["entries"]))
 

@@ -135,9 +135,10 @@ class AgentCommands:
     def data_call(self, verb, payload):
         """what the agent asks of an addon's API (WoWBridge API.lua) as data, not code: CALL records "<job> <i>/<n>[
         <verb>]\n<JSON>" in parts of CODE_CHUNK bytes. verb: "call" {a: addon, n: name, d: args}, "reply" {r: request id,
-        d: data}, "describe" {a: addon or None}, "piece" {k: job, i: piece}. WoWBridge (0.9.7 on, link features DATA)
-        compiles nothing for it, so it works with hot loading off; it answers with a RUN message, as for code(). The JSON
-        goes compressed as code() does (_packed). Returns the job id"""
+        d: data}, "describe" {a: addon or None}, "piece" {k: job, i: piece}, "pour" {k: key, g: a probe's (true) or a data
+        call's, only?: segment numbers} (0.9.13, link features POUR: the rest of a long answer in segments). WoWBridge
+        (0.9.7 on, link features DATA) compiles nothing for it, so it works with hot loading off; it answers with a RUN
+        message, as for code(). The JSON goes compressed as code() does (_packed). Returns the job id"""
         self.last_job = job = max(int(self.clock() * 1000) % 10 ** 10, self.last_job + 1)
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
         sent, zipped = self._packed(data)

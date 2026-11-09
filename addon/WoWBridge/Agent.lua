@@ -339,8 +339,17 @@ end
 -- does, without the taint the client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
 -- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds, or
 -- ANSWER_AGAIN more once every piece went (the daemon asks for a piece again when the link lost it).
+-- "pour" {"k": key, "g": true|false, "only": [segment, ...]} (link features 4, 0.9.13) sends the rest of a long answer,
+-- all that follows its first piece, in one go: cut into segments of SEGMENT bytes (between two UTF-8 characters, by the
+-- text alone, so that a pour asked again numbers them the same), each a TYPE_POUR message "<key> <i>/<m>\n<segment>"
+-- (Link.lua L.Pour: a few queued at a time); "only" sends those segments alone (the daemon asks for the ones it misses).
+-- g: the answer a probe keeps (_G.WuxianWorkshopAnswers[key], agent/probes.py), else a data call's (key: its job). Its
+-- RUN result's one value is "<m> <bytes of the rest>". While its segments go the answer is kept ANSWER_KEPT seconds
+-- from the last one handed to the link or acknowledged, never cut off halfway; once every one is acknowledged,
+-- ANSWER_AGAIN more. A reload takes it, as it takes every answer.
 local PIECE, ANSWER_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 300, 60
-local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece" }
+local SEGMENT = 32 * 1024
+local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece", pour = "=pour" }
 local answers = {}                    -- job id -> { s, cuts, left, at, served }: answers longer than a piece
 
 -- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece)
@@ -363,12 +372,76 @@ local function Pieces(s)
 	return s, cuts
 end
 
+-- the ends of the segments of what follows an answer's first piece, cut between two UTF-8 characters
+local function Segments(a)
+	if a.segs then return a.segs end
+	local s, ends, from = a.s, {}, a.cuts[1] + 1
+	while from <= #s do
+		local to = math.min(#s, from + SEGMENT - 1)
+		for _ = 1, 3 do                       -- between two UTF-8 characters: the next byte starts one
+			local b = s:byte(to + 1)
+			if not b or b < 128 or b >= 192 then break end
+			to = to - 1
+		end
+		ends[#ends + 1] = to
+		from = to + 1
+	end
+	a.segs = ends
+	return ends
+end
+
+-- the answers of a store that nobody asked for in ANSWER_KEPT seconds let go
+local function Sweep(store)
+	for k, kept in pairs(store) do
+		if type(kept) == "table" and type(kept.at) == "number" and GetTime() - kept.at > ANSWER_KEPT then store[k] = nil end
+	end
+end
+
+-- a pour of the answer kept under req.k: its segments (all, or req.only) handed to the link; "<m> <bytes of the rest>",
+-- or nil + why not
+local function Pour(req)
+	local key = tostring(req.k)
+	local store = req.g == true and _G.WuxianWorkshopAnswers or answers
+	local a = type(store) == "table" and store[key]
+	if type(a) ~= "table" or type(a.s) ~= "string" or type(a.cuts) ~= "table" or type(a.cuts[1]) ~= "number" then
+		return nil, "the rest of this answer is no longer kept in the game (the UI reloaded?)"
+	end
+	local ends = Segments(a)
+	local m, list, at = #ends, {}, 1
+	if type(req.only) == "table" then
+		for _, i in ipairs(req.only) do
+			if type(i) == "number" and i >= 1 and i <= m and i % 1 == 0 then list[#list + 1] = i end
+		end
+	else
+		for i = 1, m do list[i] = i end
+	end
+	local p = { key = key }
+	a.pour, a.out = p, a.out or 0
+	function p.Next()
+		local i = list[at]
+		if not i then return nil end
+		at = at + 1
+		a.out, a.at = a.out + 1, GetTime()
+		return ("%s %d/%d\n"):format(key, i, m) .. a.s:sub((i == 1 and a.cuts[1] or ends[i - 1]) + 1, ends[i])
+	end
+	function p.Acked()
+		a.out, a.at = math.max(0, a.out - 1), GetTime()
+		if a.out == 0 and a.pour == p and not list[at] then       -- every segment of the last pour is in: a while more
+			a.at = GetTime() - ANSWER_KEPT + ANSWER_AGAIN
+			C_Timer.After(ANSWER_AGAIN + 1, function() Sweep(store) end)
+		end
+	end
+	if list[1] then ns.Link.Pour(p) end
+	return ("%d %d"):format(m, #a.s - a.cuts[1])
+end
+
 -- (the answer's text, or nil + why not) for a data call
 local function Answer(verb, req)
 	local WB = _G.WoWBridge
 	if verb == "call" then return WB.Call(req.a, req.n, req.d) end
 	if verb == "reply" then return WB.Reply(req.r, req.d) end
 	if verb == "describe" then return WB.Describe(req.a, req.b == true) end
+	if verb == "pour" then return Pour(req) end
 	if verb ~= "piece" then return nil, ("no data call %q"):format(tostring(verb)) end
 	local key, i = tostring(req.k), tonumber(req.i)
 	local a = answers[key]
@@ -400,12 +473,10 @@ local function RunCall(id, job)
 			if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
 		end
 	end
-	if text and job.verb ~= "piece" then
+	if text and job.verb ~= "piece" and job.verb ~= "pour" then
 		local s, cuts = Pieces(text)
 		if #cuts > 1 then
-			for k, kept in pairs(answers) do
-				if GetTime() - kept.at > ANSWER_KEPT then answers[k] = nil end   -- left by a daemon that never asked
-			end
+			Sweep(answers)                              -- the ones left by a daemon that never asked
 			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
 		end
 		text = "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])

@@ -50,6 +50,10 @@ and RELOAD texts go to on_debug(kind, text) without WoW's colour and link escape
 the kind as a text prefix ("ERR ...", "RUN ...").
 From 0.9.9, when the WELCOME says z=1 (squeeze), a message that takes two frames or more may come as TYPE_ZIP: blocks of
 the message as the addon had it, its type byte first, mostly squeezed (core/squeeze.py); _split unpacks it.
+From 0.9.13 an addon with link features POUR (f=4) answers the data call "pour" (daemon/service.py, the rest of a long
+answer) with TYPE_POUR messages, one per segment: "<key> <i>/<m>\n" and the segment's bytes as they are (TYPE_ZIP when
+long, as any message). They go to on_pour(session, key, i, m, bytes) undecoded, and are acknowledged within POUR_ACK
+seconds rather than ack_lazy: the addon queues the next segments only while packets come (Link.lua POUR_QUIET).
 """
 import re
 import time
@@ -66,13 +70,17 @@ LEGACY_HB = 5.0                 # heartbeat for addons before 0.7.0: they go off
 SLOT_WARN = (400, 100)          # mailbox slots left: tell the agent (debug.log) and the log
 WRAP = 65535                    # message ids run 1..WRAP, then start over at 1
 RECEIVED_MAX = 32768            # message ids a session remembers (half the ring: no id can come back that soon)
-TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT, TYPE_BATCH, TYPE_ZIP = range(8)
-TYPE_BYTES = {bytes([t]) for t in range(8)}
+TYPE_TEXT, TYPE_DEBUG, TYPE_RUN, TYPE_RELOAD, TYPE_TEST, TYPE_EVENT, TYPE_BATCH, TYPE_ZIP, TYPE_POUR = range(9)
+TYPE_BYTES = {bytes([t]) for t in range(9)}
 URGENT_TYPES = (TYPE_RUN, TYPE_RELOAD)   # the addon shows these before the others: a later id may come before them
 LAZY = 1                        # the link features (f=) from which the acks go lazily and PARTS ask at once (0.9.6)
 DATA = 2                        # ... from which the addon takes CALL records: data calls (0.9.7)
 ZIP = 3                         # ... from which it inflates compressed CODE and CALL jobs, and shows a reload's reason
                                 # (0.9.9)
+POUR = 4                        # ... from which it pours the rest of a long answer (the data call "pour", TYPE_POUR)
+                                # (0.9.13)
+POUR_ACK = 4.0                  # seconds within which a segment of a pour is acknowledged
+_POUR_HEAD = re.compile(rb"(\S{1,64}) (\d{1,6})/(\d{1,6})")
 UNPACK_FAILED = "could not be unpacked"   # in a RUN result: a compressed job did not come out whole in the game
 STEADY = 10.0                   # seconds the link has been up (and the session online) before a frame asked for again
                                 # counts against the short display time (a covered window, a loading screen and the
@@ -223,6 +231,7 @@ class Session:
         self.nacked = {}          # id -> when a PARTS record last asked for it
         self.unacked_at = None    # when the ack first moved past the one last written
         self.ack_soon = False     # a link test came: acknowledged within ack_every
+        self.pour_soon = False    # a segment of a pour came: acknowledged within POUR_ACK
         self.show = None          # the display time its WELCOME said (a LAZY addon): show_lazy, then show_safe for good
         self.zip_off = False      # a compressed job could not be unpacked: the next ones go as they are
         self.beyond = {}          # id -> (parts, since when): messages in whole past a gap in the ack (_sacks) ...
@@ -305,7 +314,7 @@ class Companion(AgentCommands):
                           first_slot=None, last_slot=None, records={name: 0 for name in MB.NAMES.values()},
                           debug=dict(err=0, out=0, warn=0, blocked=0, dropped=0, repeats=0, run=0, reload=0, info=0), events=0,
                           reloads=0, skipped=0, batches=0, asked=0, sacked=0, given_up=0, bad_parts=0,
-                          dropped_records=0, squeezed=0, squeezed_from=0, squeezed_to=0)
+                          dropped_records=0, squeezed=0, squeezed_from=0, squeezed_to=0, poured=0, poured_bytes=0)
         self.full = False
         self.reload_sent = None       # (when, session) of the last "reload" command, until a new session shows up
         self.reload_later = False     # the player put it off (稍后): no button waits, a reload of their own is still told
@@ -316,6 +325,7 @@ class Companion(AgentCommands):
         self.before_load = None       # (addon, path) -> None, before a watched file that was saved is loaded again
         self.on_client = None         # (client version, Interface) -> None, from a HELLO that says them
         self.on_session = None        # (session, the newest job it ran or None) -> None, for a new session's HELLO
+        self.on_pour = None           # (session, key, segment, segments, its bytes) -> None, for a segment of a pour
         self.client = None            # (client version, Interface) as the last HELLO said them
         self.dispatching = None       # (session, message id) while a message is handed on
 
@@ -544,6 +554,9 @@ class Companion(AgentCommands):
     def _message(self, s, msg, mtype, data, p, now):
         """one message (or one of a batch), handed on by its type"""
         self.stats["data"] += 1
+        if mtype == TYPE_POUR:
+            self._pour(s, msg, data, p, now)
+            return
         text = data.decode("utf-8", "replace")
         s.messages.append((round(now, 3), msg, len(data), p["parts"], text))
         if mtype is None:                                   # an addon before 0.8: the kind is the first word
@@ -577,6 +590,21 @@ class Companion(AgentCommands):
         else:
             extra = f", {p['parts']} parts" if p["parts"] > 1 else ""
             self.note(f"#{msg} ({len(data)} B{extra}): {text[:80]}")
+
+    def _pour(self, s, msg, data, p, now):
+        r"""a segment of a pour: "<key> <i>/<m>\n" and its bytes, handed to on_pour as they came"""
+        head, nl, body = data.partition(b"\n")
+        m = _POUR_HEAD.fullmatch(head)
+        if not nl or not m or not 1 <= int(m[2]) <= int(m[3]):
+            self.note(f"#{msg} of session {s.sid}: not a segment of a pour ({len(data)} B): {head[:80]!r}")
+            return
+        key, i, n = m[1].decode("ascii", "replace"), int(m[2]), int(m[3])
+        s.messages.append((round(now, 3), msg, len(data), p["parts"], f"POUR {key} {i}/{n} ({len(body)} B)"))
+        s.pour_soon = True
+        self.stats["poured"] += 1
+        self.stats["poured_bytes"] += len(body)
+        if self.on_pour is not None:
+            self.on_pour(s.sid, key, i, n, body)
 
     def _split(self, s, data):
         """(type, body) of a message: addon 0.8 on puts the type in the first byte, older ones send text (None); for a
@@ -825,7 +853,7 @@ class Companion(AgentCommands):
         if s.features >= LAZY:
             self._give_up(s, now)
             asks, sacks = self._asks(s, now), self._sacks(s, now)
-            wait = self.ack_every if s.ack_soon else self.ack_lazy
+            wait = self.ack_every if s.ack_soon else min(POUR_ACK, self.ack_lazy) if s.pour_soon else self.ack_lazy
             ack_due = s.ack != s.ack_sent and s.unacked_at is not None and now - s.unacked_at >= wait
             due = (free and (bool(self.outbox) or bool(asks) or bool(sacks) or ack_due)) or since is None or since >= s.hb
         else:
@@ -892,7 +920,7 @@ class Companion(AgentCommands):
         self.written_as[self.slot] = (s.sid, s.ack)
         if any(kind == MB.WELCOME for kind, _ in records):
             s.welcome_slot = self.slot
-        s.ack_sent, s.unacked_at, s.ack_soon = s.ack, None, False
+        s.ack_sent, s.unacked_at, s.ack_soon, s.pour_soon = s.ack, None, False, False
         self.stats["packets"] += 1
         self.stats["bytes"] += n
         self.stats["first_slot"] = self.stats["first_slot"] or self.slot
@@ -952,6 +980,11 @@ class Companion(AgentCommands):
         s = self.sessions.get(self.current)
         return s is not None and s.features >= DATA
 
+    def pours(self):
+        """whether the addon of the current session pours the rest of a long answer (link features POUR, 0.9.13 on)"""
+        s = self.sessions.get(self.current)
+        return s is not None and s.features >= POUR
+
     def zipping(self):
         """whether the jobs for the current session go compressed (link features ZIP, 0.9.9 on), unless one could not
         be unpacked there"""
@@ -991,6 +1024,6 @@ class Companion(AgentCommands):
                            handshake=round(s.online_at - s.hello_at, 3) if s.online_at and s.hello_at else None,
                            beats=s.beats, messages=len(s.messages), dups=s.dups, dup_parts=s.dup_parts, ack=s.ack,
                            base=s.base, incomplete=sorted(s.partial), features=s.features, show=s.show,
-                           zip=s.features >= ZIP and not s.zip_off,
+                           zip=s.features >= ZIP and not s.zip_off, pour=s.features >= POUR,
                            last=[dict(id=i, bytes=n, parts=k, text=t[:200]) for _, i, n, k, t in list(s.messages)[-5:]])
                       for s in self.sessions.values()])

@@ -1,6 +1,7 @@
 """WgcSource's client-area offset (transport/capture.py) against a stand-in for user32: no window, no GPU. The cases
 are frame and client sizes measured on Windows 10 at 125 % (the game window and a test window). Then the window's
-rectangles in physical pixels whatever the thread's DPI awareness: a stand-in, and a real window."""
+rectangles in physical pixels whatever the thread's DPI awareness: a stand-in, and a real window. Every user32 / gdi32
+function the module calls typed, so a handle past 2^31 goes whole."""
 import ctypes
 import ctypes.wintypes as wt
 import unittest
@@ -145,6 +146,60 @@ class Physical(unittest.TestCase):
         want = self.on_thread(capture.PER_MONITOR_V2, measure)
         self.assertEqual(want[2:4], want[4:])
         self.assertEqual(self.on_thread(ctypes.c_void_p(-1), measure), want)     # DPI_AWARENESS_CONTEXT_UNAWARE
+
+
+class Typed(unittest.TestCase):
+    """every user32 / gdi32 function capture.py calls is typed, on its own handles of the DLLs: a window handle from
+    EnumWindows past 2^31 went as a C int and raised "OverflowError: int too long to convert" (daemon.log: 35,630 times
+    in a day), and find_window found nothing"""
+
+    USER32 = ("IsWindowVisible", "IsWindow", "IsIconic", "GetClientRect", "ClientToScreen", "EnumWindows", "GetWindow",
+              "GetWindowThreadProcessId", "GetClassNameW", "GetWindowTextLengthW", "GetWindowTextW", "ReleaseDC", "GetDC",
+              "GetDpiForWindow")
+    GDI32 = ("CreateCompatibleDC", "CreateCompatibleBitmap", "SelectObject", "BitBlt", "DeleteObject", "DeleteDC",
+             "GetDIBits")
+
+    def test_argtypes_and_restype(self):
+        self.assertIsNot(capture.user32, ctypes.windll.user32)     # its own: what other code sets on windll stays theirs
+        for dll, names in ((capture.user32, self.USER32), (capture.gdi32, self.GDI32)):
+            for name in names:
+                self.assertIsNotNone(getattr(dll, name).argtypes, name)
+        self.assertIs(capture.user32.EnumWindows.argtypes[0], capture.WNDENUMPROC)
+        self.assertIs(capture.WNDENUMPROC._argtypes_[0], wt.HWND)
+        for dll, name, handle in ((capture.user32, "GetWindow", wt.HWND), (capture.user32, "GetDC", wt.HDC),
+                                  (capture.gdi32, "CreateCompatibleDC", wt.HDC),
+                                  (capture.gdi32, "CreateCompatibleBitmap", wt.HBITMAP),
+                                  (capture.gdi32, "SelectObject", wt.HGDIOBJ)):
+            self.assertIs(getattr(dll, name).restype, handle, name)     # a handle back whole, not its lower 32 bits
+
+    def test_handles_past_2_to_the_31(self):
+        big = 2 ** 40 + 0x1234                                      # no such window: answered, not raised
+        self.assertFalse(capture.user32.IsWindow(big))
+        self.assertFalse(capture.user32.IsWindowVisible(big))
+        self.assertFalse(capture.user32.GetWindow(big, 4))
+        self.assertEqual(capture._class(big), "")
+        self.assertEqual(capture.client_size(big), (0, 0))
+        self.assertIsNone(capture.look_again(SimpleWindow(big)))
+
+    def test_the_windows_walked(self):
+        """EnumWindows with the typed callback: the handles it gives are the ones the other calls take (only the first
+        window's class is read)"""
+        seen = []
+
+        def first(hwnd, _):
+            seen.append(hwnd)
+            return False                                            # stop: one is enough
+        capture.user32.EnumWindows(capture.WNDENUMPROC(first), 0)
+        if not seen:
+            self.skipTest("no top-level window on this desktop")
+        self.assertIsInstance(seen[0], int)
+        self.assertTrue(capture.user32.IsWindow(seen[0]))
+        self.assertIsInstance(capture._class(seen[0]), str)
+
+
+class SimpleWindow:
+    def __init__(self, hwnd):
+        self.hwnd, self.pid, self.exe = hwnd, 1, "Wow.exe"
 
 
 if __name__ == "__main__":

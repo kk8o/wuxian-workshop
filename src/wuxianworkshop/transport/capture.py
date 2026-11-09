@@ -13,7 +13,39 @@ import numpy as np
 
 from ..core.game import isolated
 
-user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.windll.kernel32
+kernel32 = ctypes.windll.kernel32
+# this module's own handles on user32 and gdi32 (not ctypes.windll's, which other code shares), every function it calls
+# typed: without argtypes a window handle from EnumWindows (a Python int) went as a C int, and one past 2^31 raised
+# "ctypes.ArgumentError: OverflowError: int too long to convert" (daemon.log, 35,630 times in a day); a DC or bitmap as
+# a C int return value would lose its upper bits the same way
+user32, gdi32 = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32")
+
+
+WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+
+def _typed(dll, restype, **argtypes):
+    for name, args in argtypes.items():
+        fn = getattr(dll, name, None)          # GetDpiForWindow came with Windows 10 1607: looked up when called
+        if fn is not None:
+            fn.argtypes, fn.restype = args, restype
+
+
+_typed(user32, wt.BOOL, IsWindowVisible=(wt.HWND,), IsWindow=(wt.HWND,), IsIconic=(wt.HWND,),
+       GetClientRect=(wt.HWND, ctypes.POINTER(wt.RECT)), ClientToScreen=(wt.HWND, ctypes.POINTER(wt.POINT)),
+       EnumWindows=(WNDENUMPROC, wt.LPARAM))
+_typed(user32, wt.HWND, GetWindow=(wt.HWND, wt.UINT))
+_typed(user32, wt.DWORD, GetWindowThreadProcessId=(wt.HWND, ctypes.POINTER(wt.DWORD)))
+_typed(user32, ctypes.c_int, GetClassNameW=(wt.HWND, wt.LPWSTR, ctypes.c_int), GetWindowTextLengthW=(wt.HWND,),
+       GetWindowTextW=(wt.HWND, wt.LPWSTR, ctypes.c_int), ReleaseDC=(wt.HWND, wt.HDC))
+_typed(user32, wt.UINT, GetDpiForWindow=(wt.HWND,))
+_typed(user32, wt.HDC, GetDC=(wt.HWND,))
+_typed(gdi32, wt.HDC, CreateCompatibleDC=(wt.HDC,))
+_typed(gdi32, wt.HBITMAP, CreateCompatibleBitmap=(wt.HDC, ctypes.c_int, ctypes.c_int))
+_typed(gdi32, wt.HGDIOBJ, SelectObject=(wt.HDC, wt.HGDIOBJ))
+_typed(gdi32, wt.BOOL, BitBlt=(wt.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.HDC, ctypes.c_int,
+                               ctypes.c_int, wt.DWORD), DeleteObject=(wt.HGDIOBJ,), DeleteDC=(wt.HDC,))
+_typed(gdi32, ctypes.c_int, GetDIBits=(wt.HDC, wt.HBITMAP, wt.UINT, wt.UINT, ctypes.c_void_p, ctypes.c_void_p, wt.UINT))
 
 GAME_EXES = ("wow.exe", "wowt.exe", "wowb.exe", "wowclassic.exe")
 GAME_CLASSES = ("waApplication Window", "GxWindowClass")    # the client's main window (12.x; older clients)
@@ -86,7 +118,6 @@ def find_window(exes=GAME_EXES):
     if isolated():
         return None
     found = []
-    proc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
     def cb(hwnd, _):
         if user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, 4):     # GW_OWNER: skip owned popups
@@ -97,7 +128,7 @@ def find_window(exes=GAME_EXES):
                 found.append((hwnd, pid.value, exe))
         return True
 
-    user32.EnumWindows(proc(cb), 0)
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
     if not found:
         return None
     return _window(*found[0])

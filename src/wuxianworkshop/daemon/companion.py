@@ -126,6 +126,7 @@ class CompanionLoop:
         self.searched = 0.0                          # time.monotonic() of the last find_window
         self.before_load = None                     # the daemon's hook for its Companion (see AgentCommands)
         self.on_session = None                       # the daemon's: (session, its newest job) for a new session's HELLO
+        self.on_pour = None                          # the daemon's: (session, key, i, m, bytes) for a segment of a pour
         self.comp = None
         if addons is not None:
             self._make_companion(Path(addons))
@@ -167,10 +168,15 @@ class CompanionLoop:
         self.comp.before_load = self._before_load
         self.comp.on_client = self._on_client
         self.comp.on_session = self._on_session
+        self.comp.on_pour = self._on_pour
 
     def _on_session(self, sid, last_job):
         if self.on_session is not None:
             self.on_session(sid, last_job)
+
+    def _on_pour(self, sid, key, i, m, data):
+        if self.on_pour is not None:
+            self.on_pour(sid, key, i, m, data)
 
     def _on_client(self, version, interface):
         """the game's own version and ## Interface (WoWBridge's HELLO): kept, the installer writes it into the tocs"""

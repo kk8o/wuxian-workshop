@@ -6,9 +6,12 @@ functions, its global functions, its Enum and Constants tables). Each is a Lua c
 with JSON made by the small encoder J below (secret values come back as "<secret>"), parsed here.
 
 A RUN result brings back at most 4000 bytes of what the code returned (WoWBridge's Agent.lua cuts it there), so the
-answer comes in pieces (answer_chunk): the chunk keeps it in the game and returns the first piece and how many there are,
-piece_chunk brings each of the others. A piece ends between two UTF-8 characters, and the daemon takes it as it came:
-api.parse_run neither splits the "=probe" chunk's result at ", " nor reads notes into it.
+answer comes in pieces (answer_chunk): the chunk keeps it in the game and returns the first piece and how many there are.
+A WoWBridge with link features 4 (0.9.13) then pours the rest (the data call "pour": segments of 32 KB, one after
+another, Agent.lua); from an older one piece_chunk brings each of the others, WINDOW of them asked for at a time, one
+more as one comes back. A piece ends between two UTF-8 characters, and the daemon takes it as it came: api.parse_run
+neither splits the "=probe" chunk's result at ", " nor reads notes into it. The same chunks bring the whole of what any
+code returned (answer_chunk(..., whole=True): `run` with whole, up to WHOLE_MOST bytes).
 
 The chunks are plain Lua 5.1 with this client's API (RegisterAllEvents, GetMouseFoci, issecretvalue, GetPhysicalScreenSize:
 all in the API manual). Rectangles are in the game window's client pixels, from its top-left corner, as `snap` takes them.
@@ -192,15 +195,18 @@ end
 return '{"screen":' .. J({ physW, physH }) .. ',"frames":' .. J(frames, 2 + DEPTH * 3 + 4) .. '}'
 """
 
-# an answer's pieces: at most PIECE bytes each, the others asked for BATCH at a time (their requests share mailbox
-# packets, the link brings the pieces back one after another); an answer over MOST bytes is refused (over a minute to
-# bring)
-PIECE, BATCH, MOST = 3900, 4, 256 * 1024
+# an answer's pieces: at most PIECE bytes each; asked for one by one (a WoWBridge that does not pour), WINDOW at a time,
+# one more as one comes back (their requests share mailbox packets, the link brings the pieces back one after another).
+# A probe's answer over MOST bytes is refused (it is for the agent to read), a whole run's over WHOLE_MOST
+PIECE, WINDOW, MOST, WHOLE_MOST = 3900, 8, 256 * 1024, 16 * 1024 * 1024
 
 # after the chunk, run as a function (ANSWER: what it returned): the first piece, the others kept under KEY
 ANSWER_PIECES = r"""
 local s = tostring(ANSWER)
 if #s > MOST then
+	if WHOLE then
+		error(("the value is %d KB, more than the %d KB a whole run brings back"):format(math.ceil(#s / 1024), MOST / 1024), 0)
+	end
 	s = ('{"error":"the answer is %d KB, more than the %d KB a probe brings back: ask for less (inspect: a lower depth or a '
 		.. 'frame further down; trace: fewer events or arguments)"}'):format(math.ceil(#s / 1024), MOST / 1024)
 end
@@ -232,7 +238,11 @@ local a = kept and kept[KEY]
 if not a then error("the rest of this answer is no longer kept in the game (the UI reloaded?)", 0) end
 a.served = a.served or {}
 if not a.served[I] then a.served[I], a.left = true, a.left - 1 end
-if a.left <= 0 then a.at = math.min(a.at, GetTime() - 240) end  -- every piece went: a minute more, for one asked again
+if a.left <= 0 then
+	a.at = math.min(a.at, GetTime() - 240)                     -- every piece went: a minute more, for one asked again
+else
+	a.at = GetTime()                                           -- else kept 5 minutes from the latest piece asked for
+end
 return I .. "/" .. #a.cuts .. "\n" .. a.s:sub(a.cuts[I - 1] + 1, a.cuts[I])
 """
 
@@ -517,12 +527,13 @@ def api_scan(part, names=None):
     return LUA_JSON + head + SCAN_BODY
 
 
-def answer_chunk(chunk, key):
+def answer_chunk(chunk, key, whole=False):
     """a probe chunk run so that its answer comes back in pieces: it returns the first piece after a line "1/<pieces>",
-    and keeps the answer in the game under `key` for piece_chunk when there are more (the chunk's lines keep their
-    numbers)"""
+    and keeps the answer in the game under `key` for piece_chunk (or a pour) when there are more (the chunk's lines keep
+    their numbers). whole: any code, its first value (tostring) up to WHOLE_MOST bytes; past that an error"""
     return ("local ANSWER = (function(...) " + chunk + "\nend)(...)\n"
-            f"local KEY, PIECE, MOST = {lua_str(key)}, {PIECE}, {MOST}\n" + ANSWER_PIECES)
+            f"local KEY, PIECE, MOST, WHOLE = {lua_str(key)}, {PIECE}, {WHOLE_MOST if whole else MOST}, "
+            f"{'true' if whole else 'false'}\n" + ANSWER_PIECES)
 
 
 def piece_chunk(key, i):

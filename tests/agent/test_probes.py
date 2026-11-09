@@ -176,6 +176,31 @@ class Probes(unittest.TestCase):
             P.parse([P.piece([big], 1)[1]])
         self.assertTrue(str(cm.exception).startswith("the answer is 257 KB, more than the 256 KB a probe brings back"))
 
+    def test_a_whole_value_and_how_long_it_is_kept(self):
+        """whole (run --whole): the code's first value as tostring makes it, up to WHOLE_MOST bytes, past that a Lua error
+        (not a probe's JSON). The game keeps a long answer 5 minutes from the latest piece asked for, not from the first:
+        one asked for slowly (eight at a time over a slow link) is not let go in the middle"""
+        lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+        lua.execute(STUB.encode())
+
+        def run(chunk):
+            return lua.execute(chunk.encode())
+        self.assertEqual(run(P.answer_chunk("return 42, 43", "w0", whole=True)), b"1/1\n42")
+        chunk = 'return ("两"):rep(3000)'
+        self.assertEqual(run(P.answer_chunk(chunk, "w1", whole=True)).partition(b"\n")[0], b"1/3")
+        run("__now = __now + 200")
+        run(P.piece_chunk("w1", 2))
+        run("__now = __now + 200")                                       # 400 s after the first piece, 200 after the latest
+        run(P.answer_chunk(chunk, "w2"))                                 # what lets the old ones go
+        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.w1"))
+        self.assertEqual(P.piece([run(P.piece_chunk("w1", 3)).decode()], 3)[0], 3)
+        run("__now = __now + 61")
+        run(P.answer_chunk(chunk, "w3"))
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.w1"))        # a minute after its last piece
+        with self.assertRaises(lupa.LuaError) as cm:
+            run(P.answer_chunk(f'return ("x"):rep({P.WHOLE_MOST + 1})', "w4", whole=True))
+        self.assertIn("the value is 16385 KB, more than the 16384 KB a whole run brings back", str(cm.exception))
+
     def test_a_filtered_trace(self):
         self.lua.execute('KNOWN = { BAG_UPDATE = true, LOOT_OPENED = true, UNIT_AURA = true }')
         begun = self.run_chunk(P.trace_start("BAG_UPDATE, loot_opened, NOT_AN_EVENT", max_events=3))

@@ -24,6 +24,8 @@ START_TIMEOUT = 30.0         # the desktop program takes longer than `serve` to 
 
 AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
                     # (service.PIECE_WAIT), and a piece may wait out its timeout before that
+WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
+                    # gives up by itself when nothing more comes)
 
 
 class DaemonGone(ConnectionError):
@@ -77,7 +79,10 @@ class DaemonClient:
     def status(self):
         return self.get("/api/status")
 
-    def run(self, code, timeout_ms=10000, addon=None):
+    def run(self, code, timeout_ms=10000, addon=None, whole=False):
+        if whole:                    # the rest comes for as long as it keeps coming (service.run_whole)
+            return self.post("/api/run", code=code, timeout_ms=timeout_ms, addon=addon, whole=True,
+                             timeout=timeout_ms / 1000 + WHOLE_WAIT)
         return self.post("/api/run", code=code, timeout_ms=timeout_ms, addon=addon, timeout=timeout_ms / 1000 + 10)
 
     def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):

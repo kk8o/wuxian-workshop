@@ -14,7 +14,9 @@ names it could not settle.
 import asyncio
 import fnmatch
 import inspect
+import itertools
 import json
+import math
 import os
 import re
 import secrets
@@ -45,6 +47,46 @@ MAX_TOPICS = 16              # topics one ask of addon_events may name (any one 
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
 PIECE_KEPT = 280.0           # seconds after its first piece that the game still keeps an answer (it keeps 300)
+POUR_ASK = 20.0              # seconds with the link up and no new segment of a pour before the missing ones are asked
+                             # for again (the link brings a lost frame again by itself within seconds: this is for a
+                             # segment lost whole), then again after twice that ...
+POUR_QUIET = 60.0            # ... and before the answer is given up
+POUR_NOTE = 10.0             # seconds between the journal's notes on how far a long answer has come
+POUR_POLL = 0.25             # seconds between a pour's looks at how far it is (a segment that comes wakes it at once)
+_now = time.monotonic        # the clock of a pour's waits (a test's mock client puts the game's, and POUR_POLL 0)
+
+
+def short_list(numbers, most=12):
+    """a list of numbers for a note: the first `most`, and how many more"""
+    text = ", ".join(map(str, numbers[:most]))
+    return text + (f" and {len(numbers) - most} more" if len(numbers) > most else "")
+
+
+class Pouring:
+    """the segments of one pour as they come: the worker thread hands each to add() through the loop"""
+
+    def __init__(self, session):
+        self.session, self.loop = session, asyncio.get_running_loop()
+        self.got = {}                    # segment number -> its bytes
+        self.m = self.size = None        # how many segments there are, and their bytes together (the game's answer)
+        self.last = _now()               # when the latest new one came (or the link came back)
+        self.came = asyncio.Event()
+
+    def add(self, sid, i, m, data):
+        if sid != self.session or (self.m is not None and m != self.m) or i in self.got:
+            return
+        self.m, self.got[i], self.last = m, data, _now()
+        self.came.set()
+
+    def complete(self):
+        return self.m is not None and len(self.got) >= self.m
+
+    def missing(self):
+        """the numbers of the segments not in yet; None while it is not known how many there are"""
+        return None if self.m is None else [i for i in range(1, self.m + 1) if i not in self.got]
+
+    def bytes(self):
+        return sum(map(len, self.got.values()))
 
 
 def resolve_target(addons, spec):
@@ -97,6 +139,7 @@ class Service:
         self.started = time.time()
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.describing = {}         # (UI session, addon, brief) -> the addon_api answer on its way: callers share it
+        self.pours = {}              # key -> the Pouring of a long answer whose segments come (pour)
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -108,6 +151,7 @@ class Service:
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
             self.worker.on_session = self.session_started
+            self.worker.on_pour = self.on_pour      # the segments of a pour (worker thread)
 
     # --- the worker thread -----------------------------------------------------------------------------------------
 
@@ -364,7 +408,7 @@ class Service:
         # has to be restarted; "missing": the running game's folder has no WoWBridge yet, installed once the game is
         # closed; "player": player mode), None while the link is read
         link = dict(state="offline", session=None, slot_next=None, slots_left=None, hb=None, capture=w.capture,
-                    ping_p50=None, last_frame=None, addon_version=None, blocked=getattr(w, "blocked", None))
+                    ping_p50=None, last_frame=None, addon_version=None, blocked=getattr(w, "blocked", None), pour=False)
         watch, reload_pending = [], False
         if comp is not None:
             s = comp.sessions.get(comp.current)
@@ -372,7 +416,7 @@ class Service:
             link.update(state="online" if comp.link_up else "offline", session=comp.current, slot_next=comp.slot,
                         slots_left=(MB.POOL - comp.slot + 1) if comp.slot is not None else None, hb=s.hb if s else None,
                         ping_p50=rtts[len(rtts) // 2] if rtts else None, last_frame=comp.last_frame,
-                        addon_version=s.version_text if s else None,
+                        addon_version=s.version_text if s else None, pour=self.can_pour(),
                         slot_rate=round(comp.slot_rate(time.time(), s) * 60, 2) if comp.slot is not None else None)
             watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
             reload_pending = comp.reload_pending()
@@ -450,46 +494,198 @@ class Service:
     async def probe(self, code, timeout_ms, chunk="=probe"):
         """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none. The answer
         comes in pieces (probes.answer_chunk): the first with the chunk (under that chunk name: "=call" shows in the game's
-        debug window, "=probe" does not), the others asked for probes.BATCH at a time"""
+        debug window, "=probe" does not), the rest as whole_text brings it"""
         key = secrets.token_hex(4)
-        return await self.pieces(lambda: self.run(probes.answer_chunk(code, key), timeout_ms=timeout_ms, chunk=chunk),
-                                 lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"))
+        res = await self.run(probes.answer_chunk(code, key), timeout_ms=timeout_ms, chunk=chunk)
+        return self.answer_json(await self.whole_text(
+            res, lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"),
+            lambda: (key, True), timeout_ms, "probe", refresh=True))
 
     async def data_probe(self, verb, payload, timeout_ms, what):
         """a data call (agent/commands.py data_call: what the agent asks of an addon's API, sent as data) answered in
         pieces as a probe is; its JSON answer, or the ApiError that says why there is none"""
-        first = {}
+        job, res = await self.data(verb, payload, timeout_ms, what)
+        return self.answer_json(await self.whole_text(
+            res, lambda i: self.data_result("piece", {"k": str(job), "i": i}, timeout_ms, what),
+            lambda: (str(job), False), timeout_ms, what))
 
-        async def start():
-            first["job"], res = await self.data(verb, payload, timeout_ms, what)
+    async def run_whole(self, code, timeout_ms=10000, addon=None):
+        """run, with the whole of what the code returned first (as tostring makes it, up to probes.WHOLE_MOST bytes)
+        brought back however long it is: {ok, job, values: [the text], ms, chunk, bytes, note, cut: None, whole: True},
+        or run's error result. timeout_ms is for the run's own result; after it the rest comes as long as segments (or
+        pieces) keep coming (whole_text)"""
+        if not isinstance(code, str) or not code.strip():
+            raise ApiError(400, "bad_request", "code: a non-empty string of Lua")
+        key = secrets.token_hex(4)
+        res = await self.run(probes.answer_chunk(code, key, whole=True), timeout_ms, addon, "=run")
+        if not res["ok"]:
             return res
-        return await self.pieces(start, lambda i: self.data_result("piece", {"k": str(first["job"]), "i": i}, timeout_ms,
-                                                                    what))
+        text = await self.whole_text(
+            res, lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"),
+            lambda: (key, True), timeout_ms, "run", refresh=True)
+        return dict(res, values=[text], cut=None, whole=True)
 
-    async def pieces(self, first, more):
-        """the JSON answer that first() (a RUN result: piece 1 of n) and more(i) (piece i) bring, more asked for
-        probes.BATCH at a time. A piece the link lost (piece_again) is asked for again; first() never is: it is the
-        call itself, and a call may change something"""
-        n, text = self.piece(await first(), 1)
-        until, session = time.monotonic() + PIECE_KEPT, self.ui_session()
-        texts = [text]
-        for start in range(2, n + 1, probes.BATCH):
-            numbers = range(start, min(start + probes.BATCH, n + 1))
-            got = await asyncio.gather(*(self.piece_again(more, i, until, session) for i in numbers),
-                                       return_exceptions=True)
-            for i, g in zip(numbers, got):
-                if isinstance(g, BaseException):
-                    raise g
-                texts.append(self.piece(g, i)[1])
+    @staticmethod
+    def answer_json(text):
+        """the JSON a probe's or data call's whole answer is; ApiError probe_failed (saying where it breaks) when not"""
         try:
-            return probes.parse(["".join(texts)])
+            return probes.parse([text])
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 
+    async def whole_text(self, res, more, pour, timeout_ms, what, refresh=False):
+        """the whole text of an answer that comes in pieces: res is the call's own RUN result, piece 1 of n (the call
+        itself, never asked for again: a call may change something). The rest is poured (pour(): its key and whether a
+        probe keeps it) from a WoWBridge that pours (link features 4), else asked for piece by piece (more(i): piece i,
+        window). refresh: the game keeps the answer 5 minutes from the latest piece asked for (probes.PIECE_BODY), not
+        from the first"""
+        n, text = self.piece(res, 1)
+        if n == 1:
+            return text
+        session = self.ui_session()
+        if self.can_pour():
+            key, kept = pour()
+            return text + (await self.pour(key, kept, session, timeout_ms, what)).decode("utf-8", "replace")
+        return text + await self.window(n, more, session, refresh, what)
+
+    def can_pour(self):
+        """whether the addon in the game pours the rest of a long answer (link features POUR, WoWBridge 0.9.13 on)"""
+        comp = getattr(self.worker, "comp", None)
+        try:
+            return comp is not None and comp.pours()
+        except AttributeError:
+            return False
+
+    def link_is_up(self):
+        return getattr(getattr(self.worker, "comp", None), "link_up", False)
+
+    def on_pour(self, sid, key, i, m, data):
+        """(worker thread) a segment of a pour: to the request that waits for it, if one does"""
+        p = self.pours.get(key)
+        if p is not None:
+            try:
+                p.loop.call_soon_threadsafe(p.add, sid, i, m, data)
+            except RuntimeError:              # the loop is gone: nobody waits
+                pass
+
+    async def pour(self, key, kept, session, timeout_ms, what):
+        """the rest of a long answer, all that follows its first piece, from a WoWBridge that pours it: one data call
+        "pour" and the game sends every segment up (TYPE_POUR, transport/link.py on_pour), joined here in order; their
+        bytes. The link brings a frame it lost again by itself; a segment that does not come all the same (lost whole)
+        is asked for again (only) after POUR_ASK seconds with the link up and nothing new, once more after twice that.
+        With the link down (minimized, a loading screen) it waits for the link, PIECE_WAIT seconds at most, and goes on
+        when it is back; another UI session (a reload took the answer), or POUR_QUIET seconds with the link up and no new
+        segment, is an error"""
+        p = self.pours[key] = Pouring(session)       # before the call: a segment may come before its RUN result
+        t0 = noted = _now()
+        only, due, asked, last = None, True, 0, p.last   # what to ask for next (None: all), whether now, asks since last
+        try:
+            while not p.complete():
+                if self.ui_session() != session:
+                    raise ApiError(502, "lua_error", f"the rest of this answer is no longer kept in the game (the UI "
+                                                     f"reloaded: session {session} -> {self.ui_session()})")
+                if not self.link_is_up():
+                    if not await self.link_back(math.inf, session):
+                        if self.ui_session() != session:
+                            continue
+                        raise ApiError(409, "link_down", f"{what}: no frames came from the game for {PIECE_WAIT:.0f} s "
+                                                         f"with {len(p.got)} of {p.m or '?'} segments of its answer in")
+                    p.last = _now()            # back: the game goes on with it, quiet counts from now
+                if due:
+                    due = False
+                    if await self.ask_pour(p, key, kept, only, timeout_ms, what) == "link_down":
+                        due = True                       # asked once the link is back
+                    continue
+                if p.last != last:
+                    asked, last = 0, p.last              # something new came: the asks start over
+                quiet = _now() - p.last
+                if quiet >= POUR_QUIET:
+                    raise ApiError(504, "timeout", f"{what}: no segment of its answer came for {POUR_QUIET:.0f} s "
+                                                   f"with the link up ({len(p.got)} of {p.m or '?'} in)")
+                if quiet >= POUR_ASK * (asked + 1):
+                    asked, only, due = asked + 1, p.missing(), True
+                    self.journal.add("INFO", f"{what}: " + (f"segments {short_list(only)} of its answer asked for again"
+                                                            if only else "its answer asked for again")
+                                     + f" ({quiet:.0f} s without a new one)")
+                    continue
+                if _now() - noted >= POUR_NOTE:
+                    noted = _now()
+                    self.journal.add("INFO", f"{what}: segment {len(p.got)} of {p.m or '?'} of its answer, "
+                                             f"{p.bytes() / 1024:,.0f} KB in {noted - t0:.1f} s")
+                try:
+                    await asyncio.wait_for(p.came.wait(), POUR_POLL)
+                except asyncio.TimeoutError:
+                    pass
+                p.came.clear()
+        finally:
+            self.pours.pop(key, None)
+        data = b"".join(p.got[i] for i in range(1, p.m + 1))
+        if p.size is not None and len(data) != p.size:
+            raise ApiError(502, "pour_failed", f"{what}: the {p.m} segments of its answer hold {len(data)} bytes, the "
+                                               f"game said {p.size}")
+        self.journal.add("INFO", f"{what}: its answer poured, {p.m} segments, {len(data) / 1024:,.0f} KB in "
+                                 f"{_now() - t0:.1f} s")
+        return data
+
+    async def ask_pour(self, p, key, kept, only, timeout_ms, what):
+        """the data call "pour" (only: those segments alone): None once the game took it, "timeout" or "link_down" when
+        that is not known (the pour goes on: its segments may come all the same), an ApiError for what the game said"""
+        payload = dict(k=key, g=kept, **({} if only is None else {"only": only}))
+        try:
+            res = await self.data_result("pour", payload, timeout_ms, what)
+        except ApiError as e:
+            if e.code not in ("timeout", "link_down"):
+                raise
+            self.journal.add("INFO", f"{what}: the pour of its answer had no answer ({e.code}); going on")
+            return e.code
+        if not res.get("ok"):
+            raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
+        said = re.fullmatch(r"(\d+) (\d+)", (res.get("values") or [""])[0])
+        if not said:
+            raise ApiError(502, "pour_failed", f"the game answered the pour with {str(res.get('values'))[:200]}")
+        if p.m is not None and p.m != int(said[1]):
+            raise ApiError(502, "pour_failed", f"the game said {said[1]} segments, its segments say {p.m}")
+        p.m, p.size = int(said[1]), int(said[2])
+        return None
+
+    async def window(self, n, more, session, refresh, what):
+        """pieces 2..n of a long answer from a WoWBridge that does not pour, one call each (more(i)): WINDOW asked for at
+        a time, one more as one comes back; each one the link lost is asked for again (piece_again) while the game
+        keeps the answer (PIECE_KEPT from the first piece, or from the latest one with refresh)"""
+        kept = [time.monotonic() + PIECE_KEPT]
+        texts, waiting, numbers = {}, {}, iter(range(2, n + 1))
+        t0 = noted = time.monotonic()
+
+        def ask(i):
+            waiting[asyncio.ensure_future(self.piece_again(more, i, lambda: kept[0], session))] = i
+        for i in itertools.islice(numbers, probes.WINDOW):
+            ask(i)
+        try:
+            while waiting:
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    i = waiting.pop(task)
+                    texts[i] = self.piece(task.result(), i)[1]
+                    if refresh:
+                        kept[0] = time.monotonic() + PIECE_KEPT
+                    nxt = next(numbers, None)
+                    if nxt is not None:
+                        ask(nxt)
+                if time.monotonic() - noted >= POUR_NOTE:
+                    noted = time.monotonic()
+                    self.journal.add("INFO", f"{what}: piece {len(texts) + 1} of {n} of its answer in "
+                                             f"{noted - t0:.1f} s")
+        finally:
+            for task in waiting:
+                task.cancel()
+            if waiting:
+                await asyncio.gather(*waiting, return_exceptions=True)
+        return "".join(texts[i] for i in range(2, n + 1))
+
     async def piece_again(self, more, i, until, session):
         """more(i); when it times out or finds the link down (a minimized window, a loading screen), asked for again once
-        the link is back, PIECE_TRIES times in all, while the game still keeps the answer (until) in the same UI session
-        (a reload takes the answer with it). Another error is the answer's"""
+        the link is back, PIECE_TRIES times in all, while the game still keeps the answer (until(): a monotonic time) in
+        the same UI session (a reload takes the answer with it). Another error is the answer's"""
         for attempt in range(1, PIECE_TRIES + 1):
             try:
                 return await more(i)
@@ -500,12 +696,13 @@ class Service:
                 self.journal.add("INFO", f"piece {i} of a long answer asked for again ({e.code})")
 
     async def link_back(self, until, session):
-        """whether the link is up in UI session `session`, waiting for it PIECE_WAIT seconds at most and not past until"""
-        stop = min(until, time.monotonic() + PIECE_WAIT)
+        """whether the link is up in UI session `session`, waiting for it PIECE_WAIT seconds at most and not past until
+        (a monotonic time, or what a callable says)"""
+        stop = min(until() if callable(until) else until, time.monotonic() + PIECE_WAIT)
         while True:
             if self.ui_session() != session:
                 return False
-            if getattr(getattr(self.worker, "comp", None), "link_up", False):
+            if self.link_is_up():
                 return True
             if time.monotonic() >= stop:
                 return False

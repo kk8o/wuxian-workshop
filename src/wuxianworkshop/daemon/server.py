@@ -278,6 +278,11 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def run(request):
         b = await body_of(request)
+        whole = b.get("whole", False)
+        if whole not in (True, False, None):
+            raise ApiError(400, "bad_request", "whole: true (the whole first value, however long) or false")
+        if whole:
+            return await service.run_whole(b.get("code"), b.get("timeout_ms", 10000), b.get("addon"))
         return await service.run(b.get("code"), b.get("timeout_ms", 10000), b.get("addon"))
 
     @api
