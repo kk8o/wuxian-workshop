@@ -28,7 +28,13 @@
                                           state, detail, where, apply, entry}], manual:{claude, codex, cursor, trae-cn,
                                           trae, workbuddy, workbuddy-ai, other}}: the coding agents
                                           and this MCP server (agents.py); POST {action: connect|disconnect|verify, host}
-                                          answers that host again, with verify:{ok, text} when checked
+                                          answers that host again, with verify:{ok, text} when checked; ?server=wuxianwow
+                                          (GET) and server: 'wuxianwow' (POST) say the same of 无限图鉴's MCP server
+                                          (https://wuxianwow.com/mcp) instead of this program
+     GET  /api/kit/apps                -> {online, apps:[{id, title, by, addon, prompt, start, on, blocked, extension:{id,
+                                          title, on} | null, skill:{name, title, description, needs, mcp:[{name, url}]} |
+                                          null}]}: WuxianKit's apps (the kept manifest while the game is away: on and
+                                          blocked null); 接入 Agent copies an app's start (its 启动语) and checks what it needs
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -245,6 +251,8 @@ function appState() {
     lang: 'zh-CN',                             // the language in force (settings.language; 'auto' follows the system)
     na: { open: false, name: '', title: '', notes: '', template: 'basic', busy: false, error: '', result: null },
     agents: { list: null, program: null, manual: {}, busy: '', note: {} },
+    wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
+    apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
              first: { name: 'MyFirstAddon', title: '我的第一个插件', busy: false, error: '', result: null, loaded: false, fromId: 0 } },
     canPick: false,
@@ -317,7 +325,7 @@ function appState() {
       if (id === 'dev') this.scrollLogs(true);
       if (id === 'api') this.docsInit();
       if (id === 'start') this.startInit();
-      if (id === 'connect') this.loadAgents();
+      if (id === 'connect') this.loadConnect();
     },
     openSite() {
       const api = window.pywebview && window.pywebview.api;
@@ -1629,32 +1637,113 @@ function appState() {
         this.say(t('读取 Agent 失败：') + errText(e));
       }
     },
-    async agentAction(h, action) {
-      this.agents.busy = h.id + ':' + action;
-      this.agents.note = Object.assign({}, this.agents.note, { [h.id]: null });
+    async loadConnect() {                      // the 接入 Agent page: both servers' agents, and the apps
+      await Promise.all([this.loadAgents(), this.loadWxw(), this.loadApps()]);
+    },
+    async loadWxw() {                          // 无限图鉴 (server=wuxianwow): the same hosts, the same shape
       try {
-        const r = await this.api('/api/agents', { body: { action, host: h.id } });
-        this.agents.list = this.agents.list.map(x => (x.id === r.id ? r : x));
-        const done = t({ connect: '已接入', disconnect: '已断开', verify: '已检查' }[action]);
-        const note = r.verify ? { ok: r.verify.ok, text: r.verify.text } : { ok: true, text: done };
-        this.agents.note = Object.assign({}, this.agents.note, { [h.id]: note });
-        this.say(h.title + ' ' + done);
+        const d = await this.api('/api/agents?server=wuxianwow');
+        this.wxw.list = d.hosts || [];
+        this.wxw.manual = d.manual || {};
       } catch (e) {
-        this.agents.note = Object.assign({}, this.agents.note, { [h.id]: { ok: false, text: errText(e) } });
-      } finally {
-        this.agents.busy = '';
+        if (this.wxw.list === null) this.wxw.list = [];
+        this.say(t('读取无限图鉴接入失败：') + errText(e));
       }
     },
-    agentPill(h) {
-      const p = { ok: ['ok', t('已接入')], other: ['warn', t('指向别的程序')], absent: ['off', t('未接入')], missing: ['off', t('未安装')],
+    agentsOf(server) { return server === 'wuxianwow' ? this.wxw : this.agents; },
+    get agentsBusy() { return !!(this.agents.busy || this.wxw.busy); },   // both write the same settings files
+    async agentAction(h, action, server) {
+      const s = this.agentsOf(server);
+      s.busy = h.id + ':' + action;
+      s.note = Object.assign({}, s.note, { [h.id]: null });
+      try {
+        const body = server === 'wuxianwow' ? { action, host: h.id, server } : { action, host: h.id };
+        const r = await this.api('/api/agents', { body });
+        s.list = s.list.map(x => (x.id === r.id ? r : x));
+        const done = t({ connect: '已接入', disconnect: '已断开', verify: '已检查' }[action]);
+        const note = r.verify ? { ok: r.verify.ok, text: r.verify.text } : { ok: true, text: done };
+        s.note = Object.assign({}, s.note, { [h.id]: note });
+        this.say(server === 'wuxianwow' ? t('无限图鉴：{h} {done}', { h: h.title, done }) : h.title + ' ' + done);
+      } catch (e) {
+        s.note = Object.assign({}, s.note, { [h.id]: { ok: false, text: errText(e) } });
+      } finally {
+        s.busy = '';
+      }
+    },
+    agentPill(h, server) {
+      const other = server === 'wuxianwow' ? t('指向别的地址') : t('指向别的程序');
+      const p = { ok: ['ok', t('已接入')], other: ['warn', other], absent: ['off', t('未接入')], missing: ['off', t('未安装')],
                   error: ['bad', t('读不了设置')] }[h.state] || ['off', h.state];
       return [p[0], t(p[1])];
     },
+    get wxwShown() { return (this.wxw.list || []).filter(h => h.state !== 'missing'); },
+    agentsOk(server) { return (this.agentsOf(server).list || []).filter(h => h.state === 'ok'); },
     get agentsShown() { return (this.agents.list || []).filter(h => h.state !== 'missing'); },
     get agentsMissing() { return (this.agents.list || []).filter(h => h.state === 'missing').map(h => h.title); },
     get agentsProgram() {
       const p = this.agents.program;
       return p ? [p.command].concat(p.args || []).join(' ') : '—';
+    },
+
+    // ---- 接入 Agent · 应用 (/api/kit/apps): an app's 启动语 to hand an agent, and what the app needs before it
+    async loadApps() {
+      try {
+        this.apps.data = await this.api('/api/kit/apps');
+        this.apps.error = '';
+      } catch (e) {
+        this.apps.error = errText(e);
+      }
+    },
+    get appsShown() { return ((this.apps.data && this.apps.data.apps) || []).filter(a => a && a.start); },
+    get appsEmpty() {                          // the line in place of the rows: '' while there are rows
+      const d = this.apps.data;
+      if (!d || this.appsShown.length) return '';
+      return !d.online && !(d.apps || []).length ? t('进入游戏后显示') : t('没有可交给 AI 的应用');
+    },
+    appPill(a) {                               // on / blocked are null while the game is away: no pill then
+      if (a.blocked) return ['bad', t('开不了')];
+      if (a.on === true) return ['ok', t('运行中')];
+      if (a.on === false) return ['off', t('停着')];
+      return null;
+    },
+    appTitle(a) { return this.loc(a.title) || a.id; },
+    appSlash(a) {                              // Claude Code lists this program's MCP prompts as slash commands
+      const claude = (this.agents.list || []).some(h => h.id === 'claude' && h.state === 'ok');
+      return claude && a.prompt ? t('Claude Code 里也可以输入 {cmd}', { cmd: '/mcp__wuxian__' + a.prompt }) : '';
+    },
+    appChecks(a) {                             // the checklist: [{id, ok (true / false / null: not known), text, go}]
+      const out = [];
+      const x = a.extension;
+      if (x) {
+        const name = this.loc(x.title) || x.id;
+        out.push({ id: 'ext', ok: x.on === true ? true : x.on === false ? false : null,
+                   text: x.on === true ? t('扩展「{x}」已开启', { x: name }) : x.on === false ? t('扩展「{x}」未开启', { x: name })
+                                       : t('扩展「{x}」：进入游戏后确认', { x: name }) });
+      }
+      const mine = this.agentsOk('wuxian');
+      out.push({ id: 'wuxian', ok: mine.length > 0, go: mine.length ? '' : 'connect-wuxian',
+                 text: mine.length ? t('已接入无限工坊：{list}', { list: mine.map(h => h.title).join(t('、')) })
+                                   : t('还没有 Agent 接入无限工坊') });
+      const skill = a.skill || {};
+      if ((skill.needs || []).includes('shell')) {
+        const shell = mine.some(h => h.id === 'claude' || h.id === 'codex');
+        out.push({ id: 'shell', ok: shell, text: t('需要能在后台跑命令的 Agent，如 Claude Code、Codex') });
+      }
+      for (const m of skill.mcp || []) {
+        if (!m || !m.name) continue;
+        if (m.name === 'wuxianwow' || /wuxianwow\.com\/mcp/.test(m.url || '')) {
+          const on = this.agentsOk('wuxianwow');
+          out.push({ id: 'mcp:' + m.name, ok: on.length > 0, go: on.length ? '' : 'connect-wuxianwow',
+                     text: on.length ? t('已接入无限图鉴：{list}', { list: on.map(h => h.title).join(t('、')) }) : t('未接入无限图鉴') });
+        } else {
+          out.push({ id: 'mcp:' + m.name, ok: null, text: t('建议接入 MCP 服务器 {name}：{url}', { name: m.name, url: m.url || '' }) });
+        }
+      }
+      return out;
+    },
+    goPanel(id) {                              // 去接入: the panel on this page (the address keeps #connect)
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     },
 
     // ---- 开始: the first-run wizard; every step is ticked from what the daemon reports

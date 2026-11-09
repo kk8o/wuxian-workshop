@@ -1126,10 +1126,10 @@
         <h1>接入 Agent</h1>
         <span class="muted">登记到 Agent 的用户级设置，所有项目都能用</span>
         <div class="spacer"></div>
-        <button class="btn" @click="loadAgents()" :disabled="!!agents.busy"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+        <button class="btn" @click="loadConnect()" :disabled="agentsBusy"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
       </div>
       <div class="pagebody">
-        <div class="panel">
+        <div class="panel" id="connect-wuxian">
           <div class="panel-head">一键接入<div class="spacer"></div><span class="muted small mono selectable" x-text="agentsProgram"></span></div>
           <div class="loader" x-show="agents.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在查找 Agent…</div>
           <div class="agent-list" x-show="agents.list !== null">
@@ -1148,17 +1148,80 @@
                   <div class="mono tiny-path" :title="h.where" x-text="shortPath(h.where)"></div>
                 </div>
                 <div class="agent-acts">
-                  <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="!!agents.busy"
+                  <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect')" :disabled="agentsBusy"
                           x-text="agents.busy === h.id + ':connect' ? t('接入中…') : (h.state === 'other' ? t('改成现在这个') : t('一键接入'))"></button>
-                  <button class="btn" x-show="h.state === 'ok' && h.can_verify" @click="agentAction(h, 'verify')" :disabled="!!agents.busy"
+                  <button class="btn" x-show="h.state === 'ok' && h.can_verify" @click="agentAction(h, 'verify')" :disabled="agentsBusy"
                           x-text="agents.busy === h.id + ':verify' ? t('检查中…') : t('检查')"></button>
-                  <button class="btn" x-show="h.state === 'ok' || h.state === 'other'" @click="agentAction(h, 'disconnect')" :disabled="!!agents.busy"
+                  <button class="btn" x-show="h.state === 'ok' || h.state === 'other'" @click="agentAction(h, 'disconnect')" :disabled="agentsBusy"
                           x-text="agents.busy === h.id + ':disconnect' ? t('断开中…') : t('断开')"></button>
                 </div>
               </div>
             </template>
           </div>
           <p class="muted small pad" x-show="agentsMissing.length" x-text="t('没有找到：{list}。装好后点「刷新」。', { list: agentsMissing.join(t('、')) })"></p>
+        </div>
+
+        <div class="panel" id="connect-wuxianwow">
+          <div class="panel-head">无限图鉴<div class="spacer"></div><span class="muted small mono selectable">https://wuxianwow.com/mcp</span></div>
+          <p class="muted small panel-note">查游戏事实（物品、任务、副本、拍卖行价格），公会聊天等应用会用到</p>
+          <div class="loader" x-show="wxw.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在查找 Agent…</div>
+          <div class="agent-list" x-show="wxw.list !== null">
+            <template x-for="h in wxwShown" :key="h.id">
+              <div x-t class="agent-row" :class="'st-' + h.state">
+                <div class="agent-main">
+                  <div class="agent-head"><b x-text="h.title"></b><span class="pill" :class="agentPill(h, 'wuxianwow')[0]" x-text="agentPill(h, 'wuxianwow')[1]"></span></div>
+                  <div class="small muted" x-text="h.detail"></div>
+                  <p class="small" x-show="wxw.note[h.id]" :class="wxw.note[h.id] && wxw.note[h.id].ok ? 'ok-text' : 'warn-text'" x-text="wxw.note[h.id] && wxw.note[h.id].text"></p>
+                  <p class="small muted" x-show="h.state === 'ok'" x-text="h.apply"></p>
+                  <details x-show="!h.can_connect || h.state === 'error'">
+                    <summary class="small">手动接入</summary>
+                    <pre class="code selectable" x-text="wxw.manual[h.id]"></pre>
+                    <button class="btn tiny" @click="copy(wxw.manual[h.id], t('{h} 配置', { h: h.title }))">复制</button>
+                  </details>
+                  <div class="mono tiny-path" :title="h.where" x-text="shortPath(h.where)"></div>
+                </div>
+                <div class="agent-acts">
+                  <button class="btn primary" x-show="h.can_connect && h.state !== 'ok'" @click="agentAction(h, 'connect', 'wuxianwow')" :disabled="agentsBusy"
+                          x-text="wxw.busy === h.id + ':connect' ? t('接入中…') : (h.state === 'other' ? t('改成现在这个') : t('一键接入'))"></button>
+                  <button class="btn" x-show="h.state === 'ok' && h.can_verify" @click="agentAction(h, 'verify', 'wuxianwow')" :disabled="agentsBusy"
+                          x-text="wxw.busy === h.id + ':verify' ? t('检查中…') : t('检查')"></button>
+                  <button class="btn" x-show="h.state === 'ok' || h.state === 'other'" @click="agentAction(h, 'disconnect', 'wuxianwow')" :disabled="agentsBusy"
+                          x-text="wxw.busy === h.id + ':disconnect' ? t('断开中…') : t('断开')"></button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="panel" id="connect-apps">
+          <div class="panel-head">应用<div class="spacer"></div><span class="muted small" x-show="apps.data && !apps.data.online && appsShown.length">游戏未在线，显示上次保留的清单</span></div>
+          <p class="muted small panel-note">复制启动语，粘贴到 Agent 的对话里即可开始</p>
+          <div class="loader" x-show="apps.data === null && !apps.error"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在读取应用…</div>
+          <p class="small warn-text pad" x-show="apps.error" x-text="t('读取应用失败：') + apps.error"></p>
+          <p class="muted small pad" x-show="appsEmpty" x-text="appsEmpty"></p>
+          <div class="agent-list" x-show="appsShown.length">
+            <template x-for="a in appsShown" :key="a.id">
+              <div x-t class="agent-row app-row" :class="a.on === true ? 'st-ok' : ''">
+                <div class="agent-main">
+                  <div class="agent-head"><b x-text="appTitle(a)"></b><span class="pill" x-show="appPill(a)" :class="appPill(a) && appPill(a)[0]" x-text="appPill(a) && appPill(a)[1]"></span></div>
+                  <div class="small muted" x-show="a.skill && a.skill.description" x-text="a.skill && a.skill.description"></div>
+                  <p class="small warn-text" x-show="a.blocked" x-text="t('开不了：{why}', { why: a.blocked })"></p>
+                  <ul class="checks mini">
+                    <template x-for="c in appChecks(a)" :key="c.id">
+                      <li class="check" :class="c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'skip'">
+                        <span class="mark" x-text="c.ok === true ? '✓' : c.ok === false ? '✕' : '?'"></span>
+                        <div class="check-body small"><span x-text="c.text"></span><a href="#" class="app-go" x-show="c.go" @click.prevent="goPanel(c.go)" x-t>去接入</a></div>
+                      </li>
+                    </template>
+                  </ul>
+                  <p class="small muted selectable" x-show="appSlash(a)" x-text="appSlash(a)"></p>
+                </div>
+                <div class="agent-acts">
+                  <button class="btn primary" @click="copy(a.start, t('启动语'))">复制启动语</button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
 
         <div class="panel">
