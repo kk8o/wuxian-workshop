@@ -57,6 +57,9 @@ ERRORS = [("Interface/AddOns/Foo/Core.lua:12: attempt to index a nil value (fiel
 SLOTS_TEXT = ("mailbox: %d slots left in this game process (about %.1f h at a heartbeat every 15 s); when they are gone, "
               "only a full restart of the game brings new ones")
 ARITHMETIC = re.compile(r"^return\s+([\d\s+\-*/%().]+)$")
+VOICE_LINES = ["said: 小心，精英怪来了 (1.8 s)", "said: 打完这波歇一下吧 (2.1 s)", "queue: 0 waiting",
+               "said: 背包快满了 (1.2 s)"]
+EXT_HOME = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\extensions"
 
 
 def api_version():
@@ -89,6 +92,9 @@ class Fake:
                        "workbuddy": "absent", "workbuddy-ai": "missing"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
         self.ext_installed = {"wuxiankit": "0.2.0"}   # extensions.py's shapes: the catalog's addons in the game folder
+        self.local = self.local_seed()             # local/host.py's shapes: id -> a local extension, in its order
+        self.local_revision = 7
+        self.local_out = {i: self.local_log_seed(e) for i, e in self.local.items()}   # id -> its output.log lines
         self.watch = []
         self.reload_pending = False
         self.fixed = False
@@ -232,6 +238,9 @@ class Fake:
             self.entry("INFO", f"link: online, session {self.session}, heartbeat 15 s")
         if n % 5 == 0 or n % 120 in (80, 88, 90):
             self.broadcast("status", self.status())
+        voice = self.local.get("voice")
+        if voice and voice["state"] == "running" and n % 4 == 2:     # a running extension writes to its stderr now and then
+            self.local_out["voice"].append(self.rng.choice(VOICE_LINES))
 
     async def ticker(self):
         while True:
@@ -503,6 +512,260 @@ class Fake:
             result = dict(id=ext_id, folder=e["folder"], removed=removed, kept=8 if removed else None)
         self.entry("INFO", f"extension {ext_id}: {action}")
         return dict(action=action, result=result, addon=self.ext_row(e))
+
+    # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call,
+    #      translate crashed, lab is off and has never described itself
+    def local_seed(self):
+        now = self.started
+
+        def cap(name, kind, title, doc, args=None, timeout=30):
+            return dict(name=name, kind=kind, title=title, doc=doc, args=args or {}, timeout=timeout)
+
+        def ext(eid, title, state, start="use", enabled=True, caps=(), sources=(), options=(), apps=(), skills=(),
+                pid=None, started=None, exit_code=None, error=None, broken=None, described=True):
+            return dict(id=eid, title=title, version="0.1.0" if eid != "voice" else "0.3.2", path=EXT_HOME + "\\" + eid,
+                        enabled=enabled, start=start, state=state, pid=pid, started=started, exit_code=exit_code,
+                        error=error, caps=list(caps), sources=list(sources), options=list(options), apps=list(apps),
+                        skills=list(skills), broken=broken, described=described,
+                        notes=f"（假数据）本机扩展 {title}")
+        return {e["id"]: e for e in (
+            ext("voice", "声音", "running", start="workshop", pid=31412, started=now - 1500,
+                caps=[cap("say", "point", "说一句", "Speaks text aloud; returns {seconds}.", {"text": "string",
+                                                                                              "speed": "number?"}),
+                      cap("play", "point", "播放台词池", "Plays a line from a pool.", {"pool": "string"}),
+                      cap("status", "see", "状态", "What it is saying and how many lines wait.")],
+                sources=[dict(name="said", title="说完一句", doc="Each line spoken: {text, seconds}.")],
+                options=[dict(name="volume", kind="number", title="音量", default=80, min=0, max=100, step=5, unit="%",
+                              value=65),
+                         dict(name="voice", kind="choice", title="声音", default="serena", hint="换了下一句生效",
+                              choices=[dict(value="serena", label="Serena"), dict(value="chelsie", label="Chelsie")],
+                              value="serena"),
+                         dict(name="combat", kind="boolean", title="战斗中也说", default=False, value=True),
+                         dict(name="speed", kind="number", title="语速", default=1.0, min=0.5, max=2, step=0.1,
+                              value=1.0)],
+                apps=["companion"], skills=["companion"]),
+            ext("notes", "笔记", "stopped",
+                caps=[cap("put", "keep", "记一条", "Keeps a note: {text, tags?}.", {"text": "string", "tags": "table?"}),
+                      cap("find", "see", "查笔记", "Notes with these words.", {"words": "string"})],
+                options=[dict(name="folder", kind="text", title="保存位置", default="", hint="空着就放在扩展文件夹里",
+                              value="")]),
+            ext("translate", "翻译", "exited", started=now - 640, exit_code=1,
+                error="it exited with code 1 (extension_logs shows why)",
+                caps=[cap("text", "see", "翻译一段", "Translates text.", {"text": "string", "to": "zh | en"}, 60)],
+                broken="ModuleNotFoundError: No module named 'httpx'"),
+            ext("lab", "实验", "off", enabled=False, described=False),
+        )}
+
+    def local_log_seed(self, e):
+        if e["started"] is None:
+            return []
+        at = time.strftime("%H:%M:%S", time.localtime(e["started"]))
+        lines = [f"-- {at} started (pid {e['pid'] or 28870}): C:\\Python314\\python.exe main.py"]
+        if e["broken"]:
+            return lines + ["Traceback (most recent call last):", '  File "main.py", line 3, in <module>',
+                            "    import httpx", e["broken"], f"-- {at} exited with code {e['exit_code']} after 0.4 s"]
+        return lines + [f"loading model ({e['title']})", "model ready in 7.9 s",
+                        f"-- {at} ready: {len(e['caps'])} capabilities, {len(e['sources'])} sources, "
+                        f"{len(e['options'])} options"] + VOICE_LINES[:2]
+
+    def local_row(self, e):
+        return dict(id=e["id"], title=e["title"], version=e["version"], path=e["path"], enabled=e["enabled"],
+                    start=e["start"], state=e["state"], pid=e["pid"], started=e["started"], exit_code=e["exit_code"],
+                    error=e["error"], capabilities=[f"{e['id']}.{c['name']}" for c in e["caps"]],
+                    sources=[s["name"] for s in e["sources"]], options=[dict(o) for o in e["options"]],
+                    apps=list(e["apps"]), skills=list(e["skills"]))
+
+    def local_listing(self):
+        return dict(revision=self.local_revision, extensions=[self.local_row(e) for e in self.local.values()])
+
+    def local_manifest(self):
+        """the kit-shaped entries the agents' wk_ tools come from: the enabled ones"""
+        return dict(revision=self.local_revision, extensions=[dict(
+            id=e["id"], title=e["title"], version=e["version"], notes=e["notes"], state="on", runtime="local",
+            path=e["path"], docs=e["path"] + "\\AGENT.md", skills=e["path"] + "\\skills" if e["skills"] else None,
+            capabilities=[dict(id=f"{e['id']}.{c['name']}", kind=c["kind"], title=c["title"], doc=c["doc"],
+                               args=dict(c["args"]), timeout=c["timeout"]) for c in e["caps"]],
+            sources=[dict(s) for s in e["sources"]], options=[dict(o) for o in e["options"]],
+            apps=[dict(app=a, title="陪玩", prompt="companion") for a in e["apps"]])
+            for e in self.local.values() if e["enabled"]])
+
+    def local_changed(self):
+        """revision + 1, and the stream's `local` event with the rows"""
+        self.local_revision += 1
+        self.broadcast("local", self.local_listing())
+
+    def local_entry(self, eid):
+        e = self.local.get(eid) if isinstance(eid, str) else None
+        if e is None:
+            raise KeyError(f"no local extension {eid} is registered (local_extensions lists them)")
+        return e
+
+    def local_check(self, e):
+        """{ok, problems, capabilities, tests?} as Host.check answers"""
+        caps = [f"{e['id']}.{c['name']}" for c in e["caps"]]
+        if e["broken"]:
+            return dict(ok=False, capabilities=[], problems=[
+                dict(level="error", where="initialize", message=f"{e['id']} exited before it answered initialize (code 1)",
+                     hint="extension_logs shows its output: a traceback says what went wrong"),
+                dict(level="error", where="output", message="the end of its output:\n" + e["broken"],
+                     hint="a traceback says what went wrong")])
+        problems = [] if e["id"] != "notes" else [dict(
+            level="warning", where="capability notes.find", message="its doc does not say what it returns",
+            hint="say what the agent gets back: {notes: [{text, tags, time}]}")]
+        return dict(ok=True, problems=problems, capabilities=caps,
+                    tests=dict(ran=4, failed=0, output="....\n----------------------------------------------------------"
+                                                       "------------\nRan 4 tests in 0.012s\n\nOK\n"))
+
+    def local_option(self, e, name, value):
+        """None, or why value is no value of that option (manifest.value_problem's checks, roughly)"""
+        o = next((x for x in e["options"] if x["name"] == name), None)
+        if o is None:
+            return f"{e['id']} has no option {name!r}"
+        if o["kind"] == "boolean" and not isinstance(value, bool):
+            return f"option {name}: true or false"
+        if o["kind"] == "text" and not isinstance(value, str):
+            return f"option {name}: text"
+        if o["kind"] == "number":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"option {name}: a number"
+            if value < o.get("min", value) or value > o.get("max", value):
+                return f"option {name}: {o.get('min')}..{o.get('max')}"
+        if o["kind"] == "choice" and value not in [c["value"] for c in o["choices"]]:
+            return f"option {name}: one of " + ", ".join(str(c["value"]) for c in o["choices"])
+        return None
+
+    def local_run(self, e, how):
+        """a start (load): running, or (translate) failed again"""
+        e["started"], e["exit_code"], e["error"] = time.time(), None, None
+        at = time.strftime("%H:%M:%S")
+        out = self.local_out.setdefault(e["id"], [])
+        if e["broken"]:
+            e.update(state="failed", pid=None, error=f"{e['id']} exited before it answered initialize (code 1)")
+            out += [f"-- {at} started (pid 40112): C:\\Python314\\python.exe main.py", e["broken"],
+                    f"-- {at} failed: {e['error']}"]
+        else:
+            e.update(state="running", pid=self.rng.randrange(20000, 60000), described=True)
+            out += [f"-- {at} started (pid {e['pid']}): C:\\Python314\\python.exe main.py",
+                    f"-- {at} ready: {len(e['caps'])} capabilities, {len(e['sources'])} sources, "
+                    f"{len(e['options'])} options"]
+        self.entry("INFO", f"local extension {e['id']}: {e['state']} ({how})")
+
+    def local_stop(self, e):
+        if e["state"] in ("running", "starting"):
+            took = time.time() - (e["started"] or time.time())
+            e.update(state="stopped", pid=None, exit_code=0)
+            self.local_out.setdefault(e["id"], []).append(f"-- {time.strftime('%H:%M:%S')} stopped with code 0 after "
+                                                          f"{took:.1f} s")
+            self.entry("INFO", f"local extension {e['id']}: stopped")
+
+    def local_action(self, action, body):
+        """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400)"""
+        if action == "add":
+            path = body.get("path")
+            if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\", path.strip()):
+                raise ValueError("path: the full path of an extension's folder (or its wuxian-extension.json)")
+            folder = path.strip().removesuffix("\\wuxian-extension.json").rstrip("\\")
+            eid = re.sub(r"[^a-z0-9_]", "_", folder.rsplit("\\", 1)[-1].lower()).lstrip("_0123456789")[:24] or "ext"
+            same = next((e for e in self.local.values() if e["path"].lower() == folder.lower()), None)
+            if same is not None:
+                return self.local_row(same)
+            if eid in self.local:
+                raise LookupError(f"the id {eid} is taken by {self.local[eid]['path']}: give this one another id, or "
+                                  f"extension_remove that one first")
+            seed = self.local_seed()["lab"]
+            self.local[eid] = dict(seed, id=eid, title=eid, path=folder, enabled=True, state="stopped")
+            self.local_out[eid] = []
+            self.entry("INFO", f"local extension {eid}: registered ({folder})")
+            self.local_changed()
+            return self.local_row(self.local[eid])
+        e = self.local_entry(body.get("id"))
+        if action == "remove":
+            self.local_stop(e)
+            del self.local[e["id"]]
+            self.local_out.pop(e["id"], None)
+            self.entry("INFO", f"local extension {e['id']}: no longer registered ({e['path']})")
+            self.local_changed()
+            return dict(removed=True, id=e["id"], path=e["path"])
+        if action == "check":
+            return self.local_check(e)
+        if action == "stop":
+            self.local_stop(e)
+            self.local_changed()
+            return self.local_row(e)
+        if action == "load":
+            if not e["enabled"]:
+                raise LookupError(f"{e['id']} is off: extension_set {{\"id\": \"{e['id']}\", \"enabled\": true}} first")
+            self.local_stop(e)
+            self.local_run(e, "extension_load")
+            self.local_changed()
+            return dict(row=self.local_row(e), check=self.local_check(e))
+        if action == "set":
+            enabled, options = body.get("enabled"), body.get("options")
+            if enabled not in (None, True, False):
+                raise ValueError("enabled: true or false")
+            if options is not None and not isinstance(options, dict):
+                raise ValueError("options: an object, name -> value")
+            for name, value in (options or {}).items():
+                why = self.local_option(e, name, value)
+                if why:
+                    raise ValueError(why)
+            for o in e["options"]:
+                if o["name"] in (options or {}):
+                    o["value"] = options[o["name"]]
+            if enabled is False and e["enabled"]:
+                self.local_stop(e)
+                e.update(enabled=False, state="off")
+            elif enabled is True and not e["enabled"]:
+                e.update(enabled=True, state="stopped")
+                if e["start"] == "workshop":
+                    self.local_run(e, "set on")
+            if options:
+                self.entry("INFO", f"local extension {e['id']}: options " + ", ".join(f"{k}={v}" for k, v in options.items()))
+            self.local_changed()
+            return self.local_row(e)
+        raise ValueError(f"no action {action}")
+
+    def local_logs(self, eid, since=0, limit=200):
+        """{lines, next, total, reset, cut, row} as Host.logs answers"""
+        e = self.local_entry(eid)
+        if since < 0 or not 1 <= limit <= 2000:
+            raise ValueError("since: 0 or a line number; limit: 1..2000")
+        lines = self.local_out.get(e["id"], [])
+        total, reset = len(lines), False
+        if since == 0:
+            first = max(1, total - limit + 1)
+        elif since > total + 1:
+            first, reset = 1, True
+        else:
+            first = since
+        last = min(total, first + limit - 1)
+        texts = lines[first - 1:last] if last >= first else []
+        return dict(lines=[dict(n=first + i, text=t) for i, t in enumerate(texts)], next=first + len(texts), total=total,
+                    reset=reset, cut=since == 0 and first > 1, row=self.local_row(e))
+
+    START = "开始无限工坊的应用「{title}」：先调用工具 wk_docs，参数 {{\"skill\": \"{skill}\"}}，照读到的步骤做。"
+
+    def kit_apps(self):
+        """/api/kit/apps (Service.kit_apps): the game's WuxianKit answers while the link is up, else the kept manifest
+        (on and blocked null)"""
+        online = self.link_state == "online"
+
+        def app(aid, title, by, addon, prompt=None, on=None, blocked=None, temp=False, extension=None, needs=(), mcp=()):
+            skill = None if prompt is None else dict(name=prompt, title=title, description=f"（假数据）{title}的技能",
+                                                     needs=list(needs), mcp=[dict(m) for m in mcp])
+            return dict(id=aid, title=title, by=by, addon=addon, temp=temp, prompt=prompt,
+                        start=self.START.format(title=title, skill=prompt) if prompt else None,
+                        on=on if online else None, blocked=blocked if online else None, extension=extension,
+                        skill=skill)
+        return dict(online=online, apps=[
+            app("guild", "公会聊天", "WuxianKit", "WuxianKit", "guild-chat", on=True, needs=["shell"],
+                mcp=[dict(name="wuxianwow", url="https://wuxianwow.com/mcp")]),
+            app("companion", "陪玩", "声音（本机扩展）", None, "companion", on=False, needs=["shell"]),
+            app("tour", "新手指引", "WuxianKit", "WuxianKit", "tour", on=False, blocked="「指引」扩展关着",
+                extension=dict(id="guide", title="指引", on=False if online else None)),
+            app("route", "练级路线", "WuxianKit", "WuxianKit", on=False),
+            app("reactions", "反射", "无限工坊", None, on=True, temp=True),
+        ])
 
     def history(self, addon=None, vid=None, against="now"):
         if not addon:
@@ -977,6 +1240,39 @@ def create_app(fake=None, ticker=True):
         except ValueError as e:
             return error("bad_request", str(e), 400)
 
+    async def kit_apps(request):
+        return JSONResponse(fake.kit_apps())
+
+    async def local_(request):
+        return JSONResponse(fake.local_listing())
+
+    async def local_manifest(request):
+        return JSONResponse(fake.local_manifest())
+
+    async def local_logs(request):
+        q = request.query_params
+        try:
+            return JSONResponse(fake.local_logs(q.get("id"), int(q.get("since") or 0), int(q.get("limit") or 200)))
+        except KeyError as e:
+            return error("not_found", str(e.args[0]), 404)
+        except ValueError as e:
+            return error("bad_request", str(e), 400)
+
+    def local_post(action):
+        async def handle(request):
+            try:
+                body = await json_body(request)
+                if action == "load":
+                    await asyncio.sleep(0.6)               # a start takes a moment (initialize, the tests)
+                return JSONResponse(fake.local_action(action, body))
+            except KeyError as e:
+                return error("not_found", str(e.args[0]), 404)
+            except LookupError as e:
+                return error("off" if action == "load" else "extension_exists", str(e), 409)
+            except ValueError as e:
+                return error("bad_option" if action == "set" else "bad_request", str(e), 400)
+        return handle
+
     async def history_(request):
         try:
             if request.method == "GET":
@@ -1045,6 +1341,12 @@ def create_app(fake=None, ticker=True):
         Route("/api/extensions", extensions_, methods=["GET", "POST"]),
         Route("/api/agent_access", agent_access, methods=["GET"]),
         Route("/api/check", check, methods=["POST"]),
+        Route("/api/kit/apps", kit_apps, methods=["GET"]),
+        Route("/api/local", local_, methods=["GET"]),
+        Route("/api/local/manifest", local_manifest, methods=["GET"]),
+        Route("/api/local/logs", local_logs, methods=["GET"]),
+        *[Route(f"/api/local/{action}", local_post(action), methods=["POST"])
+          for action in ("set", "load", "stop", "check", "add", "remove")],
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)

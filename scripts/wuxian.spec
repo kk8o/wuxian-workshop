@@ -33,10 +33,11 @@ for name in ("!WuxianWorkshop", "WoWBridge"):     # installer.PRODUCT_ADDONS
 static = SRC / "wuxianworkshop" / "ui" / "static"
 if static.is_dir():
     datas.append((str(static), "wuxianworkshop/ui/static"))
-packs = SRC / "wuxianworkshop" / "data"                      # the content packs the program carries (content.py)
+packs = SRC / "wuxianworkshop" / "data"                      # the content packs the program carries (content.py), local-extension.md
 if packs.is_dir():
     datas.append((str(packs), "wuxianworkshop/data"))
-sdk = ROOT / "sdk" / "python" / "wuxiankit.py"               # the program template copies it (scaffold.sdk_file)
+sdk = ROOT / "sdk" / "python" / "wuxiankit.py"               # _internal/sdk: put first on the PYTHONPATH of the local
+                                                             # extensions the daemon starts (local/host.py sdk_dir)
 if sdk.is_file():
     datas.append((str(sdk), "sdk"))
 
