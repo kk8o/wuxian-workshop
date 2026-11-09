@@ -541,6 +541,19 @@ pre.diff .hunk { color: var(--sky); }
 .xp-notes { margin: 0; padding: 10px 14px; border-left: 2px solid var(--gold-d); border-radius: 0 6px 6px 0; background: var(--field);
   color: var(--fg); font-size: 12.5px; line-height: 1.7; white-space: pre-line; max-width: 820px; }
 .xp-small { margin: 8px 0 0; }
+/* 程序: the list and detail of 插件. The list: a state dot before each name, the state under it in its colour. The detail: the
+   facts on top, the output filling the rest, in the logs' monospace */
+.dot.d-bad { background: var(--bad); }
+.mitem-top .dot { margin: 0 1px; }
+.prog-sub.s-ok { color: var(--ok); }
+.prog-sub.s-warn { color: var(--gold-l); }
+.prog-sub.s-bad { color: var(--bad); }
+.prog-facts { flex: none; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.prog-facts .kv { font-size: 12.5px; }
+.prog-out-bar { flex: none; padding: 6px 12px 6px 16px; border-bottom: 1px solid var(--line2); background: var(--chrome); }
+.prog-out-bar b { font-size: 12px; font-weight: 600; color: var(--gold); letter-spacing: .04em; }
+.prog-out { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+.prog-out pre { margin: 0; padding: 8px 16px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
 
 .checks { list-style: none; margin: 0; padding: 0; }
 .check { display: flex; gap: 12px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line2); }

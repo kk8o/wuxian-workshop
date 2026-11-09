@@ -9,7 +9,8 @@
                                           development environment only: a "player" mode left in old settings is switched
                                           back to "developer" once (migrateMode)
      GET  /api/logs?tail=1&limit=      -> {entries, next, truncated}: the newest of the backlog at load; then
-     GET  /api/events?token=&since=    -> SSE "log" / "status" events; reconnects itself with since=<last id>
+     GET  /api/events?token=&since=    -> SSE "log" / "status" events, and "programs" (no data: the programs' states
+                                          changed, read them again); reconnects itself with since=<last id>
      POST /api/run {code, timeout_ms}  -> {ok, job, values, ms, chunk} or {ok:false, job, error, stack}; 504 = timeout
      POST /api/snap {max_width}        -> {path, width, height, url}; the PNG is fetched from url with the Bearer header
      POST /api/reload {reason}         -> {requested, nonce}
@@ -31,10 +32,17 @@
                                           answers that host again, with verify:{ok, text} when checked; ?server=wuxianwow
                                           (GET) and server: 'wuxianwow' (POST) say the same of 无限图鉴's MCP server
                                           (https://wuxianwow.com/mcp) instead of this program
-     GET  /api/kit/apps                -> {online, apps:[{id, title, by, addon, prompt, start, on, blocked, extension:{id,
-                                          title, on} | null, skill:{name, title, description, needs, mcp:[{name, url}]} |
-                                          null}]}: WuxianKit's apps (the kept manifest while the game is away: on and
-                                          blocked null); 接入 Agent copies an app's start (its 启动语) and checks what it needs
+     GET  /api/kit/apps                -> {online, apps:[{id, title, by, addon, prompt, driver, temp, start, on, blocked,
+                                          extension:{id, title, on} | null, skill:{name, title, description, needs,
+                                          mcp:[{name, url}]} | null}]}: WuxianKit's apps (the kept manifest while the game is
+                                          away: on and blocked null); 接入 Agent copies a prompt app's start (its 启动语) and
+                                          checks what it needs; a program app (driver "program") links to its program
+     GET  /api/programs                -> [row] (or {programs: [row]}): the programs this workshop loads outside the game
+                                          (programs.py), row {id, title, path, manifest, app, state: stopped | running |
+                                          exited, pid, started, exit_code, exited_at, command, error}; POST
+                                          /api/programs/add {path}, /start {id, restart}, /stop {id} answer the row,
+                                          /remove {id} {removed}; GET /api/programs/logs?id=&since=&limit= -> {lines:[{n,
+                                          text}], next, row}: the output from the cursor since on, next the one to ask next
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -57,15 +65,16 @@
    land once per animation frame, and 开发台 renders the last LOG_ROWS of the filtered list. */
 'use strict';
 
-const PAGES = [                                // the navigation, in its order on the left (Ctrl+1.. go there; Ctrl+9 设置)
+const PAGES = [                                // the navigation, in its order on the left (Ctrl+1..8 go there; Ctrl+9 设置)
   { id: 'status', label: '概览', icon: 'i-home' },
   { id: 'dev', label: '开发台', icon: 'i-console' },
   { id: 'addons', label: '插件', icon: 'i-addons' },
+  { id: 'programs', label: '程序', icon: 'i-program' },
   { id: 'extensions', label: '扩展', icon: 'i-puzzle' },
   { id: 'api', label: 'API 手册', icon: 'i-book' },
   { id: 'connect', label: '接入 Agent', icon: 'i-plug' },
   { id: 'doctor', label: '自检与修复', icon: 'i-shield' },
-  { id: 'start', label: '开始', icon: 'i-flag' },
+  { id: 'start', label: '开始使用', icon: 'i-flag' },
 ];
 const NAV = PAGES;
 const SITE = 'https://wuxianwow.com/workshop';  // 无限工坊's site: opened in the user's browser (ui/shell.py PageApi.open_url)
@@ -148,6 +157,11 @@ const LOG_ROWS = 300;                          // 开发台 renders the last thi
 const LOAD_LOGS = 1000;                        // the backlog asked for at load (the daemon answers at most 1000)
 const LOG_IDLE_MS = 250;                       // queued entries land on this timer while the window is hidden (no frames)
 const RECONNECT_MS = 2000;
+const PROG_LIMIT = 500;                        // 程序's output: the lines asked for at a time
+const PROG_KEEP = 500;                         // … and kept, the newest
+const PROG_PAGES = 20;                         // the requests of one catch-up at most (the rest comes with the next second)
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a program's output
+const NO_PROG = Object.freeze({ id: '', title: '', state: 'stopped', app: false, path: '', command: null, error: null });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -164,6 +178,7 @@ const CLI_HELP = [                             // `wuxian` and what each command
   ['wuxian doctor', '自检'],
   ['wuxian addons', '已装插件（版本、Interface、启用、报错数）'],
   ['wuxian errors [插件]', '平台插件收集到的报错（截至上次登出或重载）'],
+  ['wuxian program list|add|start|stop|logs', '游戏外的程序：列出、登记、开始、停止、看输出'],
   ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量、缺少的参数、机密值误用'],
   ['wuxian history [插件] [编号]', '插件的历史版本；带编号是那一版和现在的差异'],
   ['wuxian checkpoint <插件> [说明]', '给插件存一份'],
@@ -215,6 +230,7 @@ function appState() {
   const book = new LogBook();
   let logView = { key: null, view: NO_LOGS };  // 开发台's rows, kept until the entries or the filters change
   let logFrame = 0, logTimer = 0;
+  let progLines = [];                          // 程序: the output of the program shown, [{n, text}] (pout.text is it joined)
   return {
     PAGES, NAV, KINDS, API_KINDS, KIND_TEXT,
     page: 'status',
@@ -253,6 +269,10 @@ function appState() {
     agents: { list: null, program: null, manual: {}, busy: '', note: {} },
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
+    progs: { list: null, error: '', loading: false, again: false, sel: null, busy: '', confirm: '', note: null,
+             add: { open: false, path: '', busy: false, error: '' } },   // 程序: the list, the one shown, 登记程序
+    pout: { id: null, run: null, next: 0, gen: 0, text: '', count: 0, busy: false, again: false, loaded: false, error: '',
+            follow: true, after: 0 },          // 程序: the output of the one shown (its lines are progLines)
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
              first: { name: 'MyFirstAddon', title: '我的第一个插件', busy: false, error: '', result: null, loaded: false, fromId: 0 } },
     canPick: false,
@@ -282,8 +302,13 @@ function appState() {
       }
       if (!this.timers) {                      // once: init() runs again while the daemon is not up yet
         this.timers = true;
-        setInterval(() => { this.now = Date.now(); }, 1000);
-        setInterval(() => { if (this.sseState !== 'open') this.refreshStatus(); }, 5000);
+        setInterval(() => { this.now = Date.now(); this.progTick(); }, 1000);
+        setInterval(() => {
+          if (this.sseState !== 'open') {                      // no stream: no status events, no programs events
+            this.refreshStatus();
+            if (this.page === 'programs' && !document.hidden) this.loadPrograms(true);
+          }
+        }, 5000);
         setInterval(() => { if (this.page === 'extensions' && !document.hidden && !this.access.busy) this.loadAccess(); }, 20000);
       }
       try {
@@ -305,8 +330,9 @@ function appState() {
     },
 
     // ---- navigation: the page is also in the address (#dev), so that a reload or a link opens it
-    openLink(link) {                           // #api/UnitHealth: the manual, looked up; #addons/new: the 新建插件 form
-      const [id, arg] = String(link).split('/');
+    openLink(link) {                           // #api/UnitHealth: the manual, looked up; #addons/new: the 新建插件 form;
+      const [id, arg] = String(link).split('/');   // #programs/companion: that program
+      if (id === 'programs' && arg) { this.goProgram(decodeURIComponent(arg)); return; }
       this.go(id);
       if (id === 'api' && arg) {
         this.docs.q = decodeURIComponent(arg);
@@ -320,6 +346,7 @@ function appState() {
       if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
       if (id === 'doctor' && !this.doctor.checks.length) this.runDoctor();
       if (id === 'addons' && this.addons.list === null) this.loadAddons();
+      if (id === 'programs') this.progsShow();
       if (id === 'extensions' && this.ext.list === null) this.loadExtensions();
       if (id === 'extensions') this.loadAccess();
       if (id === 'dev') this.scrollLogs(true);
@@ -572,6 +599,7 @@ function appState() {
       es.onopen = () => { this.sseState = 'open'; this.daemonError = ''; };
       es.addEventListener('log', ev => { try { this.pushLog(JSON.parse(ev.data)); } catch (e) { /* ignore a bad line */ } });
       es.addEventListener('status', ev => { try { this.applyStatus(JSON.parse(ev.data)); } catch (e) { /* ignore */ } });
+      es.addEventListener('programs', () => this.onPrograms());
       es.onerror = () => {
         es.close();
         if (this.sse !== es) return;
@@ -1209,6 +1237,246 @@ function appState() {
     reportText(r) { return t(r === true ? '开' : r === false ? '关' : '未设置'); },
     enabledText(a) { return a.enabled === true ? t('已启用') : a.enabled === false ? t('已禁用') : t('{n} 个角色禁用', { n: a.disabled_in }); },
 
+    // ---- 程序 (programs.py through /api/programs): what this program loads outside the game, as 插件 is what runs in it. The
+    //      list with a state dot each; the one selected: its state, command, folder, exit code, 开始 / 停止 / 重启 / 移除, and
+    //      its output (the newest PROG_KEEP lines, asked for from a cursor every second while it runs and the page shows, once
+    //      more after it stopped). The stream's `programs` event says a state changed: the list is read again
+    async loadPrograms(quiet) {                // quiet: a failure leaves the list as it was, unsaid (接入 Agent, the timer)
+      if (this.progs.loading) { this.progs.again = true; return; }   // one read at a time; a change meanwhile: once more
+      this.progs.loading = true;
+      try {
+        do {
+          this.progs.again = false;
+          this.progsApply(progRows(await this.api('/api/programs')));
+          this.progs.error = '';
+        } while (this.progs.again);
+      } catch (e) {
+        if (!quiet) {
+          this.progs.error = t('读取程序失败：') + errText(e);
+          if (this.progs.list === null) this.progs.list = [];
+        }
+      } finally {
+        this.progs.loading = false;
+      }
+    },
+    progsShow() {                              // the page opened: the list read again, the output shown caught up
+      this.loadPrograms();
+      if (this.selProg && this.pout.id === this.selProg.id) this.loadProgOut();
+    },
+    onPrograms() {                             // the stream's word that the programs changed
+      if (this.page === 'programs') this.loadPrograms();
+      else if (this.page === 'connect' && this.progs.list !== null) this.loadPrograms(true);
+    },
+    progsApply(list) {                         // a new list: the selection kept while its program is there, else the first
+      const old = this.progs.list || [];
+      this.progs.list = list;
+      if (this.progs.sel && !list.some((r) => r.id === this.progs.sel)) this.progs.sel = null;
+      const sel = this.selProg;
+      if (sel) this.progSeen(sel, old.find((r) => r.id === sel.id));
+      else if (list.length && this.page === 'programs') this.progSelect(list[0].id);
+    },
+    progRow(row) {                             // one row the daemon answered (an action's, the output's) into the list
+      if (!row || !row.id) return;
+      const list = this.progs.list || [];
+      const old = list.find((r) => r.id === row.id);
+      this.progs.list = old ? list.map((r) => (r.id === row.id ? row : r)) : list.concat([row]);
+      this.progSeen(row, old);
+    },
+    progSeen(row, old) {                       // the shown program's row anew: a new run's output starts afresh; a run that
+      if (row.id !== this.pout.id) return;     // ended has its last lines read once more
+      if (row.started && row.started !== this.pout.run) {
+        this.progOutReset(row);
+        if (this.page === 'programs') this.loadProgOut();
+      } else if (old && old.state === 'running' && row.state !== 'running') this.pout.after = 2;
+    },
+    get selProg() { return (this.progs.list || []).find((r) => r.id === this.progs.sel) || null; },
+    get progCur() { return this.selProg || NO_PROG; },   // the detail's program: never null (the detail stays in the page)
+    progSelect(id) {
+      this.progs.sel = id;
+      this.progs.confirm = '';
+      this.progs.note = null;
+      this.progOutReset(this.selProg || { id });
+      this.loadProgOut();
+    },
+    goProgram(id) {                            // 查看程序 (接入 Agent), #programs/<id>
+      this.go('programs');
+      this.progSelect(id);
+    },
+    progTitle(r) { return r ? this.loc(r.title) || r.id : ''; },
+    progState(r) {                             // {key, cls (ok / warn / bad / ''), text}: 运行中 first, then a manifest
+      if (!r) return { key: '', cls: '', text: '' };   // that cannot be read, then how the last run ended
+      if (r.state === 'running') return { key: 'running', cls: 'ok', text: t('运行中') };
+      if (r.error) return { key: 'error', cls: 'warn', text: t('清单有错') };
+      if (r.state === 'exited') return r.exit_code && r.exit_code !== 0 ? { key: 'failed', cls: 'bad', text: t('失败') }
+        : { key: 'exited', cls: '', text: t('已退出') };
+      return { key: 'stopped', cls: '', text: t('未运行') };
+    },
+    progSub(r) {                               // the list's second line: the state, and how long it runs or how it ended
+      const s = this.progState(r);
+      if (s.key === 'running' && r.started) return s.text + ' · ' + this.upFor(progSecs(r.started));
+      if (s.key === 'failed') return s.text + ' · ' + t('退出码 {c}', { c: progCode(r.exit_code, true) });
+      return s.text;
+    },
+    get progSummary() {                        // the page bar
+      const list = this.progs.list;
+      if (!list || !list.length) return '';
+      const n = list.filter((r) => r.state === 'running').length;
+      return t('{n} 个程序', { n: list.length }) + (n ? ' · ' + t('{n} 个运行中', { n }) : '');
+    },
+    progCommand(r) {                           // the command line: argv joined, the arguments with spaces quoted
+      const c = r && r.command;
+      if (!c) return '—';
+      return Array.isArray(c) ? c.map((a) => (/\s/.test(String(a)) ? '"' + a + '"' : String(a))).join(' ') : String(c);
+    },
+    progCode(c) { return progCode(c); },
+    progTime(v) {                              // a time of a run: today's to the second, an older one with its date
+      const s = progSecs(v);
+      if (!s) return '—';
+      return new Date(s * 1000).toDateString() === new Date(this.now).toDateString() ? this.fmtTime(s) : this.fmtStamp(s);
+    },
+    progStarted(r) {                           // 开始于: when, and while it runs for how long
+      const s = this.progTime(r.started);
+      return r.state === 'running' && r.started ? s + ' · ' + t('已运行 {d}', { d: this.upFor(progSecs(r.started)) }) : s;
+    },
+    progRan(r) {                               // how long the last run ran: '' when not known
+      const a = progSecs(r.started), b = progSecs(r.exited_at);
+      return a && b && b >= a ? this.fmtDuration(b - a) : '';
+    },
+    async progAct(r, action) {                 // 开始 / 停止 / 重启 / 移除 (移除 wants a second click)
+      if (!r || !r.id || this.progs.busy) return;
+      if (action === 'remove' && this.progs.confirm !== r.id) { this.progs.confirm = r.id; return; }
+      this.progs.confirm = '';
+      this.progs.busy = r.id + ':' + action;
+      this.progs.note = null;
+      const name = this.progTitle(r);
+      try {
+        if (action === 'remove') {
+          await this.api('/api/programs/remove', { body: { id: r.id } });
+          if (this.progs.sel === r.id) { this.progs.sel = null; this.progOutReset(null); }
+          this.say(t('已移除 {name}', { name }));
+          await this.loadPrograms();
+          return;
+        }
+        const d = await this.api(action === 'stop' ? '/api/programs/stop' : '/api/programs/start',
+                                 { body: action === 'restart' ? { id: r.id, restart: true } : { id: r.id } });
+        this.progRow(progRowOf(d));              // a new run (started changed) starts the output afresh
+        if (action === 'stop' && this.pout.id === r.id) this.pout.after = 2;
+        this.say(t({ start: '已开始 {name}', stop: '已停止 {name}', restart: '已重启 {name}' }[action], { name }));
+      } catch (e) {
+        this.progs.note = { bad: true, text: t({ start: '开始失败：', stop: '停止失败：', restart: '重启失败：',
+                                                 remove: '移除失败：' }[action]) + errText(e) };
+      } finally {
+        this.progs.busy = '';
+      }
+    },
+    progBusy(r, action) { return !!r && this.progs.busy === r.id + ':' + action; },
+    progAddOpen() {
+      Object.assign(this.progs.add, { open: true, busy: false, error: '' });
+      this.$nextTick(() => { const el = this.$refs.progpath; if (el) el.focus(); });
+    },
+    async progAdd() {                          // 登记程序: a folder with wuxian-program.json, or the manifest itself
+      const a = this.progs.add;
+      const path = a.path.trim();
+      if (!path || a.busy) return;
+      a.busy = true;
+      a.error = '';
+      try {
+        const row = progRowOf(await this.api('/api/programs/add', { body: { path } }));
+        await this.loadPrograms();
+        if (row) { this.progRow(row); this.progSelect(row.id); }
+        Object.assign(a, { open: false, path: '' });
+        this.say(t('已登记 {name}', { name: row ? this.progTitle(row) : path }));
+      } catch (e) {
+        a.error = errText(e);
+      } finally {
+        a.busy = false;
+      }
+    },
+    async progPick() {                         // the App window's folder dialog (ui/shell.py pick_folder)
+      try {
+        const p = await window.pywebview.api.pick_folder(this.progs.add.path.trim());
+        if (p) this.progs.add.path = p;
+      } catch (e) { this.say(t('选择文件夹：') + errText(e)); }
+    },
+
+    // ---- 程序 · 输出: /api/programs/logs from the cursor next on (whatever the daemon hands back as next); a line at or
+    //      below the newest one had is not added again; a new run (row.started changed) starts afresh from 0. gen tells
+    //      an answer for an output since reset
+    progOutReset(row) {
+      progLines = [];
+      Object.assign(this.pout, { id: row ? row.id : null, run: (row && row.started) || null, next: 0, gen: this.pout.gen + 1,
+                                 text: '', count: 0, loaded: false, error: '', follow: true, after: 0 });
+    },
+    async loadProgOut() {
+      const id = this.pout.id;
+      if (!id) return;
+      if (this.pout.busy) { this.pout.again = true; return; }
+      this.pout.busy = true;
+      let changed = false;
+      try {
+        for (let i = 0; i < PROG_PAGES; i++) {
+          const gen = this.pout.gen, since = this.pout.next;
+          const d = await this.api('/api/programs/logs?id=' + encodeURIComponent(id) + '&since=' + since + '&limit=' + PROG_LIMIT);
+          if (this.pout.id !== id) return;
+          if (d && d.row) this.progRow(d.row);   // a new run resets the output: read it from the start
+          if (this.pout.gen !== gen) { changed = true; continue; }
+          const lines = Array.isArray(d && d.lines) ? d.lines : [];
+          let top = progLines.length ? progLines[progLines.length - 1].n : -Infinity;
+          for (const l of lines) {
+            const n = l && typeof l.n === 'number' ? l.n : null;
+            if (n !== null && n <= top) continue;
+            progLines.push({ n: n === null ? top : n, text: progText(l) });
+            if (n !== null) top = n;
+            changed = true;
+          }
+          this.pout.next = d && d.next != null ? d.next : (Number.isFinite(top) ? top : since);
+          this.pout.loaded = true;
+          this.pout.error = '';
+          if (lines.length < PROG_LIMIT || this.pout.next === since) break;
+        }
+      } catch (e) {                            // a 404: no output yet (never run), said as such, not as a failure
+        if (this.pout.id === id) { this.pout.error = e.status === 404 ? '' : errText(e); this.pout.loaded = true; }
+      } finally {
+        this.pout.busy = false;
+        if (changed && this.pout.id === id) {
+          if (progLines.length > PROG_KEEP) progLines = progLines.slice(-PROG_KEEP);
+          this.progOutChanged();
+        }
+        if (this.pout.again) { this.pout.again = false; this.loadProgOut(); }
+      }
+    },
+    progOutChanged() {                         // the text after new lines, the end followed
+      this.pout.text = progLines.map((l) => l.text).join('\n');
+      this.pout.count = progLines.length;
+      if (this.pout.follow) this.progScrollEnd();
+    },
+    progScrollEnd() {
+      this.$nextTick(() => { const b = this.$refs.progout; if (b) b.scrollTop = b.scrollHeight; });
+    },
+    onProgOutScroll(ev) {                      // up: the end is no longer followed; back at the end: followed again
+      const b = ev.target;
+      const atBottom = b.scrollHeight - b.scrollTop - b.clientHeight < 12;
+      if (atBottom && !this.pout.follow) this.pout.follow = true;
+      else if (!atBottom && this.pout.follow && b.scrollHeight > b.clientHeight) this.pout.follow = false;
+    },
+    progTick() {                               // every second: the shown program's output while it runs, and a last read
+      if (this.page !== 'programs' || document.hidden || !this.token) return;
+      const r = this.selProg;
+      if (!r || r.id !== this.pout.id || this.pout.busy) return;
+      if (r.state === 'running') this.loadProgOut();
+      else if (this.pout.after > 0) { this.pout.after--; this.loadProgOut(); }
+    },
+    get progOutLine() {                        // over the output: how many lines
+      const n = this.pout.count;
+      if (!n) return '';
+      return n >= PROG_KEEP ? t('最近 {n} 行', { n }) : t('{n} 行', { n });
+    },
+    get progOutEmpty() {                       // in place of the output: why there is none
+      if (this.pout.error) return t('读取输出失败：') + this.pout.error;
+      if (!this.pout.loaded || this.pout.count) return '';
+      return this.progCur.state === 'stopped' && !this.progCur.started ? t('还没有运行过') : t('没有输出');
+    },
+
     // ---- the API manual (apidocs.py through /api/apidocs): the search, with what an addon may do with each result (call: ok /
     // limited / protected) and a filter by it; an entry with that said in full, its types in place, its namespace; 试一下 next to
     // 开发台's 运行 Lua: a function called once (its values by the documented return names, tables opened), an enum read in the
@@ -1637,8 +1905,8 @@ function appState() {
         this.say(t('读取 Agent 失败：') + errText(e));
       }
     },
-    async loadConnect() {                      // the 接入 Agent page: both servers' agents, and the apps
-      await Promise.all([this.loadAgents(), this.loadWxw(), this.loadApps()]);
+    async loadConnect() {                      // the 接入 Agent page: both servers' agents, the apps, and the programs that
+      await Promise.all([this.loadAgents(), this.loadWxw(), this.loadApps(), this.loadPrograms(true)]);   // drive apps
     },
     async loadWxw() {                          // 无限图鉴 (server=wuxianwow): the same hosts, the same shape
       try {
@@ -1685,7 +1953,9 @@ function appState() {
       return p ? [p.command].concat(p.args || []).join(' ') : '—';
     },
 
-    // ---- 接入 Agent · 应用 (/api/kit/apps): an app's 启动语 to hand an agent, and what the app needs before it
+    // ---- 接入 Agent · 应用 (/api/kit/apps): a prompt app's 启动语 to hand an agent, and what the app needs before it; a
+    //      program app says so, with its program on the 程序 page when one of that id is registered. Temporary apps (an
+    //      agent's listening while it debugs) are not handed to anyone: not listed
     async loadApps() {
       try {
         this.apps.data = await this.api('/api/kit/apps');
@@ -1694,7 +1964,18 @@ function appState() {
         this.apps.error = errText(e);
       }
     },
-    get appsShown() { return ((this.apps.data && this.apps.data.apps) || []).filter(a => a && a.start); },
+    get appsShown() {
+      return ((this.apps.data && this.apps.data.apps) || []).filter(a => a && !a.temp && (a.start || this.appDriver(a) === 'program'));
+    },
+    appDriver(a) { return a.driver || (a.prompt ? 'prompt' : null); },   // what drives it: prompt (an agent) or program
+    appProgram(a) {                            // the registered program of a program app: the one of its id
+      if (this.appDriver(a) !== 'program') return null;
+      return (this.progs.list || []).find(p => p.id === a.id) || null;
+    },
+    appDriverText(a) {
+      const p = this.appProgram(a);
+      return p ? t('由程序「{name}」驱动', { name: this.progTitle(p) }) : t('由程序驱动');
+    },
     get appsEmpty() {                          // the line in place of the rows: '' while there are rows
       const d = this.apps.data;
       if (!d || this.appsShown.length) return '';
@@ -1716,6 +1997,7 @@ function appState() {
                    text: x.on === true ? t('扩展「{x}」已开启', { x: name }) : x.on === false ? t('扩展「{x}」未开启', { x: name })
                                        : t('扩展「{x}」：进入游戏后确认', { x: name }) });
       }
+      if (this.appDriver(a) === 'program') return out;   // its program, not an agent, runs it
       const mine = this.agentsOk('wuxian');
       out.push({ id: 'wuxian', ok: mine.length > 0, go: mine.length ? '' : 'connect-wuxian',
                  text: mine.length ? t('已接入无限工坊：{list}', { list: mine.map(h => h.title).join(t('、')) })
@@ -2094,6 +2376,32 @@ function apiMessage(data, r) {
   if (data && typeof data.error === 'string') return data.error;
   if (data && data.raw) return 'HTTP ' + r.status + ' ' + String(data.raw).slice(0, 200);
   return 'HTTP ' + r.status;
+}
+
+/* 程序: the daemon's answers in the shapes the page takes — the list as [row] or {programs: [row]}, one row as the row,
+   {row} or {program}; a time as Unix seconds (milliseconds and ISO text taken too); an exit code past 16 bits with its hex
+   (a Windows status such as 0xC0000005); an output line's text without a terminal's escapes */
+function progRows(d) {
+  return Array.isArray(d) ? d : d && Array.isArray(d.programs) ? d.programs : [];
+}
+function progRowOf(d) {
+  if (d && typeof d.id === 'string') return d;
+  return (d && ((d.row && d.row.id && d.row) || (d.program && d.program.id && d.program))) || null;
+}
+function progSecs(v) {
+  if (typeof v === 'number') return v > 1e12 ? v / 1000 : v;
+  if (typeof v === 'string' && v) { const ms = Date.parse(v); return Number.isFinite(ms) ? ms / 1000 : null; }
+  return null;
+}
+function progCode(c, short) {                    // short (the list): such a status as its hex alone
+  if (c == null) return '—';
+  if (!(c > 0xffff || c < -0xffff)) return String(c);
+  const hex = '0x' + (c >>> 0).toString(16).toUpperCase();
+  return short ? hex : c + ' (' + hex + ')';
+}
+function progText(l) {
+  const s = typeof l === 'string' ? l : l && l.text != null ? String(l.text) : '';
+  return s.replace(ANSI, '').replace(/\r$/, '');
 }
 
 function stateOf(elt) {

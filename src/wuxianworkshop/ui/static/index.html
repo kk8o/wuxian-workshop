@@ -6,15 +6,15 @@
 <meta name="color-scheme" content="dark">
 <title>无限工坊</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=10">
+<link rel="stylesheet" href="app.css?v=11">
 <!-- Vendored libraries, no CDN (public CDNs are unreliable in mainland China): htmx 2.0.11 (0BSD) and Alpine.js 3.17.4 (MIT),
      both taken from the npm tarballs on registry.npmmirror.com with the sha512 checked against the registry metadata
      (see wuxianworkshop/ui/__init__.py). app.js registers the Alpine component and the htmx json extension, so it loads
      first; the two libraries are deferred.
      The layout is a desktop program's: a tool bar, the navigation on the left, the page filling
      the rest (its lists scroll inside it, the window never does), a status bar. -->
-<script src="i18n.js?v=10"></script>
-<script src="app.js?v=10"></script>
+<script src="i18n.js?v=11"></script>
+<script src="app.js?v=11"></script>
 <script src="htmx.min.js" defer></script>
 <script src="alpine.min.js" defer></script>
 </head>
@@ -29,6 +29,7 @@
     <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.5C10.3 5.2 7.8 4.8 4.5 5v13c3.3-.2 5.8.2 7.5 1.5 1.7-1.3 4.2-1.7 7.5-1.5V5c-3.3-.2-5.8.2-7.5 1.5Zm0 0v13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3.5v4M15 3.5v4M6.5 7.5h11v3a5.5 5.5 0 0 1-11 0v-3ZM12 16v4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4.3 3 7.7 7 9 4-1.3 7-4.7 7-9V6l-7-2.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m8.8 12 2.2 2.2 4.3-4.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-program" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 8.5h17" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 11.5v5l4.2-2.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
     <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M5 8.5h3.5V7a2 2 0 1 1 4 0v1.5H16V12h1.5a2 2 0 1 1 0 4H16v3.5H5V16h1.5a2 2 0 1 0 0-4H5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 20.5V4m0 .5h10.5l-2 3.5 2 3.5H6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.5v2.3M12 18.2v2.3M3.5 12h2.3M18.2 12h2.3M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
@@ -69,7 +70,7 @@
   <!-- 导航 -->
   <nav class="sidebar" x-t>
     <template x-for="(p, i) in NAV" :key="p.id">
-      <a href="#" class="nav-item" :class="{active: page === p.id}" @click.prevent="go(p.id)" :title="t('{label}（Ctrl+{n}）', { label: t(p.label), n: i + 1 })">
+      <a href="#" class="nav-item" :class="{active: page === p.id}" @click.prevent="go(p.id)" :title="i < 8 ? t('{label}（Ctrl+{n}）', { label: t(p.label), n: i + 1 }) : t(p.label)">
         <svg class="ico"><use :href="'#' + p.icon"/></svg>
         <span class="nav-label" x-text="t(p.label)"></span>
         <span class="nav-badge" x-show="p.id === 'dev' && errCount > 0" x-text="errCount"></span>
@@ -99,7 +100,7 @@
             <div>
               <h2>用 AI 写魔兽插件</h2>
               <p>无限工坊让你的 AI Agent（Claude Code、Codex、Cursor、Trae、WorkBuddy 等）自己写插件、自己调试：从零写一个新插件，或修改你已经装着的插件（别人写的也行）；写完先检查，再在正在运行的游戏里试，看报错、print 输出和截图，在游戏里执行 Lua 查状态，对照这个客户端自己的 API 手册找到原因、改好再试。你只需说清想要什么，在游戏里验收。</p>
-              <p class="muted small">下面五步走一遍大约 5 分钟；做完的步骤会自动打勾，随时可以回到这一页（左边的「开始」）。</p>
+              <p class="muted small">下面五步走一遍大约 5 分钟；做完的步骤会自动打勾，随时可以回到这一页（左边的「开始使用」）。</p>
             </div>
           </div>
 
@@ -682,6 +683,121 @@
       </div>
     </section>
 
+    <!-- 程序：插件页的列表 + 详情，加载的是游戏外的程序。左边：每个登记的程序和它的状态点；右边：选中的程序——状态、开始时间、退出码、
+         命令、文件夹、驱动的应用，标题右边开始 / 停止 / 重启 / 移除，下面是输出（最近几百行，运行中每秒增量读取，在底部时跟随） -->
+    <section class="page" x-t x-show="page === 'programs'">
+      <div class="pagebar">
+        <h1>程序</h1>
+        <span class="muted" x-text="progSummary"></span>
+        <div class="spacer"></div>
+        <button class="btn primary" @click="progAddOpen()"><svg class="ico"><use href="#i-plus"/></svg>登记程序</button>
+        <button class="btn" @click="loadPrograms()" :disabled="progs.loading"><svg class="ico"><use href="#i-refresh"/></svg>刷新</button>
+      </div>
+      <div class="pagebody fill master-detail">
+        <div class="master">
+          <div class="loader" role="status" x-show="progs.list === null"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>正在读取…</div>
+          <p class="small bad-text pad" x-show="progs.error" x-text="progs.error"></p>
+          <ul class="mlist">
+            <template x-for="r in (progs.list || [])" :key="r.id">
+              <li class="mitem" :class="{ active: progs.sel === r.id }" @click="progSelect(r.id)">
+                <div class="mitem-top">
+                  <span class="dot" :class="'d-' + progState(r).cls"></span>
+                  <span class="mitem-title" x-text="progTitle(r)"></span>
+                  <span class="mono mitem-aside" x-text="r.id"></span>
+                </div>
+                <div class="mitem-sub prog-sub" :class="'s-' + progState(r).cls" x-text="progSub(r)"></div>
+              </li>
+            </template>
+          </ul>
+        </div>
+
+        <div class="detail">
+          <div class="detail-inner" x-show="selProg">
+            <div class="detail-head">
+              <div class="grow">
+                <div class="detail-title"><span x-text="progTitle(progCur)"></span></div>
+                <div class="muted small mono" x-text="progCur.id"></div>
+              </div>
+              <div class="xp-acts">
+                <button class="btn primary" x-show="progCur.state !== 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'start')"
+                        x-text="progBusy(progCur, 'start') ? t('开始中…') : t('开始')"></button>
+                <button class="btn" x-show="progCur.state === 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'restart')"
+                        x-text="progBusy(progCur, 'restart') ? t('重启中…') : t('重启')"></button>
+                <button class="btn" x-show="progCur.state === 'running'" :disabled="progs.busy !== ''" @click="progAct(progCur, 'stop')"
+                        x-text="progBusy(progCur, 'stop') ? t('停止中…') : t('停止')"></button>
+                <button class="btn" x-show="progCur.state !== 'running' && progs.confirm !== progCur.id" :disabled="progs.busy !== ''"
+                        @click="progAct(progCur, 'remove')">移除</button>
+              </div>
+            </div>
+            <div class="xp-confirm" x-show="progs.confirm && progs.confirm === progCur.id">
+              <span class="grow">从列表移除，不再由无限工坊加载；程序文件夹保留。</span>
+              <button class="btn confirm small" :disabled="progs.busy !== ''" @click="progAct(progCur, 'remove')"
+                      x-text="progBusy(progCur, 'remove') ? t('移除中…') : t('确认移除')"></button>
+              <button class="btn small" @click="progs.confirm = ''">取消</button>
+            </div>
+            <div class="xp-note bad" x-show="progCur.error" x-text="t('清单有错：{e}', { e: progCur.error })"></div>
+            <div class="xp-note" :class="{ bad: progs.note && progs.note.bad }" x-show="progs.note" x-text="progs.note && progs.note.text"></div>
+            <div class="prog-facts">
+              <dl class="kv">
+                <dt>状态</dt>
+                <dd><span class="xp-state" :class="progState(progCur).cls"><span class="xp-dot"></span><span x-text="progState(progCur).text"></span></span>
+                  <span class="muted" x-show="progCur.state === 'running' && progCur.pid" x-text="t('进程 {pid}', { pid: progCur.pid })"></span></dd>
+                <dt x-show="progCur.started">开始于</dt>
+                <dd x-show="progCur.started" x-text="progStarted(progCur)"></dd>
+                <dt x-show="progCur.state === 'exited'">退出码</dt>
+                <dd x-show="progCur.state === 'exited'">
+                  <span class="pill" :class="progCur.exit_code === 0 ? 'ok' : progCur.exit_code == null ? 'off' : 'bad'" x-text="progCode(progCur.exit_code)"></span>
+                  <span class="muted" x-text="t('{t} 退出', { t: progTime(progCur.exited_at) }) + (progRan(progCur) ? ' · ' + t('运行了 {d}', { d: progRan(progCur) }) : '')"></span></dd>
+                <dt>命令</dt><dd class="mono selectable" x-text="progCommand(progCur)"></dd>
+                <dt>文件夹</dt><dd class="mono selectable" x-text="progCur.path || '—'"></dd>
+                <dt>驱动的应用</dt><dd class="mono" x-text="progCur.app ? progCur.id : '—'"></dd>
+              </dl>
+            </div>
+            <div class="toolbar prog-out-bar">
+              <b>输出</b>
+              <span class="muted small" x-text="progOutLine"></span>
+              <div class="spacer"></div>
+              <label class="check-inline"><input type="checkbox" x-model="pout.follow" @change="pout.follow && progScrollEnd()"> 跟随</label>
+              <button class="btn small" :disabled="!pout.count" @click="copy(pout.text, t('输出'))">复制</button>
+            </div>
+            <div class="prog-out selectable" x-ref="progout" @scroll="onProgOutScroll($event)">
+              <div class="loader" role="status" x-show="pout.busy && !pout.loaded"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取输出…</div>
+              <pre x-show="pout.count" x-text="pout.text"></pre>
+              <div class="empty" x-show="progOutEmpty" x-text="progOutEmpty"></div>
+            </div>
+          </div>
+
+          <div class="empty intro detail-empty" x-show="progs.list && !progs.list.length && !progs.error">
+            <b>还没有程序</b>
+            <span>让 Agent 用 new_program 新建一个，或点「登记程序」选一个含 wuxian-program.json 的文件夹。</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 登记程序（对话框） -->
+      <div class="modal-back" x-show="progs.add.open" x-transition.opacity @keydown.escape.window="progs.add.open = false" @click.self="progs.add.open = false">
+        <div class="modal">
+          <div class="modal-head"><span>登记程序</span><button x-t class="x" @click="progs.add.open = false" title="关闭（Esc）">✕</button></div>
+          <div class="modal-body">
+            <form class="form" @submit.prevent="progAdd()">
+              <div class="field"><span>程序文件夹</span>
+                <div class="row tight">
+                  <input x-t class="input mono" x-ref="progpath" x-model="progs.add.path" placeholder="含 wuxian-program.json 的文件夹，或清单文件">
+                  <button class="btn" type="button" x-show="canPick" @click="progPick()">浏览…</button>
+                </div>
+              </div>
+              <div class="row end">
+                <span class="small bad-text" x-text="progs.add.error"></span>
+                <div class="spacer"></div>
+                <button class="btn" type="button" @click="progs.add.open = false">取消</button>
+                <button class="btn primary" type="submit" :disabled="progs.add.busy || !progs.add.path.trim()" x-text="progs.add.busy ? t('登记中…') : t('登记')"></button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 扩展：插件页的列表 + 详情。左边：扩展框架，它带的系统扩展，自定义扩展（网站扩展目录里的包与游戏里由它运行的扩展合成一行），
          底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
          或会话表。扩展的版本跟程序的分开 -->
@@ -1204,6 +1320,7 @@
               <div x-t class="agent-row app-row" :class="a.on === true ? 'st-ok' : ''">
                 <div class="agent-main">
                   <div class="agent-head"><b x-text="appTitle(a)"></b><span class="pill" x-show="appPill(a)" :class="appPill(a) && appPill(a)[0]" x-text="appPill(a) && appPill(a)[1]"></span></div>
+                  <p class="small muted" x-show="appDriver(a) === 'program'" x-text="appDriverText(a)"></p>
                   <p class="small warn-text" x-show="a.blocked" x-text="a.blocked"></p>
                   <ul class="checks mini">
                     <template x-for="c in appChecks(a)" :key="c.id">
@@ -1215,7 +1332,8 @@
                   </ul>
                 </div>
                 <div class="agent-acts">
-                  <button class="btn primary" @click="copy(a.start, t('启动语'))">复制启动语</button>
+                  <button class="btn primary" x-show="appDriver(a) !== 'program'" @click="copy(a.start, t('启动语'))">复制启动语</button>
+                  <button class="btn" x-show="appProgram(a)" @click="goProgram(a.id)">查看程序</button>
                 </div>
               </div>
             </template>
