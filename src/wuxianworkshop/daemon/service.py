@@ -41,6 +41,7 @@ OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities")   # what Wuxian
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
 FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's size in per cent (app.js applyScale)
+MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
 PIECE_KEPT = 280.0           # seconds after its first piece that the game still keeps an answer (it keeps 300)
@@ -636,8 +637,9 @@ class Service:
 
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         """the events addons sent with WoWBridge's Emit (journal entries of kind EVENT) from id `since` on (-1: only
-        the ones still to come), of that addon and topic (a name or a glob: "MyAddon", "scan.*"), at most `limit`;
-        with `wait` seconds and none there yet, it waits for the first one. next = the id to ask from next time"""
+        the ones still to come), of that addon (a name or a glob: "MyAddon") and topic (a name or a glob, "scan.*", or a
+        list of up to MAX_TOPICS of them: any one matches), at most `limit`; with `wait` seconds and none there yet, it
+        waits for the first one. next = the id to ask from next time"""
         if not isinstance(since, int) or isinstance(since, bool) or since < -1:
             raise ApiError(400, "bad_request", "since: an entry id, 0 or more (the `next` of the last call), or -1 for "
                                                "the events still to come")
@@ -647,13 +649,16 @@ class Service:
             raise ApiError(400, "bad_request", "limit: 1..1000")
         if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 <= wait <= 300:
             raise ApiError(400, "bad_request", "wait: 0..300 seconds")
-        for name, value in (("addon", addon), ("topic", topic)):
-            if value is not None and (not isinstance(value, str) or not value.strip()):
-                raise ApiError(400, "bad_request", f"{name}: a name or a glob")
+        if addon is not None and (not isinstance(addon, str) or not addon.strip()):
+            raise ApiError(400, "bad_request", "addon: a name or a glob")
+        topics = [topic] if isinstance(topic, str) else topic
+        if topic is not None and (not isinstance(topics, list) or not 1 <= len(topics) <= MAX_TOPICS
+                                  or not all(isinstance(t, str) and t.strip() for t in topics)):
+            raise ApiError(400, "bad_request", f"topic: a name or a glob, or a list of 1-{MAX_TOPICS} of them")
 
         def matches(e):
             return (e["kind"] == "EVENT" and (not addon or fnmatch.fnmatchcase(e.get("addon") or "", addon))
-                    and (not topic or fnmatch.fnmatchcase(e.get("topic") or "", topic)))
+                    and (not topics or any(fnmatch.fnmatchcase(e.get("topic") or "", t) for t in topics)))
 
         def pick():
             entries, next_id, truncated = self.journal.since(since, self.journal.events.maxlen, ["EVENT"])

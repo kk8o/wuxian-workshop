@@ -383,12 +383,13 @@ def build_server(backend, name="wuxian"):
         return out
 
     @mcp.tool(annotations=READ_ONLY)
-    async def events(addon: str | None = None, topic: str | None = None, since: int = 0, limit: int = 100,
+    async def events(addon: str | None = None, topic: str | list[str] | None = None, since: int = 0, limit: int = 100,
                      wait: float = 0) -> dict[str, Any]:
         """Read the events addons send with WB:Emit (WB = WoWBridge.Bind(addonName)), and WuxianKit's events
         (chat.message, kit.proposal ...). Example: {"addon": "WuxianKit", "topic": "chat.message", "since": -1, "wait":
         60}, then the same with "since" = the `next` of the answer.
-        - addon, topic: a name or a glob, case-sensitive ("MyAddon", "scan.*").
+        - addon, topic: a name or a glob, case-sensitive ("MyAddon", "scan.*"); topic may also be a list of up to 16
+          (any one matches: ["app.guild", "kit.app", "kit.ready"]).
         - since: -1 = only events from now on; 0 = all that are kept; else the `next` of your last answer.
         - wait: seconds (up to 300) to wait when nothing new is there yet.
         Each event: id, t (time), addon, topic, data, dropped (events lost before it). Use it instead of print() debugging:

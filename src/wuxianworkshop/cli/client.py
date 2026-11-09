@@ -112,6 +112,9 @@ class DaemonClient:
         return self.post("/api/api_scan", part=part, names=names, timeout=180 + AGAIN)
 
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
+        # topic: a name or a glob, or a list of them; a list of one goes as that one (a daemon before 0.9.13 reads no list)
+        if isinstance(topic, (list, tuple)):
+            topic = topic[0] if len(topic) == 1 else list(topic)
         return self.post("/api/addon_events", addon=addon, topic=topic, since=since, limit=limit, wait=wait,
                          timeout=wait + 30)
 

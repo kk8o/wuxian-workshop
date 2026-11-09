@@ -398,6 +398,29 @@ class LiveDaemon(unittest.TestCase):
         self.assertIn("status", kinds)                                   # the first status comes right after the backlog
         self.assertTrue(any(ev == "log" and d["text"] == "say: over sse" and d["kind"] == "INFO" for ev, d in seen), seen)
 
+    def test_events_of_a_list_of_topics(self):
+        """POST /api/addon_events takes topic as a list (any one matches); a bad one is 400 bad_request; `wuxian events`
+        takes --topic again for more, and a single one goes as a string (what a daemon before 0.9.13 reads)"""
+        svc = self.handle.service
+        status, mark = self.call("POST", "/api/addon_events", {"since": -1})
+        for topic in ("app.guild", "chat.message", "kit.ready"):
+            svc.on_debug("EVENT", json.dumps({"a": "WuxianKit", "t": topic, "d": {"n": 1}}))
+        status, res = self.call("POST", "/api/addon_events", {"addon": "WuxianKit", "topic": ["app.guild", "kit.*"],
+                                                              "since": mark["next"]})
+        self.assertEqual((status, [e["topic"] for e in res["events"]]), (200, ["app.guild", "kit.ready"]))
+        status, res = self.call("POST", "/api/addon_events", {"topic": ["ok", ""]})
+        self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
+        self.assertTrue(res["error"]["message"].startswith("topic: "))
+        code, out, err = self.run_cli("events", "--since", str(mark["next"]), "--topic", "app.*", "--topic", "kit.ready",
+                                      "--json")
+        self.assertEqual((code, [json.loads(x)["topic"] for x in out.splitlines()]), (0, ["app.guild", "kit.ready"]), err)
+        sent = []
+        from wuxianworkshop.cli.client import DaemonClient
+        with mock.patch.object(DaemonClient, "post", lambda self, path, timeout=None, **body: sent.append(body["topic"])):
+            DaemonClient({"port": 1, "token": "t"}).addon_events(topic=["one"])
+            DaemonClient({"port": 1, "token": "t"}).addon_events(topic=("one", "two"))
+        self.assertEqual(sent, ["one", ["one", "two"]])
+
     def test_doctor_install_settings(self):
         status, res = self.call("GET", "/api/doctor")
         self.assertEqual(status, 200)

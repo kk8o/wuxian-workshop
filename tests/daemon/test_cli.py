@@ -1,5 +1,6 @@
 """The `wuxian` command line without a daemon: argument parsing, the mcp-config snippets, quit when nothing runs."""
 import contextlib
+import fnmatch
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import unittest
 from unittest import mock
 
 from wuxianworkshop.cli import main as cli, mcpconfig
+from wuxianworkshop.daemon.api import ApiError
 
 
 class Parser(unittest.TestCase):
@@ -108,6 +110,152 @@ class Parser(unittest.TestCase):
             shell.reset_mock()
             self.assertEqual(cli.main([]), 0)
             shell.assert_called_once_with()
+
+
+class Game:
+    """a daemon client with WuxianKit's apps in the game: a clock that moves by what is waited for, events that come
+    at their times (ids from 100 on), kit.app.status / kit.app.open answering for one app"""
+
+    def __init__(self, timeline=(), running=False, lease=90, down=0, old=False):
+        self.now, self.running, self.lease, self.down, self.old = 1000.0, running, lease, down, old
+        self.timeline = [dict(id=100 + i, t=1000.0 + at, at=1000.0 + at, addon="WuxianKit", topic=topic, data=data)
+                         for i, (at, topic, data) in enumerate(timeline)]
+        self.calls, self.asks = [], []
+
+    def clock(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+        self.calls.append((name, args, self.now))
+        if self.down > 0:
+            self.down -= 1
+            raise ApiError(409, "link_down", "no frames come from the game")
+        if name == "kit.app.status":
+            if not self.running:
+                raise ApiError(400, "call_failed", "no app guild")
+            return {"result": {"app": "guild", "on": True, "lease": self.lease}}
+        assert name == "kit.app.open", name
+        self.running = True
+        return {"result": {"app": args["app"], "title": "公会聊天", "on": True, "lease": self.lease}}
+
+    def addon_events(self, addon, topic, since, limit, wait):
+        self.asks.append((topic, since, wait))
+        if self.old and isinstance(topic, list):
+            raise ApiError(400, "bad_request", "topic: a name or a glob")
+        if since == -1:
+            return {"events": [], "next": 100}
+        pick = [e for e in self.timeline if e["id"] >= since
+                and (topic is None or any(fnmatch.fnmatchcase(e["topic"], t) for t in topic))]
+        come = [e for e in pick if e["at"] <= self.now]
+        if not come:
+            if pick and pick[0]["at"] <= self.now + wait:
+                self.now = pick[0]["at"]
+                come = [e for e in pick if e["at"] <= self.now]
+            else:
+                self.now += wait
+                return {"events": [], "next": since}
+        return {"events": [{k: v for k, v in e.items() if k != "at"} for e in come], "next": come[-1]["id"] + 1}
+
+
+class Listen(unittest.TestCase):
+    """`wuxian listen <app>`: joins the app when it runs, else opens it (kit.app.open, tried again every 5 s while the
+    game is away), prints OPEN <status>, each event app.<id> as a JSON line and NEXT <id> after each batch, keeps it
+    alive with kit.app.status every max(30, lease / 3) s, joins or opens it again after kit.ready, ends with END <why>
+    (not for a replaced one), TIMEOUT after --max; --once ends after the first wake"""
+
+    def listen(self, game, *argv):
+        ns, rest = cli.build_parser().parse_known_args(["listen", *argv])
+        self.assertEqual(rest, [])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "clock", game.clock), mock.patch.object(cli, "sleep", game.sleep), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.cmd_listen(game, ns)
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def test_a_whole_run(self):
+        game = Game([(10, "app.guild", {"app": "guild", "reason": "urgent", "items": [{"id": 1}], "skipped": 0}),
+                     (10, "kit.app", {"app": "guild", "on": True, "ends": 9999}),
+                     (12, "chat.message", {"text": "not this"}),
+                     (40, "app.guild", {"app": "guild", "reason": "batch", "items": [], "skipped": 0}),
+                     (50, "kit.ready", {}),
+                     (60, "kit.app", {"app": "other", "on": False, "why": "player"}),
+                     (61, "kit.app", {"app": "guild", "on": False, "why": "replaced"}),
+                     (70, "app.guild", {"app": "guild", "reason": "idle", "items": [], "skipped": 0}),
+                     (80, "kit.app", {"app": "guild", "on": False, "why": "player"})], down=1)
+        code, lines, err = self.listen(game, "guild")
+        self.assertEqual(code, 0)
+        self.assertEqual(err.count("kit.app.status: no frames come from the game (link_down)"), 1)
+        self.assertTrue(lines[0].startswith("OPEN {"))
+        self.assertEqual(json.loads(lines[0][5:])["title"], "公会聊天")
+        wake = json.loads(lines[1])
+        self.assertEqual((sorted(wake), wake["id"], wake["topic"], wake["data"]["reason"]),
+                         (["data", "id", "t", "topic"], 100, "app.guild", "urgent"))
+        self.assertEqual(lines[2:4], ["NEXT 102", json.dumps(dict(id=103, t=1040.0, topic="app.guild", data={
+            "app": "guild", "reason": "batch", "items": [], "skipped": 0}), ensure_ascii=False)])
+        self.assertEqual(lines[4], "NEXT 104")
+        self.assertTrue(lines[5].startswith("OPEN {"))                       # after the reload: joined
+        self.assertEqual((json.loads(lines[6])["id"], lines[7:]), (107, ["NEXT 108", "END player"]))
+        names = [(n, round(at)) for n, _, at in game.calls]
+        self.assertEqual(names[:3], [("kit.app.status", 1000), ("kit.app.status", 1005), ("kit.app.open", 1005)])
+        self.assertIn(("kit.app.status", 1035), names)                       # the heartbeat: lease 90 -> every 30 s
+        self.assertIn(("kit.app.status", 1050), names)                       # after kit.ready: running, so not opened
+        self.assertEqual([n for n, _ in names].count("kit.app.open"), 1)
+        self.assertEqual(game.calls[2][1], {"app": "guild"})
+        self.assertTrue(all(t == ["app.guild", "kit.app", "kit.ready"] and 0 <= w <= 25 for t, _, w in game.asks))
+
+    def test_once_with_a_declaration(self):
+        decl = {"app": "not this", "title": "公会聊天", "hear": ["chat:guild"], "pace": True, "lease": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "guild.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(decl, f, ensure_ascii=False)
+            game = Game([(3, "app.guild", {"reason": "item", "items": []}), (4, "app.guild", {"reason": "item"})],
+                        running=True, lease=0)
+            code, lines, _ = self.listen(game, "guild", "--open", path, "--minutes", "30", "--replace", "--once")
+            self.assertEqual((code, len(lines), lines[-1]), (0, 3, "NEXT 101"))
+            self.assertEqual(game.calls, [("kit.app.open", dict(decl, app="guild", minutes=30), 1000.0)])  # no status
+            game = Game(running=True)                        # running: joined as it is, the declaration not sent
+            code, lines, _ = self.listen(game, "guild", "--open", path, "--once", "--max", "0")
+            self.assertEqual(([c[0] for c in game.calls], lines[-2:]), (["kit.app.status"], ["NEXT 100", "TIMEOUT"]))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("[1]")
+            self.assertEqual(self.listen(Game(), "guild", "--open", path)[0], 2)
+        self.assertEqual(self.listen(Game(), "guild", "--open", os.path.join(tmp, "gone.json"))[0], 2)
+        code, _, err = self.listen(Game(), "Guild!")
+        self.assertEqual(code, 2)
+        self.assertIn("app: lowercase letters", err)
+
+    def test_max_and_no_heartbeat_without_a_lease(self):
+        game = Game(running=True, lease=0)
+        code, lines, _ = self.listen(game, "guild", "--max", "120", "--since", "42")
+        self.assertEqual((code, lines[1:]), (0, ["NEXT 42", "TIMEOUT"]))
+        self.assertEqual([c[0] for c in game.calls], ["kit.app.status"])
+        self.assertEqual(game.now, 1120.0)
+        self.assertEqual(game.asks[0][1], 42)                          # from --since on, not from now
+
+    def test_the_game_away_while_it_waits(self):
+        """the open is tried every 5 s until the game answers (the error said once); --max may end it first"""
+        game = Game(down=1000)
+        code, lines, err = self.listen(game, "guild", "--max", "60")
+        self.assertEqual((code, lines), (0, ["NEXT 100", "TIMEOUT"]))
+        self.assertEqual(len(game.calls), 12)                          # at 1000, 1005 ... 1055
+        self.assertEqual(err.count("\n"), 1)
+        game = Game()                                                  # its check refuses: no OPEN, tried again
+        game.call_exposed = lambda addon, name, args=None, timeout_ms=10000: (
+            game.calls.append(name) or {"result": {"app": "guild", "on": False, "why": "你还没有加入公会"}})
+        code, lines, err = self.listen(game, "guild", "--max", "12")
+        self.assertEqual((code, lines, game.calls.count("kit.app.open")), (0, ["NEXT 100", "TIMEOUT"], 3))
+        self.assertIn("kit.app.open: it did not start:", err)
+
+    def test_a_daemon_without_lists_of_topics(self):
+        """a daemon before 0.9.13 refuses a list (400 bad_request "topic: ..."): all of WuxianKit's events, picked here"""
+        game = Game([(2, "chat.message", {}), (3, "app.guild", {"reason": "item"})], running=True, old=True)
+        code, lines, _ = self.listen(game, "guild", "--once")
+        self.assertEqual((code, [json.loads(x)["id"] for x in lines[1:-1]], lines[-1]), (0, [101], "NEXT 102"))
+        self.assertEqual([t for t, _, _ in game.asks][:2], [["app.guild", "kit.app", "kit.ready"], None])
 
 
 class BackgroundStart(unittest.TestCase):

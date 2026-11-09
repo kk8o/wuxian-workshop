@@ -462,6 +462,34 @@ class Events(unittest.TestCase):
         now = asyncio.run(svc.addon_events(since=-1))                    # -1: none of the old ones, the next id
         self.assertEqual((now["events"], now["next"]), ([], j.next_id))
 
+    def test_a_list_of_topics(self):
+        """topic may be a list of names and globs (any one matches, at most 16, none empty): what `wuxian listen` waits
+        on; a wait wakes for any of them"""
+        j, svc = self.journal, self.svc
+        j.add("EVENT", event("WuxianKit", "app.guild", {"reason": "urgent"}))
+        j.add("EVENT", event("WuxianKit", "chat.message", {}))
+        j.add("EVENT", event("WuxianKit", "kit.ready", {}))
+        j.add("EVENT", event("WuxianKit", "app.other", {}))
+        got = asyncio.run(svc.addon_events(addon="WuxianKit", topic=["app.guild", "kit.*"]))
+        self.assertEqual([e["topic"] for e in got["events"]], ["app.guild", "kit.ready"])
+        self.assertEqual(len(asyncio.run(svc.addon_events(topic=["app.*"]))["events"]), 2)
+
+        async def later():
+            task = asyncio.create_task(svc.addon_events(topic=["app.guild", "kit.app"], since=got["next"], wait=5))
+            await asyncio.sleep(0.1)
+            j.add("EVENT", event("WuxianKit", "chat.message", {}))
+            await asyncio.sleep(0.1)
+            self.assertFalse(task.done())
+            j.add("EVENT", event("WuxianKit", "kit.app", {"app": "guild", "on": False, "why": "player"}))
+            return await asyncio.wait_for(task, 2)
+        self.assertEqual([e["topic"] for e in asyncio.run(later())["events"]], ["kit.app"])
+        for bad in ([], [""], ["a", " "], ["x"] * 17, [1], {"t": "x"}, 3):
+            with self.assertRaises(ApiError) as caught:
+                asyncio.run(svc.addon_events(topic=bad))
+            self.assertEqual((caught.exception.status, caught.exception.code), (400, "bad_request"))
+            self.assertTrue(caught.exception.message.startswith("topic: "))
+        self.assertEqual(len(asyncio.run(svc.addon_events(topic=["x"] * 16))["events"]), 0)
+
 
 class McpTools(unittest.TestCase):
     def test_the_tools_and_where_they_go(self):
@@ -494,6 +522,37 @@ class McpTools(unittest.TestCase):
                           ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                           ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                           ("respond", ("12.3", {"text": "x"}, 10000))])
+
+    def test_events_takes_a_list_of_topics(self):
+        """the events tool's topic: a string or an array of strings (anyOf), a valid draft 2020-12 schema; the list
+        reaches the backend as it is"""
+        from wuxianworkshop.mcp.server import build_server
+
+        calls = []
+
+        class Backend:
+            def __getattr__(self, name):
+                async def method(*args):
+                    calls.append((name, args))
+                    return {"events": [], "next": 1}
+                return method
+
+        mcp = build_server(Backend())
+        schema = {t.name: t for t in asyncio.run(mcp.list_tools())}["events"].input_schema
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:
+            Draft202012Validator = None
+        if Draft202012Validator:
+            Draft202012Validator.check_schema(schema)
+            check = Draft202012Validator(schema)
+            self.assertTrue(check.is_valid({"topic": ["app.guild", "kit.*"]}))
+            self.assertTrue(check.is_valid({"topic": "scan.*"}))
+            self.assertFalse(check.is_valid({"topic": [1]}))
+        kinds = [k.get("type") for k in schema["properties"]["topic"]["anyOf"]]
+        self.assertEqual(kinds, ["string", "array", "null"])
+        asyncio.run(mcp.call_tool("events", {"addon": "WuxianKit", "topic": ["app.guild", "kit.app"], "since": -1}))
+        self.assertIn(("addon_events", ("WuxianKit", ["app.guild", "kit.app"], -1, 100, 0)), calls)
 
 
 class KitTools(unittest.TestCase):
@@ -930,6 +989,51 @@ class KitTools(unittest.TestCase):
         backend.call_exposed = history
         self.assertEqual(asyncio.run(tools.ran(9))["state"], "undone")
         self.assertEqual(seen, [{"limit": 50}, None])
+
+    def test_an_event_topic_stays_a_topic(self):
+        """a doc's word that is a declared event topic is not made a tool name, even where a capability has that id
+        (WuxianGuild's guild.chat: the tool and the event); other capability ids still become their tools"""
+        from wuxianworkshop.mcp import kit
+
+        m = self.manifest()
+        m["extensions"].append({"id": "guild", "title": "Guild", "addon": "WuxianGuild", "docs": "WuxianGuild",
+                                "state": "on", "events": [{"topic": "guild.chat", "doc": "a wake", "data": {}}],
+                                "capabilities": [
+            {"id": "guild.chat", "kind": "see", "title": "Listen", "args": {},
+             "doc": "start listening; then read the event guild.chat, or stop with guild.stop"},
+            {"id": "guild.stop", "kind": "see", "title": "Stop", "doc": "stop; see chat.message", "args": {}}]})
+        tools = kit.KitTools(self.backend(m), store=False)
+        desc = {t.name: t.description for t in asyncio.run(tools.list())}["wk_guild_chat"]
+        self.assertIn("then read the event guild.chat, or stop with wk_guild_stop", desc)
+        doc = asyncio.run(tools.extension_doc("guild"))
+        self.assertIn("| `wk_guild_chat` | Read | Listen: start listening; then read the event guild.chat, or stop "
+                      "with wk_guild_stop |", doc)
+        self.assertIn("stop; see chat.message", doc)
+        self.assertEqual(kit.tools_named("guild.chat and guild.stop", {"guild.chat", "guild.stop"}),
+                         "wk_guild_chat and wk_guild_stop")              # without the topics, as before
+
+    def test_the_overview_lists_the_apps(self):
+        """WuxianKit 0.6's manifest has apps: the overview shows each one's id, title, topic and `wuxian listen <id>`;
+        the server's instructions stay as they were (they are read only up to 2,048 characters)"""
+        from wuxianworkshop.mcp import kit
+        from wuxianworkshop.mcp.server import INSTRUCTIONS
+
+        m = self.manifest()
+        m["apps"] = [{"id": "guild", "title": "公会\n聊天", "by": "addon", "addon": "WuxianGuild", "topic": "app.guild",
+                      "hear": ["chat:guild", "game:guild"], "prompt": "guild-chat"},
+                     {"id": "raid_talk", "title": "副本解说", "by": "agent", "topic": "app.raid_talk", "hear": []},
+                     {"id": "Bad Id", "title": "x"}, "not an app"]
+        overview = asyncio.run(kit.KitTools(self.backend(m), store=False).overview())
+        self.assertIn("## Apps", overview)
+        self.assertIn("run `wuxian listen <id>`", overview)
+        self.assertIn("- `guild` (公会 聊天, from the addon WuxianGuild, topic `app.guild`, hears chat:guild, game:guild): "
+                      "wait with `wuxian listen guild`; skill `guild-chat`", overview)
+        self.assertIn("- `raid_talk` (副本解说, declared by an agent, topic `app.raid_talk`): wait with "
+                      "`wuxian listen raid_talk`", overview)
+        self.assertNotIn("Bad Id", overview)
+        self.assertNotIn("## Apps", asyncio.run(kit.KitTools(self.backend(self.manifest()), store=False).overview()))
+        self.assertLessEqual(len(INSTRUCTIONS), 2048)
+        self.assertNotIn("listen", INSTRUCTIONS)
 
     def test_where_another_addons_extension_comes_from(self):
         """verified when the extension catalog, as the App last read it, lists its addon; unverified when not; no

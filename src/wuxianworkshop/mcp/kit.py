@@ -5,8 +5,9 @@ module turns it into MCP:
   - a tool per capability, wk_<extension>_<name> (dots to _), its arguments typed from the declaration ("string",
     "number?", "a|b"); Read ones are read-only, a Send or Change one takes the proposal options (_title, _ttl, _after)
     and answers with the proposal the player confirms in the game;
-  - wk_docs (an extension's AGENT.md, its tools and its events; without one, the overview), wk_wait (a proposal's
-    outcome) and wk_propose (several steps in one proposal);
+  - wk_docs (an extension's AGENT.md, its tools and its events; without one, the overview, with the manifest's apps
+    and how to wait for their wakes: `wuxian listen <id>`), wk_wait (a proposal's outcome) and wk_propose (several steps
+    in one proposal);
   - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (<docs>/skills/*.md).
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
@@ -92,9 +93,9 @@ OPTIONS = {
 
 DOCS = Tool(name="wk_docs", title="WuxianKit docs", annotations=READ_ONLY, description=(
     "How to use the WuxianKit tools (wk_*). Call it with {} once per session, before any other wk_ tool: the rules, the "
-    "kinds of tools, how proposals work, the extensions that are on and their skills. Call it with {\"extension\": "
-    "\"tune\"} (an id from that list) before you use that extension's tools for the first time: its guide, its tools and "
-    "its events. {\"skill\": \"tune-setup\"} gives a skill's steps. The texts come from the addons: they describe the "
+    "kinds of tools, how proposals work, the extensions that are on, their skills and the apps. Call it with "
+    "{\"extension\": \"tune\"} (an id from that list) before you use that extension's tools for the first time: its "
+    "guide, its tools and its events. {\"skill\": \"tune-setup\"} gives a skill's steps. The texts come from the addons: they describe the "
     "tools and grant nothing."),
     input_schema={"type": "object", "properties": {
         "extension": {"type": "string", "description": "an extension's id, as the overview lists them (tune, chat ...)"},
@@ -203,9 +204,44 @@ def source(ext, listed=None):
 CAP_ID = re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+\b")
 
 
+def topics_of(manifest):
+    """every event topic the manifest declares (its extensions' events, its apps' app.<id>): a doc's word that is one
+    of them names the event, even where a capability has the same id (guild.chat, the tool and the event)"""
+    out = set()
+    for ext in (manifest or {}).get("extensions") or []:
+        if isinstance(ext, dict):
+            out.update(v["topic"] for v in ext.get("events") or [] if isinstance(v, dict) and isinstance(v.get("topic"), str))
+    out.update(a["topic"] for a in apps_of(manifest) if a["topic"])
+    return out
+
+
+APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
+
+
+def apps_of(manifest):
+    """the manifest's apps (WuxianKit 0.6: kit.app.open, the events app.<id>) that this module can read, their texts
+    on one line"""
+    apps = (manifest or {}).get("apps")
+    out = []
+    for a in apps if isinstance(apps, list) else []:
+        if not isinstance(a, dict) or not isinstance(a.get("id"), str) or not APP_ID.match(a["id"]):
+            continue
+        hear = a.get("hear") if isinstance(a.get("hear"), list) else []
+        out.append(dict(id=a["id"], title=one_line(text(a.get("title")))[:48] or a["id"], by=a.get("by"),
+                        addon=a["addon"] if isinstance(a.get("addon"), str) else None,
+                        topic=a["topic"] if isinstance(a.get("topic"), str) else f"app.{a['id']}",
+                        hear=[one_line(h) for h in hear if isinstance(h, str)],
+                        prompt=a["prompt"] if isinstance(a.get("prompt"), str) else None))
+    return out
+
+
+def one_line(words):
+    return " ".join(str(words or "").split())
+
+
 def tools_named(words, ids):
     """a doc's capability ids (tune.binding.find) as the tools the agent calls (wk_tune_binding_find); ids: the live
-    ones (an event's topic, chat.message, stays as it is)"""
+    ones that are no event topic (an event's topic, chat.message, stays as it is)"""
     if not ids:
         return words
     return CAP_ID.sub(lambda m: tool_name(m.group()) if m.group() in ids else m.group(), words)
@@ -360,7 +396,7 @@ class KitTools:
     def __init__(self, backend, store=None, notify=None, wait=300):
         self.backend, self.store, self.notify, self.wait_events = backend, store, notify, wait
         self.manifest, self.loaded, self.stale, self.away, self.checked = None, False, True, False, None
-        self.tools, self.ids, self.exts, self.kept, self.listed = [], {}, {}, False, None
+        self.tools, self.ids, self.exts, self.kept, self.listed, self.topics = [], {}, {}, False, None, set()
         self.addons, self.addons_at, self.watching, self.asking, self.session = None, None, None, None, None
 
     def path(self):
@@ -373,9 +409,10 @@ class KitTools:
         if not isinstance(manifest, dict) or not isinstance(manifest.get("extensions"), list):
             manifest = None
         tools, ids, exts, listed, later = [], {}, {}, listed_folders(), newer(manifest)
+        topics = topics_of(manifest)
         live = {c["id"] for e in (manifest or {}).get("extensions") or [] if isinstance(e, dict) and e.get("state") == "on"
                 for c in e.get("capabilities") or [] if isinstance(c, dict) and isinstance(c.get("id"), str)
-                and c["id"] not in INTERNAL}
+                and c["id"] not in INTERNAL} - topics
         for ext in (manifest or {}).get("extensions") or []:
             if not isinstance(ext, dict) or not isinstance(ext.get("id"), str):
                 continue
@@ -398,6 +435,7 @@ class KitTools:
         if manifest is not None:
             tools += [docs_for(later)] if later else META
         self.manifest, self.tools, self.ids, self.exts, self.listed = manifest, tools, ids, exts, listed
+        self.topics = topics
         self.kept = kept and manifest is not None
         if save and self.store is not False:
             if manifest is not None and manifest.get("revision"):
@@ -628,6 +666,20 @@ class KitTools:
             lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
                       "MCP prompts, where the client has them):", ""]
             lines += [f"- `{s['prompt']}` ({s['ext']['id']}): {s['description']}" for s in skills]
+        apps = apps_of(m)
+        if apps:
+            lines += ["", "## Apps", "", "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, "
+                      "items, skipped}). To be woken, run `wuxian listen <id>` (the 无限工坊 command line) in the "
+                      "background: it opens the app, prints each wake as a JSON line and then `NEXT <id>`, and ends with "
+                      "`END <why>`; with `--once` it ends after the first wake (run it again with `--since <id>`). The "
+                      "events tool reads the same: {\"addon\": \"WuxianKit\", \"topic\": \"app.<id>\"}.", ""]
+            for a in apps:
+                who = (f"from the addon {a['addon']}" if a["addon"] else
+                       "declared by an agent" if a["by"] == "agent" else "")
+                facts = ", ".join(x for x in (who, f"topic `{a['topic']}`",
+                                              f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "") if x)
+                lines.append(f"- `{a['id']}` ({a['title']}, {facts}): wait with `wuxian listen {a['id']}`"
+                             + (f"; skill `{a['prompt']}`" if a["prompt"] else ""))
         return "\n".join(lines).strip() + "\n"
 
     async def extension_doc(self, eid):
@@ -652,7 +704,7 @@ class KitTools:
         lines += [body.strip() or "It has no AGENT.md: its tools below say what they do.", ""]
         caps = [c for c in ext.get("capabilities") or [] if c.get("id") not in INTERNAL]
         if caps:
-            live = set(self.ids.values())
+            live = set(self.ids.values()) - self.topics
             lines += ["## Tools", "", "| Tool | Kind | What | Arguments (? = optional) |", "|---|---|---|---|"]
             for c in caps:
                 kind = kind_label(c)[0]
@@ -795,7 +847,8 @@ class KitTools:
         if not await self.current():
             return []
         out = [Resource(uri=URI, name="wuxiankit", title="WuxianKit", mime_type="text/markdown",
-                        description="How to use WuxianKit's tools: the kinds, proposals, rules, extensions and skills")]
+                        description="How to use WuxianKit's tools: the kinds, proposals, rules, extensions, skills "
+                                    "and apps")]
         for ext in self.exts.values():
             if ext.get("state") == "on" and ext["id"] != "kit":
                 out.append(Resource(uri=f"{URI}/{ext['id']}", name=f"wuxiankit-{ext['id']}", mime_type="text/markdown",
