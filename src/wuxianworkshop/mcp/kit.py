@@ -247,7 +247,9 @@ def apps_of(manifest):
                         extension=a["extension"] if isinstance(a.get("extension"), str) else None,
                         driver=a["driver"] if a.get("driver") in DRIVERS else None,
                         docs=a["docs"] if isinstance(a.get("docs"), str) and a["docs"] else None,
-                        temp=a.get("temp") is True, launch=a.get("launch") is True))
+                        temp=a.get("temp") is True, launch=a.get("launch") is True,
+                        see=[one_line(f) for f in a["see"] if isinstance(f, str)] if isinstance(a.get("see"), list)
+                        else []))
     return out
 
 
@@ -266,6 +268,20 @@ def sources_of(ext):
         out.append(dict(name=s["name"], title=one_line(text(s.get("title"))), doc=one_line(text(s.get("doc"))),
                         values=[one_line(v) for v in values if isinstance(v, (str, int, float))
                                 and not isinstance(v, bool) and one_line(v)]))
+    return out
+
+
+def facets_of(ext):
+    """an extension's facets (what an app sees of it now: `see` in its declaration, each wake's state.<name>) that this
+    module can read: [{name, title, doc, fields}], texts on one line"""
+    out, facets = [], (ext or {}).get("facets")
+    for f in facets if isinstance(facets, list) else []:
+        if not isinstance(f, dict) or not isinstance(f.get("name"), str) or not SOURCE.match(f["name"]):
+            continue
+        fields = f.get("fields") if isinstance(f.get("fields"), dict) else {}
+        out.append(dict(name=f["name"], title=one_line(text(f.get("title"))), doc=one_line(text(f.get("doc"))),
+                        fields=[f"{k}: {one_line(v)}" if isinstance(v, str) else str(k)
+                                for k, v in sorted(fields.items()) if isinstance(k, str)]))
     return out
 
 
@@ -797,13 +813,20 @@ class KitTools:
                           "at most 4 run at a time. Each hear entry is `<source>:<what>`"
                       + (f"; the sources now: {', '.join(sources)}" if sources else "")
                       + ". wk_docs {\"extension\": \"<id>\"} says what each source of that extension hears."]
+            facets = [f"{f['name']} (extension {eid})" for eid, e in self.exts.items() if e.get("state") == "on"
+                      for f in facets_of(e)]
+            if facets:
+                lines += ["", "What an app hears are events; what it sees is the state now: `see` in its declaration "
+                              "lists facets, and each wake carries `state` {<facet>: {...}} read as it goes out "
+                              "(wk_kit_app_state reads it at any time). The facets now: " + ", ".join(facets) + "."]
         if apps:
             lines += ["", "The apps now:", ""]
         for a in apps:
             who = (f"from the addon {a['addon']}" if a["addon"] else
                    "declared by an agent" if a["by"] == "agent" and a["driver"] != "program" else "")
             facts = ", ".join(x for x in ("temporary" if a["temp"] else "", who, f"topic `{a['topic']}`",
-                                          f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "") if x)
+                                          f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "",
+                                          f"sees {', '.join(a['see'][:8])}" if a["see"] else "") if x)
             if a["driver"] == "program":
                 how = (f"driven by a program on this computer: start it with program_start {{\"id\": \"{a['id']}\"}}, "
                        "never with wk_kit_app_open")
@@ -862,6 +885,14 @@ class KitTools:
                                                                  if len(s["values"]) > MAX_VALUES else "")
                 what = f"{s['title']}: {s['doc']}" if s["title"] and s["doc"] else s["title"] or s["doc"]
                 lines.append(f"| `{s['name']}` | {cell(what)} | {cell(values)} |")
+            lines.append("")
+        facets = facets_of(ext)
+        if facets:
+            lines += ["## Facets", "", "What an app sees of this extension now: a name in `see` (an app's declaration); "
+                      "each wake then carries state.<name>.", "", "| Facet | What | Fields |", "|---|---|---|"]
+            for f in facets:
+                what = f"{f['title']}: {f['doc']}" if f["title"] and f["doc"] else f["title"] or f["doc"]
+                lines.append(f"| `{f['name']}` | {cell(what)} | {cell(', '.join(f['fields']))} |")
             lines.append("")
         skills = [s for s in await self.skills() if s["ext"] is ext]
         if skills:

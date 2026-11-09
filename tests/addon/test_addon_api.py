@@ -936,6 +936,31 @@ class KitTools(unittest.TestCase):
         self.assertEqual([s["name"] for s in kit.sources_of(m["extensions"][2])], ["chat", "game"])
         self.assertEqual(kit.sources_of({"sources": "chat"}), [])
 
+    def test_an_extensions_facets_and_an_apps_see(self):
+        """an extension's docs show its facets (what an app sees of it now): name, title and doc, its fields; a facet
+        this module cannot read is left out. The overview names the facets of the extensions on and what each app
+        sees"""
+        from wuxianworkshop.mcp import kit
+
+        m = self.manifest()
+        m["extensions"][2]["facets"] = [
+            {"name": "today", "title": "Today", "doc": "the day so far", "fields": {"kills": "number", "levels": "number"}},
+            {"name": "Bad Name"}, "x"]
+        doc = asyncio.run(kit.KitTools(self.backend(m), store=False).extension_doc("chat"))
+        self.assertIn("## Facets", doc)
+        self.assertIn("| `today` | Today: the day so far | kills: number, levels: number |", doc)
+        self.assertNotIn("Bad Name", doc)
+        self.assertEqual([f["name"] for f in kit.facets_of(m["extensions"][2])], ["today"])
+        self.assertEqual(kit.facets_of({"facets": "today"}), [])
+        m["extensions"][0]["capabilities"].append({"id": "kit.app.open", "kind": "keep", "title": "Open app",
+                                                   "doc": "open an app", "args": {"app": "string"}})
+        m["apps"] = [{"id": "companion", "title": "无限陪玩", "by": "agent", "hear": ["game:combat"],
+                      "see": ["me", "today", 3], "driver": "program"}]
+        got = asyncio.run(kit.KitTools(self.backend(m), store=False).overview())
+        self.assertIn("The facets now: today (extension chat).", got)
+        self.assertIn("hears game:combat, sees me, today)", got)
+        self.assertEqual(kit.apps_of(m)[0]["see"], ["me", "today"])
+
     def test_a_later_protocol_gets_the_docs_only(self):
         """a WuxianKit newer than this 无限工坊 knows: wk_docs alone (saying to update), no prompts, the other tools
         refused with the same words"""
