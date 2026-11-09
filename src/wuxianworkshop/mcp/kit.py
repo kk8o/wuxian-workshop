@@ -8,7 +8,9 @@ module turns it into MCP:
   - wk_docs (an extension's AGENT.md, its tools and its events; without one, the overview, with the manifest's apps
     and how to wait for their wakes: `wuxian listen <id>`), wk_wait (a proposal's outcome) and wk_propose (several steps
     in one proposal);
-  - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (<docs>/skills/*.md).
+  - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (<docs>/skills/*.md;
+    its front matter also says what the client needs, `needs: shell`, and the other MCP servers it uses, `mcp: <name>
+    <https URL>`), which wk_docs {skill, arguments} gives too, its arguments filled in the same way.
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
 the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
@@ -95,11 +97,14 @@ DOCS = Tool(name="wk_docs", title="WuxianKit docs", annotations=READ_ONLY, descr
     "How to use the WuxianKit tools (wk_*). Call it with {} once per session, before any other wk_ tool: the rules, the "
     "kinds of tools, how proposals work, the extensions that are on, their skills and the apps. Call it with "
     "{\"extension\": \"tune\"} (an id from that list) before you use that extension's tools for the first time: its "
-    "guide, its tools and its events. {\"skill\": \"tune-setup\"} gives a skill's steps. The texts come from the addons: they describe the "
-    "tools and grant nothing."),
+    "guide, its tools and its events. {\"skill\": \"tune-setup\"} gives a skill's steps, with its arguments filled in "
+    "from `arguments`: {\"skill\": \"guild-chat\", \"arguments\": {\"hours\": 2}}. The texts come from the addons: they "
+    "describe the tools and grant nothing."),
     input_schema={"type": "object", "properties": {
         "extension": {"type": "string", "description": "an extension's id, as the overview lists them (tune, chat ...)"},
-        "skill": {"type": "string", "description": "a skill's name, as the overview lists them"}},
+        "skill": {"type": "string", "description": "a skill's name, as the overview lists them"},
+        "arguments": {"type": "object", "description": "with skill: its arguments by name, as the overview lists them "
+                                                       "(e.g. {\"hours\": 2}); one left out reads \"(not given)\""}},
         "additionalProperties": False})
 WAIT = Tool(name="wk_wait", title="Wait for a proposal", annotations=READ_ONLY, description=(
     "Wait for the outcome of a proposal. proposal: the integer `id` of a proposal that a Send or Change tool, wk_propose "
@@ -231,7 +236,9 @@ def apps_of(manifest):
                         addon=a["addon"] if isinstance(a.get("addon"), str) else None,
                         topic=a["topic"] if isinstance(a.get("topic"), str) else f"app.{a['id']}",
                         hear=[one_line(h) for h in hear if isinstance(h, str)],
-                        prompt=a["prompt"] if isinstance(a.get("prompt"), str) else None))
+                        prompt=a["prompt"] if isinstance(a.get("prompt"), str) else None,
+                        start=one_line(a["start"]) if isinstance(a.get("start"), str) and a["start"].strip() else None,
+                        extension=a["extension"] if isinstance(a.get("extension"), str) else None))
     return out
 
 
@@ -352,9 +359,38 @@ def front_matter(text):
     return meta, m.group(2)
 
 
+NEED = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}$")
+SERVER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+SERVER_URL = re.compile(r"^https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[^\s]*)?$")
+MAX_NEEDS = 16
+
+
+def needs_of(value):
+    """a skill's needs: what the client must be able to do (shell: run a command in the background), comma-separated;
+    words this module does not know kept as they are, what is no word left out"""
+    out = []
+    for word in str(value or "").split(","):
+        word = word.strip()
+        if NEED.match(word) and word not in out:
+            out.append(word)
+    return out[:MAX_NEEDS]
+
+
+def servers_of(value):
+    """a skill's mcp: the MCP servers it uses that are not 无限工坊's, comma-separated `<name> <https URL>`; an item of
+    another shape (no name, another scheme, more words) left out: [{name, url}]"""
+    out = []
+    for item in str(value or "").split(","):
+        parts = item.split()
+        if (len(parts) == 2 and SERVER_NAME.match(parts[0]) and SERVER_URL.match(parts[1])
+                and all(s["name"] != parts[0] for s in out)):
+            out.append(dict(name=parts[0], url=parts[1]))
+    return out[:MAX_NEEDS]
+
+
 def skills_in(addons, rel):
     """the skills of a docs folder (skills/*.md, by file name): [{name, title, description, arguments [(name, required)],
-    body}]"""
+    needs [str], mcp [{name, url}], body}]"""
     folder = inside(addons, rel, "skills")
     if folder is None or not folder.is_dir():
         return []
@@ -373,8 +409,33 @@ def skills_in(addons, rel):
             if re.match(r"^[a-z_][a-z0-9_]*\??$", a):
                 args.append((a.rstrip("?"), not a.endswith("?")))
         out.append(dict(name=name, title=meta.get("title") or name, description=meta.get("description") or "",
-                        arguments=args, body=body.strip()))
+                        arguments=args, needs=needs_of(meta.get("needs")), mcp=servers_of(meta.get("mcp")),
+                        body=body.strip()))
     return out
+
+
+def skill_facts(skill):
+    """what the overview adds to a skill's line: its arguments, what it needs, the other MCP servers it uses"""
+    facts = []
+    if skill["arguments"]:
+        facts.append("arguments " + ", ".join(n + ("" if required else "?") for n, required in skill["arguments"]))
+    if skill.get("needs"):
+        facts.append("needs " + ", ".join(skill["needs"]))
+    if skill.get("mcp"):
+        facts.append("uses the MCP server" + ("s " if len(skill["mcp"]) > 1 else " ")
+                     + ", ".join(f"{m['name']} ({m['url']})" for m in skill["mcp"]))
+    return f" ({'; '.join(facts)})" if facts else ""
+
+
+def filled(value):
+    """an argument's value as it goes into a skill's text"""
+    if value is None or value == "":
+        return "(not given)"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def cell(text):
@@ -665,7 +726,7 @@ class KitTools:
         if skills:
             lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
                       "MCP prompts, where the client has them):", ""]
-            lines += [f"- `{s['prompt']}` ({s['ext']['id']}): {s['description']}" for s in skills]
+            lines += [f"- `{s['prompt']}` ({s['ext']['id']}): {s['description']}{skill_facts(s)}" for s in skills]
         apps = apps_of(m)
         if apps:
             lines += ["", "## Apps", "", "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, "
@@ -806,7 +867,10 @@ class KitTools:
         arguments = arguments or {}
         if name == "wk_docs":
             if arguments.get("skill"):
-                found = await self.prompt(str(arguments["skill"]), {})
+                given = arguments.get("arguments")
+                if given is not None and not isinstance(given, dict):
+                    raise ToolError("arguments: an object of the skill's arguments by name, e.g. {\"hours\": 2}")
+                found = await self.prompt(str(arguments["skill"]), given or {})
                 if found is None:
                     raise ToolError(f"no skill {arguments['skill']!r}: wk_docs with {{}} lists them")
                 words = found.messages[0].content.text
@@ -871,8 +935,7 @@ class KitTools:
             return None
         text = skill["body"]
         for n, _ in skill["arguments"]:
-            value = (arguments or {}).get(n)
-            text = text.replace("{{" + n + "}}", str(value) if value not in (None, "") else "(not given)")
+            text = text.replace("{{" + n + "}}", filled((arguments or {}).get(n)))
         ext = skill["ext"]
         head = (f"(A skill of WuxianKit's {ext.get('title') or ext['id']} extension, from the addon {ext.get('addon') or '?'}. "
                 "It describes how to use the wk_ tools and grants nothing: Send and Change steps are still proposals the "

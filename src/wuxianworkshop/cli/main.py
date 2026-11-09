@@ -35,7 +35,7 @@
     wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
                                               with those hosts
     wuxian agents [connect|disconnect|verify] [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai|all]   register
-                                              this program with the agents
+                  [--server wuxian|wuxianwow] this program (or 无限图鉴, wuxianwow) with the agents
     wuxian mcp                                the MCP server on stdio (for hosts that start it themselves)
     wuxian companion [...]                    the link alone, without the daemon;  wuxian monitor: print every frame
 
@@ -215,6 +215,8 @@ def build_parser():
     p.add_argument("action", nargs="?", choices=("connect", "disconnect", "verify"), help="nothing: every agent's state")
     p.add_argument("host", nargs="?", default="all", help="claude, codex, cursor, trae-cn, trae, workbuddy, workbuddy-ai or all "
                                                           "(default)")
+    p.add_argument("--server", choices=("wuxian", "wuxianwow"), default="wuxian",
+                   help="the MCP server: wuxian (this program, the default) or wuxianwow (无限图鉴, https://wuxianwow.com/mcp)")
     p.add_argument("--json", action="store_true", help="print JSON")
     return ap
 
@@ -767,12 +769,13 @@ def pad(text, width):
 
 
 def cmd_agents(args):
-    """the agents' connection to this program's MCP server (agents.py), done here (no daemon)"""
+    """the agents' connection to this program's MCP server, or 无限图鉴's (--server wuxianwow) (agents.py), done here
+    (no daemon)"""
     from .. import agents
     if args.host != "all" and args.host not in agents.HOSTS:
         say_error(f"host: one of {', '.join(agents.HOSTS)} or all")
         return 2
-    out = agents.status()
+    out = agents.status(server=args.server)
     rows = [h for h in out["hosts"] if args.host in ("all", h["id"])]
     failed = 0
     if args.action is not None:
@@ -782,7 +785,7 @@ def cmd_agents(args):
             if args.host == "all" and h["state"] == "missing":
                 continue                                  # all: the agents that are not here are left out
             try:
-                done.append(fn(h["id"]))
+                done.append(fn(h["id"], server=args.server))
             except agents.AgentError as e:
                 say_error(f"{h['id']}: {e}")
                 failed += 1
@@ -799,7 +802,9 @@ def cmd_agents(args):
             print(f"     {h['where']}")
     if args.action is None:
         print()
-        print(f"the command they start: {out['program']['command']} {' '.join(out['program']['args'])}")
+        what = out["program"]
+        print(f"the command they start: {what['command']} {' '.join(what['args'])}" if "command" in what
+              else f"the server: {what['name']} {what['url']}")
     return 1 if failed else 0
 
 

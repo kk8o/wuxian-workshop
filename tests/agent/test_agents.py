@@ -291,14 +291,26 @@ class FakeClaude:
         servers = data.setdefault("mcpServers", {})
         sub, rest = argv[2], argv[3:]
         if sub == "add":
-            name = next(a for a in rest if not a.startswith("-") and a not in ("user", "stdio"))
+            flags, words, i = {}, [], 0
+            head = rest[:rest.index("--")] if "--" in rest else rest
+            while i < len(head):                                    # --scope, --transport and --env take a value
+                if head[i].startswith("-"):
+                    flags.setdefault(head[i], []).append(head[i + 1])
+                    i += 2
+                else:
+                    words.append(head[i])
+                    i += 1
+            name = words[0]
             if name in servers:
                 return 1, f"MCP server {name} already exists in user config\n"
-            cmd = rest[rest.index("--") + 1:]
-            envs = dict(rest[i + 1].split("=", 1) for i, a in enumerate(rest) if a == "--env")
-            servers[name] = {"type": "stdio", "command": cmd[0], "args": cmd[1:], "env": envs}
+            if flags.get("--transport") == ["http"]:
+                servers[name] = {"type": "http", "url": words[1]}
+            else:
+                cmd = rest[rest.index("--") + 1:]
+                envs = dict(e.split("=", 1) for e in flags.get("--env", []))
+                servers[name] = {"type": "stdio", "command": cmd[0], "args": cmd[1:], "env": envs}
             path.write_text(json.dumps(data), encoding="utf-8")
-            return 0, f"Added stdio MCP server {name}\n"
+            return 0, f"Added {servers[name]['type']} MCP server {name}\n"
         if sub == "remove":
             if rest[0] not in servers:
                 return 1, f'No MCP server named "{rest[0]}" in user scope\n'
@@ -313,7 +325,9 @@ class FakeClaude:
         return 2, "unknown\n"
 
 
-class Claude(Base):
+class ClaudeHome(Base):
+    """a home with Claude Code's config folder and the stand-in for its command line"""
+
     def setUp(self):
         super().setUp()
         self.cfg = Path(self.tmp.name) / "claudecfg"
@@ -323,6 +337,9 @@ class Claude(Base):
 
     def put_cli(self):
         (self.bin / "claude.exe").write_bytes(b"")
+
+
+class Claude(ClaudeHome):
 
     def test_states_and_connect_through_the_command_line(self):
         self.assertEqual(self.status("claude")["state"], "missing")
@@ -374,6 +391,192 @@ class Claude(Base):
         st = A.connect("claude", home=self.home, env=self.env, run=FakeClaude(healthy=False))
         self.assertFalse(st["verify"]["ok"])
         self.assertIn("Failed", st["verify"]["text"])
+
+
+URL = "https://wuxianwow.com/mcp"
+
+
+class Web(ClaudeHome):
+    """the second server, 无限图鉴 (wuxianwow) by its URL: each agent's own way (the website's aiconnect.js), an entry of
+    any name that reaches it counts, disconnect removes only the one written here, wuxian's entry is never touched"""
+
+    def web(self, host):
+        return next(h for h in A.status(home=self.home, env=self.env, server="wuxianwow")["hosts"] if h["id"] == host)
+
+    def connect(self, host):
+        return A.connect(host, home=self.home, env=self.env, run=self.fake, verify=False, server="wuxianwow")
+
+    def disconnect(self, host):
+        return A.disconnect(host, home=self.home, env=self.env, run=self.fake, server="wuxianwow")
+
+    def test_the_mark(self):
+        mark = A.target("wuxianwow")["mark"]
+        for yes in ({"url": URL}, {"url": "https://wuxianwow.com/mcp/"}, {"serverUrl": "https://www.WuxianWow.com/mcp?x=1"},
+                    {"command": "npx", "args": ["-y", "mcp-remote", URL]}, {"type": "streamableHttp", "baseUrl": URL}):
+            self.assertTrue(A.serves(yes, mark), yes)
+        for no in ({"url": "https://notwuxianwow.com/mcp"}, {"url": "https://wuxianwow.com/mcpx"}, {"url": "https://wuxianwow.com/ai"},
+                   {"command": URL.replace("/mcp", "")}, "wuxianwow.com/mcp", None):
+            self.assertFalse(A.serves(no, mark), no)
+        with self.assertRaises(A.AgentError):
+            A.target("elsewhere")
+        self.assertEqual(A.target(None)["name"], "wuxian")
+
+    def test_the_status_shape(self):
+        out = A.status(home=self.home, env=self.env, server="wuxianwow")
+        self.assertEqual((out["server"], out["program"]), ("wuxianwow", {"name": "wuxianwow", "url": URL}))
+        self.assertEqual([h["id"] for h in out["hosts"]], list(A.HOSTS))
+        self.assertTrue(all(h["server"] == "wuxianwow" and h["state"] == "missing" for h in out["hosts"]))
+        m = out["manual"]
+        self.assertEqual(m["claude"], f"claude mcp add --transport http --scope user wuxianwow {URL}")
+        self.assertEqual(tomllib.loads(m["codex"].split("\n", 1)[1]), {"mcp_servers": {"wuxianwow": {"url": URL}}})
+        for h in ("cursor", "trae-cn", "trae", "other"):
+            self.assertEqual(json.loads(m[h]), {"mcpServers": {"wuxianwow": {"url": URL}}}, h)
+        for h in ("workbuddy", "workbuddy-ai"):
+            self.assertEqual(json.loads(m[h]), {"mcpServers": {"wuxianwow": {"type": "http", "url": URL}}}, h)
+        self.assertEqual(json.loads(m["remote"])["mcpServers"]["wuxianwow"]["args"], ["-y", "mcp-remote", URL])
+        self.assertEqual(A.status(home=self.home, env=self.env)["server"], "wuxian")         # the default, as before
+
+    def test_json_agents(self):
+        cases = {"cursor": (self.home / ".cursor", ".", {"url": URL}),
+                 "trae-cn": (self.home / "AppData" / "Roaming" / "Trae CN", "User", {"url": URL}),
+                 "trae": (self.home / "AppData" / "Roaming" / "Trae", "User", {"url": URL}),
+                 "workbuddy": (self.home / ".workbuddy", ".", {"type": "http", "url": URL}),
+                 "workbuddy-ai": (self.home / ".workbuddy-ai", ".", {"type": "http", "url": URL})}
+        for host, (folder, sub, entry) in cases.items():
+            with self.subTest(host):
+                path = folder / sub / "mcp.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                mine = {"wuxian": {"command": PROG["command"], "args": ["mcp"]}, "other": {"command": "node", "args": []}}
+                path.write_text(json.dumps({"mcpServers": mine}), encoding="utf-8")
+                st = self.web(host)
+                self.assertEqual((st["state"], st["can_connect"], st["name"], st["entry"]), ("absent", True, None, None))
+                if "wuxian" in A.tr(*A.CLASSES[host].apply):
+                    self.assertIn("wuxianwow", st["apply"])                              # its own name in the words
+                st = self.connect(host)
+                self.assertEqual((st["state"], st["name"], st["entry"], st["ours"]), ("ok", "wuxianwow", "wuxianwow", True))
+                self.assertIn(URL, st["detail"])
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(data["mcpServers"], dict(mine, wuxianwow=entry))
+                self.assertTrue(path.with_name("mcp.json" + A.BACKUP).is_file())
+                self.assertEqual(self.status(host)["state"], "ok")                       # wuxian's own entry as it was
+                st = self.disconnect(host)
+                self.assertEqual(st["state"], "absent")
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["mcpServers"], mine)
+
+    def test_an_entry_of_another_name_counts(self):
+        """added by hand from the website (another name, the URL with a slash) or through mcp-remote: connected, not
+        added again, and disconnect leaves it"""
+        path = self.home / ".cursor" / "mcp.json"
+        path.parent.mkdir()
+        for entry in ({"url": URL + "/"}, {"command": "npx", "args": ["-y", "mcp-remote", URL]}):
+            with self.subTest(entry):
+                text = json.dumps({"mcpServers": {"wuxian-db": entry}})
+                path.write_text(text, encoding="utf-8")
+                st = self.web("cursor")
+                self.assertEqual((st["state"], st["name"], st["entry"], st["ours"]), ("ok", "wuxian-db", "wuxian-db", False))
+                self.assertIn("断开不会删它", st["detail"])
+                self.assertEqual(self.connect("cursor")["state"], "ok")
+                self.assertEqual(path.read_text(encoding="utf-8"), text)                  # not added again
+                self.assertEqual(self.disconnect("cursor")["state"], "ok")
+                self.assertEqual(path.read_text(encoding="utf-8"), text)                  # not ours: left
+
+    def test_its_name_written_another_way(self):
+        """an entry named wuxianwow through mcp-remote is connected but not ours (disconnect leaves it); one that reaches
+        elsewhere is other, and connect replaces it"""
+        path = self.home / ".workbuddy" / "mcp.json"
+        path.parent.mkdir()
+        remote = {"command": "npx", "args": ["-y", "mcp-remote", URL]}
+        path.write_text(json.dumps({"mcpServers": {"wuxianwow": remote}}), encoding="utf-8")
+        self.assertEqual((self.web("workbuddy")["state"], self.web("workbuddy")["ours"]), ("ok", False))
+        self.disconnect("workbuddy")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["wuxianwow"], remote)
+        path.write_text(json.dumps({"mcpServers": {"wuxianwow": {"url": "https://elsewhere.example/mcp"}}}), encoding="utf-8")
+        st = self.web("workbuddy")
+        self.assertEqual((st["state"], st["ours"]), ("other", False))
+        self.assertIn("elsewhere.example", st["detail"])
+        self.assertEqual(self.connect("workbuddy")["state"], "ok")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["wuxianwow"], {"type": "http", "url": URL})
+
+    def test_codex(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text(CODEX_CONFIG, encoding="utf-8")
+        A.connect("codex", home=self.home, env=self.env, verify=False)                   # wuxian first
+        with_wuxian = config.read_text(encoding="utf-8")
+        st = self.connect("codex")
+        self.assertEqual((st["state"], st["name"], st["ours"]), ("ok", "wuxianwow", True))
+        text = config.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith(with_wuxian), text)
+        self.assertTrue(text.endswith("[mcp_servers.wuxianwow]\nurl = 'https://wuxianwow.com/mcp'\n"), text)
+        data = tomllib.loads(text)
+        self.assertEqual(data["mcp_servers"]["wuxianwow"], {"url": URL})
+        self.assertEqual(self.status("codex")["state"], "ok")
+        self.connect("codex")                                                            # once more: the same file
+        self.assertEqual(config.read_text(encoding="utf-8"), text)
+        self.disconnect("codex")
+        self.assertEqual(config.read_text(encoding="utf-8"), with_wuxian)
+        self.assertEqual(self.web("codex")["state"], "absent")
+        aliased = with_wuxian + "\n[mcp_servers.db]\nurl = \"https://wuxianwow.com/mcp\"\n"     # the website's way, another name
+        config.write_text(aliased, encoding="utf-8")
+        self.assertEqual((self.web("codex")["state"], self.web("codex")["name"]), ("ok", "db"))
+        self.connect("codex")
+        self.disconnect("codex")
+        self.assertEqual(config.read_text(encoding="utf-8"), aliased)
+
+    def test_claude_code_through_its_command_line(self):
+        self.put_cli()
+        (self.cfg / ".claude.json").write_text(json.dumps({"mcpServers": {"wuxian": {"type": "stdio", "command": PROG["command"],
+                                                                                       "args": ["mcp"]}}}), encoding="utf-8")
+        self.assertEqual(self.web("claude")["state"], "absent")
+        st = A.connect("claude", home=self.home, env=self.env, run=self.fake, server="wuxianwow")
+        self.assertEqual(self.fake.calls[0], ["mcp", "add", "--transport", "http", "--scope", "user", "wuxianwow", URL])
+        self.assertEqual((st["state"], st["ours"]), ("ok", True))
+        self.assertEqual(st["verify"], {"ok": True, "text": "Claude Code 连它：✔ Connected"})
+        self.assertEqual(self.fake.calls[1], ["mcp", "get", "wuxianwow"])
+        self.assertEqual(self.status("claude")["state"], "ok")                           # wuxian's still there
+        self.fake.calls.clear()
+        self.connect("claude")                                                           # there already: nothing run
+        self.assertEqual(self.fake.calls, [])
+        self.disconnect("claude")
+        self.assertEqual(self.fake.calls, [["mcp", "remove", "wuxianwow", "-s", "user"]])
+        self.assertEqual((self.web("claude")["state"], self.status("claude")["state"]), ("absent", "ok"))
+
+    def test_claude_code_with_an_entry_of_its_own(self):
+        """one added through claude.ai's connector-like name, or another URL under our name"""
+        self.put_cli()
+        cfg = self.cfg / ".claude.json"
+        cfg.write_text(json.dumps({"mcpServers": {"无限图鉴": {"type": "http", "url": URL}}}), encoding="utf-8")
+        st = A.verify("claude", home=self.home, env=self.env, run=self.fake, server="wuxianwow")
+        self.assertEqual((st["state"], st["name"]), ("ok", "无限图鉴"))
+        self.assertEqual(self.fake.calls[-1], ["mcp", "get", "无限图鉴"])                # asked by its own name
+        self.disconnect("claude")
+        self.assertIn("无限图鉴", json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"])
+        cfg.write_text(json.dumps({"mcpServers": {"wuxianwow": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}}), encoding="utf-8")
+        self.assertEqual(self.web("claude")["state"], "other")
+        self.fake.calls.clear()
+        self.assertEqual(self.connect("claude")["state"], "ok")
+        self.assertEqual([c[:2] for c in self.fake.calls], [["mcp", "remove"], ["mcp", "add"]])
+
+    def test_claude_code_without_its_command_line(self):
+        (self.cfg / ".claude.json").write_text("{}", encoding="utf-8")
+        st = self.web("claude")
+        self.assertEqual((st["state"], st["can_connect"]), ("absent", False))
+        with self.assertRaises(A.AgentError):
+            self.connect("claude")
+
+    def test_an_agent_without_http(self):
+        """an agent that cannot take a server by URL: no one-click connect, the manual way through mcp-remote"""
+        (self.home / ".cursor").mkdir()
+        with unittest.mock.patch.object(A.Cursor, "http", False):
+            st = self.web("cursor")
+            self.assertEqual((st["state"], st["can_connect"]), ("absent", False))
+            self.assertIn("mcp-remote", st["detail"])
+            with self.assertRaises(A.AgentError):
+                self.connect("cursor")
+            self.assertFalse((self.home / ".cursor" / "mcp.json").exists())
+            manual = A.status(home=self.home, env=self.env, server="wuxianwow")["manual"]
+            self.assertEqual(json.loads(manual["cursor"])["mcpServers"]["wuxianwow"]["command"], "npx")
+            self.assertEqual(self.status("cursor")["can_connect"], True)                   # wuxian on stdio: as before
 
 
 class Commands(unittest.TestCase):
