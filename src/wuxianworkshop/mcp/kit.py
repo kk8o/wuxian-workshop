@@ -6,14 +6,19 @@ module turns it into MCP:
     "number?", "a|b"); Read ones are read-only, a Send or Change one takes the proposal options (_title, _ttl, _after)
     and answers with the proposal the player confirms in the game;
   - wk_docs (an extension's AGENT.md, its tools, its events and its sources, what an app hears from it; without one,
-    the overview: the extensions, the skills, and the manifest's apps by who drives them, a prompt (its skill) or a
-    program on this computer (the program_start tool), with how to wait for their wakes, `wuxian listen <id>`, and how
-    to listen for a while through a temporary app), wk_wait (a proposal's outcome) and wk_propose (several steps in one
-    proposal);
+    the overview: the extensions, the local extensions, the skills, and the apps, an app with a prompt started by its
+    skill, with how to wait for their wakes, `wuxian listen <id>`, and how to listen for a while through a temporary
+    app), wk_wait (a proposal's outcome) and wk_propose (several steps in one proposal);
   - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (skills/*.md of a
-    docs folder: the extensions' that are on, and the manifest's apps', an app's skills its own; a skill's front matter
-    also says what the client needs, `needs: shell`, and the other MCP servers it uses, `mcp: <name> <https URL>`),
-    which wk_docs {skill, arguments} gives too, its arguments filled in the same way.
+    docs folder: the manifest's apps', then the local extensions', then those of the extensions that are on, an app's
+    skills its own; a skill's front matter also says what the client needs, `needs: shell`, and the other MCP servers it
+    uses, `mcp: <name> <https URL>`), which wk_docs {skill, arguments} gives too, its arguments filled in the same way.
+The local extensions (local/, the same model with another runtime: a process on this computer that 无限工坊 runs) come
+from backend.local_manifest() ({revision, extensions: [an extension entry as the kit's, runtime "local", its docs and
+skills as absolute paths]}): their capabilities are wk_<extension>_<name> tools too, called through backend.local_call,
+documented, listed and given skills by the same code as the kit's. They run without the game, so they stay listed and
+callable while it is away or has no WuxianKit; a backend without local_manifest (an older daemon, a test's stand-in) has
+none. They are read again when the daemon's events say local.changed with another revision.
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
 the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
@@ -79,6 +84,12 @@ PROPOSES = ("Proposal", "makes a proposal of saved steps at once; nothing change
                         "or at once if every step is pre-approved")   # a capability with proposes
 ANSWERS = (" Returns a proposal {id, state, steps}. If state is done, it already ran (pre-approved); otherwise tell the "
            "player what you proposed and call wk_wait with {\"proposal\": id} for the outcome.")
+LOCAL = "local"                             # the daemon's events of the local extensions: addon "local", topic local.*
+LOCAL_KINDS = {"see": ("Read", "returns data at once; changes nothing"),
+               "keep": ("Store", "saves or deletes data on this computer at once; the game is not changed"),
+               "point": ("Guide", "shows or plays something for the player at once; changes no setting")}
+LOCAL_WHERE = "Runs on this computer and works without the game."
+LOCAL_TIMEOUT = 30                          # seconds a local capability's call waits when it declares no timeout
 
 
 def kind_label(cap):
@@ -98,7 +109,8 @@ OPTIONS = {
 
 DOCS = Tool(name="wk_docs", title="WuxianKit docs", annotations=READ_ONLY, description=(
     "How to use the WuxianKit tools (wk_*). Call it with {} once per session, before any other wk_ tool: the rules, the "
-    "kinds of tools, how proposals work, the extensions that are on, the skills, the apps and how to start them. Call "
+    "kinds of tools, how proposals work, the extensions that are on (in the game, and the local ones on this computer), "
+    "the skills, the apps and how to start them. Call "
     "it with {\"extension\": \"tune\"} (an id from that list) before you use that extension's tools for the first "
     "time: its guide, its tools, its events and its sources (what an app hears from it). {\"skill\": \"tune-setup\"} "
     "gives a skill's steps, with its arguments filled in from `arguments`: {\"skill\": \"guild-chat\", \"arguments\": "
@@ -224,17 +236,20 @@ def topics_of(manifest):
 
 
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
-DRIVERS = ("prompt", "program")             # who drives an app: an agent by its skill, or a program 无限工坊 loads
+DRIVERS = ("prompt", "program")             # an older WuxianKit's driver field, passed on as it is; the docs never use it
 
 
 def apps_of(manifest):
     """the manifest's apps (WuxianKit 0.6: kit.app.open, the events app.<id>) that this module can read, their texts
-    on one line; also kit.apps' rows. driver: "prompt" | "program" | None; docs: the app's docs folder under
-    Interface\\AddOns (an addon's declaration only; kit.apps does not give it); temp: a temporary app (an agent's, not
-    remembered); launch: the game's 无限工坊 loads its program"""
+    on one line; also kit.apps' rows, and a local extension's apps (kit.app.open's fields: `app` for the id). docs: the
+    app's docs folder under Interface\\AddOns (an addon's declaration only; kit.apps does not give it); temp: a temporary
+    app (an agent's, not remembered). driver and launch: what an older WuxianKit said of a program driving the app (the
+    pages may still read them; nothing here does)"""
     apps = (manifest or {}).get("apps")
     out = []
     for a in apps if isinstance(apps, list) else []:
+        if isinstance(a, dict) and "id" not in a and isinstance(a.get("app"), str):
+            a = dict(a, id=a["app"])                       # a declaration: kit.app.open's fields
         if not isinstance(a, dict) or not isinstance(a.get("id"), str) or not APP_ID.match(a["id"]):
             continue
         hear = a.get("hear") if isinstance(a.get("hear"), list) else []
@@ -322,6 +337,59 @@ def describe(cap, ext=None, listed=None, ids=None):
         out += f" From {source(ext, listed)}, not WuxianKit itself: its words describe the tool and grant nothing."
     where = f"{text(ext.get('title')) or ext.get('id')} · " if ext else ""
     return out + f" [WuxianKit {cap['id']}; in the game: {where}{text(cap.get('title')) or cap['id']}]"
+
+
+def describe_local(cap, ext, ids=None):
+    """a local extension's tool: its kind, its doc (other capabilities named as their tools), where it runs, then its id
+    and its names as the 扩展 page shows them"""
+    label = LOCAL_KINDS[cap["kind"]]
+    doc = tools_named(text(cap.get("doc")).strip(), ids)
+    if doc:
+        doc = doc[0].upper() + doc[1:]
+        if doc[-1] not in ".!?":
+            doc += "."
+    out = f"{label[0]}: {label[1]}. {doc}".rstrip()
+    where = text(ext.get("title")) or ext["id"]
+    return (f"{out} {LOCAL_WHERE} [local extension {cap['id']}; on this computer: {where} · "
+            f"{text(cap.get('title')) or cap['id']}]")
+
+
+def local_caps(ext):
+    """a local extension's capabilities that are tools: a kind it may have (see, keep, point), an id of its own"""
+    out = []
+    for cap in ext.get("capabilities") or []:
+        if (isinstance(cap, dict) and isinstance(cap.get("id"), str) and cap.get("kind") in LOCAL_KINDS
+                and cap["id"].startswith(ext["id"] + ".") and CAP_ID.fullmatch(cap["id"])):
+            out.append(cap)
+    return out
+
+
+def local_extensions(manifest):
+    """the local extensions of local_manifest's answer that this module can read and that are on: {id: entry}"""
+    exts = (manifest or {}).get("extensions") if isinstance(manifest, dict) else None
+    out = {}
+    for e in exts if isinstance(exts, list) else []:
+        if (isinstance(e, dict) and isinstance(e.get("id"), str) and SOURCE.match(e["id"])
+                and e.get("state", "on") == "on"):
+            out[e["id"]] = e
+    return out
+
+
+def option_line(o):
+    """an option of a local extension as its docs list it: [name, kind, value, what]"""
+    kind = o.get("kind") if isinstance(o.get("kind"), str) else "?"
+    if kind == "choice":
+        values = [str(c.get("value")) for c in o.get("choices") or [] if isinstance(c, dict)]
+        kind += f" ({' / '.join(values)})" if values else ""
+    elif kind == "number":
+        bounds = [f"{k} {o[k]}" for k in ("min", "max", "step") if isinstance(o.get(k), (int, float))]
+        kind += f" ({', '.join(bounds)})" if bounds else ""
+    value = o.get("value", o.get("default"))
+    shown = json.dumps(value, ensure_ascii=False) if value is not None else "—"
+    if isinstance(o.get("unit"), str) and o["unit"] and value is not None:
+        shown += f" {o['unit']}"
+    what = "; ".join(x for x in (one_line(text(o.get("title"))), one_line(text(o.get("hint")))) if x)
+    return [str(o.get("name")), kind, shown, what]
 
 
 def from_capabilities(caps):
@@ -434,10 +502,17 @@ def servers_of(value):
 def skills_in(addons, rel):
     """the skills of a docs folder (skills/*.md, by file name): [{name, title, description, arguments [(name, required)],
     needs [str], mcp [{name, url}], body}]"""
-    folder = inside(addons, rel, "skills")
-    if folder is None or not folder.is_dir():
+    return skills_from(inside(addons, rel, "skills"))
+
+
+def skills_from(folder):
+    """the skills of a skills folder (a docs folder's skills/, a local extension's skills folder): as skills_in"""
+    try:
+        if folder is None or not Path(folder).is_dir():
+            return []
+    except (OSError, TypeError, ValueError):
         return []
-    out = []
+    folder, out = Path(folder), []
     for p in sorted(folder.glob("*.md"))[:MAX_SKILLS]:
         text = read_doc(p)
         if text is None:
@@ -471,8 +546,11 @@ def skill_facts(skill):
 
 
 def owner(skill):
-    """whose a skill is, as the overview and the prompts say it: an extension's id, or `app <id>`"""
-    return f"app {skill['app']['id']}" if skill.get("app") else skill["ext"]["id"]
+    """whose a skill is, as the overview and the prompts say it: an extension's id, `local <id>` (a local extension's),
+    or `app <id>`"""
+    if skill.get("app"):
+        return f"app {skill['app']['id']}"
+    return f"local {skill['ext']['id']}" if skill.get("local") else skill["ext"]["id"]
 
 
 def filled(value):
@@ -507,6 +585,11 @@ class KitTools:
         self.manifest, self.loaded, self.stale, self.away, self.checked = None, False, True, False, None
         self.tools, self.ids, self.exts, self.kept, self.listed, self.topics = [], {}, {}, False, None, set()
         self.addons, self.addons_at, self.watching, self.asking, self.session = None, None, None, None, None
+        # the local extensions (backend.local_manifest): tools, their capability ids by tool name, the entries by id.
+        # self.tools / self.ids stay the game's WuxianKit's (the pages count them as its); listing() gives both
+        self.local, self.local_tools, self.local_ids, self.local_exts = None, [], {}, {}
+        self.local_stale, self.local_away, self.local_checked = True, False, None
+        self.local_asking, self.local_watching = None, None
 
     def path(self):
         return cache_path() if self.store is None else Path(self.store)
@@ -551,6 +634,42 @@ class KitTools:
                 self.kept = save_cached(self.path(), manifest)
             else:
                 forget_cached(self.path())
+        if self.local_exts:                                # their docs name the game's tools that are there now
+            self.use_local(self.local)
+
+    def use_local(self, manifest):
+        """the local extensions in force (local_manifest's answer; one this module cannot read: none) and the tools
+        they make, each capability apart, all in force at once"""
+        exts = local_extensions(manifest)
+        live = (set(self.ids.values()) - self.topics) | {c["id"] for e in exts.values() for c in local_caps(e)}
+        tools, ids = [], {}
+        for ext in exts.values():
+            for cap in local_caps(ext):
+                try:
+                    name = tool_name(cap["id"])
+                    tool = Tool(name=name, title=text(cap.get("title")) or None, description=describe_local(cap, ext, live),
+                                input_schema=schema(dict(cap, proposes=False)),
+                                annotations=READ_ONLY if cap["kind"] == "see" else WRITES)
+                except Exception as e:                       # a declaration this module cannot read
+                    logger.debug(f"local {cap.get('id')} left out: {e!r}")
+                    continue
+                if name not in ids:
+                    ids[name] = cap["id"]
+                    tools.append(tool)
+        self.local = manifest if isinstance(manifest, dict) else None
+        self.local_tools, self.local_ids, self.local_exts = tools, ids, exts
+
+    def listing(self):
+        """the wk_ tools: the game's WuxianKit's and the local extensions' (a local one wins a name both have, as the
+        daemon's local_call does), wk_docs also when only local extensions are there"""
+        local = self.local_tools
+        if not local and not self.local_exts:
+            return self.tools
+        names = {t.name for t in local}
+        out = [t for t in self.tools if t.name not in names] + local
+        if self.manifest is None:
+            out.append(DOCS)
+        return out
 
     async def kit(self, name, args=None, timeout_ms=20000):
         answer = await self.backend.call_exposed(ADDON, name, args, timeout_ms)
@@ -625,7 +744,8 @@ class KitTools:
         return self.stale or self.checked is None or time.monotonic() - self.checked > (AWAY if self.away else RECHECK)
 
     def signature(self):
-        return (self.manifest or {}).get("revision"), tuple(t.name for t in self.tools)
+        return ((self.manifest or {}).get("revision"), (self.local or {}).get("revision"),
+                tuple(t.name for t in self.listing()), tuple(self.local_exts))
 
     def refresh(self):
         """the ask in flight, or a new one: a task every caller shares"""
@@ -637,11 +757,61 @@ class KitTools:
         """an ask; the clients hear when it changed the lists"""
         before = self.signature()
         await self.ask()
+        await self.tell(before)
+
+    async def tell(self, before):
+        """the clients hear that the lists changed, when they did since `before` (a signature)"""
         if self.signature() != before and self.notify is not None:
             try:
                 await self.notify()
             except Exception as e:                         # nobody to tell, a client gone
                 logger.debug(f"list change not told: {e!r}")
+
+    # the local extensions: read from the daemon (no game call), when nothing is known yet, when its events say another
+    # revision, and at most every RECHECK seconds besides (every AWAY seconds while it does not answer)
+
+    def has_local(self):
+        return getattr(self.backend, "local_manifest", None) is not None
+
+    def local_due(self):
+        return (self.local_stale or self.local_checked is None
+                or time.monotonic() - self.local_checked > (AWAY if self.local_away else RECHECK))
+
+    def local_refresh(self):
+        if self.local_asking is None or self.local_asking.done():
+            self.local_asking = asyncio.get_running_loop().create_task(self.local_asked())
+        return self.local_asking
+
+    async def local_asked(self):
+        """reads the local extensions; whatever goes wrong keeps the last ones (none at first). A daemon from before them
+        (404) has none. The clients hear when the lists changed"""
+        before = self.signature()
+        try:
+            answer = await awaited(self.backend.local_manifest())
+        except ApiError as e:
+            if e.status in (404, 405):                     # an older daemon: no local extensions
+                self.use_local(None)
+                self.local_away = False
+            else:
+                logger.debug(f"local extensions not read now: {e!r}")
+                self.local_away = True
+        except Exception as e:                             # the daemon away: the last ones stand
+            logger.debug(f"local extensions not read now: {e!r}")
+            self.local_away = True
+        else:
+            self.use_local(answer)
+            self.local_away = False
+        self.local_stale, self.local_checked = False, time.monotonic()
+        await self.tell(before)
+
+    async def local_current(self, wait=False):
+        if not self.has_local() or not self.local_due():
+            return
+        task = self.local_refresh()
+        if wait:
+            await asyncio.shield(task)
+        elif self.local_checked is None:
+            await asyncio.wait({task}, timeout=FIRST_WAIT)
 
     async def current(self, wait=False):
         """the manifest in force. When it may have changed the game is asked in the background (refresh) and the
@@ -662,23 +832,64 @@ class KitTools:
                 await asyncio.shield(task)
             elif self.manifest is None and self.checked is None:
                 await asyncio.wait({task}, timeout=FIRST_WAIT)
+        await self.local_current(wait)
         self.watch()                                       # a WuxianKit installed later is heard too
         return self.manifest
 
     async def list(self):
         await self.current()
-        return self.tools
+        return self.listing()
 
     # the watch: kit.changed / kit.ready with another revision, or another UI session (a reload or a restart: WuxianKit
     # may be gone) -> read again; the clients hear when the lists changed
 
     def watch(self):
+        if self.has_local() and (self.local_watching is None or self.local_watching.done()):
+            try:
+                self.local_watching = asyncio.get_running_loop().create_task(self.local_watch_loop())
+            except RuntimeError:
+                self.local_watching = None
         if self.watching is not None and not self.watching.done():
             return
         try:
             self.watching = asyncio.get_running_loop().create_task(self.watch_loop())
         except RuntimeError:
             self.watching = None
+
+    def local_heard(self, events):
+        """whether these events tell of other local extensions (local.changed with another revision)"""
+        for e in events or []:
+            if isinstance(e, dict) and e.get("topic") == "local.changed":
+                if (e.get("data") or {}).get("revision") != (self.local or {}).get("revision"):
+                    return True
+        return False
+
+    async def local_watch_loop(self):
+        """the daemon's local.* events: local.changed with another revision -> read again (the clients hear when the
+        lists changed); after the daemon was away, read again too and follow its events from now"""
+        PASSIVE.set(True)
+        since, lost = -1, False
+        while True:
+            t0 = time.monotonic()
+            try:
+                answer = await self.backend.addon_events(LOCAL, "local.*", since, 100, self.wait_events)
+            except Exception:                              # the daemon away: try again later (not a cancel)
+                answer = None
+            if not isinstance(answer, dict) or "next" not in answer:
+                since, lost = -1, True                      # another daemon numbers its events afresh
+                await asyncio.sleep(AWAY)
+                continue
+            since = answer["next"]
+            changed = lost or self.local_heard(answer.get("events"))
+            lost = False
+            if not answer.get("events") and time.monotonic() - t0 < 0.5:
+                await asyncio.sleep(POLL if not self.wait_events else 1)
+            if changed:
+                self.local_stale = True
+                try:
+                    await asyncio.shield(self.local_refresh())
+                except Exception as e:
+                    logger.debug(f"local extensions' watch: {e!r}")
 
     def heard(self, events):
         """whether these events tell of another manifest"""
@@ -730,53 +941,68 @@ class KitTools:
         return read_doc(inside(addons, ext.get("docs"), "AGENT.md")) if ext else None
 
     async def skills(self):
-        """the skills of every docs folder: the manifest's apps' (an app's skills its own) and the extensions' that are
-        on: [{prompt, ext | None, app | None, docs, name, title, description, arguments, needs, mcp, body}]. The apps'
-        come first, so that an app's skill keeps the name its start line gives (wk_docs {"skill": "<prompt>"}); a name
-        already taken gets its owner's id in front (<id>-<name>). A folder that two of them name is read once, for the
-        first. None while the game's WuxianKit is of a later protocol (they would name tools that are not there)"""
+        """the skills of every docs folder: the manifest's apps' (an app's skills its own), the local extensions' (their
+        skills folders) and those of the extensions that are on: [{prompt, ext | None, app | None, local, docs, name,
+        title, description, arguments, needs, mcp, body}]. The apps' come first, so that an app's skill keeps the name
+        its start line gives (wk_docs {"skill": "<prompt>"}), then the local extensions' (theirs are the apps they bring);
+        a name already taken gets its owner's id in front (<id>-<name>). A folder that two of them name is read once, for
+        the first. The game's are left out while its WuxianKit is of a later protocol (they would name tools that are
+        not there)"""
         await self.current()
-        if newer(self.manifest):
-            return []
+        later = newer(self.manifest)
         addons, out, seen, read = await self.addons_dir(), [], set(), set()
-        owners = [(None, a, a["docs"]) for a in apps_of(self.manifest) if a["docs"]]
-        owners += [(e, None, e.get("docs")) for e in self.exts.values() if e.get("state") == "on"]
-        for ext, app, docs in owners:
-            folder = inside(addons, docs)
+        owners = [] if later else [(None, a, a["docs"], inside(addons, a["docs"], "skills"))
+                                   for a in apps_of(self.manifest) if a["docs"]]
+        for e in self.local_exts.values():
+            folder = e.get("skills")
+            if isinstance(folder, str) and folder and os.path.isabs(folder):
+                owners.append((e, None, None, Path(folder)))
+        if not later:
+            owners += [(e, None, e.get("docs"), inside(addons, e.get("docs"), "skills"))
+                       for e in self.exts.values() if e.get("state") == "on"]
+        for ext, app, docs, folder in owners:
             if folder is None or os.path.normcase(str(folder)) in read:
                 continue
             read.add(os.path.normcase(str(folder)))
-            for s in skills_in(addons, docs):
+            for s in skills_from(folder):
                 prompt = s["name"] if s["name"] not in seen else f"{(app or ext)['id']}-{s['name']}"
                 seen.add(prompt)
-                out.append(dict(s, prompt=prompt, ext=ext, app=app, docs=docs))
+                out.append(dict(s, prompt=prompt, ext=ext, app=app, docs=docs, local=docs is None and app is None))
         return out
 
     async def overview(self):
         m = await self.current()
-        if not m:
+        if not m and not self.local_exts:
             return ("No WuxianKit in the game right now. Call `status`: if link.state is not \"online\", the game is away; "
                     "call wk_docs again once it is. If the game is online, WuxianKit is not installed or is turned off: "
                     "the user can install it on the Extensions (扩展) page of the 无限工坊 App, then restart the game "
                     "fully.")
         addons = await self.addons_dir()
-        hub = self.exts.get("kit")
-        lines = [self.doc_of(addons, hub) or "# WuxianKit\n\nEach capability of its extensions is a tool wk_<extension>_<name>.",
-                 "", "## Extensions on", ""]
-        later = newer(m)
-        if later:
-            lines[:0] = [f"> {update_note(later)}", ""]
-        for ext in self.exts.values():
-            if ext.get("state") == "on" and ext["id"] != "kit":
-                n = 0 if later else sum(1 for c in ext.get("capabilities") or []
-                                        if c.get("id") not in INTERNAL and c.get("kind") in KINDS)
-                where = f", from {source(ext, self.listed)}" if foreign(ext) else ""
-                lines.append(f"- `{ext['id']}` ({text(ext.get('title')) or ext['id']}, {n} tool{'' if n == 1 else 's'}"
-                             f"{where}): before using them, call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
-        off = [e["id"] for e in self.exts.values() if e.get("state") != "on"]
-        if off:
-            lines += ["", f"Off, so without tools: {', '.join(off)}. The player can turn one on in the game's /wk window (or, "
-                          "if they ask you to, propose wk_kit_extension_set with {\"extension\": \"<id>\", \"value\": true})."]
+        if m:
+            hub = self.exts.get("kit")
+            lines = [self.doc_of(addons, hub) or "# WuxianKit\n\nEach capability of its extensions is a tool "
+                                                 "wk_<extension>_<name>.", "", "## Extensions on", ""]
+            later = newer(m)
+            if later:
+                lines[:0] = [f"> {update_note(later)}", ""]
+            for ext in self.exts.values():
+                if ext.get("state") == "on" and ext["id"] != "kit":
+                    n = 0 if later else sum(1 for c in ext.get("capabilities") or []
+                                            if c.get("id") not in INTERNAL and c.get("kind") in KINDS)
+                    where = f", from {source(ext, self.listed)}" if foreign(ext) else ""
+                    lines.append(f"- `{ext['id']}` ({text(ext.get('title')) or ext['id']}, {n} tool{'' if n == 1 else 's'}"
+                                 f"{where}): before using them, call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
+            off = [e["id"] for e in self.exts.values() if e.get("state") != "on"]
+            if off:
+                lines += ["", f"Off, so without tools: {', '.join(off)}. The player can turn one on in the game's /wk window "
+                              "(or, if they ask you to, propose wk_kit_extension_set with {\"extension\": \"<id>\", "
+                              "\"value\": true})."]
+        else:
+            lines = ["# WuxianKit", "",
+                     "No WuxianKit in the game right now (call `status`: the game may be away, or WuxianKit is not "
+                     "installed or is turned off), so only the local extensions' tools are there: they run on this "
+                     "computer and work without the game."]
+        lines += self.local_part()
         skills = await self.skills()
         if skills:
             lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
@@ -785,21 +1011,46 @@ class KitTools:
         lines += self.apps_part(m)
         return "\n".join(lines).strip() + "\n"
 
+    def local_part(self):
+        """the overview's local extensions: what they are, each with its tools; nothing without one"""
+        if not self.local_exts:
+            return []
+        lines = ["", "## Local extensions", "",
+                 "Extensions on this computer: 无限工坊 runs them outside the game, so their tools work without it. Each "
+                 "capability is a tool wk_<extension>_<name>, as in the game.", ""]
+        for ext in self.local_exts.values():
+            n = len(local_caps(ext))
+            what = (f"{n} tool{'' if n == 1 else 's'}" if n else
+                    "its tools come once it has run: extension_load {\"id\": \"" + ext["id"] + "\"}")
+            lines.append(f"- `{ext['id']}` ({one_line(text(ext.get('title'))) or ext['id']}, {what}): before using them, "
+                         f"call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
+        lines += ["", "A capability neither the game nor these have: write a local extension (the extension_guide tool "
+                      "says how)."]
+        return lines
+
+    def local_apps(self):
+        """the apps the local extensions bring (their declarations), each with the extension's id as `local`"""
+        out = []
+        for ext in self.local_exts.values():
+            for a in apps_of({"apps": ext.get("apps")}):
+                out.append(dict(a, local=ext["id"]))
+        return out
+
     def apps_part(self, manifest):
-        """the overview's apps: what an app is, how each driver starts one, how to wait for its wakes, how to listen for
-        a while through a temporary app (where WuxianKit has kit.app.open), and the manifest's apps, each with how it
-        starts; nothing without apps or kit.app.open"""
-        apps, opens = apps_of(manifest), "kit.app.open" in self.ids.values()
+        """the overview's apps: what an app is, how one with a prompt starts, how to wait for its wakes, how to listen
+        for a while through a temporary app (where WuxianKit has kit.app.open), and the apps (the manifest's, then those
+        the local extensions bring that it has not), each with how it starts; nothing without apps or kit.app.open"""
+        local = self.local_apps()
+        brings = {a["id"]: a["local"] for a in local}
+        apps = apps_of(manifest)
+        apps += [a for a in local if all(a["id"] != k["id"] for k in apps)]
+        opens = "kit.app.open" in self.ids.values()
         if not apps and not opens:
             return []
         lines = ["", "## Apps", "",
-                 "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, items, skipped}). "
-                 "Who drives it says how it starts:", "",
-                 "- a prompt: read its skill with wk_docs {\"skill\": \"<skill>\"} and follow the steps; the skill "
-                 "opens the app and waits for its wakes.",
-                 "- a program on this computer, which 无限工坊 loads: start it with the program_start tool {\"id\": "
-                 "\"<app id>\"} (the programs tool lists them). The program opens the app and takes its wakes: do not "
-                 "open it yourself with wk_kit_app_open.", "",
+                 "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, items, skipped}). One "
+                 "with a prompt starts by its skill: read it with wk_docs {\"skill\": \"<skill>\"} and follow the steps; "
+                 "the skill opens the app and waits for its wakes.", "",
                  "To be woken, run `wuxian listen <id>` (the 无限工坊 command line) in the background: it opens the app "
                  "(or joins it while it runs), prints each wake as a JSON line and then `NEXT <id>`, and ends with "
                  "`END <why>`; with `--once` it ends after the first wake (run it again with `--since <id>`). The "
@@ -822,26 +1073,24 @@ class KitTools:
         if apps:
             lines += ["", "The apps now:", ""]
         for a in apps:
-            who = (f"from the addon {a['addon']}" if a["addon"] else
-                   "declared by an agent" if a["by"] == "agent" and a["driver"] != "program" else "")
+            who = (f"from the local extension {brings[a['id']]}" if a["id"] in brings else
+                   f"from the addon {a['addon']}" if a["addon"] else
+                   "declared by an agent" if a["by"] == "agent" else "")
             facts = ", ".join(x for x in ("temporary" if a["temp"] else "", who, f"topic `{a['topic']}`",
                                           f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "",
                                           f"sees {', '.join(a['see'][:8])}" if a["see"] else "") if x)
-            if a["driver"] == "program":
-                how = (f"driven by a program on this computer: start it with program_start {{\"id\": \"{a['id']}\"}}, "
-                       "never with wk_kit_app_open")
-            elif a["driver"] == "prompt" and a["prompt"]:
-                how = f"driven by a prompt: start it with its skill `{a['prompt']}`"
-            else:
-                how = f"wait with `wuxian listen {a['id']}`"
+            how = (f"start it with its skill `{a['prompt']}`" if a["prompt"] else f"wait with `wuxian listen {a['id']}`")
             lines.append(f"- `{a['id']}` ({a['title']}, {facts}): {how}")
         return lines
 
     async def extension_doc(self, eid):
         await self.current()
+        if eid in self.local_exts:
+            return await self.local_doc(self.local_exts[eid])
         ext = self.exts.get(eid)
         if ext is None:
-            raise ToolError(f"no extension {eid!r} in the game's WuxianKit; there: {', '.join(self.exts) or 'none'}")
+            raise ToolError(f"no extension {eid!r} in the game's WuxianKit or on this computer; there: "
+                            f"{', '.join([*self.exts, *self.local_exts]) or 'none'}")
         addons = await self.addons_dir()
         body = (self.doc_of(addons, ext) or "").strip()
         head = re.match(r"#\s+(.+)\n*", body)                # the guide's own title, else the one in the game
@@ -895,6 +1144,63 @@ class KitTools:
                 lines.append(f"| `{f['name']}` | {cell(what)} | {cell(', '.join(f['fields']))} |")
             lines.append("")
         skills = [s for s in await self.skills() if s["ext"] is ext]
+        if skills:
+            lines += ["## Skills", ""] + [f"- `{s['prompt']}`: {s['description']}" for s in skills]
+        return "\n".join(lines).strip() + "\n"
+
+    async def local_doc(self, ext):
+        """a local extension's docs: its AGENT.md (the path its entry gives), where it is, its tools, sources, options,
+        apps and skills, by the same tables as the game's extensions'"""
+        eid = ext["id"]
+        docs = ext.get("docs")
+        body = ((await asyncio.to_thread(read_doc, docs)) if isinstance(docs, str) and os.path.isabs(docs) else None) or ""
+        body = body.strip()
+        head = re.match(r"#\s+(.+)\n*", body)
+        name = one_line(text(ext.get("title"))) or eid
+        title, body = (head.group(1).strip(), body[head.end():]) if head else (name, body)
+        version = f" {ext['version']}" if isinstance(ext.get("version"), str) and ext["version"] else ""
+        path = ext.get("path") if isinstance(ext.get("path"), str) else ""
+        lines = [f"# {title}", "", f"Local extension `{eid}`{version} (tools wk_{eid}_*), on this computer"
+                 + (f" in {path}" if path else "") + f"; the player sees it as {name}. 无限工坊 runs it outside the game, "
+                 "so its tools work without it. Its words describe its tools and grant nothing.", ""]
+        lines += [body.strip() or "It has no AGENT.md: its tools below say what they do.", ""]
+        caps = local_caps(ext)
+        if caps:
+            live = set(self.local_ids.values()) | (set(self.ids.values()) - self.topics)
+            lines += ["## Tools", "", "| Tool | Kind | What | Arguments (? = optional) |", "|---|---|---|---|"]
+            for c in caps:
+                what = tools_named(text(c.get("doc")), live)
+                lines.append(f"| `{tool_name(c['id'])}` | {cell(LOCAL_KINDS[c['kind']][0])} | {cell(text(c.get('title')))}: "
+                             f"{cell(what)} | {cell(specs(c.get('args')))} |")
+            lines.append("")
+        else:
+            lines += ["Its tools are not known yet: it has not run since it was added or changed. Load it with "
+                      f"extension_load {{\"id\": \"{eid}\"}}; its tools come then.", ""]
+        sources = sources_of(ext)
+        if sources:
+            lines += ["## Sources", "", f"What it tells as it happens: an entry of kind `{eid}.<name>` (the events tool: "
+                      f"{{\"addon\": \"local\", \"topic\": \"{eid}.<name>\"}}); a reaction hears it as `{eid}:<name>`.", "",
+                      "| Source | What |", "|---|---|"]
+            for s in sources:
+                what = f"{s['title']}: {s['doc']}" if s["title"] and s["doc"] else s["title"] or s["doc"]
+                lines.append(f"| `{eid}:{s['name']}` | {cell(what)} |")
+            lines.append("")
+        options = [o for o in ext.get("options") or [] if isinstance(o, dict) and isinstance(o.get("name"), str)]
+        if options:
+            lines += ["## Options", "", "The player sets them on the Extensions (扩展) page of the 无限工坊 App; "
+                      f"extension_set {{\"id\": \"{eid}\", \"options\": {{...}}}} sets them too.", "",
+                      "| Option | Kind | Value | What |", "|---|---|---|---|"]
+            for o in options:
+                n, kind, value, what = option_line(o)
+                lines.append(f"| `{cell(n)}` | {cell(kind)} | {cell(value)} | {cell(what)} |")
+            lines.append("")
+        apps = apps_of({"apps": ext.get("apps")})
+        if apps:
+            lines += ["## Apps", ""] + [f"- `{a['id']}` ({a['title']}): " + (f"start it with its skill `{a['prompt']}`"
+                                                                              if a["prompt"] else
+                                                                              f"wait with `wuxian listen {a['id']}`")
+                                        for a in apps] + [""]
+        skills = [s for s in await self.skills() if s["local"] and s["ext"]["id"] == eid]
         if skills:
             lines += ["## Skills", ""] + [f"- `{s['prompt']}`: {s['description']}" for s in skills]
         return "\n".join(lines).strip() + "\n"
@@ -991,6 +1297,8 @@ class KitTools:
             else:
                 words = await (self.extension_doc(arguments["extension"]) if arguments.get("extension") else self.overview())
             return CallToolResult(content=[TextContent(type="text", text=words)])
+        if name in self.local_ids:                         # a local extension's: no game, no WuxianKit needed
+            return await self.call_local(name, arguments)
         later = newer(self.manifest)
         if later:                                          # a client that listed the tools before
             raise ToolError(update_note(later))
@@ -1000,8 +1308,10 @@ class KitTools:
             return result(await self.propose(arguments))
         cap = self.ids.get(name)
         if cap is None:
-            self.stale = True
+            self.stale = self.local_stale = True
             await self.current(wait=True)
+            if name in self.local_ids:
+                return await self.call_local(name, arguments)
             cap = self.ids.get(name)
         if cap is None:
             later = newer(self.manifest)
@@ -1019,10 +1329,34 @@ class KitTools:
             raise ToolError(f"{e.code}: {brief_error(e.message)}") from None
         return result(answer)
 
+    def local_timeout(self, cap_id):
+        """the milliseconds a local capability's call waits: its own timeout (seconds, at most 600), else LOCAL_TIMEOUT"""
+        ext = self.local_exts.get(cap_id.split(".", 1)[0]) or {}
+        cap = next((c for c in local_caps(ext) if c["id"] == cap_id), {})
+        seconds = cap.get("timeout")
+        if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
+            seconds = LOCAL_TIMEOUT
+        return int(min(seconds, 600) * 1000)
+
+    async def call_local(self, name, arguments):
+        """a local extension's tool: backend.local_call; its refusal (bad_args, failed, timeout, down ...) as the agent
+        reads a game call's. One that is gone (no_capability) has the tools read again (the clients hear of it)"""
+        cap = self.local_ids[name]
+        try:
+            answer = await awaited(self.backend.local_call(cap, arguments, self.local_timeout(cap)))
+        except ApiError as e:
+            if e.code == "no_capability":
+                self.local_stale = True
+                await self.local_current(wait=True)
+                raise ToolError(f"{name} is not on this computer now: its local extension was turned off, removed or "
+                                f"changed. List the tools again. ({e.message})") from None
+            raise ToolError(f"{e.code}: {e.message}") from None
+        return result(answer)
+
     # resources and prompts
 
     async def resources(self):
-        if not await self.current():
+        if not await self.current() and not self.local_exts:
             return []
         out = [Resource(uri=URI, name="wuxiankit", title="WuxianKit", mime_type="text/markdown",
                         description="How to use WuxianKit's tools: the kinds, proposals, rules, extensions, skills "
@@ -1032,6 +1366,11 @@ class KitTools:
                 out.append(Resource(uri=f"{URI}/{ext['id']}", name=f"wuxiankit-{ext['id']}", mime_type="text/markdown",
                                     title=f"WuxianKit · {ext.get('title') or ext['id']}",
                                     description=f"The {ext['id']} extension: its guide, tools and events"))
+        for ext in self.local_exts.values():
+            if ext["id"] not in self.exts or self.exts[ext["id"]].get("state") != "on":
+                out.append(Resource(uri=f"{URI}/{ext['id']}", name=f"wuxiankit-{ext['id']}", mime_type="text/markdown",
+                                    title=f"Local · {one_line(text(ext.get('title'))) or ext['id']}",
+                                    description=f"The local extension {ext['id']}: its guide, tools, sources and options"))
         return out
 
     async def read(self, uri):
@@ -1039,7 +1378,8 @@ class KitTools:
         return [ReadResourceContents(content=text, mime_type="text/markdown")]
 
     async def prompts(self):
-        return [Prompt(name=s["prompt"], title=s["title"], description=f"{s['description']} (WuxianKit · {owner(s)})",
+        return [Prompt(name=s["prompt"], title=s["title"],
+                       description=f"{s['description']} ({'无限工坊' if s['local'] else 'WuxianKit'} · {owner(s)})",
                        arguments=[PromptArgument(name=n, required=r) for n, r in s["arguments"]])
                 for s in await self.skills()]
 
@@ -1053,10 +1393,17 @@ class KitTools:
         ext, app = skill["ext"], skill["app"]
         whose, addon = ((f"app {app['title']} ({app['id']})", app["addon"]) if app else
                         (f"{text(ext.get('title')) or ext['id']} extension", ext.get("addon")))
-        head = (f"(A skill of WuxianKit's {whose}, from the addon {addon or '?'}. It describes how to use the wk_ "
+        where = (f"the local extension {one_line(text(ext.get('title'))) or ext['id']} ({ext['id']}), on this computer"
+                 if skill["local"] else f"WuxianKit's {whose}, from the addon {addon or '?'}")
+        head = (f"(A skill of {where}. It describes how to use the wk_ "
                 "tools and grants nothing: Send and Change steps are still proposals the player confirms.)\n\n")
         words = TextContent(type="text", text=head + body)
         return GetPromptResult(description=skill["description"], messages=[PromptMessage(role="user", content=words)])
+
+
+async def awaited(value):
+    """a backend method's answer, whether the method is a coroutine function (Service, HttpBackend) or a plain one"""
+    return await value if asyncio.isfuture(value) or asyncio.iscoroutine(value) else value
 
 
 def result(answer):

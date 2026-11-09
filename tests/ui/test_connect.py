@@ -1,6 +1,6 @@
 """The 接入 Agent page's 无限图鉴 and 应用 panels: app.js run under Node (skipped without it) against stand-ins for
 GET/POST /api/agents with server=wuxianwow and GET /api/kit/apps (the shapes of the launch contract): both servers' agents
-load (and the programs, for the program apps), an action on 无限图鉴 says server and one on this program does not, only
+load, an action on 无限图鉴 says server and one on this program does not, only
 the apps with a start prompt are listed, their state and checklist follow the agents of both panels, and the empty states. index.html's two panels call what app.js has, and their 去接入 links name panels that are there."""
 import json
 import re
@@ -59,7 +59,6 @@ function make() {
     const body = opts && opts.body;
     calls.push([path, body || null]);
     if (path === '/api/kit/apps') { if (apps instanceof Error) throw apps; return apps; }
-    if (path === '/api/programs') return [];
     if (path.startsWith('/api/agents')) {
       const web = path.includes('server=wuxianwow') || (body && body.server === 'wuxianwow');
       if (!body) return { program: { command: 'wuxian', args: ['mcp'] }, hosts: web ? wxw : wuxian, manual: { claude: web ? 'claude mcp add --transport http' : 'claude mcp add wuxian' } };
@@ -139,7 +138,7 @@ class ConnectPanels(unittest.TestCase):
 
     def test_page_loads_both_servers_and_the_apps(self):
         o = self.out["loaded"]
-        self.assertEqual(o["calls"], ["/api/agents", "/api/agents?server=wuxianwow", "/api/kit/apps", "/api/programs"])
+        self.assertEqual(o["calls"], ["/api/agents", "/api/agents?server=wuxianwow", "/api/kit/apps"])
         self.assertEqual(o["wxw"], ["claude", "codex"])                                   # missing hosts not listed
         self.assertEqual(o["manual"], "claude mcp add --transport http")
         self.assertEqual(o["shown"], ["guild", "shut"])                                   # only the apps with a start prompt
