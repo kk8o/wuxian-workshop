@@ -569,6 +569,9 @@ pre.diff .hunk { color: var(--sky); }
 .agent-main pre.code { margin: 6px 0; font-size: 11.5px; }
 .agent-acts { flex: none; display: flex; gap: 6px; align-items: center; }
 .tiny-path { font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere; }
+.panel-note { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--line2); }
+.app-row .checks { margin: 4px 0 2px; }
+.app-row .check-body { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
 details.snippet { margin-top: 10px; border: 1px solid var(--line2); border-radius: 5px; padding: 6px 10px; }
 details.snippet summary { cursor: pointer; font-size: 12.5px; }
 details.snippet pre.code { margin-top: 6px; }
