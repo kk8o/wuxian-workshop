@@ -1707,10 +1707,6 @@ function appState() {
       return null;
     },
     appTitle(a) { return this.loc(a.title) || a.id; },
-    appSlash(a) {                              // Claude Code lists this program's MCP prompts as slash commands
-      const claude = (this.agents.list || []).some(h => h.id === 'claude' && h.state === 'ok');
-      return claude && a.prompt ? t('Claude Code 里也可以输入 {cmd}', { cmd: '/mcp__wuxian__' + a.prompt }) : '';
-    },
     appChecks(a) {                             // the checklist: [{id, ok (true / false / null: not known), text, go}]
       const out = [];
       const x = a.extension;

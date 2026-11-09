@@ -759,7 +759,6 @@ const EN = {
   '开不了': 'Blocked',
   '停着': 'Stopped',  '复制启动语': 'Copy start prompt',
   '启动语': 'Start prompt',
-  'Claude Code 里也可以输入 {cmd}': 'In Claude Code you can also type {cmd}',
   '扩展「{x}」已开启': 'Extension "{x}" is on',
   '扩展「{x}」未开启': 'Extension "{x}" is off',
   '扩展「{x}」：进入游戏后确认': 'Extension "{x}": checked once you are in the game',

@@ -1,8 +1,7 @@
 """The 接入 Agent page's 无限图鉴 and 应用 panels: app.js run under Node (skipped without it) against stand-ins for
 GET/POST /api/agents with server=wuxianwow and GET /api/kit/apps (the shapes of the launch contract): both servers' agents
 load, an action on 无限图鉴 says server and one on this program does not, only the apps with a start prompt are listed,
-their state and checklist follow the agents of both panels, the slash command shows with Claude Code connected, and the
-empty states. index.html's two panels call what app.js has, and their 去接入 links name panels that are there."""
+their state and checklist follow the agents of both panels, and the empty states. index.html's two panels call what app.js has, and their 去接入 links name panels that are there."""
 import json
 import re
 import shutil
@@ -83,7 +82,7 @@ const checks = (st, a) => st.appChecks(a).map(c => [c.id, c.ok, c.go || '']);
                  shown: st.appsShown.map(a => a.id), pills: st.appsShown.map(a => st.appPill(a)), empty: st.appsEmpty };
   const guild = st.appsShown[0], shut = st.appsShown[1];
   out.title = st.appTitle(guild);
-  out.before = { guild: checks(st, guild), shut: checks(st, shut), slash: st.appSlash(guild),
+  out.before = { guild: checks(st, guild), shut: checks(st, shut),
                  texts: st.appChecks(guild).map(c => c.text) };
 
   // connecting 无限图鉴 to Claude Code (server in the body), then this program (no server): the checklist follows
@@ -91,7 +90,7 @@ const checks = (st, a) => st.appChecks(a).map(c => [c.id, c.ok, c.go || '']);
   await st.agentAction(st.wxw.list[0], 'connect', 'wuxianwow');
   await st.agentAction(st.agents.list[0], 'connect');
   out.posts = calls.map(c => c[1]);
-  out.after = { guild: checks(st, guild), slash: st.appSlash(guild), wxwState: st.wxw.list[0].state, mine: st.agents.list[0].state,
+  out.after = { guild: checks(st, guild), wxwState: st.wxw.list[0].state, mine: st.agents.list[0].state,
                 said: st.said.slice(), busy: st.agentsBusy, pill: st.agentPill(st.wxw.list[0], 'wuxianwow'),
                 other: [st.agentPill({ state: 'other' }, 'wuxianwow')[1], st.agentPill({ state: 'other' })[1]] };
   await st.agentAction(st.wxw.list[0], 'verify', 'wuxianwow');
@@ -120,7 +119,7 @@ const checks = (st, a) => st.appChecks(a).map(c => [c.id, c.ok, c.go || '']);
   st.lang = 'en';
   apps = APPS;
   await st.loadApps();
-  out.english = st.appChecks(st.appsShown[0]).map(c => c.text).concat([st.appSlash(st.appsShown[0]), st.appPill(st.appsShown[1])[1]]);
+  out.english = st.appChecks(st.appsShown[0]).map(c => c.text).concat([st.appPill(st.appsShown[1])[1]]);
   process.stdout.write(JSON.stringify(out));
 })().catch(e => { console.error(e.stack); process.exit(1); });
 """
@@ -155,7 +154,6 @@ class ConnectPanels(unittest.TestCase):
         self.assertEqual(b["texts"][3], "未接入无限图鉴")
         self.assertIn("https://example.org/mcp", b["texts"][4])
         self.assertEqual(b["shut"], [["ext", False, ""], ["wuxian", True, ""]])          # no needs, no servers
-        self.assertEqual(b["slash"], "")                                                  # Claude Code not connected
 
     def test_actions_and_the_checklist_after(self):
         self.assertEqual(self.out["posts"], [{"action": "connect", "host": "claude", "server": "wuxianwow"},
@@ -163,7 +161,6 @@ class ConnectPanels(unittest.TestCase):
         a = self.out["after"]
         self.assertEqual(a["guild"][3], ["mcp:wuxianwow", True, ""])
         self.assertEqual((a["wxwState"], a["mine"], a["busy"]), ("ok", "ok", False))
-        self.assertEqual(a["slash"], "Claude Code 里也可以输入 /mcp__wuxian__guild-chat")
         self.assertEqual(a["said"], ["无限图鉴：Claude Code 已接入", "Claude Code 已接入"])
         self.assertEqual(a["pill"], ["ok", "已接入"])
         self.assertEqual(a["other"], ["指向别的地址", "指向别的程序"])
@@ -184,8 +181,7 @@ class ConnectPanels(unittest.TestCase):
         self.assertEqual(e[0], 'Extension "Guild" is on')
         self.assertEqual(e[1], "Connected to Wuxian Workshop: Claude Code, Codex")
         self.assertEqual(e[3], "Connected to Wuxian Codex: Claude Code")
-        self.assertEqual(e[5], "In Claude Code you can also type /mcp__wuxian__guild-chat")
-        self.assertEqual(e[6], "Blocked")
+        self.assertEqual(e[5], "Blocked")
 
 
 class Template(unittest.TestCase):
@@ -200,7 +196,7 @@ class Template(unittest.TestCase):
     def test_calls_exist(self):
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', self.part))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t"}
-        self.assertTrue({"agentAction", "agentPill", "appChecks", "appPill", "appSlash", "appTitle", "goPanel", "copy"} <= names)
+        self.assertTrue({"agentAction", "agentPill", "appChecks", "appPill", "appTitle", "goPanel", "copy"} <= names)
         for name in names:
             self.assertRegex(self.js, r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, name)
         for getter in ("agentsBusy", "wxwShown", "appsShown", "appsEmpty"):
