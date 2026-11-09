@@ -1,6 +1,6 @@
 """The 接入 Agent page's apps (/api/kit/apps) over a real daemon: WuxianKit's kit.apps while the game answers (with
 why an app that is off cannot start, never kit.app.status: the agent's heartbeat), the apps of the kept manifest while it does not; each app's
-driver (prompt, program), launch and temp, its start line as WuxianKit gives it, its own extension and the skill its
+temp (no driver, no launch: programs are gone, contract3 section 7), its start line as WuxianKit gives it, its own extension and the skill its
 prompt names in its docs folder (with needs and mcp)."""
 import os
 import tempfile
@@ -118,9 +118,11 @@ class KitAppsApi(unittest.TestCase):
         self.assertTrue(online)
         self.assertEqual(list(apps), ["guild", "tour", "quiz", "companion", "raid_talk"])
         guild = apps["guild"]
-        keys = ("title", "by", "addon", "driver", "launch", "temp", "prompt", "start", "on", "blocked")
+        keys = ("title", "by", "addon", "temp", "prompt", "start", "on", "blocked")
+        self.assertNotIn("driver", guild)
+        self.assertNotIn("launch", guild)
         self.assertEqual({k: guild[k] for k in keys},
-                         dict(title="公会聊天", by="addon", addon="WuxianKit", driver="prompt", launch=False, temp=False,
+                         dict(title="公会聊天", by="addon", addon="WuxianKit", temp=False,
                               prompt="guild-chat", start=START, on=True, blocked=None))
         self.assertIsNone(guild["extension"])     # an app of its own: chat is only what it hears
         self.assertEqual(guild["skill"], {"name": "guild-chat", "title": "Guild chat", "description": "Take part in guild chat",
@@ -131,12 +133,11 @@ class KitAppsApi(unittest.TestCase):
         quiz = apps["quiz"]                       # no docs: the skill wk_docs gives by its name; no extension guessed
         self.assertEqual((quiz["skill"]["name"], quiz["skill"]["description"], quiz["extension"]),
                          ("chat-quiz", "A quiz", None))
-        companion = apps["companion"]             # driven by a program the game's 无限工坊 loads
-        self.assertEqual((companion["driver"], companion["launch"], companion["temp"], companion["prompt"],
-                          companion["skill"]), ("program", True, False, None, None))
+        companion = apps["companion"]             # an app without a prompt: no start line, no skill
+        self.assertEqual((companion["temp"], companion["prompt"], companion["skill"]), (False, None, None))
         talk = apps["raid_talk"]                  # a temporary app
-        self.assertEqual((talk["on"], talk["blocked"], talk["driver"], talk["temp"], talk["prompt"], talk["start"],
-                          talk["extension"], talk["skill"]), (True, None, None, True, None, None, None, None))
+        self.assertEqual((talk["on"], talk["blocked"], talk["temp"], talk["prompt"], talk["start"],
+                          talk["extension"], talk["skill"]), (True, None, True, None, None, None, None))
         reads = [(n, a, s) for n, a, s in self.game.calls if n in ("kit.apps", "kit.app.status")]
         self.assertEqual(reads, [("kit.apps", None, True)])   # the page's own read; no kit.app.status (a heartbeat)
 
@@ -153,8 +154,7 @@ class KitAppsApi(unittest.TestCase):
             self.game.apps = Game().apps
 
     def test_while_the_game_is_away(self):
-        """the kept manifest's apps: on, blocked and launch not known; driver, temp, the skill and extension as
-        before"""
+        """the kept manifest's apps: on and blocked not known; temp, the skill and extension as before"""
         self.apps()                                                    # the manifest read and kept
         self.game.away = True
         self.game.calls.clear()
@@ -163,8 +163,7 @@ class KitAppsApi(unittest.TestCase):
         self.assertEqual(list(apps), ["guild", "tour", "quiz", "companion", "raid_talk"])
         self.assertEqual((apps["guild"]["on"], apps["guild"]["blocked"], apps["guild"]["start"]), (None, None, START))
         self.assertEqual(apps["guild"]["skill"]["needs"], ["shell"])
-        self.assertEqual((apps["companion"]["driver"], apps["companion"]["launch"], apps["raid_talk"]["temp"]),
-                         ("program", None, True))                   # launch: only the game in this UI session knows
+        self.assertEqual((apps["companion"]["temp"], apps["raid_talk"]["temp"]), (False, True))
         self.assertEqual((apps["tour"]["on"], apps["tour"]["blocked"], apps["tour"]["extension"]["on"]), (None, None, False))
         self.assertFalse([n for n, _, _ in self.game.calls if n in ("kit.apps", "kit.app.status")])   # not asked
 

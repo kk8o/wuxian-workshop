@@ -30,8 +30,10 @@
     wuxian install [--no-clean] [--game DIR]  install the addon
     wuxian update [check|download|apply]      the program's updates (an installed copy; apply restarts it)
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
-    wuxian program list | add <path> | remove <id> | start <id> [--restart] | stop <id> | logs <id> [-f]
-                                              programs outside the game, loaded by the program loader
+    wuxian ext list | add <path> | remove <id> | load <id> | stop <id> | set <id> [--on|--off] [--option k=v]
+               | check <id|path> | new <id> [--title T] | logs <id> [-f]   local extensions (on this computer)
+    wuxian wk <capability> ['<json args>']    call a capability: a local extension's, or WuxianKit's in the game
+    wuxian reaction list | set '<json>' | clear [--id X] [--owner A]   reactions: an item heard calls a capability
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
     wuxian quit                               stop the daemon
     wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
@@ -200,26 +202,52 @@ def build_parser():
     p.add_argument("--title", help="the name shown in the game (default: the folder name)")
     p.add_argument("--notes", default="", help="one line about it")
     p.add_argument("--template", choices=("basic", "window"), default="basic")
-    p = sub.add_parser("program", help="programs outside the game (the program loader): list, add, remove, start, stop, "
-                                        "logs")
+    p = sub.add_parser("ext", help="local extensions (WuxianKit's extensions on this computer): list, add, remove, load, "
+                                    "stop, set, check, new, logs")
     act = p.add_subparsers(dest="action", metavar="<action>", required=True)
-    q = act.add_parser("list", help="the registered programs and their state")
+    q = act.add_parser("list", help="the registered local extensions and their state")
     q.add_argument("--json", action="store_true", help="print JSON")
-    q = act.add_parser("add", help="register a program: its folder (or its wuxian-program.json)")
+    q = act.add_parser("add", help="register an extension: its folder (or its wuxian-extension.json)")
     q.add_argument("path")
-    q = act.add_parser("remove", help="take a program off the registry (a running one is stopped first)")
-    q.add_argument("id", help="its id (or its folder)")
-    q = act.add_parser("start", help="start a program")
+    q = act.add_parser("remove", help="take an extension off the registry (stopped first; its folder stays)")
     q.add_argument("id")
-    q.add_argument("--restart", action="store_true", help="stop it first when it runs")
-    q = act.add_parser("stop", help="stop a program (its app first, then its process tree)")
+    q = act.add_parser("load", help="check an extension and (re)start it, run its tests")
     q.add_argument("id")
-    q = act.add_parser("logs", help="a program's output (stdout and stderr) and how it ended")
+    q = act.add_parser("stop", help="stop an extension")
     q.add_argument("id")
-    q.add_argument("--follow", "-f", action="store_true", help="keep printing new lines, across restarts (Ctrl+C ends it)")
+    q = act.add_parser("set", help="turn an extension on or off, set its options")
+    q.add_argument("id")
+    on = q.add_mutually_exclusive_group()
+    on.add_argument("--on", dest="enabled", action="store_const", const=True, help="turn it on")
+    on.add_argument("--off", dest="enabled", action="store_const", const=False, help="turn it off (it stops)")
+    q.add_argument("--option", action="append", default=[], metavar="NAME=VALUE",
+                   help="an option (the value as JSON: 0.8, true, \"text\"; anything else is text); again for more")
+    q = act.add_parser("check", help="check an extension (an id, or a folder) without touching the running one")
+    q.add_argument("id")
+    q.add_argument("--json", action="store_true", help="print JSON")
+    q = act.add_parser("new", help="a new extension from the template (default folder: %%WUXIAN_HOME%%\\extensions\\<id>)")
+    q.add_argument("id")
+    q.add_argument("--title", help="the name the player sees (default: the id)")
+    q.add_argument("--folder", help="the full path of its folder (new or empty)")
+    q = act.add_parser("logs", help="an extension's output (its stderr and the workshop's lines on its starts and ends)")
+    q.add_argument("id")
+    q.add_argument("--follow", "-f", action="store_true", help="keep printing new lines (Ctrl+C ends it)")
     q.add_argument("--since", type=int, default=0, help="from this line on (default: from the first; the last --limit "
                                                                  "lines when there are more)")
     q.add_argument("--limit", type=int, default=200, help="at most this many lines (default 200)")
+    p = sub.add_parser("wk", help="call a capability: a local extension's, or the game's WuxianKit's (see, keep, point)")
+    p.add_argument("cap", help="its id, <extension>.<name>: voice.say, sense.bags")
+    p.add_argument("args", nargs="?", help="its arguments as a JSON object")
+    p.add_argument("--timeout-ms", type=int, default=30000)
+    p = sub.add_parser("reaction", help="reactions: an item heard calls a capability, without the agent")
+    act = p.add_subparsers(dest="action", metavar="<action>", required=True)
+    q = act.add_parser("list", help="the reactions set now")
+    q.add_argument("--json", action="store_true", help="print JSON")
+    q = act.add_parser("set", help="set one: '{\"hear\": \"game:combat\", \"call\": \"voice.play\", \"args\": {...}}'")
+    q.add_argument("spec", help="the reaction as a JSON object")
+    q = act.add_parser("clear", help="clear reactions: --id, --owner, or (neither) all")
+    q.add_argument("--id")
+    q.add_argument("--owner", help="an app id: the reactions it owns")
     p = sub.add_parser("api", help="this client's API manual: search, one entry, the manual's topics")
     p.add_argument("words", nargs="*", help="what to search for")
     p.add_argument("--get", metavar="NAME", help="one function, event or table in full")
@@ -798,94 +826,162 @@ def cmd_new(client, args):
     return 0
 
 
-def program_line(r):
-    """one program for `wuxian program list` and the answers of add / start / stop"""
-    if r["state"] == "running":
-        state = f"running (pid {r['pid']})"
-    elif r["state"] == "exited":
-        state = "exited" + (f" with code {r['exit_code']}" if r.get("exit_code") is not None else "")
-    else:
-        state = "stopped"
-    return f"{r['id']:<16} {state:<22} {r['title']}" + ("  [app]" if r.get("app") else "") + f"  {r['path']}"
+def ext_line(r):
+    """one local extension for `wuxian ext list` and the answers of add / load / stop / set"""
+    state = r["state"]
+    if state in ("running", "starting") and r.get("pid"):
+        state += f" (pid {r['pid']})"
+    elif state == "exited" and r.get("exit_code") is not None:
+        state += f" with code {r['exit_code']}"
+    caps = len(r.get("capabilities") or [])
+    return f"{r['id']:<16} {state:<22} {r['title']}  [{caps} capabilities]  {r['path']}"
 
 
-def program_end(r):
-    """how a program that does not run ended, for the end of `wuxian program logs` (None while it runs)"""
-    if r["state"] == "running":
-        return None
-    if r["state"] == "exited":
-        code = r.get("exit_code")
-        return f"-- exited with code {code if code is not None else '?'}" + (
-            f" at {fmt_time(r['exited_at'])}" if r.get("exited_at") else "")
-    if not r.get("started"):
-        return "-- it has not run yet"
-    return "-- stopped" + (f" at {fmt_time(r['exited_at'])}" if r.get("exited_at") else "")
+def option_value(text):
+    """NAME=VALUE of --option: the value as JSON, else as text"""
+    name, eq, value = text.partition("=")
+    if not eq or not name.strip():
+        raise ValueError(f"--option {text}: NAME=VALUE")
+    try:
+        return name.strip(), json.loads(value)
+    except ValueError:
+        return name.strip(), value
 
 
-def cmd_program(client, args):
+def print_problems(problems):
+    for p in problems:
+        print(f"{p['level']}: {p['where']}: {p['message']}", file=sys.stderr)
+        if p.get("hint"):
+            print(f"    {p['hint']}", file=sys.stderr)
+
+
+def print_check(check):
+    print_problems(check.get("problems") or [])
+    tests = check.get("tests")
+    if tests:
+        print(f"tests: {tests['ran']} ran, {tests['failed']} failed", file=sys.stderr)
+    print(("ok" if check.get("ok") else "not ok") + f": {len(check.get('capabilities') or [])} capabilities"
+          + (f" ({', '.join(check['capabilities'])})" if check.get("capabilities") else ""))
+
+
+def cmd_ext(client, args):
     a = args.action
     if a == "list":
-        rows = client.programs()
+        res = client.local_extensions()
         if args.json:
-            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            print(json.dumps(res, ensure_ascii=False, indent=2))
             return 0
-        for r in rows:
-            print(program_line(r))
+        for r in res["extensions"]:
+            print(ext_line(r))
             if r.get("error"):
                 print(f"    {r['error']}")
-        if not rows:
-            print("no programs registered: `wuxian program add <folder>` (a folder with a wuxian-program.json)")
+        if not res["extensions"]:
+            print("no local extensions registered: `wuxian ext new <id>` makes one, `wuxian ext add <folder>` registers one")
         return 0
     if a == "add":
-        r = client.program_add(str(Path(args.path).resolve()))
-        print(f"registered: {program_line(r)}")
-        if r.get("declared") not in (None, "ok"):
-            print(f"WuxianKit did not take its app: {r['declared']}", file=sys.stderr)
+        print(f"registered: {ext_line(client.extension_add(str(Path(args.path).resolve())))}")
         return 0
     if a == "remove":
-        res = client.program_remove(args.id)
+        res = client.extension_remove(args.id)
         print(f"{res['id']} is no longer registered ({res['path']}; its files stay)")
         return 0
-    if a == "start":
-        r = client.program_start(args.id, args.restart)
-        print(f"started {r['id']}, pid {r['pid']}: {' '.join(r['command'] or [])}")
-        return 0
+    if a == "load":
+        res = client.extension_load(args.id)
+        print_check(res["check"])
+        print(ext_line(res["row"]))
+        return 0 if res["check"].get("ok") else 1
     if a == "stop":
-        r = client.program_stop(args.id)
-        print(program_line(r))
+        print(ext_line(client.extension_stop(args.id)))
         return 0
-    return program_logs(client, args)
+    if a == "set":
+        try:
+            options = dict(option_value(o) for o in args.option) or None
+        except ValueError as e:
+            say_error(str(e))
+            return 2
+        print(ext_line(client.extension_set(args.id, args.enabled, options)))
+        return 0
+    if a == "check":
+        res = client.extension_check(args.id)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print_check(res)
+        return 0 if res.get("ok") else 1
+    if a == "new":
+        res = client.new_extension(args.id, args.title, args.folder)
+        print(f"made {res['row']['path']}: {', '.join(Path(f).name for f in res['files'])}")
+        print(res.get("guide", ""))
+        return 0
+    return ext_logs(client, args)
 
 
-def program_logs(client, args):
-    """`wuxian program logs`: the lines, then how it ended; with --follow the new ones as they come, and a new start's
-    from its first line"""
-    since, limit, started = max(0, args.since), max(1, min(args.limit, 2000)), None
+def ext_logs(client, args):
+    """`wuxian ext logs`: the lines; with --follow the new ones as they come"""
+    since, limit = max(0, args.since), max(1, min(args.limit, 2000))
     try:
         while True:
-            res = client.program_logs(args.id, since, limit)
-            row = res["row"]
-            if started is not None and row.get("started") != started:
-                print(f"-- started again at {fmt_time(row['started'])}" if row.get("started") else "--", flush=True)
-                if since != 1 and not res["reset"]:
-                    res = client.program_logs(args.id, 1, limit)
-                    row = res["row"]
-            started = row.get("started")
+            res = client.extension_logs(args.id, since, limit)
             if res.get("cut"):
                 print(f"-- its last {len(res['lines'])} of {res['total']} lines (--since 1: from the first)",
                       file=sys.stderr, flush=True)
+            if res.get("reset") and since:
+                print("-- the output was moved to output.1.log: from the first line of the new one", file=sys.stderr,
+                      flush=True)
             for line in res["lines"]:
                 print(line["text"], flush=True)
             since = res["next"]
             if not args.follow:
-                end = program_end(row)
-                if end:
-                    print(end, file=sys.stderr)
                 return 0
             if not res["lines"]:
                 time.sleep(0.5)
     except KeyboardInterrupt:
         return 0
+
+
+def cmd_wk(client, args):
+    try:
+        call_args = json.loads(args.args) if args.args else None
+    except ValueError as e:
+        say_error(f"args: not JSON ({e})")
+        return 2
+    res = client.local_call(args.cap, call_args, args.timeout_ms)
+    print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
+    return 0
+
+
+def reaction_line(r):
+    what = f"{r.get('id')}: {r.get('hear')} -> {r.get('call')}"
+    if r.get("owner"):
+        what += f" (owner {r['owner']})"
+    what += f", fired {r.get('fired') or 0}"
+    if r.get("error"):
+        what += f"; error: {r['error']}"
+    return what
+
+
+def cmd_reaction(client, args):
+    a = args.action
+    if a == "list":
+        res = client.reactions()
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        for r in res["reactions"]:
+            print(reaction_line(r))
+        if not res["reactions"]:
+            print("no reactions set")
+        return 0
+    if a == "set":
+        try:
+            spec = json.loads(args.spec)
+        except ValueError as e:
+            say_error(f"spec: not JSON ({e})")
+            return 2
+        print(reaction_line(client.reaction_set(spec)))
+        return 0
+    print(f"cleared {client.reaction_clear(args.id, args.owner)['cleared']}")
+    return 0
 
 
 def pad(text, width):
@@ -1147,7 +1243,7 @@ CLIENT_COMMANDS = dict(status=cmd_status, run=cmd_run, load=cmd_load, watch=cmd_
                        restore=cmd_restore,
                        logs=cmd_logs, say=cmd_say, doctor=cmd_doctor, addons=cmd_addons, errors=cmd_errors,
                        install=cmd_install, update=cmd_update, new=cmd_new, events=cmd_events, listen=cmd_listen,
-                       program=cmd_program,
+                       ext=cmd_ext, wk=cmd_wk, reaction=cmd_reaction,
                        call=cmd_call, respond=cmd_respond,
                        **{"addon-api": cmd_addon_api})
 
