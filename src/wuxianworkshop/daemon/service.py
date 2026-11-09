@@ -1345,13 +1345,16 @@ class Service:
         return (answer or {}).get("result")
 
     async def kit_apps(self, refresh=False):
-        """WuxianKit's apps for the 接入 Agent page: {online, apps: [{id, title, by, addon, prompt, start (the line that
-        hands the app to an agent; None: it has no prompt, or a WuxianKit before it), on, blocked (why it cannot start
-        while off), extension {id, title, on} | None, skill {name, title, description, needs, mcp} | None}]}. online:
-        the game's WuxianKit answered kit.apps; else the apps of the manifest kept on disk (none without one), on and
-        blocked None. blocked comes from kit.apps (WuxianKit 0.6), never from kit.app.status: that is the agent's heartbeat
-        and would keep the app alive. The skill is the app's prompt among the skills of the extensions that are on; the
-        extension, the app's own (kit.apps and the manifest say it) or the one whose skills hold the prompt"""
+        """WuxianKit's apps for the 接入 Agent page: {online, apps: [{id, title, by, addon, driver ("prompt": an agent
+        drives it by its skill; "program": a program 无限工坊 loads; None), launch (the game's 无限工坊 loads its program,
+        in this UI session), temp (a temporary app: an agent's, not remembered), prompt, start (the line that hands the
+        app to an agent; None: it has no prompt, or a WuxianKit before it), on, blocked (why it cannot start while off),
+        extension {id, title, on} | None, skill {name, title, description, needs, mcp} | None}]}. online: the game's
+        WuxianKit answered kit.apps; else the apps of the manifest kept on disk (none without one), on, blocked and
+        launch None. blocked comes from kit.apps (WuxianKit 0.6), never from kit.app.status: that is the agent's
+        heartbeat and would keep the app alive. The skill is the one the app's prompt names in the app's docs folder
+        (the manifest says it, kit.apps does not), else the one wk_docs gives by that name; the extension, the app's
+        own as kit.apps and the manifest say it"""
         from ..mcp import kit as kit_tools
         view = await self.page_kit()
         if refresh:
@@ -1369,32 +1372,22 @@ class Service:
         rows = kit_tools.apps_of({"apps": live}) if live is not None else list(known.values())
         states = {a.get("id"): a for a in live or [] if isinstance(a, dict)}
         skills = await view.skills() if manifest else []
-        addons = await view.addons_dir()
-        folders = {}                                         # extension id -> the skill names in its docs folder
-
-        def holder(prompt):
-            for eid, ext in view.exts.items():
-                if eid not in folders:
-                    folders[eid] = {s["name"] for s in kit_tools.skills_in(addons, ext.get("docs"))}
-                if prompt in folders[eid]:
-                    return ext
-            return None
-
         out = []
         for a in rows:
+            kept = known.get(a["id"]) or {}
             state = states.get(a["id"]) or {}
             on = state.get("on") if isinstance(state.get("on"), bool) else None
             blocked = state.get("blocked") if isinstance(state.get("blocked"), str) else None
-            eid = a["extension"] or (known.get(a["id"]) or {}).get("extension")
-            skill = next((s for s in skills if a["prompt"] and s["prompt"] == a["prompt"]), None)
+            eid, docs = a["extension"] or kept.get("extension"), a["docs"] or kept.get("docs")
+            skill = None
+            if a["prompt"]:
+                skill = (next((s for s in skills if docs and s["docs"] == docs and s["name"] == a["prompt"]), None)
+                         or next((s for s in skills if s["prompt"] == a["prompt"]), None))
             ext = view.exts.get(eid) if eid else None
-            if ext is None and skill is not None:
-                ext = skill["ext"]
-            if ext is None and a["prompt"]:
-                ext = await asyncio.to_thread(holder, a["prompt"])
-            start = a["start"] or (known.get(a["id"]) or {}).get("start")
-            out.append(dict(id=a["id"], title=a["title"], by=self.word(a["by"]), addon=a["addon"], prompt=a["prompt"],
-                            start=start, on=on, blocked=blocked,
+            start = a["start"] or kept.get("start")
+            out.append(dict(id=a["id"], title=a["title"], by=self.word(a["by"]), addon=a["addon"],
+                            driver=a["driver"] or kept.get("driver"), launch=a["launch"] if live is not None else None,
+                            temp=a["temp"], prompt=a["prompt"], start=start, on=on, blocked=blocked,
                             extension=None if ext is None else dict(
                                 id=ext.get("id"), title=kit_tools.text(ext.get("title")) or ext.get("id"),
                                 on=ext.get("state") == "on"),

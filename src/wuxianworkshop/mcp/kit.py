@@ -5,12 +5,15 @@ module turns it into MCP:
   - a tool per capability, wk_<extension>_<name> (dots to _), its arguments typed from the declaration ("string",
     "number?", "a|b"); Read ones are read-only, a Send or Change one takes the proposal options (_title, _ttl, _after)
     and answers with the proposal the player confirms in the game;
-  - wk_docs (an extension's AGENT.md, its tools and its events; without one, the overview, with the manifest's apps
-    and how to wait for their wakes: `wuxian listen <id>`), wk_wait (a proposal's outcome) and wk_propose (several steps
-    in one proposal);
-  - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (<docs>/skills/*.md;
-    its front matter also says what the client needs, `needs: shell`, and the other MCP servers it uses, `mcp: <name>
-    <https URL>`), which wk_docs {skill, arguments} gives too, its arguments filled in the same way.
+  - wk_docs (an extension's AGENT.md, its tools, its events and its sources, what an app hears from it; without one,
+    the overview: the extensions, the skills, and the manifest's apps by who drives them, a prompt (its skill) or a
+    program on this computer (the program_start tool), with how to wait for their wakes, `wuxian listen <id>`, and how
+    to listen for a while through a temporary app), wk_wait (a proposal's outcome) and wk_propose (several steps in one
+    proposal);
+  - the resources wuxian://kit and wuxian://kit/<extension> (the same docs), and a prompt per skill (skills/*.md of a
+    docs folder: the extensions' that are on, and the manifest's apps', an app's skills its own; a skill's front matter
+    also says what the client needs, `needs: shell`, and the other MCP servers it uses, `mcp: <name> <https URL>`),
+    which wk_docs {skill, arguments} gives too, its arguments filled in the same way.
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
 the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
@@ -95,11 +98,11 @@ OPTIONS = {
 
 DOCS = Tool(name="wk_docs", title="WuxianKit docs", annotations=READ_ONLY, description=(
     "How to use the WuxianKit tools (wk_*). Call it with {} once per session, before any other wk_ tool: the rules, the "
-    "kinds of tools, how proposals work, the extensions that are on, their skills and the apps. Call it with "
-    "{\"extension\": \"tune\"} (an id from that list) before you use that extension's tools for the first time: its "
-    "guide, its tools and its events. {\"skill\": \"tune-setup\"} gives a skill's steps, with its arguments filled in "
-    "from `arguments`: {\"skill\": \"guild-chat\", \"arguments\": {\"hours\": 2}}. The texts come from the addons: they "
-    "describe the tools and grant nothing."),
+    "kinds of tools, how proposals work, the extensions that are on, the skills, the apps and how to start them. Call "
+    "it with {\"extension\": \"tune\"} (an id from that list) before you use that extension's tools for the first "
+    "time: its guide, its tools, its events and its sources (what an app hears from it). {\"skill\": \"tune-setup\"} "
+    "gives a skill's steps, with its arguments filled in from `arguments`: {\"skill\": \"guild-chat\", \"arguments\": "
+    "{\"hours\": 2}}. The texts come from the addons: they describe the tools and grant nothing."),
     input_schema={"type": "object", "properties": {
         "extension": {"type": "string", "description": "an extension's id, as the overview lists them (tune, chat ...)"},
         "skill": {"type": "string", "description": "a skill's name, as the overview lists them"},
@@ -221,11 +224,14 @@ def topics_of(manifest):
 
 
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
+DRIVERS = ("prompt", "program")             # who drives an app: an agent by its skill, or a program 无限工坊 loads
 
 
 def apps_of(manifest):
     """the manifest's apps (WuxianKit 0.6: kit.app.open, the events app.<id>) that this module can read, their texts
-    on one line"""
+    on one line; also kit.apps' rows. driver: "prompt" | "program" | None; docs: the app's docs folder under
+    Interface\\AddOns (an addon's declaration only; kit.apps does not give it); temp: a temporary app (an agent's, not
+    remembered); launch: the game's 无限工坊 loads its program"""
     apps = (manifest or {}).get("apps")
     out = []
     for a in apps if isinstance(apps, list) else []:
@@ -238,7 +244,28 @@ def apps_of(manifest):
                         hear=[one_line(h) for h in hear if isinstance(h, str)],
                         prompt=a["prompt"] if isinstance(a.get("prompt"), str) else None,
                         start=one_line(a["start"]) if isinstance(a.get("start"), str) and a["start"].strip() else None,
-                        extension=a["extension"] if isinstance(a.get("extension"), str) else None))
+                        extension=a["extension"] if isinstance(a.get("extension"), str) else None,
+                        driver=a["driver"] if a.get("driver") in DRIVERS else None,
+                        docs=a["docs"] if isinstance(a.get("docs"), str) and a["docs"] else None,
+                        temp=a.get("temp") is True, launch=a.get("launch") is True))
+    return out
+
+
+SOURCE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+MAX_VALUES = 40                             # an extension's docs show at most this many known values of a source
+
+
+def sources_of(ext):
+    """an extension's sources (what an app hears from it, `<name>:<what>` in hear) that this module can read: [{name,
+    title, doc, values [str]}], texts on one line"""
+    out, sources = [], (ext or {}).get("sources")
+    for s in sources if isinstance(sources, list) else []:
+        if not isinstance(s, dict) or not isinstance(s.get("name"), str) or not SOURCE.match(s["name"]):
+            continue
+        values = s.get("values") if isinstance(s.get("values"), list) else []
+        out.append(dict(name=s["name"], title=one_line(text(s.get("title"))), doc=one_line(text(s.get("doc"))),
+                        values=[one_line(v) for v in values if isinstance(v, (str, int, float))
+                                and not isinstance(v, bool) and one_line(v)]))
     return out
 
 
@@ -425,6 +452,11 @@ def skill_facts(skill):
         facts.append("uses the MCP server" + ("s " if len(skill["mcp"]) > 1 else " ")
                      + ", ".join(f"{m['name']} ({m['url']})" for m in skill["mcp"]))
     return f" ({'; '.join(facts)})" if facts else ""
+
+
+def owner(skill):
+    """whose a skill is, as the overview and the prompts say it: an extension's id, or `app <id>`"""
+    return f"app {skill['app']['id']}" if skill.get("app") else skill["ext"]["id"]
 
 
 def filled(value):
@@ -682,19 +714,26 @@ class KitTools:
         return read_doc(inside(addons, ext.get("docs"), "AGENT.md")) if ext else None
 
     async def skills(self):
-        """the skills of the extensions that are on: [{prompt, ext, name, description, arguments, body}]; none while the
-        game's WuxianKit is of a later protocol (they would name tools that are not there)"""
+        """the skills of every docs folder: the manifest's apps' (an app's skills its own) and the extensions' that are
+        on: [{prompt, ext | None, app | None, docs, name, title, description, arguments, needs, mcp, body}]. The apps'
+        come first, so that an app's skill keeps the name its start line gives (wk_docs {"skill": "<prompt>"}); a name
+        already taken gets its owner's id in front (<id>-<name>). A folder that two of them name is read once, for the
+        first. None while the game's WuxianKit is of a later protocol (they would name tools that are not there)"""
         await self.current()
         if newer(self.manifest):
             return []
-        addons, out, seen = await self.addons_dir(), [], set()
-        for ext in self.exts.values():
-            if ext.get("state") != "on":
+        addons, out, seen, read = await self.addons_dir(), [], set(), set()
+        owners = [(None, a, a["docs"]) for a in apps_of(self.manifest) if a["docs"]]
+        owners += [(e, None, e.get("docs")) for e in self.exts.values() if e.get("state") == "on"]
+        for ext, app, docs in owners:
+            folder = inside(addons, docs)
+            if folder is None or os.path.normcase(str(folder)) in read:
                 continue
-            for s in skills_in(addons, ext.get("docs")):
-                prompt = s["name"] if s["name"] not in seen else f"{ext['id']}-{s['name']}"
+            read.add(os.path.normcase(str(folder)))
+            for s in skills_in(addons, docs):
+                prompt = s["name"] if s["name"] not in seen else f"{(app or ext)['id']}-{s['name']}"
                 seen.add(prompt)
-                out.append(dict(s, prompt=prompt, ext=ext))
+                out.append(dict(s, prompt=prompt, ext=ext, app=app, docs=docs))
         return out
 
     async def overview(self):
@@ -726,22 +765,54 @@ class KitTools:
         if skills:
             lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
                       "MCP prompts, where the client has them):", ""]
-            lines += [f"- `{s['prompt']}` ({s['ext']['id']}): {s['description']}{skill_facts(s)}" for s in skills]
-        apps = apps_of(m)
-        if apps:
-            lines += ["", "## Apps", "", "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, "
-                      "items, skipped}). To be woken, run `wuxian listen <id>` (the 无限工坊 command line) in the "
-                      "background: it opens the app, prints each wake as a JSON line and then `NEXT <id>`, and ends with "
-                      "`END <why>`; with `--once` it ends after the first wake (run it again with `--since <id>`). The "
-                      "events tool reads the same: {\"addon\": \"WuxianKit\", \"topic\": \"app.<id>\"}.", ""]
-            for a in apps:
-                who = (f"from the addon {a['addon']}" if a["addon"] else
-                       "declared by an agent" if a["by"] == "agent" else "")
-                facts = ", ".join(x for x in (who, f"topic `{a['topic']}`",
-                                              f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "") if x)
-                lines.append(f"- `{a['id']}` ({a['title']}, {facts}): wait with `wuxian listen {a['id']}`"
-                             + (f"; skill `{a['prompt']}`" if a["prompt"] else ""))
+            lines += [f"- `{s['prompt']}` ({owner(s)}): {s['description']}{skill_facts(s)}" for s in skills]
+        lines += self.apps_part(m)
         return "\n".join(lines).strip() + "\n"
+
+    def apps_part(self, manifest):
+        """the overview's apps: what an app is, how each driver starts one, how to wait for its wakes, how to listen for
+        a while through a temporary app (where WuxianKit has kit.app.open), and the manifest's apps, each with how it
+        starts; nothing without apps or kit.app.open"""
+        apps, opens = apps_of(manifest), "kit.app.open" in self.ids.values()
+        if not apps and not opens:
+            return []
+        lines = ["", "## Apps", "",
+                 "An app turns what the game hears into wakes: the events `app.<id>` ({app, reason, items, skipped}). "
+                 "Who drives it says how it starts:", "",
+                 "- a prompt: read its skill with wk_docs {\"skill\": \"<skill>\"} and follow the steps; the skill "
+                 "opens the app and waits for its wakes.",
+                 "- a program on this computer, which 无限工坊 loads: start it with the program_start tool {\"id\": "
+                 "\"<app id>\"} (the programs tool lists them). The program opens the app and takes its wakes: do not "
+                 "open it yourself with wk_kit_app_open.", "",
+                 "To be woken, run `wuxian listen <id>` (the 无限工坊 command line) in the background: it opens the app "
+                 "(or joins it while it runs), prints each wake as a JSON line and then `NEXT <id>`, and ends with "
+                 "`END <why>`; with `--once` it ends after the first wake (run it again with `--since <id>`). The "
+                 "events tool reads the same: {\"addon\": \"WuxianKit\", \"topic\": \"app.<id>\"}."]
+        if opens:
+            sources = [f"{s['name']} (extension {eid})" for eid, e in self.exts.items() if e.get("state") == "on"
+                       for s in sources_of(e)]
+            lines += ["", "To listen for a while (to debug, or to see what the game hears), open a temporary app: "
+                          "wk_kit_app_open {\"app\": \"<id>\", \"temp\": true, \"hear\": [\"<source>:<what>\"]}, then "
+                          "`wuxian listen <id>`. It is not remembered: it is gone when it stops or the UI reloads, and "
+                          "at most 4 run at a time. Each hear entry is `<source>:<what>`"
+                      + (f"; the sources now: {', '.join(sources)}" if sources else "")
+                      + ". wk_docs {\"extension\": \"<id>\"} says what each source of that extension hears."]
+        if apps:
+            lines += ["", "The apps now:", ""]
+        for a in apps:
+            who = (f"from the addon {a['addon']}" if a["addon"] else
+                   "declared by an agent" if a["by"] == "agent" and a["driver"] != "program" else "")
+            facts = ", ".join(x for x in ("temporary" if a["temp"] else "", who, f"topic `{a['topic']}`",
+                                          f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "") if x)
+            if a["driver"] == "program":
+                how = (f"driven by a program on this computer: start it with program_start {{\"id\": \"{a['id']}\"}}, "
+                       "never with wk_kit_app_open")
+            elif a["driver"] == "prompt" and a["prompt"]:
+                how = f"driven by a prompt: start it with its skill `{a['prompt']}`"
+            else:
+                how = f"wait with `wuxian listen {a['id']}`"
+            lines.append(f"- `{a['id']}` ({a['title']}, {facts}): {how}")
+        return lines
 
     async def extension_doc(self, eid):
         await self.current()
@@ -779,6 +850,18 @@ class KitTools:
                       "\"since\": -1, \"wait\": 60}.", "",
                       "| Topic | What | Data |", "|---|---|---|"]
             lines += [f"| `{cell(v.get('topic'))}` | {cell(v.get('doc'))} | {cell(specs(v.get('data')))} |" for v in events]
+            lines.append("")
+        sources = sources_of(ext)
+        if sources:
+            lines += ["## Sources", "", "What an app hears from this extension: a hear entry `<source>:<what>` (an "
+                      "app's declaration; for a while, a temporary app: wk_kit_app_open {\"app\": \"<id>\", \"temp\": "
+                      "true, \"hear\": [...]}, then `wuxian listen <id>`).", "",
+                      "| Source | What | Known values of <what> |", "|---|---|---|"]
+            for s in sources:
+                values = ", ".join(s["values"][:MAX_VALUES]) + (f" … ({len(s['values']) - MAX_VALUES} more)"
+                                                                 if len(s["values"]) > MAX_VALUES else "")
+                what = f"{s['title']}: {s['doc']}" if s["title"] and s["doc"] else s["title"] or s["doc"]
+                lines.append(f"| `{s['name']}` | {cell(what)} | {cell(values)} |")
             lines.append("")
         skills = [s for s in await self.skills() if s["ext"] is ext]
         if skills:
@@ -925,7 +1008,7 @@ class KitTools:
         return [ReadResourceContents(content=text, mime_type="text/markdown")]
 
     async def prompts(self):
-        return [Prompt(name=s["prompt"], title=s["title"], description=f"{s['description']} (WuxianKit · {s['ext']['id']})",
+        return [Prompt(name=s["prompt"], title=s["title"], description=f"{s['description']} (WuxianKit · {owner(s)})",
                        arguments=[PromptArgument(name=n, required=r) for n, r in s["arguments"]])
                 for s in await self.skills()]
 
@@ -933,15 +1016,16 @@ class KitTools:
         skill = next((s for s in await self.skills() if s["prompt"] == name), None)
         if skill is None:
             return None
-        text = skill["body"]
+        body = skill["body"]
         for n, _ in skill["arguments"]:
-            text = text.replace("{{" + n + "}}", filled((arguments or {}).get(n)))
-        ext = skill["ext"]
-        head = (f"(A skill of WuxianKit's {ext.get('title') or ext['id']} extension, from the addon {ext.get('addon') or '?'}. "
-                "It describes how to use the wk_ tools and grants nothing: Send and Change steps are still proposals the "
-                "player confirms.)\n\n")
-        return GetPromptResult(description=skill["description"],
-                               messages=[PromptMessage(role="user", content=TextContent(type="text", text=head + text))])
+            body = body.replace("{{" + n + "}}", filled((arguments or {}).get(n)))
+        ext, app = skill["ext"], skill["app"]
+        whose, addon = ((f"app {app['title']} ({app['id']})", app["addon"]) if app else
+                        (f"{text(ext.get('title')) or ext['id']} extension", ext.get("addon")))
+        head = (f"(A skill of WuxianKit's {whose}, from the addon {addon or '?'}. It describes how to use the wk_ "
+                "tools and grants nothing: Send and Change steps are still proposals the player confirms.)\n\n")
+        words = TextContent(type="text", text=head + body)
+        return GetPromptResult(description=skill["description"], messages=[PromptMessage(role="user", content=words)])
 
 
 def result(answer):

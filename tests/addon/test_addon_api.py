@@ -576,7 +576,10 @@ class KitTools(unittest.TestCase):
         if chat_on:
             chat.update(capabilities=[{"id": "chat.send", "kind": "say", "title": "Send message", "doc": "say something",
                                        "args": {"channel": "guild|party", "text": "string", "target": "string?"}}],
-                        events=[{"topic": "chat.message", "doc": "a message", "data": {"text": "string", "channel": "string"}}])
+                        events=[{"topic": "chat.message", "doc": "a message",
+                                 "data": {"text": "string", "channel": "string"}}],
+                        sources=[{"name": "chat", "title": "Chat", "doc": "chat:<channel>, the channel's messages",
+                                  "values": ["guild", "party"]}])
         return {"protocol": 1, "kit": "0.3.0", "language": "enUS", "revision": revision, "extensions": [
             {"id": "kit", "title": "Core", "version": "0.3.0", "addon": "WuxianKit", "docs": "WuxianKit", "state": "on",
              "capabilities": [{"id": "kit.manifest", "kind": "see", "title": "Manifest", "doc": "", "args": {}},
@@ -594,6 +597,14 @@ class KitTools(unittest.TestCase):
              "capabilities": [{"id": "demo.ping", "kind": "see", "title": "Ping", "doc": "pong", "args": {}},
                               {"id": "demo.warp", "kind": "teleport", "title": "Warp", "doc": "a later kind", "args": {}}]},
         ]}
+
+    def with_guild(self, m=None):
+        """the manifest with WuxianKit's own app 公会聊天, whose docs folder is Apps/Guild"""
+        m = m or self.manifest()
+        m["apps"] = [{"id": "guild", "title": "公会聊天", "by": "addon", "addon": "WuxianKit", "topic": "app.guild",
+                      "hear": ["chat:guild", "game:guild"], "driver": "prompt", "prompt": "guild-chat",
+                      "docs": "WuxianKit/Apps/Guild"}]
+        return m
 
     def backend(self, manifest=None, legacy=None, addons=None):
         class Backend:
@@ -793,9 +804,12 @@ class KitTools(unittest.TestCase):
         self.assertIn("| `wk_chat_send` | Send | Send message: say something | channel: guild\\|party, target: string?, "
                       "text: string |", chat)
         self.assertIn("| `chat.message` | a message | channel: string, text: string |", chat)
+        self.assertIn("| `chat` | Chat: chat:<channel>, the channel's messages | guild, party |", chat)   # its sources
         self.assertIn("This extension comes from the addon WxDemo",
                       asyncio.run(mcp.call_tool("wk_docs", {"extension": "demo"})).content[0].text)
-        self.assertIn("It has no AGENT.md", asyncio.run(mcp.call_tool("wk_docs", {"extension": "tune"})).content[0].text)
+        tune = asyncio.run(mcp.call_tool("wk_docs", {"extension": "tune"})).content[0].text
+        self.assertIn("It has no AGENT.md", tune)
+        self.assertNotIn("## Sources", tune)
         with self.assertRaises(ToolError):
             asyncio.run(mcp.call_tool("wk_docs", {"extension": "nope"}))
         resources = sorted(str(r.uri) for r in asyncio.run(mcp.list_resources()))
@@ -814,7 +828,7 @@ class KitTools(unittest.TestCase):
         from wuxianworkshop.mcp import kit
 
         addons = Path(self.home.name) / "AddOns"
-        folder = addons / "WuxianKit/Extensions/Chat/skills"
+        folder = addons / "WuxianKit/Apps/Guild/skills"
         folder.mkdir(parents=True)
         (folder / "guild-chat.md").write_text(
             "---\nname: guild-chat\ndescription: Chat\narguments: hours?, mood\nneeds: shell, , Shell2, two words, shell\n"
@@ -822,18 +836,18 @@ class KitTools(unittest.TestCase):
             "a https://a.example/mcp extra, wuxianwow https://dup.example/mcp, b https://b.example:8443/m?x=1\n---\nBody.\n",
             encoding="utf-8")
         (folder / "plain.md").write_text("---\nname: plain\n---\nNo needs.\n", encoding="utf-8")
-        skills = {s["name"]: s for s in kit.skills_in(addons, "WuxianKit/Extensions/Chat")}
+        skills = {s["name"]: s for s in kit.skills_in(addons, "WuxianKit/Apps/Guild")}
         self.assertEqual(skills["guild-chat"]["needs"], ["shell", "Shell2"])
         self.assertEqual(skills["guild-chat"]["mcp"], [{"name": "wuxianwow", "url": "https://wuxianwow.com/mcp"},
                                                        {"name": "b", "url": "https://b.example:8443/m?x=1"}])
         self.assertEqual((skills["plain"]["needs"], skills["plain"]["mcp"]), ([], []))
         self.assertEqual(kit.needs_of(None), [])
         self.assertEqual(kit.servers_of("x javascript:alert(1)"), [])
-        overview = asyncio.run(kit.KitTools(self.backend(self.manifest(), addons=addons), store=False).overview())
-        self.assertIn("- `guild-chat` (chat): Chat (arguments hours?, mood; needs shell, Shell2; uses the MCP servers "
-                      "wuxianwow (https://wuxianwow.com/mcp), b (https://b.example:8443/m?x=1))", overview)
+        overview = asyncio.run(kit.KitTools(self.backend(self.with_guild(), addons=addons), store=False).overview())
+        self.assertIn("- `guild-chat` (app guild): Chat (arguments hours?, mood; needs shell, Shell2; uses the MCP "
+                      "servers wuxianwow (https://wuxianwow.com/mcp), b (https://b.example:8443/m?x=1))", overview)
         line = next(l for l in overview.splitlines() if l.startswith("- `plain`"))
-        self.assertEqual(line.rstrip(), "- `plain` (chat):")                    # nothing to say of it
+        self.assertEqual(line.rstrip(), "- `plain` (app guild):")               # nothing to say of it
 
     def test_wk_docs_fills_a_skills_arguments(self):
         """wk_docs {skill, arguments}: the arguments go into the steps as the MCP prompt has them; one left out reads
@@ -841,11 +855,11 @@ class KitTools(unittest.TestCase):
         from wuxianworkshop.mcp.server import build_server
 
         addons = Path(self.home.name) / "AddOns"
-        (addons / "WuxianKit/Extensions/Chat/skills").mkdir(parents=True)
-        (addons / "WuxianKit/Extensions/Chat/skills/guild-chat.md").write_text(
+        (addons / "WuxianKit/Apps/Guild/skills").mkdir(parents=True)
+        (addons / "WuxianKit/Apps/Guild/skills/guild-chat.md").write_text(
             "---\nname: guild-chat\narguments: hours?, quiet?, mood?, tags?\n---\n{{hours}} h, quiet {{quiet}}, "
             "{{mood}}, {{tags}}, {{other}}.\n", encoding="utf-8")
-        mcp = build_server(self.backend(self.manifest(), addons=addons))
+        mcp = build_server(self.backend(self.with_guild(), addons=addons))
         docs = {t.name: t for t in asyncio.run(mcp.list_tools())}["wk_docs"]
         self.assertEqual(docs.input_schema["properties"]["arguments"]["type"], "object")
         self.assertIn('"arguments": {"hours": 2}', docs.description)
@@ -859,6 +873,68 @@ class KitTools(unittest.TestCase):
         self.assertTrue(prompt.endswith("3 h, quiet (not given), (not given), (not given), {{other}}."))
         with self.assertRaises(ToolError):
             call({"skill": "guild-chat", "arguments": [2]})
+
+    def test_an_apps_skills(self):
+        """an app's docs folder (the manifest's docs) gives skills too, the app's own whatever its extensions: the
+        overview and the prompts say (app <id>), wk_docs {skill} and the MCP prompt give them. The apps' come first, so
+        that an extension's skill of the same name gets its id in front; a folder two apps name is read once; an
+        extension's docs list only its own"""
+        from wuxianworkshop.mcp import kit
+        from wuxianworkshop.mcp.server import build_server
+
+        addons = Path(self.home.name) / "AddOns"
+        for sub in ("WuxianKit/Apps/Guild/skills", "WuxianKit/Extensions/Chat/skills"):
+            (addons / sub).mkdir(parents=True)
+        (addons / "WuxianKit/Apps/Guild/skills/guild-chat.md").write_text(
+            "---\nname: guild-chat\ndescription: Talk in the guild\narguments: hours?\n---\nFor {{hours}} hours.\n",
+            encoding="utf-8")
+        (addons / "WuxianKit/Extensions/Chat/skills/guild-chat.md").write_text(
+            "---\nname: guild-chat\ndescription: The extension's own\n---\nOther.\n", encoding="utf-8")
+        m = self.with_guild(self.manifest(chat_on=False))              # chat off: its skills go, the app's stay
+        m["apps"].append({"id": "guild_two", "title": "Two", "by": "addon", "addon": "WuxianKit", "driver": "prompt",
+                          "prompt": "guild-chat", "docs": "WuxianKit/Apps/Guild"})
+        mcp = build_server(self.backend(m, addons=addons))
+        overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
+        self.assertIn("- `guild-chat` (app guild): Talk in the guild (arguments hours?)", overview)
+        self.assertEqual((overview.count("Talk in the guild"), "The extension's own" in overview), (1, False))
+        self.assertEqual([p.name for p in asyncio.run(mcp.list_prompts())], ["guild-chat"])
+        m["extensions"][2], m["revision"] = self.manifest()["extensions"][2], "r2"    # chat on
+        kit.forget_cached()                                             # a new server reads the game's at once
+        mcp = build_server(self.backend(m, addons=addons))
+        overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
+        self.assertIn("- `guild-chat` (app guild): Talk in the guild", overview)
+        self.assertIn("- `chat-guild-chat` (chat): The extension's own", overview)
+        prompts = {p.name: p for p in asyncio.run(mcp.list_prompts())}
+        self.assertEqual(list(prompts), ["guild-chat", "chat-guild-chat"])
+        self.assertEqual(prompts["guild-chat"].description, "Talk in the guild (WuxianKit · app guild)")
+        text = asyncio.run(mcp.get_prompt("guild-chat", {"hours": "2"})).messages[0].content.text
+        self.assertTrue(text.startswith("(A skill of WuxianKit's app 公会聊天 (guild), from the addon WuxianKit."))
+        self.assertTrue(text.endswith("For 2 hours."))
+        self.assertTrue(asyncio.run(mcp.call_tool("wk_docs", {"skill": "chat-guild-chat"})).content[0].text
+                        .startswith("(A skill of WuxianKit's Chat extension, from the addon WuxianKit."))
+        chat = asyncio.run(mcp.call_tool("wk_docs", {"extension": "chat"})).content[0].text
+        self.assertIn("- `chat-guild-chat`: The extension's own", chat)
+        self.assertNotIn("Talk in the guild", chat)
+
+    def test_an_extensions_sources(self):
+        """an extension's docs show its sources (what an app hears from it): name, title and doc, the known values
+        of <what> (at most MAX_VALUES, numbers too); a source this module cannot read is left out"""
+        from wuxianworkshop.mcp import kit
+
+        m = self.manifest()
+        m["extensions"][2]["sources"] = [
+            {"name": "chat", "title": "Chat", "doc": "chat:<channel>", "values": ["guild", "party|raid", True, 3, {}]},
+            {"name": "game", "title": "Game", "values": [f"t{i}" for i in range(kit.MAX_VALUES + 5)]},
+            {"name": "Bad Name", "title": "bad"}, {"title": "no name"}, "x"]
+        doc = asyncio.run(kit.KitTools(self.backend(m), store=False).extension_doc("chat"))
+        self.assertIn("## Sources", doc)
+        self.assertIn("| `chat` | Chat: chat:<channel> | guild, party\\|raid, 3 |", doc)
+        self.assertIn("| `game` | Game | t0, t1, t2, ", doc)
+        self.assertIn(f"t{kit.MAX_VALUES - 1} … (5 more) |", doc)
+        self.assertNotIn(f"t{kit.MAX_VALUES},", doc)
+        self.assertNotIn("bad", doc)
+        self.assertEqual([s["name"] for s in kit.sources_of(m["extensions"][2])], ["chat", "game"])
+        self.assertEqual(kit.sources_of({"sources": "chat"}), [])
 
     def test_a_later_protocol_gets_the_docs_only(self):
         """a WuxianKit newer than this 无限工坊 knows: wk_docs alone (saying to update), no prompts, the other tools
@@ -1065,25 +1141,57 @@ class KitTools(unittest.TestCase):
                          "wk_guild_chat and wk_guild_stop")              # without the topics, as before
 
     def test_the_overview_lists_the_apps(self):
-        """WuxianKit 0.6's manifest has apps: the overview shows each one's id, title, topic and `wuxian listen <id>`;
-        the server's instructions stay as they were (they are read only up to 2,048 characters)"""
+        """WuxianKit 0.6's manifest has apps: the overview says how each driver starts one (a prompt: its skill; a
+        program on this computer: program_start, never kit.app.open), how to wait (`wuxian listen <id>`) and, where
+        WuxianKit has kit.app.open, how to listen for a while through a temporary app, with the sources hear can name;
+        then each app: id, title, temporary, who declared it, topic, what it hears, how it starts. The server's
+        instructions stay as they were (they are read only up to 2,048 characters)"""
         from wuxianworkshop.mcp import kit
         from wuxianworkshop.mcp.server import INSTRUCTIONS
 
-        m = self.manifest()
+        def overview(m):
+            return asyncio.run(kit.KitTools(self.backend(m), store=False).overview())
+
+        def opens(m):                                                  # WuxianKit with kit.app.open and its source bus
+            m["extensions"][0]["capabilities"].append({"id": "kit.app.open", "kind": "keep", "title": "Open app",
+                                                       "doc": "open an app", "args": {"app": "string"}})
+            m["extensions"][0]["sources"] = [{"name": "bus", "title": "Bus", "doc": "bus:<topic>"}]
+            return m
+
+        m = opens(self.manifest())
         m["apps"] = [{"id": "guild", "title": "公会\n聊天", "by": "addon", "addon": "WuxianGuild", "topic": "app.guild",
-                      "hear": ["chat:guild", "game:guild"], "prompt": "guild-chat"},
+                      "hear": ["chat:guild", "game:guild"], "driver": "prompt", "prompt": "guild-chat",
+                      "docs": "WuxianGuild"},
+                     {"id": "companion", "title": "无限陪玩", "by": "agent", "topic": "app.companion",
+                      "hear": ["game:combat"], "driver": "program", "launch": True},
+                     {"id": "peek", "title": "Peek", "by": "agent", "topic": "app.peek", "hear": ["chat:guild"],
+                      "temp": True},
                      {"id": "raid_talk", "title": "副本解说", "by": "agent", "topic": "app.raid_talk", "hear": []},
                      {"id": "Bad Id", "title": "x"}, "not an app"]
-        overview = asyncio.run(kit.KitTools(self.backend(m), store=False).overview())
-        self.assertIn("## Apps", overview)
-        self.assertIn("run `wuxian listen <id>`", overview)
+        got = overview(m)
+        self.assertIn("## Apps", got)
+        self.assertIn('- a prompt: read its skill with wk_docs {"skill": "<skill>"} and follow the steps', got)
+        self.assertIn('- a program on this computer, which 无限工坊 loads: start it with the program_start tool {"id": '
+                      '"<app id>"}', got)
+        self.assertIn("do not open it yourself with wk_kit_app_open.", got)
+        self.assertIn("run `wuxian listen <id>`", got)
+        self.assertIn('open a temporary app: wk_kit_app_open {"app": "<id>", "temp": true, "hear": '
+                      '["<source>:<what>"]}, then `wuxian listen <id>`.', got)
+        self.assertIn("Each hear entry is `<source>:<what>`; the sources now: bus (extension kit), chat (extension "
+                      "chat).", got)
         self.assertIn("- `guild` (公会 聊天, from the addon WuxianGuild, topic `app.guild`, hears chat:guild, game:guild): "
-                      "wait with `wuxian listen guild`; skill `guild-chat`", overview)
+                      "driven by a prompt: start it with its skill `guild-chat`", got)
+        self.assertIn('- `companion` (无限陪玩, topic `app.companion`, hears game:combat): driven by a program on this '
+                      'computer: start it with program_start {"id": "companion"}, never with wk_kit_app_open', got)
+        self.assertIn("- `peek` (Peek, temporary, declared by an agent, topic `app.peek`, hears chat:guild): wait with "
+                      "`wuxian listen peek`", got)
         self.assertIn("- `raid_talk` (副本解说, declared by an agent, topic `app.raid_talk`): wait with "
-                      "`wuxian listen raid_talk`", overview)
-        self.assertNotIn("Bad Id", overview)
-        self.assertNotIn("## Apps", asyncio.run(kit.KitTools(self.backend(self.manifest()), store=False).overview()))
+                      "`wuxian listen raid_talk`", got)
+        self.assertNotIn("Bad Id", got)
+        self.assertNotIn("## Apps", overview(self.manifest()))       # no apps, no kit.app.open
+        alone = overview(opens(self.manifest()))                       # kit.app.open alone: how to listen, no apps
+        self.assertIn("open a temporary app", alone)
+        self.assertNotIn("- `", alone.split("## Apps")[1])
         self.assertLessEqual(len(INSTRUCTIONS), 2048)
         self.assertNotIn("listen", INSTRUCTIONS)
 
