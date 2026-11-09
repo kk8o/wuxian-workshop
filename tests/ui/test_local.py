@@ -70,6 +70,7 @@ async function api(path, opts) {
   if (path === '/api/extensions') return { addons: [], catalog: null, addons_dir: null };
   if (path.startsWith('/api/agent_access')) return { kit: null, kit_state: 'absent', kit_addon: null, servers: [] };
   if (path === '/api/local') return { revision, extensions: rows.map(copyOf) };
+  if (path === '/api/kit/apps') return { online: true, apps: [{ id: 'guild', title: '公会聊天' }] };
   if (path === '/api/local/manifest') return { revision, extensions: [{ id: 'voice', capabilities: [
     { id: 'voice.say', kind: 'point', title: '说一句', doc: 'speak', args: {} },
     { id: 'voice.status', kind: 'see', title: '状态', doc: '', args: {} }] }] };
@@ -234,11 +235,29 @@ const posts = () => calls.filter((c) => c[1]).map((c) => [c[0], c[1]]);
   await settle();
   out.sse.bare = calls.map((c) => c[0]);
 
+  // 补充: the apps it annotates (their titles once /api/kit/apps answered, else their ids), the skills it supplements;
+  // selecting one that annotates reads the apps when they are not known yet
+  const fx = { id: 'facts', title: '图鉴速查', state: 'stopped', enabled: true, capabilities: [], options: [],
+               annotate: [{ app: 'guild', call: 'facts.lookup' }, { app: 'raid', call: 'facts.lookup' }], extends: ['guild-chat'] };
+  st.apps.data = null;
+  out.adds = { bare: st.lxAdds(fx), none: st.lxAdds(st.lx.list[0]), empty: st.lxAdds(st.lxCur.id ? null : st.lxCur) };
+  st.lx.list.push(fx);
+  calls.length = 0;
+  st.xpSelect('l:facts');
+  await settle();
+  out.adds.read = calls.map((c) => c[0]).filter((p) => p === '/api/kit/apps');
+  out.adds.titled = st.lxAdds(st.lxCur);
+  calls.length = 0;
+  st.xpSelect('l:facts');
+  await settle();
+  out.adds.again = calls.map((c) => c[0]).filter((p) => p === '/api/kit/apps');
+
   // in English
   globalThis.Alpine = { store: () => ({ v: 'en' }) };
   st.lang = 'en';
   out.english = ['running', 'starting', 'failed', 'off', 'stopped'].map((s) => st.lxState({ state: s, enabled: s !== 'off' }).text)
-    .concat([st.lxState({ state: 'exited', exit_code: 2 }).text, st.lxStart({ start: 'workshop' }), st.lxKind('keep')]);
+    .concat([st.lxState({ state: 'exited', exit_code: 2 }).text, st.lxStart({ start: 'workshop' }), st.lxKind('keep'),
+             st.lxAdds(fx)]);
   process.stdout.write(JSON.stringify(out));
 })().catch((e) => { console.error(e.stack); process.exit(1); });
 """
@@ -323,6 +342,13 @@ class LocalPart(unittest.TestCase):
         self.assertIsNone(c["other"])
         self.assertEqual(self.out["never"], "还没有运行过")
 
+    def test_supplements(self):
+        a = self.out["adds"]
+        self.assertEqual((a["bare"], a["none"], a["empty"]), ("guild（附注）、raid（附注）、guild-chat（技能）", "", ""))
+        self.assertEqual(a["read"], ["/api/kit/apps"])                   # the apps' titles: read once
+        self.assertEqual(a["titled"], "公会聊天（附注）、raid（附注）、guild-chat（技能）")
+        self.assertEqual(a["again"], [])
+
     def test_stream_event(self):
         s = self.out["sse"]
         self.assertEqual(s["ids"], ["voice"])
@@ -331,7 +357,8 @@ class LocalPart(unittest.TestCase):
 
     def test_english(self):
         self.assertEqual(self.out["english"], ["Running", "Starting", "Failed to start", "Off", "Not running", "Crashed",
-                                               "With Wuxian Workshop", "Store"])
+                                               "With Wuxian Workshop", "Store",
+                                               "公会聊天 (annotations), raid (annotations), guild-chat (skill)"])
 
 
 class Template(unittest.TestCase):

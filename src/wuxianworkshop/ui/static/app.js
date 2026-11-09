@@ -165,7 +165,7 @@ const LX_KEEP = 500;                           // … and kept, the newest
 const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
 const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
-                              apps: [], skills: [], error: null });
+                              apps: [], skills: [], annotate: [], extends: [], error: null });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -1321,6 +1321,15 @@ function appState() {
     lxShow(id) {                               // selected in the list
       this.lx.note = null;
       this.lxOutReset(this.selLx || { id });
+      const r = this.selLx;                    // the apps it annotates are named by their titles: read them once
+      if (r && (r.annotate || []).length && !this.apps.data) this.loadApps();
+    },
+    lxAdds(r) {                                // 补充: the apps it annotates, the skills it supplements; '' without them
+      if (!r) return '';
+      const apps = (this.apps.data && this.apps.data.apps) || [];
+      const title = (id) => { const a = apps.find((x) => x && x.id === id); return a ? this.appTitle(a) : id; };
+      return (r.annotate || []).map((a) => t('{app}（附注）', { app: title(a.app) }))
+        .concat((r.extends || []).map((s) => t('{skill}（技能）', { skill: s }))).join(t('、'));
     },
     lxTitle(r) { return r ? this.loc(r.title) || r.id : ''; },
     lxLine(r) { return r.id + (r.version ? ' · ' + r.version : ''); },

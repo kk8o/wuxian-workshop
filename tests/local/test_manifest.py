@@ -143,5 +143,103 @@ class Description(unittest.TestCase):
         self.assertIsNotNone(M.value_problem(choice, "b"))
 
 
+class Supplements(unittest.TestCase):
+    """annotate and extends (the fourth batch's contract, section 1): what is taken, normalized; what is refused; the
+    calls checked against the description once there is one"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name).resolve() / "facts"
+        (self.folder / "skills").mkdir(parents=True)
+        (self.folder / "AGENT.md").write_text("# facts", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, **fields):
+        d = dict({"id": "facts", "title": "图鉴速查", "run": ["python", "-m", "facts"]}, **fields)
+        (self.folder / M.MANIFEST).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return M.check_manifest(self.folder)
+
+    def test_taken(self):
+        (self.folder / "skills" / "guild-chat.md").write_text("﻿用 notes.facts", encoding="utf-8")
+        m, problems = self.check(annotate=[{"app": "guild", "call": "facts.lookup"},
+                                           {"app": "raid_1", "call": "facts.raid.look", "wake": "w", "timeout": 10}],
+                                 extends={"guild-chat": "skills/guild-chat.md"})
+        self.assertEqual(problems, [])
+        self.assertEqual(m["annotate"], [{"app": "guild", "call": "facts.lookup", "wake": "wake", "timeout": 3.0},
+                                         {"app": "raid_1", "call": "facts.raid.look", "wake": "w", "timeout": 10.0}])
+        self.assertEqual(m["extends"], {"guild-chat": str(self.folder / "skills" / "guild-chat.md")})
+        m, problems = self.check()
+        self.assertEqual((m["annotate"], m["extends"], problems), ([], {}, []))
+
+    def test_annotate_refused(self):
+        cases = [
+            ({"app": "guild"}, "annotate"),                                       # no list
+            ([{"app": f"a{i}", "call": "facts.x"} for i in range(9)], "annotate"),  # more than 8
+            (["guild"], "annotate[0]"),
+            ([{"app": "*", "call": "facts.x"}], "annotate[0].app"),               # no wildcards
+            ([{"app": "Guild", "call": "facts.x"}], "annotate[0].app"),
+            ([{"app": "g" * 25, "call": "facts.x"}], "annotate[0].app"),
+            ([{"app": "guild", "call": "other.lookup"}], "annotate[0].call"),     # not its own
+            ([{"app": "guild", "call": "facts"}], "annotate[0].call"),
+            ([{"app": "guild", "call": "facts.Look"}], "annotate[0].call"),
+            ([{"app": "guild", "call": "facts.x", "wake": "a b"}], "annotate[0].wake"),
+            ([{"app": "guild", "call": "facts.x", "timeout": 11}], "annotate[0].timeout"),
+            ([{"app": "guild", "call": "facts.x", "timeout": 0}], "annotate[0].timeout"),
+            ([{"app": "guild", "call": "facts.x", "timeout": True}], "annotate[0].timeout"),
+            ([{"app": "guild", "call": "facts.x"}, {"app": "guild", "call": "facts.y"}], "annotate[1].app"),
+        ]
+        for value, where in cases:
+            m, problems = self.check(annotate=value)
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], value)
+            self.assertTrue(all(p["hint"] for p in problems), value)
+        m, problems = self.check(annotate=[{"app": "guild", "call": "facts.x", "colour": 1}])
+        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: annotate[0].colour"])
+        self.assertEqual(len(m["annotate"]), 1)
+
+    def test_extends_refused(self):
+        outside = Path(self.tmp.name).resolve() / "outside.md"
+        outside.write_text("x", encoding="utf-8")
+        cases = [
+            (["guild-chat"], "extends"),
+            ({"Guild_Chat": "skills/x.md"}, "extends.Guild_Chat"),
+            ({"guild-chat": ""}, "extends.guild-chat"),
+            ({"guild-chat": 3}, "extends.guild-chat"),
+            ({"guild-chat": "../outside.md"}, "extends.guild-chat"),
+            ({"guild-chat": str(outside)}, "extends.guild-chat"),
+            ({"guild-chat": "skills"}, "extends.guild-chat"),                        # a folder
+        ]
+        for value, where in cases:
+            m, problems = self.check(extends=value)
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], value)
+        (self.folder / "skills" / "bad.md").write_bytes(b"\xff\xfe\x00bad")
+        m, problems = self.check(extends={"guild-chat": "skills/none.md", "companion": "skills/bad.md"})
+        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: extends.companion",
+                                                         f"{M.MANIFEST}: extends.guild-chat"])
+        self.assertEqual(sorted(m["extends"]), ["companion", "guild-chat"])      # kept: the skill says why it is missing
+
+    def test_against_the_description(self):
+        m, _ = self.check(annotate=[{"app": "guild", "call": "facts.lookup"}, {"app": "raid", "call": "facts.mark"},
+                                    {"app": "pvp", "call": "facts.ghost"}, {"app": "bg", "call": "facts.bare"}])
+        before = M.annotate_problems(m, None)
+        self.assertEqual([p["level"] for p in before], ["warning"] * 4)
+        self.assertIn("has not described itself", before[0]["message"])
+        desc = {"capabilities": [{"name": "lookup", "kind": "see", "args": {"wake": "table?", "text": "string?"}},
+                                 {"name": "mark", "kind": "keep", "args": {"wake": "table"}},
+                                 {"name": "bare", "kind": "see", "args": {}}]}
+        after = M.annotate_problems(m, desc)
+        self.assertEqual([(p["level"], p["where"]) for p in after],
+                         [("error", f"{M.MANIFEST}: annotate[1].call"), ("error", f"{M.MANIFEST}: annotate[2].call"),
+                          ("warning", f"{M.MANIFEST}: annotate[3].call")])
+        self.assertIn("an annotation only reads", after[0]["message"])
+        self.assertIn("has no capability facts.ghost", after[1]["message"])
+        ok = [M.annotation_ok(a, desc) for a in m["annotate"]]
+        self.assertEqual(ok, [True, False, False, True])
+        self.assertTrue(all(M.annotation_ok(a, None) for a in m["annotate"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -522,11 +522,13 @@ class Fake:
             return dict(name=name, kind=kind, title=title, doc=doc, args=args or {}, timeout=timeout)
 
         def ext(eid, title, state, start="use", enabled=True, caps=(), sources=(), options=(), apps=(), skills=(),
-                pid=None, started=None, exit_code=None, error=None, broken=None, described=True):
+                annotate=(), extends=(), pid=None, started=None, exit_code=None, error=None, broken=None,
+                described=True):
             return dict(id=eid, title=title, version="0.1.0" if eid != "voice" else "0.3.2", path=EXT_HOME + "\\" + eid,
                         enabled=enabled, start=start, state=state, pid=pid, started=started, exit_code=exit_code,
                         error=error, caps=list(caps), sources=list(sources), options=list(options), apps=list(apps),
-                        skills=list(skills), broken=broken, described=described,
+                        skills=list(skills), annotate=[dict(a) for a in annotate], extends=list(extends),
+                        broken=broken, described=described,
                         notes=f"（假数据）本机扩展 {title}")
         return {e["id"]: e for e in (
             ext("voice", "声音", "running", start="workshop", pid=31412, started=now - 1500,
@@ -546,7 +548,8 @@ class Fake:
                 apps=["companion"], skills=["companion"]),
             ext("notes", "笔记", "stopped",
                 caps=[cap("put", "keep", "记一条", "Keeps a note: {text, tags?}.", {"text": "string", "tags": "table?"}),
-                      cap("find", "see", "查笔记", "Notes with these words.", {"words": "string"})],
+                      cap("find", "see", "查笔记", "Notes with these words.", {"words": "string?", "wake": "table?"})],
+                annotate=[dict(app="guild", call="notes.find", wake="wake", timeout=3.0)], extends=["guild-chat"],
                 options=[dict(name="folder", kind="text", title="保存位置", default="", hint="空着就放在扩展文件夹里",
                               value="")]),
             ext("translate", "翻译", "exited", started=now - 640, exit_code=1,
@@ -573,7 +576,8 @@ class Fake:
                     start=e["start"], state=e["state"], pid=e["pid"], started=e["started"], exit_code=e["exit_code"],
                     error=e["error"], capabilities=[f"{e['id']}.{c['name']}" for c in e["caps"]],
                     sources=[s["name"] for s in e["sources"]], options=[dict(o) for o in e["options"]],
-                    apps=list(e["apps"]), skills=list(e["skills"]))
+                    apps=list(e["apps"]), skills=list(e["skills"]), annotate=[dict(a) for a in e["annotate"]],
+                    extends=sorted(e["extends"]))
 
     def local_listing(self):
         return dict(revision=self.local_revision, extensions=[self.local_row(e) for e in self.local.values()])
@@ -586,7 +590,9 @@ class Fake:
             capabilities=[dict(id=f"{e['id']}.{c['name']}", kind=c["kind"], title=c["title"], doc=c["doc"],
                                args=dict(c["args"]), timeout=c["timeout"]) for c in e["caps"]],
             sources=[dict(s) for s in e["sources"]], options=[dict(o) for o in e["options"]],
-            apps=[dict(app=a, title="陪玩", prompt="companion") for a in e["apps"]])
+            apps=[dict(app=a, title="陪玩", prompt="companion") for a in e["apps"]],
+            annotate=[dict(a) for a in e["annotate"]],
+            extends={s: e["path"] + "\\skills\\" + s + ".md" for s in e["extends"]})
             for e in self.local.values() if e["enabled"]])
 
     def local_changed(self):

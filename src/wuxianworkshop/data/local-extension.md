@@ -63,6 +63,7 @@ The workshop is the hub: every call between the agent, reactions and extensions 
   workshop, for a model that takes long to load.
 - `docs`, `skills`: default `AGENT.md` and `skills/` when they exist.
 - `apps`: optional, see Apps.
+- `annotate`, `extends`: optional, see Adding to apps.
 
 The workshop starts it with `WUXIAN_EXTENSION=<id>`, `WUXIAN_HOME`, `PYTHONPATH` (the folder of `wuxiankit.py` first),
 `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-8`. Once started it keeps running; after a crash the next call starts
@@ -107,6 +108,49 @@ game, where each gets a card with 交给 AI (Hand to AI) that says it comes with
 follows to run the app: check, open the app, prepare, set reactions, wait for wakes, act through the extension's tools,
 stop. A skill's front matter is `name`, `title`, `description`, `arguments`, and `needs: shell` when it runs commands
 in the background. An app is the finished product built on parts; an extension that is only a part declares no app.
+
+## Adding to apps: annotations and skill supplements (补充应用：附注与技能补充)
+
+A local extension adds to apps that are not its own in four ways: capabilities and reactions
+(above), and two more declared in the manifest, for what only this computer has (a local database, a faster lookup):
+
+```json
+{
+  "id": "facts",
+  "title": "图鉴速查",
+  "run": ["python", "-m", "facts"],
+  "start": "workshop",
+  "annotate": [{"app": "guild", "call": "facts.lookup", "wake": "wake", "timeout": 3}],
+  "extends": {"guild-chat": "skills/guild-chat.md"}
+}
+```
+
+- `annotate` (附注): a list, at most 8, one entry per app. `app` names one app by its id (no wildcards). `call` is a
+  `see` capability of this extension's own (`<id>.<name>`): an annotation only reads. `wake` is the argument the whole
+  wake (`{app, reason, items, skipped, state?, pace?, quiet?}`) goes in, default `"wake"`; declare it in the
+  capability's `args` (`"wake": "table?"`). `timeout`: seconds, default 3, at most 10.
+- When: each time the app wakes, before the wake reaches the journal, the workshop calls every annotation of that
+  app at once and waits until all have answered or their timeouts passed. Then the wake goes on with `notes`:
+  `{"<extension id>": <the capability's result>}`. The agent reads it with the wake (`wuxian listen`, `events`).
+- Failure never loses the wake: an annotation that fails or times out gives
+  `{"error": "<why>", "reason": "timeout|down|failed|no_capability|bad_args|starting"}` in its place. An extension
+  that is not running is started, but the wake waits only its timeout; the start goes on, so the next wake is fast.
+  `start: workshop` keeps it warm. Wakes of one app keep their order; apps without annotations do not wait at all.
+- `extends` (技能补充): skill name -> a Markdown file in the extension's folder (UTF-8). The name is the one in the
+  skill file (`guild-chat`, `companion`), not a prompt name with an owner's id in front. Whenever an agent reads that
+  skill (`wk_docs {"skill": ...}` or the MCP prompt), the file follows the skill's text as a section of its own:
+
+  ```
+  ## 本机扩展「图鉴速查」的补充（On this machine: the local extension facts）
+
+  <the file>
+  ```
+
+  Several extensions: by id. A file that cannot be read gives one line saying why, never a failed skill. Write it for
+  the agent that follows the skill: what `notes.<id>` holds and how to use it, what to do on `notes.<id>.error`.
+- One switch: turning the extension off (or removing it) takes its annotations and supplements away with it.
+- `extension_check` and `extension_load` check both: an `app` id, a `call` of its own (once it has described itself:
+  that it has the capability and that it is `see`; before that, a warning), a file inside the folder.
 
 ## Python
 
