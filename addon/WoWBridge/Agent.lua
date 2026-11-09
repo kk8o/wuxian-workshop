@@ -417,15 +417,27 @@ local function Pour(req)
 	end
 	local p = { key = key }
 	a.pour, a.out = p, a.out or 0
+	-- its line in the debug log and the panel's 最近 (a pour is no RUN result): how many segments are in, then the sum
+	local n, done, bytes, t0 = #list, 0, 0, GetTime()
+	local ok, line = false, nil
+	if n > 0 and ns.Console then ok, line = pcall(ns.Console.Add, "LINK", ns.L.CON_POURING:format(0, n)) end
+	if not ok then line = nil end
 	function p.Next()
 		local i = list[at]
 		if not i then return nil end
 		at = at + 1
 		a.out, a.at = a.out + 1, GetTime()
-		return ("%s %d/%d\n"):format(key, i, m) .. a.s:sub((i == 1 and a.cuts[1] or ends[i - 1]) + 1, ends[i])
+		local seg = a.s:sub((i == 1 and a.cuts[1] or ends[i - 1]) + 1, ends[i])
+		bytes = bytes + #seg
+		return ("%s %d/%d\n"):format(key, i, m) .. seg
 	end
 	function p.Acked()
 		a.out, a.at = math.max(0, a.out - 1), GetTime()
+		done = math.min(n, done + 1)
+		if line then
+			pcall(ns.Console.Update, line, done < n and ns.L.CON_POURING:format(done, n)
+				or ns.L.CON_POURED:format(n, bytes / 1024, GetTime() - t0))
+		end
 		if a.out == 0 and a.pour == p and not list[at] then       -- every segment of the last pour is in: a while more
 			a.at = GetTime() - ANSWER_KEPT + ANSWER_AGAIN
 			C_Timer.After(ANSWER_AGAIN + 1, function() Sweep(store) end)

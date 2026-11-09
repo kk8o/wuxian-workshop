@@ -153,6 +153,24 @@ class Poured(Pour):
         self.assertTrue(any(re.match(r"run: its answer poured, 6 segments, \d+ KB in [\d.]+ s$", n) for n in notes), notes)
         self.assertTrue(self.comp.stats["squeezed"] >= 6)             # they went squeezed (TYPE_ZIP)
 
+    def test_the_panel_shows_how_far_a_pour_is(self):
+        """a pour is no RUN result, so it has a line of its own in the debug log (the panel's 最近 shows it): the
+        segments in so far while it goes, then how many, how big and how long"""
+        console = self.s.ns[b"Console"]
+        seen = []
+
+        def look():
+            got = console.Recent(1)[1]
+            if got and got[b"text"] not in seen:
+                seen.append(got[b"text"])
+        res = self.whole(text_of(200_000, seed=5), each=look)
+        self.assertTrue(res["ok"], res)
+        texts = [t.decode() for t in seen]
+        self.assertTrue(any(re.fullmatch(r"long answer going up: [1-5]/6 segments", t) for t in texts), texts)
+        self.s.run(5)                                             # the last acknowledgements reach the game
+        last = console.Recent(1)[1][b"text"].decode()
+        self.assertRegex(last, r"^long answer sent: 6 segments · \d+ KB · \d+ s$")
+
     def test_two_wait_at_most_and_a_run_result_goes_first(self):
         """no more than two segments wait in the queue unshown (each 32 KB to squeeze, and the queue holds 256 messages
         at most); a run sent meanwhile has its result back within a few frames, before the rest of the pour"""

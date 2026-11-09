@@ -116,6 +116,21 @@ function K.Add(kind, text, detail, failed)
 		K.unseen = K.unseen + 1
 		Badge()
 	end
+	return e
+end
+
+-- a line whose text moves on (a pour's progress: Agent.lua): the panel's 最近 shows it at its next refresh, the window
+-- draws its lines again at most once a second
+local redrawDue
+function K.Update(e, text)
+	if type(e) ~= "table" then return end
+	e.text = tostring(text or "")
+	if redrawDue then return end
+	redrawDue = true
+	C_Timer.After(1, function()
+		redrawDue = false
+		full, dirty = true, true
+	end)
 end
 
 -- whether an error, a warning or a blocked action with this text has a line now (Debug.lua takes no stack then)
