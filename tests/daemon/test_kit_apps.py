@@ -1,5 +1,5 @@
 """The 接入 Agent page's apps (/api/kit/apps) over a real daemon: WuxianKit's kit.apps while the game answers (with
-kit.app.status for why an app that is off cannot start), the apps of the kept manifest while it does not; each app's
+why an app that is off cannot start, never kit.app.status: the agent's heartbeat), the apps of the kept manifest while it does not; each app's
 start line as WuxianKit gives it, its extension and the skill its prompt names (with needs and mcp)."""
 import os
 import tempfile
@@ -37,7 +37,7 @@ class Game:
         self.apps = [{"id": "guild", "title": "公会聊天", "by": "addon", "addon": "WuxianKit", "on": True, "present": True,
                       "prompt": "guild-chat", "start": START},
                      {"id": "tour", "title": "新手引导", "by": "addon", "addon": "WuxianKit", "on": False, "present": False,
-                      "prompt": "guide-tour"},
+                      "prompt": "guide-tour", "blocked": "「指引」扩展关着"},
                      {"id": "raid_talk", "title": "副本解说", "by": "agent", "on": False, "present": False}]
 
     async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
@@ -50,8 +50,6 @@ class Game:
             return {"ok": True, "result": self.manifest}
         if name == "kit.apps":
             return {"ok": True, "result": self.apps}
-        if name == "kit.app.status":
-            return {"ok": True, "result": {"app": args["app"], "on": False, "blocked": "「指引」扩展关着"}}
         raise ApiError(400, "call_failed", f"WuxianKit.{name} is not exposed")
 
     async def addon_api(self, addon=None, brief=False, shared=None):
@@ -109,14 +107,14 @@ class KitAppsApi(unittest.TestCase):
         self.assertEqual(guild["extension"], {"id": "chat", "title": "消息", "on": True})
         self.assertEqual(guild["skill"], {"name": "guild-chat", "title": "Guild chat", "description": "Take part in guild chat",
                                           "needs": ["shell"], "mcp": [{"name": "wuxianwow", "url": "https://wuxianwow.com/mcp"}]})
-        tour = apps["tour"]                       # its extension is off: no skill, why it cannot start from kit.app.status
+        tour = apps["tour"]                       # its extension is off: no skill, why it cannot start from kit.apps
         self.assertEqual((tour["on"], tour["blocked"], tour["start"], tour["skill"]), (False, "「指引」扩展关着", None, None))
         self.assertEqual(tour["extension"], {"id": "guide", "title": "指引", "on": False})
         talk = apps["raid_talk"]
         self.assertEqual((talk["on"], talk["blocked"], talk["prompt"], talk["start"], talk["extension"], talk["skill"]),
                          (False, None, None, None, None, None))
         reads = [(n, a, s) for n, a, s in self.game.calls if n in ("kit.apps", "kit.app.status")]
-        self.assertEqual(reads, [("kit.apps", None, True), ("kit.app.status", {"app": "tour"}, True)])   # the page's own reads
+        self.assertEqual(reads, [("kit.apps", None, True)])   # the page's own read; no kit.app.status (a heartbeat)
 
     def test_a_wuxiankit_before_start(self):
         """kit.apps without start (a WuxianKit before it): the kept manifest's start, else None"""

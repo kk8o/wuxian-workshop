@@ -37,7 +37,6 @@ from .journal import REQUEST_ID
 from .kitcache import KIT, SHARED, KitCache
 
 OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities", "kit.apps")   # what WuxianKit's views read of it for themselves
-OWN_ASKS = ("kit.app.status",)   # the same, with arguments (the 接入 Agent page's apps): neither counted nor listed in the game
 
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
@@ -696,8 +695,7 @@ class Service:
             code = probes.call_chunk(addon, name, args)       # also what checks args (JSON a Lua table can hold)
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
-        own = (addon == KIT and (name in OWN_READS and args is None or name in OWN_ASKS)
-               and (SHARED.get() if shared is None else shared))
+        own = addon == KIT and name in OWN_READS and args is None and (SHARED.get() if shared is None else shared)
         if own and name in ("kit.revision", "kit.manifest"):
             return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code, own))
         return await self.call_game(addon, name, args, timeout_ms, code, own)
@@ -1154,8 +1152,9 @@ class Service:
         hands the app to an agent; None: it has no prompt, or a WuxianKit before it), on, blocked (why it cannot start
         while off), extension {id, title, on} | None, skill {name, title, description, needs, mcp} | None}]}. online:
         the game's WuxianKit answered kit.apps; else the apps of the manifest kept on disk (none without one), on and
-        blocked None. The skill is the app's prompt among the skills of the extensions that are on; the extension, the
-        app's own (WuxianKit 0.6's apps say it in kit.app.status) or the one whose skills hold the prompt"""
+        blocked None. blocked comes from kit.apps (WuxianKit 0.6), never from kit.app.status: that is the agent's heartbeat
+        and would keep the app alive. The skill is the app's prompt among the skills of the extensions that are on; the
+        extension, the app's own (kit.apps and the manifest say it) or the one whose skills hold the prompt"""
         from ..mcp import kit as kit_tools
         view = await self.page_kit()
         if refresh:
@@ -1190,13 +1189,6 @@ class Service:
             on = state.get("on") if isinstance(state.get("on"), bool) else None
             blocked = state.get("blocked") if isinstance(state.get("blocked"), str) else None
             eid = a["extension"] or (known.get(a["id"]) or {}).get("extension")
-            if live is not None and on is False and a["prompt"] and blocked is None:
-                try:                                         # kit.apps does not say why an app cannot start
-                    status = await self.kit_read("kit.app.status", {"app": a["id"]})
-                except ApiError:
-                    status = None
-                if isinstance(status, dict):
-                    blocked = status.get("blocked") if isinstance(status.get("blocked"), str) else blocked
             skill = next((s for s in skills if a["prompt"] and s["prompt"] == a["prompt"]), None)
             ext = view.exts.get(eid) if eid else None
             if ext is None and skill is not None:
