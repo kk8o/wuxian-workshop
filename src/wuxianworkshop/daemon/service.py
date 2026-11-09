@@ -10,9 +10,13 @@ Before an addon's code goes to the game (load, the start of a watch, a watched f
 checked first (agent/lint.py): a syntax error keeps it out of the game (load answers 422 check_failed, a watched save is
 not loaded), the other findings come with load's answer; check() is the whole report, the running game asked about the
 names it could not settle.
-Programs (programs.py, the program loader) run outside the game: registered, started, stopped, their output read here,
-over the same HTTP and MCP. A program that drives a WuxianKit app has it declared (kit.app.declare, launch true) after
-every UI session's kit.ready, so that the player's 开始 in the game (the event kit.app.launch) starts it.
+Local extensions (local/host.py) are WuxianKit's extensions on this computer: processes that speak JSON-RPC over stdio,
+registered, started on their first call, checked, stopped and their output read here, over the same HTTP and MCP; their
+capabilities are called with local_call (which also calls WuxianKit's see / keep / point capabilities in the game), their
+sources' items go into the journal as events of the addon "local" (topic <extension>.<source>; local.changed when the
+extensions changed). Their apps are declared to WuxianKit (kit.app.declare) after every kit.ready. Reactions
+(local/reactions.py) call a capability when an item is heard: a game source through the temporary app "reactions"
+(kit.app.open), a local source directly.
 """
 import asyncio
 import fnmatch
@@ -29,7 +33,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
-from .. import programs as loader_lib
+from ..local import manifest as local_manifest
+from ..local.host import Host as LocalHost, call_error
+from ..local.reactions import ReactionError, Reactions
 from ..agent import history, lint, probes
 from ..agent.commands import toc_files
 from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
@@ -58,10 +64,11 @@ POUR_QUIET = 60.0            # ... and before the answer is given up
 POUR_NOTE = 10.0             # seconds between the journal's notes on how far a long answer has come
 POUR_POLL = 0.25             # seconds between a pour's looks at how far it is (a segment that comes wakes it at once)
 _now = time.monotonic        # the clock of a pour's waits (a test's mock client puts the game's, and POUR_POLL 0)
-STOP_GRACE = 10.0            # seconds a program whose app was stopped (kit.app.stop) has to end by itself
-DECLARE_EVERY = 5.0          # seconds between looks for a UI session whose programs' apps are not declared yet ...
-DECLARE_GRACE = 15.0         # ... and how long it is there first (its kit.ready may still come: a login, a reload)
 ABSENT = "absent"            # declare(): the game's WuxianKit has no kit.app.declare
+LOCAL = "local"              # the addon name of the local extensions' events in the journal
+REACTIONS_APP = "reactions"  # the temporary app through which the reactions hear the game
+REACTIONS_MINUTES = 720
+ALLOWED_KINDS = ("see", "keep", "point")   # what local_call calls (say and do are proposals: a later step)
 
 
 def short_list(numbers, most=12):
@@ -156,9 +163,15 @@ class Service:
         self.tracing = asyncio.Lock()         # one trace at a time: they share the game-side frame
         self.history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wuxian-history")
         self.history_big = set()             # addons too big to keep: said once
-        self.loader = loader_lib.Programs(note=lambda text: self.journal.add("INFO", text))   # programs.py
+        self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), on_event=self.local_event,
+                               on_call=self.extension_calls, on_change=self.local_changed)   # local/host.py
+        self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
+                                   note=lambda text: self.journal.add("INFO", text),
+                                   local_sources=lambda: set(self.local.ids()))
+        self.reaction_hears = []             # the game sources the reactions hear (their temporary app's hear)
+        self.reactions_open = False          # that app was opened in this UI session
         self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
-        self.declared = None                 # the UI session whose programs' apps WuxianKit was told of
+        self.declared = None                 # the UI session whose local extensions' apps WuxianKit was told of
         self.declaring = None                # an asyncio.Lock: one round of declarations at a time
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
@@ -178,8 +191,7 @@ class Service:
         self.content_checks = Scheduler(self.content.check, first=40, name="wuxian-content").start()
         if self.sync_addons_on:
             self.addon_sync = Scheduler(self.sync_addons, first=8, every=30, name="wuxian-addons").start()
-        self.loader.adopt()                  # programs still running from before this daemon: taken back
-        self.soon(self.programs_watch())
+        self.local.autostart()               # the local extensions that start with 无限工坊 (start "workshop")
 
     def close(self):
         """stop the worker; whoever waits for a job hears that the daemon is going"""
@@ -197,7 +209,7 @@ class Service:
             except RuntimeError:
                 pass
         self.pending.clear()
-        self.loader.close()                  # the programs it started (or took back) end with it
+        self.local.close()                   # the local extensions get shutdown; their trees end after 5 s
         self.journal.close()
 
     def on_debug(self, kind, text):
@@ -1361,13 +1373,12 @@ class Service:
         return (answer or {}).get("result")
 
     async def kit_apps(self, refresh=False):
-        """WuxianKit's apps for the 接入 Agent page: {online, apps: [{id, title, by, addon, driver ("prompt": an agent
-        drives it by its skill; "program": a program 无限工坊 loads; None), launch (the game's 无限工坊 loads its program,
-        in this UI session), temp (a temporary app: an agent's, not remembered), prompt, start (the line that hands the
-        app to an agent; None: it has no prompt, or a WuxianKit before it), on, blocked (why it cannot start while off),
-        extension {id, title, on} | None, skill {name, title, description, needs, mcp} | None}]}. online: the game's
-        WuxianKit answered kit.apps; else the apps of the manifest kept on disk (none without one), on, blocked and
-        launch None. blocked comes from kit.apps (WuxianKit 0.6), never from kit.app.status: that is the agent's
+        """WuxianKit's apps for the 接入 Agent page: {online, apps: [{id, title, by, addon, temp (a temporary app: an
+        agent's, not remembered), prompt, start (the line that hands the app to an agent; None: it has no prompt, or a
+        WuxianKit before it), on, blocked (why it cannot start while off), extension {id, title, on} | None, skill
+        {name, title, description, needs, mcp} | None}]}. online: the game's WuxianKit answered kit.apps; else the apps
+        of the manifest kept on disk (none without one), on and blocked None. blocked comes from kit.apps (WuxianKit
+        0.6), never from kit.app.status: that is the agent's
         heartbeat and would keep the app alive. The skill is the one the app's prompt names in the app's docs folder
         (the manifest says it, kit.apps does not), else the one wk_docs gives by that name; the extension, the app's
         own as kit.apps and the manifest say it"""
@@ -1401,9 +1412,7 @@ class Service:
                          or next((s for s in skills if s["prompt"] == a["prompt"]), None))
             ext = view.exts.get(eid) if eid else None
             start = a["start"] or kept.get("start")
-            out.append(dict(id=a["id"], title=a["title"], by=self.word(a["by"]), addon=a["addon"],
-                            driver=a["driver"] or kept.get("driver"), launch=a["launch"] if live is not None else None,
-                            temp=a["temp"], prompt=a["prompt"], start=start, on=on, blocked=blocked,
+            out.append(dict(id=a["id"], title=a["title"], by=self.word(a["by"]), addon=a["addon"], temp=a["temp"], prompt=a["prompt"], start=start, on=on, blocked=blocked,
                             extension=None if ext is None else dict(
                                 id=ext.get("id"), title=kit_tools.text(ext.get("title")) or ext.get("id"),
                                 on=ext.get("state") == "on"),
@@ -1437,31 +1446,42 @@ class Service:
                     calls=agent.get("calls") or 0, listed=agent.get("listed"), tools=(got or {}).get("tools"),
                     revision=(got or {}).get("revision"), state=state)
 
-    # --- programs (programs.py): loaded and debugged outside the game, as addons are in it --------------------------
+    # --- local extensions (local/host.py) and reactions (local/reactions.py) -----------------------------------------
 
     def soon(self, coro):
         """(any thread) a coroutine on the server's loop; dropped when there is none (a Service without a server)"""
         loop = self.loop
         if loop is None or self.closed:
             coro.close()
-            return
+            return None
         try:
-            asyncio.run_coroutine_threadsafe(coro, loop)
+            return asyncio.run_coroutine_threadsafe(coro, loop)
         except RuntimeError:                  # the loop has closed: the daemon stops
             coro.close()
+            return None
 
     def kit_event(self, topic, data):
-        """(worker thread) WuxianKit's events for the programs: kit.ready (a login or a reload: the programs' apps are
-        declared again, launch living in WuxianKit's memory only), kit.app.launch (the player's 开始 of a program's app)"""
+        """(worker thread) WuxianKit's events for the local side: kit.ready (a login or a reload: the extensions' apps
+        are declared again, the reactions' temporary app opened again), app.reactions (what that app heard: each item
+        to the reactions), kit.app with on false (an app stopped: the reactions it owns go)"""
         if topic == "kit.ready":
             self.declared = None
-            self.soon(self.declare_programs())
-        elif topic == "kit.app.launch" and isinstance(data, dict) and isinstance(data.get("app"), str):
-            self.soon(self.program_launch(data["app"]))
+            self.reactions_open = False
+            self.soon(self.declare_local_apps())
+            self.soon(self.reactions_hear_again())
+        elif topic == f"app.{REACTIONS_APP}" and isinstance(data, dict) and isinstance(data.get("items"), list):
+            for item in data["items"]:
+                if isinstance(item, dict):
+                    self.soon(self.reactor.item(item))
+        elif topic == "kit.app" and isinstance(data, dict) and data.get("on") is False and isinstance(data.get("app"), str):
+            if data["app"] == REACTIONS_APP:
+                self.reactions_open = False
+            else:
+                self.soon(self.reactor.app_stopped(data["app"]))
 
-    async def declare(self, pid, decl):
-        """kit.app.declare of one program's app: "ok"; None when not now (the game away); ABSENT when the game's
-        WuxianKit has no kit.app.declare (or no WuxianKit runs); else WuxianKit's refusal, journaled"""
+    async def declare(self, eid, decl):
+        """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away); ABSENT when the
+        game's WuxianKit has no kit.app.declare (or no WuxianKit runs); else WuxianKit's refusal, journaled"""
         if not self.link_is_up():
             return None
         try:
@@ -1473,149 +1493,291 @@ class Service:
             if "has no kit.app.declare" in text or "has no WoWBridge handle" in text:
                 return ABSENT
             first = text.splitlines()[0][:300] if text else "refused"
-            self.journal.add("INFO", f"program {pid}: WuxianKit did not take its app: {first}")
+            self.journal.add("INFO", f"local extension {eid}: WuxianKit did not take its app {decl.get('app')}: {first}")
             return first
         return "ok"
 
-    async def declare_programs(self):
-        """every program's app told to WuxianKit (kit.app.declare with launch true: its card offers 开始), once per UI
-        session: after kit.ready, or (programs_watch) a while into a session joined without one"""
+    async def declare_local_apps(self, only=None):
+        """the enabled local extensions' apps told to WuxianKit (kit.app.declare: their cards hand them to an agent),
+        once per UI session after kit.ready; only: the apps of that extension, now (added, turned on, loaded)"""
         if self.declaring is None:
             self.declaring = asyncio.Lock()
         try:
             async with self.declaring:
                 sid = self.ui_session()
-                if sid is None or sid == self.declared or not self.link_is_up():
+                if sid is None or not self.link_is_up() or (only is None and sid == self.declared):
                     return
-                for pid, decl in await asyncio.to_thread(self.loader.declarations):
-                    result = await self.declare(pid, decl)
+                for eid, decl in await asyncio.to_thread(self.local.declarations):
+                    if only is not None and eid != only:
+                        continue
+                    result = await self.declare(eid, decl)
                     if result == ABSENT:
-                        break                 # a WuxianKit before declare: none of them
+                        return                # a WuxianKit before declare: none of them
                     if result is None:
                         return                # the game went away: at the next kit.ready
-                self.declared = sid
+                if only is None:
+                    self.declared = sid
         except Exception as e:                # a bug: said, and the daemon goes on
-            self.journal.add("INFO", f"programs: declaring their apps failed: {e!r}")
+            self.journal.add("INFO", f"local extensions: declaring their apps failed: {e!r}")
 
-    async def programs_watch(self):
-        """(the server's loop, while the daemon runs) a UI session the daemon joined without its kit.ready (it started
-        while the game ran): the programs' apps are declared once it has been there DECLARE_GRACE seconds"""
-        seen = None
-        while not self.closed:
-            await asyncio.sleep(DECLARE_EVERY)
-            sid = self.ui_session()
-            if sid is None or sid == self.declared or not self.link_is_up():
-                continue
-            if seen is None or seen[0] != sid:
-                seen = (sid, time.monotonic())
-            elif time.monotonic() - seen[1] >= DECLARE_GRACE:
-                await self.declare_programs()
+    def local_event(self, eid, item):
+        """(an extension's reader thread) an item of one of its sources: an event of the addon "local" in the journal
+        (topic <extension>.<source>), and the reactions hear it"""
+        self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": item["kind"], "d": item}, ensure_ascii=False))
+        self.soon(self.reactor.item(item))
 
-    async def program_launch(self, app):
-        """WuxianKit's kit.app.launch {app}: the player clicked 开始 on a program's app in the game: that program starts
-        (a line in the log when there is none, or it runs already)"""
-        if not loader_lib.ID.match(app):
-            return
+    def local_changed(self, revision):
+        """(any thread) the local extensions changed: local.changed in the journal; the reactions look again at which
+        of their sources are the game's"""
+        self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": "local.changed", "d": {"revision": revision}}))
+        self.soon(self.reactor.refresh())
+
+    def extension_calls(self, eid, cap, args):
+        """(an extension's reader thread) its call {cap, args}: a Future of the result (ApiError as local_call's)"""
+        async def value():
+            return (await self.local_call(cap, args, caller={"by": "extension", "id": eid}))["result"]
+        fut = self.soon(value())
+        if fut is None:
+            raise ApiError(503, "stopping", "the daemon is shutting down")
+        return fut
+
+    def kit_manifest_known(self):
+        """the WuxianKit manifest known now without asking the game: a view's, the kit cache's newest, the one kept on
+        disk; None"""
+        view = getattr(self.local_mcp, "kit_tools", None) or self.kit_view
+        manifest = getattr(view, "manifest", None)
+        if isinstance(manifest, dict):
+            return manifest
+        kept = list(self.kit_cache.manifests.values())
+        if kept:
+            return kept[-1]
+        from ..paths import state_dir
         try:
-            e, run = await asyncio.to_thread(self.loader.run_of, app)
-        except ApiError:
-            self.journal.add("INFO", f"kit.app.launch {app}: no program {app} is registered here (wuxian program list)")
-            return
-        if e.error or e.manifest["app"] is None:
-            self.journal.add("INFO", f"program {app}: not started for the game's 开始: "
-                                     + (e.error or "its manifest declares no app"))
-            return
-        if run is not None and run.running:
-            self.journal.add("INFO", f"program {app}: the game's 开始, but it runs already (pid {run.pid})")
-            return
-        try:
-            await asyncio.to_thread(self.loader.start, app, "the player's 开始 in the game")
-        except ApiError as ex:
-            self.journal.add("INFO", f"program {app}: could not start for the game's 开始: {ex.message}")
-
-    async def programs(self):
-        """the registered programs: [row] (programs.Programs.row)"""
-        return await asyncio.to_thread(self.loader.rows)
-
-    async def declare_row(self, row):
-        """a program just registered: its app told to WuxianKit now while the game is online (else at the next
-        kit.ready): "ok", WuxianKit's refusal, or None (not now)"""
-        if not row.get("app") or row.get("error"):
+            manifest = json.loads((state_dir() / "kit-manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
-        decl = next((d for pid, d in await asyncio.to_thread(self.loader.declarations) if pid == row["id"]), None)
-        result = await self.declare(row["id"], decl) if decl is not None else None
-        return None if result == ABSENT else result
+        return manifest if isinstance(manifest, dict) else None
 
-    async def program_add(self, path):
-        """registers a program by its folder or its manifest (an absolute path): its row, with declared (its app told
-        to WuxianKit: "ok", WuxianKit's refusal, None: not now)"""
-        row = await asyncio.to_thread(self.loader.add, path)
-        return dict(row, declared=await self.declare_row(row))
+    @staticmethod
+    def kit_kind(manifest, cap):
+        """the kind of a capability of the game's WuxianKit as its manifest says (one that answers with a proposal,
+        proposes, counts as do); None when no extension that is on has it"""
+        for ext in (manifest or {}).get("extensions") or []:
+            if not isinstance(ext, dict) or ext.get("state") != "on":
+                continue
+            for c in ext.get("capabilities") or []:
+                if isinstance(c, dict) and c.get("id") == cap:
+                    return "do" if c.get("proposes") else c.get("kind")
+        return None
 
-    async def program_remove(self, id):
-        """takes a program off the registry (id, or its folder); a running one is stopped first. Its folder stays"""
-        e, run = await asyncio.to_thread(self.loader.run_of, id)
-        if run is not None and run.running:
-            await self.stop_run(run)
-        result = await asyncio.to_thread(self.loader.remove, str(e.folder))
-        if e.error is None and e.manifest["app"] is not None:     # its card no longer offers 开始
-            await self.declare(e.id, loader_lib.declaration(e.manifest, launch=False))
-        return result
+    def cap_kind(self, cap):
+        """see / keep / point / say / do of a capability, a local extension's or the game's WuxianKit's; None"""
+        kind = self.local.kind_of(cap)
+        if kind is not None:
+            return kind
+        return self.kit_kind(self.kit_manifest_known(), cap)
 
-    async def program_start(self, id, restart=False):
-        """starts a program: its row. restart: one that runs is stopped first (program_stop's way); without it a
-        running one is an error (409 running)"""
-        if restart not in (True, False, None):
-            raise ApiError(400, "bad_request", "restart: true (stop it first when it runs) or false")
-        if restart:
-            e, run = await asyncio.to_thread(self.loader.run_of, id)
-            if run is not None and run.running:
-                await self.stop_run(run)
-        return await asyncio.to_thread(self.loader.start, id)
-
-    async def program_stop(self, id):
-        """stops a program (stop_run): its row; one that does not run is left as it is"""
-        e, run = await asyncio.to_thread(self.loader.run_of, id)
-        if run is not None and run.running:
-            await self.stop_run(run)
-        return await asyncio.to_thread(self.loader.get, str(e.folder))
-
-    async def stop_run(self, run):
-        """a program that drives an app, with the game online: its app is stopped first (kit.app.stop: the program sees
-        it end and exits by itself) and it has STOP_GRACE seconds; then (and for any other) its process tree is ended"""
-        run.stop_asked = True
-        if run.app and self.link_is_up():
+    async def local_call(self, cap, args=None, timeout_ms=30000, caller=None):
+        """a capability called: a local extension's (started when it does not run; it has timeout_ms, or the longer
+        timeout it declared), else the game's WuxianKit's (see, keep or point only: say and do are proposals, a later
+        step). {result}; ApiError no_capability, bad_args, failed, timeout, down (it cannot start: why, with the end
+        of its output; for the game's: the game is not online), not_allowed (a say or do)"""
+        if not isinstance(cap, str) or not re.match(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+$", cap):
+            raise ApiError(400, "bad_request", "cap: a capability id, <extension>.<name> (voice.say, sense.bags)")
+        if args is not None and not isinstance(args, dict):
+            raise ApiError(400, "bad_args", f"{cap}: args is an object of its arguments by name")
+        seconds = self.timeout_seconds(timeout_ms, 30000)
+        caller = caller if isinstance(caller, dict) else {"by": "agent"}
+        found = await asyncio.to_thread(self.local.capability, cap)
+        if found is not None:
+            entry, described = found
+            eid = entry["id"]
+            if not entry["enabled"]:
+                raise ApiError(404, "no_capability", f"{cap}: the local extension {eid} is off (extension_set turns it "
+                                                     f"on)")
+            if described is None and entry.get("described") is not None:
+                raise ApiError(404, "no_capability", self.no_such(eid, entry))
+            proc = await asyncio.wrap_future(self.local.ensure(eid, f"a call of {cap}"))
+            if described is None:                          # it had not described itself before this start
+                found = await asyncio.to_thread(self.local.capability, cap)
+                described = found[1] if found else None
+                if described is None:
+                    raise ApiError(404, "no_capability", self.no_such(eid, found[0] if found else entry))
+            fut = self.local.call(proc, described["name"], args, caller)
+            limit = max(seconds, float(described.get("timeout") or 0))
             try:
-                await self.call_exposed(KIT, "kit.app.stop", {"app": run.id}, 5000)
-            except ApiError:
-                pass
-            else:
-                if await asyncio.to_thread(run.done.wait, STOP_GRACE):
-                    return
-        await asyncio.to_thread(self.loader.kill, run)
+                result = await asyncio.wait_for(asyncio.wrap_future(fut), limit)
+            except asyncio.TimeoutError:
+                raise ApiError(504, "timeout", f"{cap} did not answer within {limit:.0f} s (extension_logs shows what "
+                                               f"it did)") from None
+            except Exception as e:
+                raise call_error(e, cap) from None
+            return dict(result=result)
+        manifest = self.kit_manifest_known()
+        kind = self.kit_kind(manifest, cap)
+        if kind is None and self.link_is_up():
+            try:
+                view = await self.page_kit()
+                manifest = await view.current(wait=True)
+            except Exception:
+                manifest = None
+            kind = self.kit_kind(manifest, cap)
+        if kind is None:
+            raise ApiError(404, "no_capability", f"no capability {cap}: no local extension has it (local_extensions "
+                                                 f"lists them), and the game's WuxianKit has no extension that is on "
+                                                 f"with it (or the game is not online)")
+        if kind not in ALLOWED_KINDS:
+            raise ApiError(403, "not_allowed", f"{cap} is a {kind} capability: a proposal the player confirms; only see, "
+                                               f"keep and point capabilities can be called this way")
+        try:
+            answer = await self.call_exposed(KIT, cap, args, int(seconds * 1000))
+        except ApiError as e:
+            if e.code == "call_failed":
+                first, _, rest = str(e.message or "").partition("\n")
+                raise ApiError(422, "failed", f"{cap}: {first}") from None
+            if e.code == "timeout":
+                raise ApiError(504, "timeout", f"{cap}: {e.message}") from None
+            raise ApiError(503, "down", f"{cap}: the game is not online ({e.code}: {e.message})") from None
+        return dict(result=(answer or {}).get("result"))
 
-    async def program_logs(self, id, since=0, limit=200):
-        """a program's output by line (programs.Programs.logs): {lines: [{n, text}], next, total, reset, cut, row}"""
-        return await asyncio.to_thread(self.loader.logs, id, since, limit)
+    @staticmethod
+    def no_such(eid, entry):
+        names = [c["id"] for c in ((entry or {}).get("described") or {}).get("capabilities") or []]
+        return f"the local extension {eid} has no such capability (it has: {', '.join(names) or 'none'})"
 
-    async def new_program(self, path, id, title=None, app=True):
-        """a new program from the template (scaffold.create_program) in the folder `path` (new or empty), registered:
-        its row, with files and declared"""
-        if not isinstance(path, str) or not path.strip():
-            raise ApiError(400, "bad_request", "path: the full path of the new program's folder (new or empty)")
-        if app not in (True, False, None):
-            raise ApiError(400, "bad_request", "app: true (it drives a WuxianKit app, the default) or false")
+    async def local_extensions(self):
+        """{revision, extensions: [row]} (local/host.py Host.row)"""
+        return await asyncio.to_thread(self.local.listing)
+
+    async def local_manifest(self):
+        """{revision, extensions}: the enabled local extensions as WuxianKit's manifest lists an extension (mcp/kit.py
+        renders them as it renders the game's)"""
+        return await asyncio.to_thread(self.local.manifest_entries)
+
+    async def extension_add(self, path):
+        """registers a local extension by its folder (or its wuxian-extension.json): its row; its apps are told to
+        WuxianKit now while the game is online"""
+        row = await asyncio.to_thread(self.local.add, path)
+        await self.declare_local_apps(only=row["id"])
+        return row
+
+    async def extension_remove(self, id):
+        """stops a local extension and takes it off the registry (its folder stays; its apps stay declared)"""
+        return await asyncio.to_thread(self.local.remove, id)
+
+    async def extension_load(self, id):
+        """checks a local extension and (re)starts it: {row, check}"""
+        res = await asyncio.to_thread(self.local.load_, id)
+        await self.declare_local_apps(only=res["row"]["id"])
+        return res
+
+    async def extension_stop(self, id):
+        """stops a local extension (shutdown, then its process tree): its row"""
+        return await asyncio.to_thread(self.local.stop, id)
+
+    async def extension_set(self, id, enabled=None, options=None):
+        """turns a local extension on or off, and sets some of its options: its row"""
+        row = await asyncio.to_thread(self.local.set, id, enabled, options)
+        if enabled is True:
+            await self.declare_local_apps(only=row["id"])
+        return row
+
+    async def extension_check(self, id):
+        """a local extension (an id, or the full path of a folder) checked without touching its running process:
+        {ok, problems, capabilities, tests?}"""
+        return await asyncio.to_thread(self.local.check, id)
+
+    async def extension_logs(self, id, since=0, limit=200):
+        """a local extension's output by line: {lines: [{n, text}], next, total, reset, cut, row}"""
+        return await asyncio.to_thread(self.local.logs, id, since, limit)
+
+    async def new_extension(self, id, title=None, folder=None):
+        """a new local extension from the template (scaffold.new_extension_files) in folder (default
+        %WUXIAN_HOME%\\extensions\\<id>; new or empty), registered: {row, files, guide}"""
+        bad = local_manifest.id_problem(id)
+        if bad:
+            raise ApiError(400, "bad_request", f"id: {bad['message']}: {bad['hint']}")
         if title is not None and not isinstance(title, str):
             raise ApiError(400, "bad_request", "title: text")
+        if folder is None or (isinstance(folder, str) and not folder.strip()):
+            from ..paths import home
+            path = home() / "extensions" / id
+        elif not isinstance(folder, str) or not Path(folder.strip()).is_absolute():
+            raise ApiError(400, "bad_request", "folder: the full path of the new extension's folder (new or empty)")
+        else:
+            path = Path(folder.strip())
+        if path.exists() and (not path.is_dir() or any(path.iterdir())):
+            raise ApiError(409, "folder_not_empty", f"{path} is not empty: give another folder, or extension_add an "
+                                                    f"extension that is there")
+        make = getattr(scaffold, "new_extension_files", None)
+        if make is None:
+            raise ApiError(501, "not_available", "this build of 无限工坊 has no extension template "
+                                                 "(scaffold.new_extension_files)")
         try:
-            made = await asyncio.to_thread(scaffold.create_program, path.strip(), id, title, app is not False)
+            files = await asyncio.to_thread(make, str(path), id, title)
         except scaffold.ScaffoldError as e:
-            raise ApiError(409 if e.code == "folder_not_empty" else 400, e.code, str(e)) from None
-        self.journal.add("INFO", f"new program {made['id']} in {made['path']}")
-        row = await self.program_add(made["path"])
-        return dict(row, files=made["files"],
-                    hint=f"read its AGENTS.md; program_start {{\"id\": \"{made['id']}\"}} starts it (Python 3.10+ on PATH "
-                         f"runs main.py, else put a python.exe in its manifest's run), program_logs shows its output")
+            raise ApiError(400, getattr(e, "code", "bad_request"), str(e)) from None
+        self.journal.add("INFO", f"new local extension {id} in {path}")
+        row = await self.extension_add(str(path))
+        return dict(row=row, files=[str(f) for f in files or []],
+                    guide=f"Read {path}\\AGENT.md and extension_guide (the whole guide). Edit main.py, then "
+                          f"extension_load {{\"id\": \"{id}\"}} (it checks, restarts and runs its tests), call its "
+                          f"wk_{id}_ tools, read extension_logs when something fails")
+
+    async def reaction_call(self, cap, args, caller):
+        """(the reactions) a capability called for a reaction: its result"""
+        return (await self.local_call(cap, args, 30000, caller))["result"]
+
+    async def reactions_hear(self, entries):
+        """(the reactions) the game sources they hear changed: the temporary app "reactions" opened with them as its
+        hear (kit.app.open; again at each kit.ready), stopped when there are none. The game away: at its kit.ready.
+        WuxianKit's refusal is an ApiError not_heard with its words"""
+        self.reaction_hears = [e for e in entries or [] if isinstance(e, str)]
+        if not self.reaction_hears:
+            if self.reactions_open and self.link_is_up():
+                try:
+                    await self.call_exposed(KIT, "kit.app.stop", {"app": REACTIONS_APP}, 5000)
+                except ApiError:
+                    pass
+            self.reactions_open = False
+            return
+        if not self.link_is_up():
+            return
+        decl = dict(app=REACTIONS_APP, title="反射", hear=list(self.reaction_hears), temp=True, digest=False, lease=0,
+                    minutes=REACTIONS_MINUTES)
+        try:
+            await self.call_exposed(KIT, "kit.app.open", decl, 10000)
+        except ApiError as e:
+            if e.code == "call_failed":
+                raise ApiError(400, "not_heard", str(e.message or "").partition("\n")[0]) from None
+            return
+        self.reactions_open = True
+
+    async def reactions_hear_again(self):
+        """kit.ready: the reactions' app opened again in the new UI session"""
+        if not self.reaction_hears:
+            return
+        try:
+            await self.reactions_hear(list(self.reaction_hears))
+        except ApiError as e:
+            self.journal.add("INFO", f"reactions: the game did not take what they hear: {e.message}")
+
+    async def reactions(self):
+        """{reactions: [...]}"""
+        return dict(reactions=self.reactor.list())
+
+    async def reaction_set(self, spec):
+        """a reaction set (one with its id replaced): that reaction. ApiError bad_args with the engine's words"""
+        try:
+            return await self.reactor.set(spec)
+        except ReactionError as e:
+            raise ApiError(400, "bad_args", str(e)) from None
+
+    async def reaction_clear(self, id=None, owner=None):
+        """{cleared: n}: the reaction id, the reactions of owner (an app id), or (neither) all"""
+        if id is not None and not isinstance(id, str) or owner is not None and not isinstance(owner, str):
+            raise ApiError(400, "bad_request", "id, owner: texts")
+        return dict(cleared=await self.reactor.clear(id=id, owner=owner))
 
     async def history(self, addon=None, vid=None, against="now"):
         """kept versions (agent/history.py): no addon = the addons that have some; an addon = its versions, newest

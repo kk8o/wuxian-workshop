@@ -134,51 +134,94 @@ class Parser(unittest.TestCase):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("watch", "begin")
 
-    def test_program(self):
-        ns, _ = self.parse("program", "list", "--json")
-        self.assertEqual((ns.command, ns.action, ns.json), ("program", "list", True))
-        ns, _ = self.parse("program", "add", r"C:\p\talk")
-        self.assertEqual((ns.action, ns.path), ("add", r"C:\p\talk"))
-        ns, _ = self.parse("program", "start", "talk", "--restart")
-        self.assertEqual((ns.action, ns.id, ns.restart), ("start", "talk", True))
-        ns, _ = self.parse("program", "stop", "talk")
-        self.assertEqual((ns.action, ns.id), ("stop", "talk"))
-        ns, _ = self.parse("program", "remove", "talk")
-        self.assertEqual((ns.action, ns.id), ("remove", "talk"))
-        ns, _ = self.parse("program", "logs", "talk", "-f", "--since", "5", "--limit", "50")
-        self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "talk", True, 5, 50))
-        ns, _ = self.parse("program", "logs", "talk")
-        self.assertEqual((ns.follow, ns.since, ns.limit), (False, 0, 200))
-        for argv in (("program",), ("program", "begin"), ("program", "start")):
+    def test_ext(self):
+        ns, _ = self.parse("ext", "list", "--json")
+        self.assertEqual((ns.command, ns.action, ns.json), ("ext", "list", True))
+        ns, _ = self.parse("ext", "add", r"C:\e\voice")
+        self.assertEqual((ns.action, ns.path), ("add", r"C:\e\voice"))
+        for action in ("remove", "load", "stop", "check"):
+            ns, _ = self.parse("ext", action, "voice")
+            self.assertEqual((ns.action, ns.id), (action, "voice"))
+        ns, _ = self.parse("ext", "set", "voice", "--off", "--option", "volume=80", "--option", "name=小明")
+        self.assertEqual((ns.enabled, ns.option), (False, ["volume=80", "name=小明"]))
+        self.assertEqual(dict(map(cli.option_value, ns.option)), {"volume": 80, "name": "小明"})
+        ns, _ = self.parse("ext", "set", "voice", "--on")
+        self.assertIs(ns.enabled, True)
+        ns, _ = self.parse("ext", "set", "voice")
+        self.assertIsNone(ns.enabled)
+        ns, _ = self.parse("ext", "new", "voice", "--title", "声音", "--folder", r"C:\e\v")
+        self.assertEqual((ns.id, ns.title, ns.folder), ("voice", "声音", r"C:\e\v"))
+        ns, _ = self.parse("ext", "logs", "voice", "-f", "--since", "5", "--limit", "50")
+        self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "voice", True, 5, 50))
+        for argv in (("ext",), ("ext", "begin"), ("ext", "load"), ("ext", "set", "v", "--on", "--off"),
+                     ("program", "list")):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.parse(*argv)
+        with self.assertRaises(ValueError):
+            cli.option_value("novalue")
 
-    def test_program_logs_follow_a_new_start(self):
-        """`wuxian program logs -f`: the new lines as they come; another start's from its first line, said once"""
-        row = dict(id="talk", state="running", started=100.0, exit_code=None, exited_at=None)
+    def test_wk_and_reaction(self):
+        ns, _ = self.parse("wk", "voice.say", '{"text": "hi"}', "--timeout-ms", "5000")
+        self.assertEqual((ns.command, ns.cap, ns.args, ns.timeout_ms), ("wk", "voice.say", '{"text": "hi"}', 5000))
+        ns, _ = self.parse("reaction", "set", '{"hear": "game:combat", "call": "voice.play"}')
+        self.assertEqual((ns.action, json.loads(ns.spec)["call"]), ("set", "voice.play"))
+        ns, _ = self.parse("reaction", "clear", "--owner", "companion")
+        self.assertEqual((ns.id, ns.owner), (None, "companion"))
+
+        class Client:
+            def __init__(self):
+                self.asked = []
+
+            def local_call(self, cap, args, timeout_ms):
+                self.asked.append((cap, args, timeout_ms))
+                return {"result": {"seconds": 1.5}}
+
+            def reactions(self):
+                return {"reactions": [dict(id="r1", hear="game:combat", call="voice.play", owner="companion",
+                                           fired=2, error="not heard: away")]}
+
+            def reaction_clear(self, id, owner):
+                self.asked.append(("clear", id, owner))
+                return {"cleared": 3}
+
+        c, out = Client(), io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_wk(c, self.parse("wk", "voice.say", '{"text": "hi"}')[0]), 0)
+            self.assertEqual(cli.cmd_reaction(c, self.parse("reaction", "list")[0]), 0)
+            self.assertEqual(cli.cmd_reaction(c, self.parse("reaction", "clear")[0]), 0)
+        self.assertEqual(c.asked, [("voice.say", {"text": "hi"}, 30000), ("clear", None, None)])
+        lines = out.getvalue().splitlines()
+        self.assertEqual(json.loads("\n".join(lines[:3])), {"seconds": 1.5})
+        self.assertEqual(lines[3:], ["r1: game:combat -> voice.play (owner companion), fired 2; error: not heard: away",
+                                     "cleared 3"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.cmd_wk(c, self.parse("wk", "voice.say", "{bad")[0]), 2)
+
+    def test_ext_logs_follow(self):
+        """`wuxian ext logs -f`: the new lines as they come; a file moved aside said once, its new lines from the
+        first"""
+        row = dict(id="voice", state="running")
         answers = [
             dict(lines=[dict(n=1, text="a"), dict(n=2, text="b")], next=3, total=2, reset=False, cut=False, row=row),
-            dict(lines=[dict(n=3, text="c")], next=4, total=3, reset=False, cut=False, row=row),
-            dict(lines=[], next=1, total=0, reset=False, cut=False, row=dict(row, started=200.0)),   # started again
-            dict(lines=[dict(n=1, text="new")], next=2, total=1, reset=False, cut=False, row=dict(row, started=200.0)),
+            dict(lines=[], next=3, total=2, reset=False, cut=False, row=row),
+            dict(lines=[dict(n=1, text="new")], next=2, total=1, reset=True, cut=False, row=row),
         ]
         asked = []
 
         class Client:
-            def program_logs(self, pid, since, limit):
-                asked.append((pid, since, limit))
+            def extension_logs(self, eid, since, limit):
+                asked.append((eid, since, limit))
                 if not answers:
                     raise KeyboardInterrupt                   # Ctrl+C ends it
                 return answers.pop(0)
 
-        ns, _ = self.parse("program", "logs", "talk", "-f")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), mock.patch.object(cli.time, "sleep"):
-            self.assertEqual(cli.cmd_program(Client(), ns), 0)
-        self.assertEqual(out.getvalue().splitlines()[:3], ["a", "b", "c"])
-        self.assertTrue(out.getvalue().splitlines()[3].startswith("-- started again at "))
-        self.assertEqual(out.getvalue().splitlines()[4:], ["new"])
-        self.assertEqual([since for _, since, _ in asked], [0, 3, 4, 1, 2])
+        ns, _ = self.parse("ext", "logs", "voice", "-f")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(cli.time, "sleep"):
+            self.assertEqual(cli.cmd_ext(Client(), ns), 0)
+        self.assertEqual(out.getvalue().splitlines(), ["a", "b", "new"])
+        self.assertIn("moved to output.1.log", err.getvalue())
+        self.assertEqual([since for _, since, _ in asked], [0, 3, 3, 2])
 
     def test_app_goes_to_the_shell(self):
         with mock.patch.object(cli, "run_shell", return_value=0) as shell:

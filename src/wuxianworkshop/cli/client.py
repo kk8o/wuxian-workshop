@@ -22,6 +22,8 @@ from ..paths import logs_dir
 START_TIMEOUT = 30.0         # the desktop program takes longer than `serve` to come up (WebView2, the tray)
 
 
+START_WAIT = 200    # seconds a call of a local extension may wait for it to start (initialize: 180 s) on top of its own
+LOAD_WAIT = 330     # seconds extension_load / extension_check may take: a start (180 s) and its tests (120 s)
 AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
                     # (service.PIECE_WAIT), and a piece may wait out its timeout before that
 WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
@@ -175,27 +177,50 @@ class DaemonClient:
     def new_addon(self, name, title=None, notes="", template="basic"):
         return self.post("/api/new_addon", name=name, title=title, notes=notes, template=template)
 
-    def programs(self):
-        return self.get("/api/programs")
+    # the local extensions (local/host.py): a start may wait for initialize (180 s), a load for that and the tests
 
-    def program_add(self, path):
-        return self.request("POST", "/api/programs/add", body=dict(path=path), timeout=60)   # post(path=...) is the route
+    def local_extensions(self):
+        return self.get("/api/local")
 
-    def program_remove(self, id):
-        return self.post("/api/programs/remove", id=id, timeout=60)
+    def extension_add(self, path):
+        return self.request("POST", "/api/local/add", body=dict(path=path), timeout=60)   # post(path=...) is the route
 
-    def program_start(self, id, restart=False):
-        # a restart may wait for the program to end by itself (service.STOP_GRACE), then for its tree to be ended
-        return self.post("/api/programs/start", id=id, restart=restart, timeout=60)
+    def extension_remove(self, id):
+        return self.post("/api/local/remove", id=id, timeout=60)
 
-    def program_stop(self, id):
-        return self.post("/api/programs/stop", id=id, timeout=60)
+    def extension_load(self, id):
+        return self.post("/api/local/load", id=id, timeout=LOAD_WAIT)
 
-    def program_logs(self, id, since=0, limit=200):
-        return self.get("/api/programs/logs", id=id, since=since, limit=limit)
+    def extension_stop(self, id):
+        return self.post("/api/local/stop", id=id, timeout=60)
 
-    def new_program(self, path, id, title=None, app=True):
-        return self.request("POST", "/api/programs/new", body=dict(path=path, id=id, title=title, app=app), timeout=60)
+    def extension_set(self, id, enabled=None, options=None):
+        return self.post("/api/local/set", id=id, enabled=enabled, options=options, timeout=60)
+
+    def extension_check(self, id):
+        return self.post("/api/local/check", id=id, timeout=LOAD_WAIT)
+
+    def new_extension(self, id, title=None, folder=None):
+        return self.post("/api/local/new", id=id, title=title, folder=folder, timeout=60)
+
+    def extension_logs(self, id, since=0, limit=200):
+        return self.get("/api/local/logs", id=id, since=since, limit=limit)
+
+    def local_manifest(self):
+        return self.get("/api/local/manifest")
+
+    def local_call(self, cap, args=None, timeout_ms=30000, caller=None):
+        wait = 600 + START_WAIT        # the daemon times the call out itself: the longer of timeout_ms and the capability's own
+        return self.post("/api/local/call", cap=cap, args=args, timeout_ms=timeout_ms, caller=caller, timeout=wait)
+
+    def reactions(self):
+        return self.get("/api/reactions")
+
+    def reaction_set(self, spec):
+        return self.request("POST", "/api/reactions/set", body=spec, timeout=60)
+
+    def reaction_clear(self, id=None, owner=None):
+        return self.post("/api/reactions/clear", id=id, owner=owner)
 
     def update(self, action=None, background=False):
         if action is None:

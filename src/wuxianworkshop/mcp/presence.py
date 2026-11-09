@@ -61,13 +61,21 @@ class Presence:
                 record["calls"] += 1
         result = await call_next(ctx)
         if ctx.method == "tools/list" and isinstance(result, dict) and isinstance(result.get("tools"), list):
-            given = sum(1 for t in result["tools"] if isinstance(t, dict) and str(t.get("name", "")).startswith(PREFIX))
+            given = sum(1 for t in result["tools"] if isinstance(t, dict) and self.counts(str(t.get("name", ""))))
             more = isinstance(ctx.params, dict) and ctx.params.get("cursor")       # a later page adds to the first
             manifest = getattr(self.kit, "manifest", None) or {}
             with self.lock:
                 record["tools"] = (record["tools"] or 0) + given if more else given
                 record["revision"], record["listed"] = manifest.get("revision"), time.time()
         return result
+
+    def counts(self, name):
+        """whether a listed tool is one of the game's WuxianKit tools: the KitTools' own (a local extension's wk_ tools
+        are not: an agent of a game without WuxianKit has them too); without a KitTools, any wk_ tool"""
+        kit_tools = getattr(self.kit, "tools", None)
+        if kit_tools is None:
+            return name.startswith(PREFIX)
+        return name in {getattr(t, "name", None) for t in kit_tools}
 
     def prune(self, now):
         """(under the lock) an HTTP client idle IDLE seconds is no longer listed; a stdio process's one agent stays"""

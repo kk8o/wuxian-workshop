@@ -49,7 +49,7 @@ SNAP_TYPES = {"png": "image/png", "jpg": "image/jpeg"}
 STATUS_EVERY = 2.0                 # seconds between the status events of /api/events, whether entries come or not
 STARTUP_WAIT = 15.0
 MCP_AFTER = 4.0                    # seconds the App's daemon waits to build its MCP server: the window and its page first
-PROGRAMS_CHANGED = {"kind": "programs"}   # what /api/events queues when the programs changed: `event: programs`
+LOCAL_CHANGED = {"kind": "local"}         # what /api/events queues when the local extensions changed: `event: local`
 UI_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
             ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".txt": "text/plain"}
 
@@ -332,7 +332,8 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def events(request):
         """SSE: the log entries from ?since= on as `event: log`, the status every 2 s as `event: status`, and
-        `event: programs` (no data) whenever a program was added, removed, started or ended: GET /api/programs again"""
+        `event: local` {revision, extensions: [row]} whenever the local extensions changed (one added, removed, started,
+        stopped, ended, or described anew)"""
         since = int_param(request, "since", 0)
         kinds = request.query_params.get("kinds")
         kinds = {k.strip().upper() for k in kinds.split(",") if k.strip()} if kinds else None
@@ -340,7 +341,7 @@ def make_app(service, access, handle, mcp=None):
         queue = asyncio.Queue(maxsize=1000)
 
         def push(entry):
-            if kinds and entry is not PROGRAMS_CHANGED and entry["kind"] not in kinds:
+            if kinds and entry is not LOCAL_CHANGED and entry["kind"] not in kinds:
                 return
             if queue.full():                       # a slow reader loses its oldest entries, nobody else waits
                 try:
@@ -350,7 +351,7 @@ def make_app(service, access, handle, mcp=None):
             queue.put_nowait(entry)
 
         unsubscribe = service.journal.subscribe(loop, push)
-        unsubscribe_programs = service.loader.subscribe(loop, lambda: push(PROGRAMS_CHANGED))
+        unsubscribe_local = service.local.subscribe(loop, lambda: push(LOCAL_CHANGED))
 
         async def stream():
             last = since - 1
@@ -377,8 +378,8 @@ def make_app(service, access, handle, mcp=None):
                     if entry is None:
                         continue
                     while True:
-                        if entry is PROGRAMS_CHANGED:
-                            yield sse("programs", {})
+                        if entry is LOCAL_CHANGED:
+                            yield sse("local", await service.local_extensions())
                         elif entry["id"] > last:       # not one the backlog above already carried
                             last = entry["id"]
                             yield sse("log", entry)
@@ -388,7 +389,7 @@ def make_app(service, access, handle, mcp=None):
                             break
             finally:
                 unsubscribe()
-                unsubscribe_programs()
+                unsubscribe_local()
 
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -543,35 +544,67 @@ def make_app(service, access, handle, mcp=None):
         return service.mcp_report(await body_of(request))
 
     @api
-    async def programs_(request):
-        return await service.programs()       # [row]
+    async def local_(request):
+        return await service.local_extensions()
 
     @api
-    async def program_add(request):
-        return await service.program_add((await body_of(request)).get("path"))
+    async def local_add(request):
+        return await service.extension_add((await body_of(request)).get("path"))
 
     @api
-    async def program_remove(request):
-        return await service.program_remove((await body_of(request)).get("id"))
+    async def local_remove(request):
+        return await service.extension_remove((await body_of(request)).get("id"))
 
     @api
-    async def program_start(request):
+    async def local_load(request):
+        return await service.extension_load((await body_of(request)).get("id"))
+
+    @api
+    async def local_stop(request):
+        return await service.extension_stop((await body_of(request)).get("id"))
+
+    @api
+    async def local_set(request):
         b = await body_of(request)
-        return await service.program_start(b.get("id"), b.get("restart", False))
+        return await service.extension_set(b.get("id"), b.get("enabled"), b.get("options"))
 
     @api
-    async def program_stop(request):
-        return await service.program_stop((await body_of(request)).get("id"))
-
-    @api
-    async def program_logs(request):
-        return await service.program_logs(request.query_params.get("id"), int_param(request, "since", 0),
-                                          int_param(request, "limit", 200))
-
-    @api
-    async def new_program(request):
+    async def local_check(request):
         b = await body_of(request)
-        return await service.new_program(b.get("path"), b.get("id"), b.get("title"), b.get("app", True))
+        return await service.extension_check(b.get("id") if b.get("id") is not None else b.get("path"))
+
+    @api
+    async def local_new(request):
+        b = await body_of(request)
+        return await service.new_extension(b.get("id"), b.get("title"), b.get("folder"))
+
+    @api
+    async def local_logs(request):
+        return await service.extension_logs(request.query_params.get("id"), int_param(request, "since", 0),
+                                            int_param(request, "limit", 200))
+
+    @api
+    async def local_manifest(request):
+        return await service.local_manifest()
+
+    @api
+    async def local_call(request):
+        b = await body_of(request)
+        return await service.local_call(b.get("cap"), b.get("args"), b.get("timeout_ms", 30000), b.get("caller"))
+
+    @api
+    async def reactions_(request):
+        return await service.reactions()
+
+    @api
+    async def reaction_set(request):
+        b = await body_of(request)
+        return await service.reaction_set(b.get("spec") if "spec" in b else b)
+
+    @api
+    async def reaction_clear(request):
+        b = await body_of(request)
+        return await service.reaction_clear(b.get("id"), b.get("owner"))
 
     @api
     async def history_(request):
@@ -626,13 +659,20 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/kit/apps", kit_apps, methods=["GET"]),
         Route("/api/mcp/report", mcp_report, methods=["POST"]),
         Route("/api/check", check, methods=["POST"]),
-        Route("/api/programs", programs_, methods=["GET"]),
-        Route("/api/programs/add", program_add, methods=["POST"]),
-        Route("/api/programs/remove", program_remove, methods=["POST"]),
-        Route("/api/programs/start", program_start, methods=["POST"]),
-        Route("/api/programs/stop", program_stop, methods=["POST"]),
-        Route("/api/programs/logs", program_logs, methods=["GET"]),
-        Route("/api/programs/new", new_program, methods=["POST"]),
+        Route("/api/local", local_, methods=["GET"]),
+        Route("/api/local/add", local_add, methods=["POST"]),
+        Route("/api/local/remove", local_remove, methods=["POST"]),
+        Route("/api/local/load", local_load, methods=["POST"]),
+        Route("/api/local/stop", local_stop, methods=["POST"]),
+        Route("/api/local/set", local_set, methods=["POST"]),
+        Route("/api/local/check", local_check, methods=["POST"]),
+        Route("/api/local/new", local_new, methods=["POST"]),
+        Route("/api/local/logs", local_logs, methods=["GET"]),
+        Route("/api/local/manifest", local_manifest, methods=["GET"]),
+        Route("/api/local/call", local_call, methods=["POST"]),
+        Route("/api/reactions", reactions_, methods=["GET"]),
+        Route("/api/reactions/set", reaction_set, methods=["POST"]),
+        Route("/api/reactions/clear", reaction_clear, methods=["POST"]),
         Route("/api/try", try_, methods=["POST"]),
     ]
     if mcp is not None:
@@ -745,7 +785,7 @@ class DaemonHandle:
             self._cleanup()
             raise RuntimeError(f"the HTTP server did not start: {self.error!r}")
         write_daemon_json(self.info())
-        self.service.loop = self.loop          # the lifespan set it: the programs' work from the game's events goes there
+        self.service.loop = self.loop          # the lifespan set it: the local side's work from the game's events goes there
         self.service.start()
         if self.mcp is not None:
             self.mcp.start(MCP_AFTER if self.window else 0)
