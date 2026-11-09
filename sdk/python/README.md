@@ -99,4 +99,4 @@ for wake in app:                                       # 一直等到下一个�
 
 ## 测试
 
-随 SDK 的 `test_sdk.py`：假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等。
+工坊仓库的 `tests/sdk/test_sdk.py`：假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等。

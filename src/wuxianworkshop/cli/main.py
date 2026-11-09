@@ -467,7 +467,8 @@ def cmd_listen(client, args):
     line {id, t, topic, data}, NEXT <id> after each batch of them. OPEN <status> when it opened (again after a login or
     a reload: kit.ready), END <why> when it stopped (kit.app with on = false; a replaced one goes on), NEXT <id> and
     TIMEOUT after --max. While it runs, kit.app.status is its heartbeat every max(30, lease / 3) s. Failures go to
-    stderr (each once until it changes) and are tried again every RETRY s"""
+    stderr (each once until it changes) and are tried again every RETRY s. With --since N what came after N is read
+    first, so that an app stopped since then ends (END) instead of being opened again"""
     app = args.app
     if not APP_ID.match(app):
         say_error("app: lowercase letters, digits and _, at most 24 (the id WuxianKit knows it by)")
@@ -491,6 +492,7 @@ def cmd_listen(client, args):
     deadline = None if limit is None else clock() + max(1.0, limit)
     since, opened, every, beat, retry = args.since, False, None, None, clock()
     replace, said, wide = args.replace, None, False
+    caught_up = since < 0                    # --since N: what came after N first (a stop there ends it, not a re-open)
 
     def out(line):
         print(line, flush=True)
@@ -552,7 +554,7 @@ def cmd_listen(client, args):
         try:
             if since < 0:                     # -1: from now on; the id now, so that nothing after the open is missed
                 since = ask(-1, 0)["next"]
-            if not opened and now >= retry:
+            if not opened and caught_up and now >= retry:
                 status = ensure()
                 if status is None:
                     retry = clock() + RETRY
@@ -568,7 +570,7 @@ def cmd_listen(client, args):
                     kit("kit.app.status", {"app": app})
                 except ApiError as e:
                     failed("kit.app.status", e)
-            wait = 25.0
+            wait = 25.0 if caught_up else 0.0
             for at in (deadline, beat if opened else retry):
                 if at is not None:
                     wait = min(wait, at - clock())
@@ -578,6 +580,7 @@ def cmd_listen(client, args):
             sleep(RETRY)
             continue
         since, woke = res["next"], False
+        caught_up = caught_up or not res.get("truncated")
         for e in res["events"]:
             data = e.get("data") if isinstance(e.get("data"), dict) else {}
             if e.get("topic") == topic:

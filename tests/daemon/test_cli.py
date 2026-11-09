@@ -236,6 +236,21 @@ class Listen(unittest.TestCase):
         self.assertEqual(game.now, 1120.0)
         self.assertEqual(game.asks[0][1], 42)                          # from --since on, not from now
 
+    def test_since_reads_first(self):
+        """--since N: what came after N is read before anything is opened, so that an app the player stopped between
+        two `listen --once` ends (END) instead of being opened again"""
+        game = Game([(0, "app.guild", {"reason": "item", "items": []}),
+                     (0, "kit.app", {"app": "guild", "on": False, "why": "player"})])
+        code, lines, _ = self.listen(game, "guild", "--since", "100", "--once")
+        self.assertEqual((code, lines[1:]), (0, ["NEXT 102", "END player"]))
+        self.assertEqual(game.calls, [])
+        self.assertEqual(game.asks[0][1:], (100, 0.0))
+        game = Game([(0, "app.guild", {"reason": "item", "items": []})], running=True)   # running: its wake, then join
+        code, lines, _ = self.listen(game, "guild", "--since", "100", "--max", "10")
+        self.assertEqual((code, lines[0].startswith("{"), lines[1]), (0, True, "NEXT 101"))
+        self.assertTrue(lines[2].startswith("OPEN {"))
+        self.assertEqual([c[0] for c in game.calls], ["kit.app.status"])
+
     def test_the_game_away_while_it_waits(self):
         """the open is tried every 5 s until the game answers (the error said once); --max may end it first"""
         game = Game(down=1000)
