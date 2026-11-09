@@ -1204,8 +1204,7 @@
               <div x-t class="agent-row app-row" :class="a.on === true ? 'st-ok' : ''">
                 <div class="agent-main">
                   <div class="agent-head"><b x-text="appTitle(a)"></b><span class="pill" x-show="appPill(a)" :class="appPill(a) && appPill(a)[0]" x-text="appPill(a) && appPill(a)[1]"></span></div>
-                  <div class="small muted" x-show="a.skill && a.skill.description" x-text="a.skill && a.skill.description"></div>
-                  <p class="small warn-text" x-show="a.blocked" x-text="t('开不了：{why}', { why: a.blocked })"></p>
+                  <p class="small warn-text" x-show="a.blocked" x-text="a.blocked"></p>
                   <ul class="checks mini">
                     <template x-for="c in appChecks(a)" :key="c.id">
                       <li class="check" :class="c.ok === true ? 'ok' : c.ok === false ? 'bad' : 'skip'">
