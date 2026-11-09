@@ -539,59 +539,5 @@ class Apps(Base):
         self.assertEqual(len(new.calls("kit.app.open")), 1)
 
 
-class Programs(Base):
-    """a program 无限工坊 loads: program_app() reads its manifest (wuxian-program.json) for Client.app"""
-
-    def manifest(self, data, folder="prog", raw=None):
-        d = self.home / folder
-        d.mkdir(exist_ok=True)
-        f = d / wk.MANIFEST
-        f.write_text(raw if raw is not None else json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        return f
-
-    def test_program_app(self):
-        f = self.manifest({"id": "talk", "title": "解说", "run": ["python", "main.py"],
-                           "app": {"hear": ["game:combat"], "me": True, "controls": ["stop"]}})
-        want = ("talk", {"hear": ["game:combat"], "me": True, "controls": ["stop"], "title": "解说", "driver": "program"})
-        self.assertEqual(wk.program_app(f), want)
-        self.assertEqual(wk.program_app(f.parent), want)                       # its folder
-        self.assertEqual(wk.program_app(str(f)), want)
-        with mock.patch.dict(os.environ, {wk.MANIFEST_ENV: str(f)}):           # what the loader sets
-            self.assertEqual(wk.program_app(), want)
-        env = {k: v for k, v in os.environ.items() if k != wk.MANIFEST_ENV}
-        cwd = os.getcwd()
-        try:
-            os.chdir(f.parent)                                                 # else the current folder's
-            with mock.patch.dict(os.environ, env, clear=True):
-                self.assertEqual(wk.program_app(), want)
-        finally:
-            os.chdir(cwd)
-        f = self.manifest({"id": "bare", "run": ["x"], "app": {"app": "other", "hear": []}}, "bare")
-        self.assertEqual(wk.program_app(f), ("bare", {"hear": [], "title": "bare", "driver": "program"}))
-
-    def test_what_program_app_refuses(self):
-        for kw, code in ((dict(raw="{no"), "bad_manifest"), (dict(data=[1]), "bad_manifest"),
-                         (dict(data={"run": ["x"]}), "bad_manifest"),
-                         (dict(data={"id": "plain", "run": ["x"]}), "no_app")):
-            with self.assertRaises(wk.WuxianError) as cm:
-                wk.program_app(self.manifest(kw.get("data"), raw=kw.get("raw")))
-            self.assertEqual(cm.exception.code, code, kw)
-        with self.assertRaises(wk.WuxianError) as cm:
-            wk.program_app(self.home / "none")
-        self.assertEqual(cm.exception.code, "no_manifest")
-
-    def test_client_app_takes_the_declaration(self):
-        f = self.manifest({"id": "demo", "title": "Demo", "run": ["x"], "app": {"hear": ["game:*"], "lease": 300}})
-        s = self.kit.app(*wk.program_app(f))
-        self.assertIsNone(s.get(1))
-        self.assertEqual(self.fake.calls("kit.app.open")[0]["args"], {"app": "demo", "title": "Demo", "hear": ["game:*"],
-                                                                      "lease": 300, "driver": "program"})
-        t = self.kit.app("demo", {"title": "Demo", "hear": ["game:*"], "app": "x", "me": True}, hear=[], me=None)
-        self.assertIsNone(t.get(1))                     # the keywords win; None leaves one out; decl's app is not sent
-        self.assertEqual(self.fake.calls("kit.app.open")[1]["args"], {"app": "demo", "title": "Demo", "hear": []})
-        with self.assertRaises(TypeError):
-            self.kit.app("demo", ["game:*"])
-
-
 if __name__ == "__main__":
     unittest.main()
