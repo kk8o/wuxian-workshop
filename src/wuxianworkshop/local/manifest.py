@@ -5,14 +5,23 @@ words are for the agent that writes the extension.
 
     {"id": "voice", "title": "声音", "version": "0.1.0", "notes": "...",
      "run": ["python", "-m", "voice"], "python": "tts/.venv/Scripts/python.exe", "env": {"K": "V"},
-     "start": "use" | "workshop", "docs": "AGENT.md", "skills": "skills", "apps": [{"app": "companion", ...}]}
+     "start": "use" | "workshop", "docs": "AGENT.md", "skills": "skills", "apps": [{"app": "companion", ...}],
+     "annotate": [{"app": "guild", "call": "facts.lookup", "wake": "wake", "timeout": 3}],
+     "extends": {"guild-chat": "skills/guild-chat.md"}}
 
-id: ^[a-z][a-z0-9_]{0,23}$, not a WuxianKit extension's (chat game route sense guide data tune gate codex guides) and not
+id:^[a-z][a-z0-9_]{0,23}$, not a WuxianKit extension's (chat game route sense guide data tune gate codex guides) and not
 local, wb or wk. title: at most 48 bytes. run: the argv, relative to the folder; a first item "python" is the manifest's
 `python` (relative to the folder), else the workshop's own interpreter. start: use (the default: started by the first
 call of one of its capabilities) or workshop (started with the daemon: a model to warm up). docs: default AGENT.md when
 there is one; skills: default skills/ when there is one. apps: kit.app.open's fields without temp, driver and launch; the
 daemon declares them (kit.app.declare) after every kit.ready.
+
+annotate: at most ANNOTATE_MOST notes the daemon adds to an app's wakes before they reach the journal; each {app (a
+WuxianKit app id, named: no wildcards), call (a see capability of this extension's own, <id>.<name>), wake (the
+argument the whole wake goes in, default "wake"), timeout (seconds, default 3, at most 10)}, one per app. That the call
+is a see capability it has is known once it described itself (annotate_problems). extends: skill name (a skill file's
+name, guild-chat: not the prompt an owner's id may prefix) -> a Markdown file in the extension's folder that wk_docs
+and the skill's prompt append to that skill.
 
 The description (initialize's answer): {protocol: 1, capabilities: [cap], sources: [src], options: [opt]};
 cap = {name, kind: see | keep | point, title, doc, args: {name: spec}, timeout?: seconds (default 30, at most 600)}; an
@@ -48,6 +57,12 @@ TIMEOUT_DEFAULT, TIMEOUT_MOST = 30, 600
 TEXT_MOST = 2000                       # characters of a text option's value
 NOT_IN_APP = ("temp", "driver", "launch")
 STARTS = ("use", "workshop")
+KIT_APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")   # an app id as WuxianKit writes it
+ANNOTATE_MOST = 8
+ANNOTATE_FIELDS = ("app", "call", "wake", "timeout")
+ANNOTATE_WAKE = "wake"
+ANNOTATE_TIMEOUT, ANNOTATE_TIMEOUT_MOST = 3.0, 10.0
+SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")   # as mcp/kit.py reads a skill's name
 
 
 class ManifestError(Exception):
@@ -97,8 +112,9 @@ def id_problem(value, where="id"):
 
 def check_manifest(path):
     """(manifest or None, problems) of an extension's folder (or its manifest file). The manifest as the host uses it:
-    {id, title, version, notes, run, python, env, start, docs, skills, apps, folder, file}; docs and skills absolute
-    paths or None, python an absolute path or None"""
+    {id, title, version, notes, run, python, env, start, docs, skills, apps, annotate, extends, folder, file}; docs and
+    skills absolute paths or None, python an absolute path or None, annotate [{app, call, wake, timeout}], extends
+    {skill: absolute path}"""
     folder, file = locate(path)
     where = MANIFEST
     out = []
@@ -120,7 +136,8 @@ def check_manifest(path):
     def field(name):
         return f"{where}: {name}"
 
-    known = {"id", "title", "version", "notes", "run", "python", "env", "start", "docs", "skills", "apps"}
+    known = {"id", "title", "version", "notes", "run", "python", "env", "start", "docs", "skills", "apps", "annotate",
+             "extends"}
     for name in sorted(set(d) - known):
         out.append(problem("warning", field(name), "this field means nothing to 无限工坊",
                            "the fields: " + ", ".join(sorted(known))))
@@ -176,11 +193,13 @@ def check_manifest(path):
         out.append(problem("warning", field("docs"), "there is no AGENT.md",
                            "write one: wk_docs {\"extension\": id} shows it to the agent before it uses the tools"))
     apps = check_apps(d.get("apps"), field("apps"), out)
+    annotate = check_annotate(d.get("annotate"), eid, field("annotate"), out)
+    extends = check_extends(d.get("extends"), folder, field("extends"), out)
     manifest = dict(id=eid, title=title, version=text_of(version, 32) if version is not None else None,
                     notes=text_of(notes, NOTES_MAX) if notes is not None else None, run=list(run or []),
                     python=str(python_path) if python_path is not None else None, env=dict(env), start=start,
                     docs=str(docs) if docs else None, skills=str(skills) if skills else None, apps=apps,
-                    folder=str(folder), file=str(file))
+                    annotate=annotate, extends=extends, folder=str(folder), file=str(file))
     return (None if errors_in(out) else manifest), out
 
 
@@ -239,6 +258,144 @@ def check_apps(apps, where, out):
         seen.add(aid)
         kept.append(dict(a, app=aid, title=title))
     return kept
+
+
+def check_annotate(annotate, eid, where, out):
+    """the manifest's annotate as the daemon uses it ([{app, call, wake, timeout}]); the bad ones are problems. Whether
+    call is a see capability the extension has waits for its description (annotate_problems)"""
+    if annotate is None:
+        return []
+    example = '[{"app": "guild", "call": "<id>.lookup"}]'
+    if not isinstance(annotate, list):
+        out.append(problem("error", where, "annotate is a list of the apps whose wakes it annotates", example))
+        return []
+    if len(annotate) > ANNOTATE_MOST:
+        out.append(problem("error", where, f"at most {ANNOTATE_MOST} annotations", "one per app it adds facts to"))
+        return []
+    own = eid if isinstance(eid, str) and ID.match(eid) else None
+    kept, seen = [], set()
+    for i, a in enumerate(annotate):
+        at = f"{where}[{i}]"
+        if not isinstance(a, dict):
+            out.append(problem("error", at, "an annotation is a JSON object", '{"app": "guild", "call": "<id>.lookup"}'))
+            continue
+        for name in sorted(set(a) - set(ANNOTATE_FIELDS)):
+            out.append(problem("warning", f"{at}.{name}", "this field means nothing to 无限工坊",
+                               "the fields: " + ", ".join(ANNOTATE_FIELDS)))
+        aid = a.get("app")
+        if not isinstance(aid, str) or not KIT_APP_ID.match(aid):
+            out.append(problem("error", f"{at}.app", f"{aid!r} is not an app id",
+                               "one app by its id (lowercase letters, digits and _, at most 24 characters), such as "
+                               "\"guild\"; no wildcards"))
+            continue
+        if aid in seen:
+            out.append(problem("error", f"{at}.app", f"the app {aid} is annotated twice",
+                               "one annotation per app: one capability that gives all its facts"))
+            continue
+        call = a.get("call")
+        name = call[len(own) + 1:] if own and isinstance(call, str) and call.startswith(own + ".") else None
+        if name is None or not CAP_NAME.match(name) or len(name) > CAP_NAME_MAX:
+            out.append(problem("error", f"{at}.call", f"{call!r} is no capability of this extension's own",
+                               f"\"{own or '<id>'}.<name>\": a see capability of this extension that reads the wake "
+                               "and answers its facts"))
+            continue
+        wake = a.get("wake", ANNOTATE_WAKE)
+        if wake is None:
+            wake = ANNOTATE_WAKE
+        if not isinstance(wake, str) or not ARG_NAME.match(wake):
+            out.append(problem("error", f"{at}.wake", f"{wake!r} is not an argument name",
+                               "the argument the whole wake goes in; leave it out for \"wake\""))
+            continue
+        timeout = a.get("timeout", ANNOTATE_TIMEOUT)
+        if timeout is None:
+            timeout = ANNOTATE_TIMEOUT
+        if not finite(timeout) or not 0 < timeout <= ANNOTATE_TIMEOUT_MOST:
+            out.append(problem("error", f"{at}.timeout", f"timeout is seconds, more than 0 and at most "
+                                                         f"{ANNOTATE_TIMEOUT_MOST:g}",
+                               "the wake waits that long for the note; leave it out for 3"))
+            continue
+        seen.add(aid)
+        kept.append(dict(app=aid, call=call, wake=wake, timeout=float(timeout)))
+    return kept
+
+
+def check_extends(extends, folder, where, out):
+    """the manifest's extends as the host uses it ({skill: absolute path}); a path that leaves the folder or is no path
+    is an error; a file that is not there or is no UTF-8 a warning (kept: the skill then says why it is missing)"""
+    if extends is None:
+        return {}
+    example = '{"guild-chat": "skills/guild-chat.md"}'
+    if not isinstance(extends, dict):
+        out.append(problem("error", where, "extends is an object, skill name -> a Markdown file in the extension folder",
+                           example))
+        return {}
+    base = Path(folder).resolve()
+    kept = {}
+    for skill, rel in sorted(extends.items()):
+        at = f"{where}.{skill}"
+        if not SKILL_NAME.match(skill):
+            out.append(problem("error", at, f"{skill!r} is not a skill name",
+                               "the name in the skill file (lowercase letters, digits and -), such as guild-chat; not "
+                               "the prompt name that may have an owner's id in front"))
+            continue
+        if not text_of(rel) or Path(rel).is_absolute() or Path(rel).drive:
+            out.append(problem("error", at, "the file is a path relative to the extension folder", example))
+            continue
+        p = (base / rel).resolve()
+        if base not in p.parents:
+            out.append(problem("error", at, f"{rel} is not in the extension folder",
+                               "keep the supplement in the extension's own folder, such as skills/<skill>.md"))
+            continue
+        if p.is_dir():
+            out.append(problem("error", at, f"{p} is a folder", "name a Markdown file"))
+            continue
+        try:
+            p.read_bytes().decode("utf-8-sig")
+        except FileNotFoundError:
+            out.append(problem("warning", at, f"there is no {p}", "write it, or leave the skill out of extends"))
+        except UnicodeDecodeError:
+            out.append(problem("warning", at, f"{p} is not UTF-8", "save it as UTF-8"))
+        except OSError as e:
+            out.append(problem("warning", at, f"{p} cannot be read: {e.strerror or e}", "check the file"))
+        kept[skill] = str(p)
+    return kept
+
+
+def annotate_problems(manifest, described):
+    """the problems of a manifest's annotate against what the extension last said of itself (described: its
+    description {capabilities: [{name, kind, args}]}, or None): each call a see capability it has, which takes the wake.
+    Before it described itself: a warning each"""
+    out = []
+    caps = {c.get("name"): c for c in (described or {}).get("capabilities") or [] if isinstance(c, dict)}
+    for i, a in enumerate((manifest or {}).get("annotate") or []):
+        at = f"{MANIFEST}: annotate[{i}].call"
+        name = a["call"].partition(".")[2]
+        if described is None:
+            out.append(problem("warning", at, f"{a['call']} is not checked yet: {manifest['id']} has not described "
+                                              "itself", "extension_load starts it; its capabilities are checked then"))
+            continue
+        cap = caps.get(name)
+        if cap is None:
+            out.append(problem("error", at, f"{manifest['id']} has no capability {a['call']}",
+                               "annotate calls a see capability of this extension's own: declare it, or fix the name"))
+        elif cap.get("kind") != "see":
+            out.append(problem("error", at, f"{a['call']} is a {cap.get('kind')} capability: an annotation only reads",
+                               "make it a see capability (it answers facts and changes nothing)"))
+        elif a["wake"] not in (cap.get("args") or {}):
+            out.append(problem("warning", at, f"{a['call']} takes no argument {a['wake']}: the wake goes in it",
+                               f"declare \"{a['wake']}\": \"table?\" in its args, or set wake to the argument that "
+                               "takes it"))
+    return out
+
+
+def annotation_ok(annotation, described):
+    """whether an annotation may be called: before the extension described itself yes (it starts on the call), after
+    only when its call is a see capability it has"""
+    if described is None:
+        return True
+    name = annotation["call"].partition(".")[2]
+    return any(isinstance(c, dict) and c.get("name") == name and c.get("kind") == "see"
+               for c in described.get("capabilities") or [])
 
 
 # --- the description: initialize's answer ----------------------------------------------------------------------------

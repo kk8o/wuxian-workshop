@@ -450,6 +450,7 @@ class Host:
         self.lines = {}               # output path -> Lines
         self.listeners = {}
         self.closing = False
+        self.annotate_cache = None    # (stamps, {app: [annotation]}): annotations() without reading every manifest
 
     # --- telling of changes
 
@@ -507,6 +508,7 @@ class Host:
 
     def save(self, data):
         write_json(self.registry, data)
+        self.annotate_cache = None
 
     @property
     def revision(self):
@@ -593,7 +595,9 @@ class Host:
                     capabilities=[c["id"] for c in desc.get("capabilities") or []],
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
-                    skills=self.skill_names((m or {}).get("skills")))
+                    skills=self.skill_names((m or {}).get("skills")),
+                    annotate=[dict(a) for a in (m or {}).get("annotate") or []],
+                    extends=sorted((m or {}).get("extends") or {}))
 
     def rows(self):
         with self.lock:
@@ -612,8 +616,8 @@ class Host:
     def manifest_entries(self):
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
         notes, state "on", runtime "local", path, docs, skills, capabilities: [{id, kind, title, doc, args, timeout}],
-        sources: [{name, title, doc}], options: [opt + value], apps: [declaration]}. One whose manifest cannot be read
-        now keeps what it described"""
+        sources: [{name, title, doc}], options: [opt + value], apps: [declaration], annotate: [{app, call, wake,
+        timeout}], extends: {skill: absolute path}}. One whose manifest cannot be read now keeps what it described"""
         out = []
         with self.lock:
             data = self.load()
@@ -630,7 +634,9 @@ class Host:
                             capabilities=[{k: c[k] for k in ("id", "kind", "title", "doc", "args", "timeout")}
                                           for c in desc.get("capabilities") or []],
                             sources=[dict(s) for s in desc.get("sources") or []], options=self.option_rows(e),
-                            apps=[dict(a) for a in (m or {}).get("apps") or []]))
+                            apps=[dict(a) for a in (m or {}).get("apps") or []],
+                            annotate=[dict(a) for a in (m or {}).get("annotate") or []],
+                            extends=dict((m or {}).get("extends") or {})))
         return dict(revision=int(data.get("revision") or 0), extensions=out)
 
     def declarations(self):
@@ -645,6 +651,64 @@ class Host:
                 here = {"id": e["id"], "title": m.get("title") or e["id"]}
                 out += [(e["id"], dict(a, local=dict(here))) for a in m["apps"]]
         return out
+
+    def enabled_manifests(self):
+        """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id)"""
+        out = []
+        for e in self.load()["extensions"]:
+            if e["enabled"]:
+                m, _ = M.check_manifest(e["path"])
+                if m is not None and m["id"] == e["id"]:
+                    out.append((e, m))
+        return out
+
+    def annotations(self, app):
+        """[{"ext": id, "call": "facts.lookup", "wake": "wake", "timeout": 3.0}] of the enabled extensions that annotate
+        app, by extension id; once an extension described itself, only a call that is a see capability it has. Called
+        for every wake of every app (the daemon's frame thread), so it is a table kept until the registry or an enabled
+        extension's manifest changes: a few stats, no reads, while nothing did"""
+        if not isinstance(app, str) or not app:
+            return []
+        return [dict(a) for a in self.annotation_table().get(app, [])]
+
+    @staticmethod
+    def stamp(path):
+        """(mtime_ns, size) of a file, or None when it is not there"""
+        try:
+            st = os.stat(path)
+        except (OSError, ValueError):
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def annotation_table(self):
+        """{app: [annotation]} of the enabled extensions, kept while the stamps of the registry and of the enabled
+        extensions' manifests stay (save() drops it at once)"""
+        with self.lock:
+            cache = self.annotate_cache
+            if cache is not None and all(self.stamp(path) == was for path, was in cache[0]):
+                return cache[1]
+            stamps = [(self.registry, self.stamp(self.registry))]
+            stamps += [(path, self.stamp(path)) for path in (M.locate(e["path"])[1] for e in self.load()["extensions"]
+                                                            if e["enabled"])]
+            table = {}
+            for e, m in self.enabled_manifests():
+                for a in m["annotate"]:
+                    if M.annotation_ok(a, e.get("described")):
+                        table.setdefault(a["app"], []).append(dict(ext=e["id"], call=a["call"], wake=a["wake"],
+                                                                   timeout=a["timeout"]))
+            for items in table.values():
+                items.sort(key=lambda a: a["ext"])
+            self.annotate_cache = (stamps, table)
+            return table
+
+    def extensions_of(self, skill):
+        """[{"ext": id, "title": title, "path": <absolute path of the Markdown>}] of the enabled extensions that extend
+        skill (a skill file's name), by extension id"""
+        if not isinstance(skill, str) or not skill:
+            return []
+        out = [dict(ext=e["id"], title=m.get("title") or e["id"], path=m["extends"][skill])
+               for e, m in self.enabled_manifests() if skill in m["extends"]]
+        return sorted(out, key=lambda x: x["ext"])
 
     def capability(self, cap_id):
         """(entry, the described capability or None) of a capability id whose extension is registered; None when no
@@ -1098,7 +1162,7 @@ class Host:
         tests folder) run with its Python"""
         e, folder = self.resolve(ident)
         m, problems = M.check_manifest(folder)
-        caps = []
+        caps, described = [], None
         if m is not None:
             other = next((x for x in self.load()["extensions"] if x["id"] == m["id"]
                           and os.path.normcase(x["path"]) != os.path.normcase(str(folder))), None)
@@ -1112,7 +1176,7 @@ class Host:
                 proc = self.spawn(m, out, on_message=self.check_message, on_end=lambda p: None)
                 desc, more = self.initialize(proc, m, dict((e or {}).get("options") or {}))
                 problems += more
-                caps = [c["id"] for c in desc["capabilities"]]
+                caps, described = [c["id"] for c in desc["capabilities"]], desc
             except Down as d:
                 problems += d.problems
                 lines = tail(out.path)
@@ -1126,6 +1190,8 @@ class Host:
                 if proc is not None:
                     proc.shutdown()
                 out.close()
+        if m is not None:
+            problems += M.annotate_problems(m, described if described is not None else (e or {}).get("described"))
         result = dict(ok=False, problems=problems, capabilities=caps)
         if m is not None:
             tests = self.run_tests(m)
@@ -1199,6 +1265,7 @@ class Host:
                                               "a traceback says what went wrong"))
             except ApiError as a:
                 problems.append(M.problem("error", "start", a.message, ""))
+            problems += M.annotate_problems(m, self.entry(eid).get("described"))
         check = dict(ok=False, problems=problems, capabilities=caps)
         if m is not None:
             tests = self.run_tests(m)

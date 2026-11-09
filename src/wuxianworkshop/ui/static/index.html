@@ -867,6 +867,7 @@
                   <dt x-show="(lxCur.sources || []).length">事件来源</dt><dd x-show="(lxCur.sources || []).length" class="mono" x-text="(lxCur.sources || []).map((n) => lxCur.id + ':' + n).join('  ')"></dd>
                   <dt x-show="(lxCur.apps || []).length">应用</dt><dd x-show="(lxCur.apps || []).length" class="mono" x-text="(lxCur.apps || []).join('  ')"></dd>
                   <dt x-show="(lxCur.skills || []).length">Agent 技能</dt><dd x-show="(lxCur.skills || []).length" class="mono" x-text="(lxCur.skills || []).join('  ')"></dd>
+                  <dt x-show="lxAdds(lxCur)">补充</dt><dd x-show="lxAdds(lxCur)" x-text="lxAdds(lxCur)"></dd>
                   <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
                 </dl>
                 <div x-show="lxCheck">

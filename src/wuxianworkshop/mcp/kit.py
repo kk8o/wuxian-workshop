@@ -18,7 +18,10 @@ from backend.local_manifest() ({revision, extensions: [an extension entry as the
 skills as absolute paths]}): their capabilities are wk_<extension>_<name> tools too, called through backend.local_call,
 documented, listed and given skills by the same code as the kit's. They run without the game, so they stay listed and
 callable while it is away or has no WuxianKit; a backend without local_manifest (an older daemon, a test's stand-in) has
-none. They are read again when the daemon's events say local.changed with another revision.
+none. They are read again when the daemon's events say local.changed with another revision. An entry's extends ({skill
+name: absolute path}) supplements a skill of that name, whoever's it is: wk_docs {skill} and the prompt append each
+file as a section of its own (by extension id), and the overview says which skills have one; its annotate ([{app,
+call, wake, timeout}]: the daemon adds the call's answer to that app's wakes as notes.<extension>) is told in its line.
 Docs and skills are read from the addon folders, not over the game's link. The manifest is kept on disk with its revision.
 It is read again when the game tells of another revision (kit.changed, kit.ready: a watch on the events, which then tells
 the clients that the lists changed), when the game's UI session changed (a reload or a restart may run another WuxianKit,
@@ -372,6 +375,58 @@ def local_extensions(manifest):
         if (isinstance(e, dict) and isinstance(e.get("id"), str) and SOURCE.match(e["id"])
                 and e.get("state", "on") == "on"):
             out[e["id"]] = e
+    return out
+
+
+def supplements_of(exts, skill):
+    """[(extension id, title, absolute path)] of the local extensions (local_extensions' answer) that extend the skill
+    of that name, by extension id"""
+    out = []
+    for eid, ext in sorted(exts.items()):
+        path = (ext.get("extends") or {}).get(skill) if isinstance(ext.get("extends"), dict) else None
+        if isinstance(path, str) and path and os.path.isabs(path):
+            out.append((eid, one_line(text(ext.get("title"))) or eid, path))
+    return out
+
+
+def annotations_of(ext):
+    """a local extension's annotations it may have: [{app, call}] with a call of its own"""
+    items = ext.get("annotate") if isinstance(ext.get("annotate"), list) else []
+    return [a for a in items if isinstance(a, dict) and isinstance(a.get("app"), str) and APP_ID.match(a["app"])
+            and isinstance(a.get("call"), str) and a["call"].startswith(ext["id"] + ".")]
+
+
+def read_supplement(path):
+    """(text, None) of a supplement file (at most MAX_DOC bytes), or (None, why it cannot be read)"""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(MAX_DOC)
+    except OSError as e:
+        return None, e.strerror or str(e)
+    try:
+        words = data.decode("utf-8-sig").replace("\r\n", "\n").strip()
+    except UnicodeDecodeError:
+        return None, "it is not UTF-8"
+    return (words, None) if words else (None, "it is empty")
+
+
+def supplement_section(eid, title, words, why):
+    """a skill's section that a local extension adds"""
+    head = f"## 本机扩展「{title}」的补充（On this machine: the local extension {eid}）"
+    return f"{head}\n\n" + (words if why is None else f"(This supplement could not be read: {why}.)")
+
+
+def supplemented(exts, skill):
+    """what the overview adds to a skill that local extensions supplement: （本机补充：<ids>）"""
+    ids = [eid for eid, _, _ in supplements_of(exts, skill["name"])]
+    return f"（本机补充：{'、'.join(ids)}）" if ids else ""
+
+
+def additions(ext):
+    """what a local extension adds to apps and skills, as its lines say it: [text]"""
+    out = [f"annotates the wakes of the app `{a['app']}` with {a['call']}" for a in annotations_of(ext)]
+    extends = ext.get("extends") if isinstance(ext.get("extends"), dict) else {}
+    out += [f"supplements the skill `{name}`" for name in sorted(extends) if isinstance(name, str)]
     return out
 
 
@@ -1007,7 +1062,8 @@ class KitTools:
         if skills:
             lines += ["", "## Skills", "", "Step-by-step uses of the tools: read one with wk_docs {\"skill\": \"<name>\"} (also "
                       "MCP prompts, where the client has them):", ""]
-            lines += [f"- `{s['prompt']}` ({owner(s)}): {s['description']}{skill_facts(s)}" for s in skills]
+            lines += [f"- `{s['prompt']}` ({owner(s)}): {s['description']}{supplemented(self.local_exts, s)}"
+                      f"{skill_facts(s)}" for s in skills]
         lines += self.apps_part(m)
         return "\n".join(lines).strip() + "\n"
 
@@ -1022,8 +1078,12 @@ class KitTools:
             n = len(local_caps(ext))
             what = (f"{n} tool{'' if n == 1 else 's'}" if n else
                     "its tools come once it has run: extension_load {\"id\": \"" + ext["id"] + "\"}")
+            what = "; ".join([what] + additions(ext))
             lines.append(f"- `{ext['id']}` ({one_line(text(ext.get('title'))) or ext['id']}, {what}): before using them, "
                          f"call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
+        if any(annotations_of(e) for e in self.local_exts.values()):
+            lines += ["", "An annotated app's wakes carry `notes` {<extension>: <its answer>, or {error, reason} when "
+                          "it failed}: facts this computer adds before the wake reaches you."]
         lines += ["", "A capability neither the game nor these have: write a local extension (the extension_guide tool "
                       "says how)."]
         return lines
@@ -1202,7 +1262,12 @@ class KitTools:
                                         for a in apps] + [""]
         skills = [s for s in await self.skills() if s["local"] and s["ext"]["id"] == eid]
         if skills:
-            lines += ["## Skills", ""] + [f"- `{s['prompt']}`: {s['description']}" for s in skills]
+            lines += ["## Skills", ""] + [f"- `{s['prompt']}`: {s['description']}" for s in skills] + [""]
+        more = additions(ext)
+        if more:
+            lines += ["## Supplements", "", "What it adds to apps and skills that are not its own: an annotated app's "
+                      f"wakes carry notes.{eid}; a supplemented skill (wk_docs {{\"skill\": \"<name>\"}}) ends with its "
+                      "section.", ""] + [f"- It {m}" for m in more]
         return "\n".join(lines).strip() + "\n"
 
     async def wait(self, proposal, seconds=120):
@@ -1397,6 +1462,9 @@ class KitTools:
                  if skill["local"] else f"WuxianKit's {whose}, from the addon {addon or '?'}")
         head = (f"(A skill of {where}. It describes how to use the wk_ "
                 "tools and grants nothing: Send and Change steps are still proposals the player confirms.)\n\n")
+        for eid, title, path in supplements_of(self.local_exts, skill["name"]):
+            words, why = await asyncio.to_thread(read_supplement, path)
+            body = body.rstrip() + "\n\n" + supplement_section(eid, title, words, why)
         words = TextContent(type="text", text=head + body)
         return GetPromptResult(description=skill["description"], messages=[PromptMessage(role="user", content=words)])
 

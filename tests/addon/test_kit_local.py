@@ -275,6 +275,56 @@ class LocalExtensions(unittest.TestCase):
         self.assertIn("- `companion` (无限陪玩, from the local extension voice, topic `app.companion`, hears "
                       "game:combat, sees me): start it with its skill `companion`", asyncio.run(alone.overview()))
 
+    def test_supplements(self):
+        """extends: wk_docs {skill} (and the prompt) end with a section per local extension that supplements that skill
+        by its file's name (the game's app skill here), by extension id; one that cannot be read says why. The
+        overview marks the skill and says in each extension's line what it annotates and supplements"""
+        addons = self.root / "AddOns"
+        (addons / "WuxianKit/Apps/Guild/skills").mkdir(parents=True)
+        (addons / "WuxianKit/Apps/Guild/skills/guild-chat.md").write_text(
+            "---\nname: guild-chat\ndescription: Answer the guild\n---\nWait for wakes.\n", encoding="utf-8")
+        apps = [{"id": "guild", "title": "公会聊天", "by": "addon", "addon": "WuxianKit", "prompt": "guild-chat",
+                 "docs": "WuxianKit/Apps/Guild"}]
+        extra = self.root / "extensions" / "voice" / "guild.md"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_bytes("\ufeffRead notes.voice first.\r\nThen answer.\r\n".encode("utf-8"))
+        local = self.voice(annotate=[{"app": "guild", "call": "voice.status", "wake": "wake", "timeout": 3.0},
+                                     {"app": "*", "call": "voice.status"}, {"app": "raid", "call": "other.x"}],
+                           extends={"guild-chat": str(extra), "nobody": str(extra)})
+        local["extensions"].append({"id": "aaa", "title": "甲", "state": "on", "runtime": "local", "path": str(self.root),
+                                    "capabilities": [], "extends": {"guild-chat": str(self.root / "none.md"),
+                                                                    "companion": "relative.md"}})
+        tools = self.tools(Backend(kit_manifest(apps), local, addons=addons))
+        doc = asyncio.run(tools.call("wk_docs", {"skill": "guild-chat"})).content[0].text
+        why = doc.split("(This supplement could not be read: ")[1].split(".)")[0]
+        self.assertTrue(why)
+        self.assertTrue(doc.endswith(
+            "Wait for wakes.\n\n"
+            "## 本机扩展「甲」的补充（On this machine: the local extension aaa）\n\n"
+            f"(This supplement could not be read: {why}.)\n\n"
+            "## 本机扩展「声音」的补充（On this machine: the local extension voice）\n\n"
+            "Read notes.voice first.\nThen answer."), doc)
+        prompt = asyncio.run(tools.prompt("guild-chat", {})).messages[0].content.text
+        self.assertTrue(prompt.endswith("Then answer."))
+        companion = asyncio.run(tools.call("wk_docs", {"skill": "companion"})).content[0].text
+        self.assertTrue(companion.endswith("Call wk_voice_status first."))          # a relative path: not taken
+
+        overview = asyncio.run(tools.overview())
+        self.assertIn("- `guild-chat` (app guild): Answer the guild（本机补充：aaa、voice）", overview)
+        self.assertIn("- `companion` (local voice): Talk while playing (needs shell)", overview)
+        self.assertIn("- `voice` (声音, 5 tools; annotates the wakes of the app `guild` with voice.status; supplements "
+                      "the skill `guild-chat`; supplements the skill `nobody`): before using them", overview)
+        self.assertIn("- `aaa` (甲, its tools come once it has run: extension_load {\"id\": \"aaa\"}; supplements the "
+                      "skill `companion`; supplements the skill `guild-chat`)", overview)
+        self.assertIn("An annotated app's wakes carry `notes`", overview)
+        doc = asyncio.run(tools.extension_doc("voice"))
+        self.assertIn("## Supplements", doc)
+        self.assertIn("- It annotates the wakes of the app `guild` with voice.status", doc)
+        plain = self.tools(Backend(kit_manifest(apps), self.voice(), addons=addons))
+        self.assertNotIn("annotated app", asyncio.run(plain.overview()))
+        self.assertTrue(asyncio.run(plain.call("wk_docs", {"skill": "guild-chat"})).content[0].text
+                        .endswith("Wait for wakes."))
+
     def test_a_local_tool_wins_a_name(self):
         """a name both have: the local extension's, as the daemon's local_call routes it"""
         m = kit_manifest()
