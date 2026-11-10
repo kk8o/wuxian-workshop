@@ -583,6 +583,7 @@ pre.diff .hunk { color: var(--sky); }
 .mgroup .btn { align-self: stretch; display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .mgroup .btn svg.ico { width: 11px; height: 11px; }
 .lx-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xp-where { flex: none; font-size: 10.5px; line-height: 15px; padding: 0 5px; border-radius: 3px; background: var(--panel2); color: var(--muted); }
 .lx-empty { padding: 8px 14px 10px; }
 .lx-empty p { margin: 0 0 8px; }
 .kv dd.lx-game { gap: 6px 12px; }

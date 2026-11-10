@@ -210,7 +210,7 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(set(d), {"kit", "kit_state", "kit_addon", "servers", "program", "now"})
         self.assertEqual((d["kit_state"], set(d["kit_addon"])), ("running", {"there", "version"}))
         custom = [e for e in d["kit"]["extensions"] if not e["builtin"]]
-        self.assertEqual([(e["id"], e["addon"]) for e in custom], [("eui", "WuxianKit_EllesmereUI")])
+        self.assertEqual([(e["id"], e["addon"]) for e in custom], [("eui", "WuxianKit_EllesmereUI"), ("herald", "WuxianHeraldSkin")])
 
     def test_check(self):
         """agent/lint.py's shape, which the 插件 page's 检查 reads"""

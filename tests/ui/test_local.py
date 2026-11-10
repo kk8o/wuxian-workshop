@@ -299,7 +299,7 @@ class LocalPart(unittest.TestCase):
     def test_the_one_selected(self):
         s = self.out["sel"]
         self.assertEqual((s["kind"], s["title"], s["tag"], s["line"], s["tab"], s["cur"]),
-                         ("local", "声音", "本机扩展", "voice · 0.1.0", "info", "voice"))
+                         ("local", "声音", "本机", "voice · 0.1.0", "info", "voice"))
         self.assertRegex(s["started"], r" · 已运行 2 分钟$")
         self.assertEqual(s["start"], "首次调用时启动")
         self.assertEqual(s["caps"], [{"id": "voice.say", "name": "wk_voice_say", "title": "说一句", "kind": "point"},
@@ -386,7 +386,7 @@ class Template(unittest.TestCase):
         return self.html[start:self.html.index("<!-- Agent 会话 -->", start)]
 
     def test_calls_exist(self):
-        start = self.html.index('<div class="mgroup"><span>本机扩展</span>')
+        start = self.html.index('<span>已添加</span>')
         part = self.part() + self.html[start:self.html.index('<div class="master-foot">', start)]
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', part))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t", "in", "String"}

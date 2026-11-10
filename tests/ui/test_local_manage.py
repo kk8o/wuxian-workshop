@@ -316,7 +316,8 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   Object.assign(st.lxn, { id: ' my_tool ', title: '', addon: ' MyTool ' });
   calls.length = 0;
   await st.lxNew();
-  out.created = { posts: posts(), sel: st.xp.sel, said: last(st), dialog: st.lxn.open,
+  out.created = { posts: posts(), sel: st.xp.sel, said: last(st), dialog: st.lxn.open, result: copyOf(st.lxn.result),
+                  prompt: st.lxPrompt(st.lxn.result), detailPrompt: st.lxPrompt(st.lxCur),
                   addons: st.lxCur.addons.map((a) => [a.folder, st.lxAddonState(a)]), will: st.lxWillInstall(st.lxCur) };
   st.lxNewOpen();
   Object.assign(st.lxn, { id: 'named', title: ' 有名字 ', addon: '' });
@@ -486,13 +487,22 @@ class Manage(unittest.TestCase):
 
     def test_new(self):
         o = self.out
-        self.assertEqual(o["newOpen"], [{"open": True, "id": "", "title": "", "addon": "", "busy": False, "error": ""}, ""])
+        self.assertEqual(o["newOpen"], [{"open": True, "id": "", "title": "", "addon": "", "busy": False, "error": "",
+                                         "result": None}, ""])
         c = o["created"]
         self.assertEqual(c["posts"], [["/api/local/new", {"id": "my_tool", "addon": "MyTool"}]])
-        self.assertEqual((c["sel"], c["said"], c["dialog"]), ("l:my_tool", "已创建 my_tool", False))
+        self.assertEqual((c["sel"], c["said"], c["dialog"]), ("l:my_tool", "已创建 my_tool", True))   # it shows what next
+        r = c["result"]
+        self.assertEqual((r["id"], r["addon"]), ("my_tool", "MyTool"))
+        self.assertTrue(r["path"])
+        self.assertTrue(c["prompt"].startswith("请先读 " + r["path"] + "\\AGENT.md 和 extension_guide。"), c["prompt"])
+        self.assertIn("在本机扩展 my_tool 里实现：（在这里写你想要的功能）", c["prompt"])
+        self.assertIn("wk_my_tool_", c["prompt"])
+        self.assertIn("游戏插件在 addons\\MyTool：", c["prompt"])
+        self.assertEqual(c["detailPrompt"], c["prompt"])        # 更多 · 复制给 Agent 的第一句话 says the same of its row
         self.assertEqual((c["addons"], c["will"]), ([["MyTool", "未安装"]], "MyTool"))
         self.assertEqual(o["createdNamed"], [[["/api/local/new", {"id": "named", "title": "有名字"}]], "有名字"])
-        self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "busy": False,
+        self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "busy": False, "result": None,
                                              "error": "标识已被占用，请先移除同名扩展"})
         self.assertEqual(o["createNothing"], 0)
 
@@ -519,38 +529,40 @@ class Page(unittest.TestCase):
         self.js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
         self.css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
         self.i18n = (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")
-        start = self.html.index('<div class="mgroup"><span>本机扩展</span>')
+        start = self.html.index('<span>已添加</span>')
         self.master = self.html[start:self.html.index('<div class="master-foot">', start)]
+        start = self.html.index("<section class=\"page\" x-t x-show=\"page === 'extensions'\">")
+        self.bar = self.html[start:self.html.index('<div class="pagebody', start)]
         start = self.html.index("<!-- 本机扩展：")
         self.detail = self.html[start:self.html.index("<!-- Agent 会话 -->", start)]
         start = self.html.index("<!-- 本机扩展 · 添加（对话框）")
         self.dialogs = self.html[start:self.html.index("</section>", start)]
 
-    def test_the_group_head(self):
-        head = self.master[:self.master.index('<ul class="mlist">')]
+    def test_the_page_bar(self):                # 添加 and the folder are the page's, in its bar
+        head = self.bar
         self.assertIn('<span class="menu-wrap" @click.outside="lxMenuClose(\'add\')">', head)
         self.assertIn('@click="lxMenu(\'add\')"><svg class="ico"><use href="#i-plus"/></svg>添加</button>', head)
-        self.assertIn('<div class="menu right" x-ref="lxAddMenu" x-show="lx.menu === \'add\'"', head)
-        self.assertIn("const m = this.$refs.lxAddMenu;", self.js)   # the group may be the list's last: its menu comes into view
+        self.assertIn('<div class="menu right" x-show="lx.menu === \'add\'"', head)
         items = re.findall(r'<button class="menu-item" @click="(\w+)\(\)">([^<]+)</button>', head)
         self.assertEqual(items, [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
-        self.assertIn('x-show="lx.home" :title="t(\'扩展文件夹\') + t(\'：\') + lx.home" :aria-label="t(\'扩展文件夹\')" '
-                      '@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg></button>', head)
+        self.assertIn('x-show="lx.home" :title="t(\'扩展文件夹\') + t(\'：\') + lx.home" '
+                      '@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg>扩展文件夹</button>', head)
         self.assertNotIn("扩展目录", head)                           # 扩展目录 is the catalog on this page: the folder has its own word
+        self.assertNotIn("lxAdd", self.master[:self.master.index('<ul class="mlist">')])
         self.assertIn(".mgroup > span:first-child { flex: none; white-space: nowrap;", self.css)
 
     def test_a_row(self):
         row = self.master[self.master.index('<li class="mitem line"'):self.master.index("</li>")]
         sub = row[row.index('<div class="mitem-sub">'):]
-        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-show="r.origin === \'linked\'" x-text="lxOrigin(r)"></span>',
-                      'x-show="r.author" x-text="r.author"'):
+        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-show="r.linked" x-text="r.linked"></span>',
+                      'x-show="r.author" x-text="r.author"', '<span class="xp-where" :title="r.tip" x-text="r.where"></span>'):
             self.assertIn(piece, sub)
         self.assertNotRegex(row, r">[^<]*[\u4e00-\u9fff][^<]*<")   # a row's words come through x-text (no x-t on it)
 
     def test_nothing_yet(self):
         empty = self.master[self.master.index('<div class="lx-empty"'):]
-        self.assertIn('x-show="lx.list && !lx.list.length && !lx.error"', empty)
-        self.assertIn("暂无本机扩展。", empty)
+        self.assertIn('x-show="lx.list && !xpInstalled.length && !lx.error"', empty)
+        self.assertIn("尚未添加扩展。", empty)
         self.assertEqual(re.findall(r'<button class="btn small" @click="(\w+)\(\)">([^<]+)</button>', empty),
                          [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
         self.assertNotIn("new_extension", self.master)
@@ -562,6 +574,7 @@ class Page(unittest.TestCase):
         self.assertIn("t('更多')", menu)
         self.assertIn('@click="lxOpen(lxCur.path)" x-text="canOpen ? t(\'打开文件夹\') : t(\'文件夹路径\')"', menu)
         self.assertIn('@click="lxPack(lxCur)">打包</button>', menu)
+        self.assertIn('<button class="menu-item" @click="lxCopyPrompt(lxCur)">复制给 Agent 的第一句话</button>', menu)
         self.assertIn('<button class="menu-item bad" :disabled="lx.busy !== \'\'" @click="lxDrop(lxCur)">移除</button>', menu)
         confirm = d[d.index('<div class="xp-confirm" x-show="lx.drop && lx.drop === lxCur.id">'):]
         confirm = confirm[:confirm.index("</div>")]
@@ -624,7 +637,9 @@ class Page(unittest.TestCase):
     def test_calls_exist(self):
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', self.dialogs))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t"}
-        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy"})
+        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen"})
+        for name in names - {"copy"}:
+            self.assertRegex(self.js, r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, name)
         for name in names | {"lxMenu", "lxMenuClose", "lxAddFolder", "lxAddPackage", "lxNewOpen", "lxOpenHome", "lxOpen",
                              "lxPack", "lxDrop", "lxDropLine", "lxRemove", "lxInstall", "lxOrigin", "lxUnmet", "lxBlocked",
                              "lxAddonState", "lxAddonPill", "lxGameAct", "lxWillInstall", "lxRestart"}:
@@ -643,7 +658,8 @@ class Page(unittest.TestCase):
             self.assertIn("\n" + rule, self.css)
 
     def test_the_words_have_their_english(self):
-        for word in ("添加", "链接文件夹", "安装扩展包", "新建扩展", "扩展文件夹", "暂无本机扩展。", "链接", "主页", "游戏插件",
+        for word in ("添加", "链接文件夹", "安装扩展包", "新建扩展", "扩展文件夹", "尚未添加扩展。", "再建一个",
+                     "首次运行前需要批准：关闭此窗口后，在详情中点「允许运行」。", "链接", "主页", "游戏插件",
                      "有更新", "同名插件已存在", "游戏目录未知", "重启游戏后生效", "同时安装游戏插件：{names}",
                      "需要无限工坊 {v} 以上", "需要 WuxianKit {v} 以上", "版本不足", "更多", "打包", "移除", "确认移除",
                      "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",

@@ -538,6 +538,8 @@ class Fake:
                                                  title="读取设置"),
                                             dict(name="wk_eui_layout_tidy", cap="eui.layout.tidy", kind="do", label="Change",
                                                  title="整理布局")]))
+        exts.append(dict(id="herald", title="播报", version="0.1.4", addon="WuxianHeraldSkin", builtin=False, state="on",
+                         tools=[dict(name="wk_herald_show", cap="herald.show", kind="point", label="Guide", title="显示播报")]))
         exts[0]["tools"] += [dict(name=n, cap=None, kind=None, label=lab, title=t) for n, lab, t in (
             ("wk_docs", "Read", "WuxianKit docs"), ("wk_wait", "Read", "Wait for a proposal"),
             ("wk_propose", "Proposal", "One proposal of several steps"))]

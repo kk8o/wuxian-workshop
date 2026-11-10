@@ -773,6 +773,39 @@ function appState() {
       }
       return rows;
     },
+    get xpInstalled() {                        // 已添加, by title: the custom extensions in the game and the local ones; a local
+      const joined = new Set();                //   extension and what the game runs from its game addons are one row
+      const rows = (this.lx.list || []).map((r) => {
+        const mods = this.lxGameMods(r);
+        mods.forEach((m) => joined.add(m.id));
+        const game = mods.length ? this.xpJoin(mods) : null, st = this.lxState(r);
+        return { key: 'l:' + r.id, title: this.lxTitle(r), aside: r.id, where: this.lxWhere(r), tip: this.lxWhereTip(r),
+          version: r.version || '',
+          linked: r.origin === 'linked' ? this.lxOrigin(r) : '', author: r.author || '',
+          pill: { text: st.text, cls: st.cls || 'off' }, count: (r.capabilities || []).length + (game ? game.count : 0) };
+      });
+      for (const c of this.xpCustom) {         // a package not in the game folder is in 扩展目录; one run from a local one's addon, its row
+        if ((c.pkg && !c.pkg.there && !c.mod) || (!c.pkg && joined.has(c.mod.id))) continue;
+        rows.push({ key: c.key, title: c.title, aside: '', where: t('游戏'), tip: t('由游戏插件提供，在游戏中运行'), version: this.xpVersionOf(c),
+          linked: '', author: '',
+          pill: this.xpBadge(c), count: c.count });
+      }
+      const lang = this.lang === 'en' ? 'en' : 'zh-CN';
+      return rows.sort((a, b) => a.title.localeCompare(b.title, lang));
+    },
+    get xpAvailable() {                        // 扩展目录: the catalog's packages not in the game folder (nor run there)
+      return this.xpCustom.filter((c) => c.pkg && !c.pkg.there && !c.mod);
+    },
+    lxGameMods(r) {                            // the extensions of WuxianKit the game runs from a local extension's game addons
+      const folders = ((r && r.addons) || []).map((a) => a.folder);
+      return folders.length ? this.xpMods.filter((m) => !m.builtin && folders.includes(m.addon)) : [];
+    },
+    lxWhere(r) {                               // where it runs: 本机, or 游戏 · 本机 when it brings game addons
+      return r && (r.addons || []).length ? t('游戏') + ' · ' + t('本机') : t('本机');
+    },
+    lxWhereTip(r) {                            // the tooltip of lxWhere
+      return r && (r.addons || []).length ? t('包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行') : t('在这台电脑上运行，不需要游戏');
+    },
     xpJoin(mods) {                             // the extensions of one addon as one: their tools together, on while one is
       if (mods.length === 1) return mods[0];
       const tools = mods.flatMap((m) => m.tools || []);
@@ -828,16 +861,20 @@ function appState() {
       const s = this.xp.sel;                   //   extension id>, sessions)
       if (s === 'sessions') return { kind: 'sessions' };
       const l = this.selLx;
-      if (l) return { kind: 'local', title: this.lxTitle(l), tag: t('本机扩展'), line: this.lxLine(l), pkg: null, mod: null,
-        count: 0, confirm: 0, tools: null, notes: '' };
+      if (l) {                                 // mod: what the game runs from its game addons (the 能力 tab lists it too)
+        const mods = this.lxGameMods(l), game = mods.length ? this.xpJoin(mods) : null;
+        return { kind: 'local', title: this.lxTitle(l), tag: this.lxWhere(l), tip: this.lxWhereTip(l), line: this.lxLine(l),
+          pkg: null, mod: game,
+          count: game ? game.count : 0, confirm: game ? game.confirm : 0, tools: game ? game.tools : null, notes: '' };
+      }
       const m = s.startsWith('x:') && this.xpSys.find((x) => 'x:' + x.id === s);
-      if (m) return { kind: 'sys', title: m.title, tag: t('系统扩展'), line: m.id + (m.version ? ' · ' + m.version : ''),
+      if (m) return { kind: 'sys', title: m.title, tag: t('内置'), tip: t('随扩展框架提供，在游戏中运行，不能单独移除'), line: m.id + (m.version ? ' · ' + m.version : ''),
         pkg: null, mod: m, count: m.count, confirm: m.confirm, tools: m.tools, notes: '' };
       const c = this.xpCustom.find((r) => r.key === s);       // else the framework (also for a row that has gone)
       const p = c ? c.pkg : this.xpPkg, mod = c ? c.mod : null, k = this.xpRunning;
       const missing = (p && p.missing) || [];
       return {
-        kind: c ? 'custom' : 'kit', title: c ? c.title : (p ? this.loc(p.title) : t('扩展框架')), tag: c ? t('自定义扩展') : '',
+        kind: c ? 'custom' : 'kit', title: c ? c.title : (p ? this.loc(p.title) : t('扩展框架')), tag: c ? t('游戏') : '', tip: c ? t('由游戏插件提供，在游戏中运行') : '',
         line: p ? p.folder + ' · ' + this.xpVersion(p)
           : mod ? (mod.addon || mod.id) + (mod.version ? ' · ' + mod.version : '') : 'WuxianKit' + (k ? ' · ' + k.version : ''),
         pkg: p, mod, count: c ? c.count : this.xpTools.n, confirm: c ? (mod ? mod.confirm : 0) : this.xpTools.confirm,
@@ -889,7 +926,7 @@ function appState() {
     },
     get xpExtLine() {                          // the framework's 扩展
       const custom = this.xpCustom.filter((c) => c.mod || (c.pkg && c.pkg.there)).length;
-      return t('{a} 个系统扩展 · {b} 个自定义扩展', { a: this.xpSys.length, b: custom });
+      return t('{a} 个内置扩展 · {b} 个来自其他插件', { a: this.xpSys.length, b: custom });
     },
     get xpToolsLine() {                        // the Agent 工具 of the one selected: how many, how many the player confirms
       const sel = this.xpSel;
@@ -1540,12 +1577,20 @@ function appState() {
     // ---- 本机 · 管理: 添加 (链接文件夹 / 安装扩展包 / 新建扩展), 扩展文件夹, and of the one shown 打开文件夹 / 打包 / 移除 and
     //      its 游戏插件. The folders and files are picked through the shell (pywebview's pick_folder / pick_file) and opened
     //      by it (open_folder, which opens only what the page lists); in a browser the path is typed (lxa) or shown (lxp)
-    lxMenu(which) {                            // 'add' (the group's) | 'more' (the detail's)
+    lxMenu(which) {                            // 'add' (the page bar's) | 'more' (the detail's)
       this.lx.menu = this.lx.menu === which ? '' : which;
-      if (this.lx.menu !== 'add') return;      // the group may be the last thing the list shows: its menu comes into view
-      this.$nextTick(() => { const m = this.$refs.lxAddMenu; if (m && m.scrollIntoView) m.scrollIntoView({ block: 'nearest' }); });
     },
     lxMenuClose(which) { if (this.lx.menu === which) this.lx.menu = ''; },
+    lxPrompt(r) {                              // the first thing to tell the agent about a local extension (as promptFor of an addon)
+      if (!r || !r.id) return '';
+      const addon = r.addon || (((r.addons || [])[0] || {}).folder) || '';
+      return t('请先读 {path}\\AGENT.md 和 extension_guide。然后在本机扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id })
+        + (addon ? t('游戏插件在 addons\\{addon}：extension_load 会把它装进游戏，新插件完整重启游戏后才会出现，在那之前可以用 load 热加载。', { addon }) : '');
+    },
+    lxCopyPrompt(r) {
+      this.lx.menu = '';
+      this.copy(this.lxPrompt(r), t('给 Agent 的第一句话'));
+    },
     lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('扩展文件夹'); },   // where its folder is
     lxBlocked(r) { return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop'); },    // this workshop is too old for it
     lxUnmet(r) {                               // what it requires and is not there, as one line ('' when all is)
@@ -1696,19 +1741,22 @@ function appState() {
     lxAddSubmit() { return this.lxAdd(this.lxa.path, this.lxa.kind); },
     lxNewOpen() {
       this.lx.menu = '';
-      this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '' };
+      this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '', result: null };
     },
-    async lxNew() {                            // POST /api/local/new {id, title?, addon?} -> its row (or {row, …}), selected
-      const id = this.lxn.id.trim(), title = this.lxn.title.trim(), addon = this.lxn.addon.trim();
-      if (!id || this.lxn.busy) return;
+    async lxNew() {                            // POST /api/local/new {id, title?, addon?} -> {row, files, guide}, selected; the
+      const id = this.lxn.id.trim(), title = this.lxn.title.trim(), addon = this.lxn.addon.trim();   // dialog then shows
+      if (!id || this.lxn.busy) return;        //   what comes next (lxn.result), as 新建插件 does
       this.lxn.busy = true;
       this.lxn.error = '';
       try {
         const body = { id };
         if (title) body.title = title;
         if (addon) body.addon = addon;
-        const row = lxRowOf(await this.api('/api/local/new', { body }));
-        this.lxn = { open: false, id: '', title: '', addon: '', busy: false, error: '' };
+        const d = await this.api('/api/local/new', { body }), row = lxRowOf(d);
+        const path = (row && row.path) || '';
+        const files = ((d && d.files) || []).map((f) => (path && f.startsWith(path) ? f.slice(path.length + 1) : f));
+        this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '',
+          result: { id, path, files, addon, needs: !!row && row.approval === 'needed' } };
         if (row) { this.lxRow(row); this.xpSelect('l:' + row.id); } else await this.loadLocal(true);
         this.say(t('已创建 {name}', { name: row ? this.lxTitle(row) : id }));
       } catch (e) {
