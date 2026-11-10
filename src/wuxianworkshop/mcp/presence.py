@@ -5,13 +5,22 @@ which WuxianKit manifest. On the 2026-07-28 wire a connection lasts one request 
 not a connection: a stdio server serves one agent, its process one record (single); the daemon's /mcp (HTTP) keeps one
 per client name and version, until it has been idle IDLE seconds. On stdio, server.Reporter sends the records to the
 daemon now and then (POST /api/mcp/report) with what the process is and serves; the daemon's own /mcp server is read in
-place (Service.agent_access)."""
+place (Service.agent_access).
+
+Presence also keeps what each MCP session registered itself: the ids of the local extensions it made or added
+(new_extension, extension_add). An agent may set the options of those and of no others (server.extension_set). A session
+is the stdio process; over HTTP a handshake-era connection, or on the 2026-07-28 wire (no connection outlives a request)
+the client's name and version: two clients of one name and version share theirs there."""
+import contextvars
 import threading
 import time
+import weakref
 
 from mcp_types import CLIENT_INFO_META_KEY
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 PREFIX = "wk_"                                         # WuxianKit's tools (mcp/kit.py)
+MINE = contextvars.ContextVar("wuxian_mcp_registered", default=None)       # what this request's session registered (a set)
 
 
 def client_of(ctx):
@@ -40,11 +49,59 @@ class Presence:
     def __init__(self, single=False):
         self.single, self.records, self.kit = single, {}, None
         self.lock = threading.Lock()                   # the reporter reads from its own thread
+        self.own = set()                               # single: what the one session registered
+        self.by_connection = weakref.WeakKeyDictionary()                   # HTTP, the handshake era: connection -> set
+        self.by_client = {}                            # HTTP, the 2026-07-28 wire: (name, version) -> set, while listed
 
     async def __call__(self, ctx, call_next):
         if ctx.request_id is None:                     # a notification: no envelope says who sent it
             return await call_next(ctx)
         client, now = client_of(ctx), time.time()
+        token = MINE.set(self.session(ctx, client))
+        try:
+            return await self.seen(ctx, call_next, client, now)
+        finally:
+            MINE.reset(token)
+
+    def session(self, ctx, client):
+        """the set of what this request's MCP session registered, or None: nothing says whose the request is"""
+        if self.single:
+            return self.own
+        if ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+            connection = getattr(ctx.session, "_connection", None)
+            if connection is None:
+                return None
+            try:
+                return self.by_connection.setdefault(connection, set())
+            except TypeError:                          # a connection that cannot be a weak key
+                return None
+        if client is None:
+            return None
+        with self.lock:
+            return self.by_client.setdefault((client["name"], client["version"]), set())
+
+    def mine(self):
+        return self.own if self.single else MINE.get()
+
+    def registered(self, eid):
+        """this request's session registered the local extension `eid` (new_extension, extension_add)"""
+        mine = self.mine()
+        if mine is not None and isinstance(eid, str):
+            mine.add(eid)
+
+    def removed(self, eid):
+        """the local extension `eid` is off the registry: no session's any more (another of that id is not theirs)"""
+        with self.lock:
+            sets = [self.own, *self.by_client.values(), *self.by_connection.values()]
+        for mine in sets:
+            mine.discard(eid)
+
+    def registers(self, eid):
+        """whether this request's session registered the local extension `eid` itself"""
+        mine = self.mine()
+        return mine is not None and eid in mine
+
+    async def seen(self, ctx, call_next, client, now):
         if client is None and not self.single and ctx.method not in ("tools/list", "tools/call"):
             return await call_next(ctx)                # a probe or a ping of nobody known: not an agent of its own
         key = "process" if self.single else (client["name"], client["version"]) if client else None
@@ -78,10 +135,12 @@ class Presence:
         return name in {getattr(t, "name", None) for t in kit_tools}
 
     def prune(self, now):
-        """(under the lock) an HTTP client idle IDLE seconds is no longer listed; a stdio process's one agent stays"""
+        """(under the lock) an HTTP client idle IDLE seconds is no longer listed, and what it registered is nobody's;
+        a stdio process's one agent stays"""
         if not self.single:
             for key in [k for k, r in self.records.items() if now - r["last"] > self.IDLE]:
                 del self.records[key]
+                self.by_client.pop(key, None)
 
     def view(self):
         """the agents, earliest first: {client {name, version} or None, protocol, first, last, calls, listed (when it

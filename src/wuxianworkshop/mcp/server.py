@@ -287,7 +287,28 @@ def build_server(backend, name="wuxian"):
         try:
             return await coro
         except ApiError as e:
+            if e.code == "needs_approval":             # only the player allows a local extension to run: say how
+                raise ToolError(f"{e.code}: {e.message} {kit_tools.APPROVE}") from None
             raise ToolError(f"{e.code}: {e.message}") from None
+
+    async def noted(answer):
+        """a local extension's row, {row, ...} or {extensions: [row]} as the agent gets it: where the player has to
+        allow an extension before it runs (approval needed / changed; never in developer mode, which allows them as
+        they start), `approval_note` says so and how"""
+        if not isinstance(answer, dict):
+            return answer
+        rows = answer.get("extensions") if isinstance(answer.get("extensions"), list) else None
+        row = answer.get("row") if isinstance(answer.get("row"), dict) else None
+        waiting = [r for r in (rows if rows is not None else [row or answer]) if kit_tools.approval_of(r)]
+        if not waiting or await kit_tools.mode_of(backend) == "developer":
+            return answer
+        if rows is not None:
+            names = ", ".join(f"{r.get('id')} ({kit_tools.APPROVALS[r['approval']]})" for r in waiting)
+            return dict(answer, approval_note=f"Not allowed to run yet: {names}. Their calls answer needs_approval. "
+                                              f"{kit_tools.APPROVE}")
+        note = (f"It may not run yet: {kit_tools.APPROVALS[waiting[0]['approval']]}, so its calls answer needs_approval. "
+                f"{kit_tools.APPROVE}")
+        return dict(answer, row=dict(row, approval_note=note)) if row is not None else dict(answer, approval_note=note)
 
     @mcp.tool(annotations=READ_ONLY)
     async def status() -> dict[str, Any]:
@@ -592,10 +613,12 @@ def build_server(backend, name="wuxian"):
     async def local_extensions() -> dict[str, Any]:
         """The local extensions registered with 无限工坊 (they run on this computer, outside the game), with revision
         (one more with every change). Each: id, title, version, path, enabled, start (use: it starts at its first call;
-        workshop: with 无限工坊), state (off, stopped, starting, running, exited: it ended by itself, see exit_code;
-        failed: see error), pid, capabilities (their wk_ tools: wk_<id>_<name>), sources, options (with value), apps,
-        skills."""
-        return await call(backend.local_extensions())
+        workshop: with 无限工坊), state (off, stopped, starting, running, hung: it answers nothing, its next call starts
+        it afresh; stopping, exited: it ended by itself; backoff: it failed to start, 无限工坊 tries again later) with
+        since and why, pid, command (what it runs), approval (ok; needed or changed: only the player allows it to run,
+        see approval_note), capabilities (their wk_ tools: wk_<id>_<name>), sources, options (with value), apps, skills,
+        adds (what it adds to apps: {app: {wake, skill}})."""
+        return await noted(await call(backend.local_extensions()))
 
     @mcp.tool(annotations=WRITES)
     async def new_extension(id: str, title: str | None = None, folder: str | None = None) -> dict[str, Any]:
@@ -603,27 +626,35 @@ def build_server(backend, name="wuxian"):
         id: lowercase letters, digits and _ (a letter first, 24 at most), not a WuxianKit extension's. folder: a full
         path (new or empty); default: the workshop's extensions folder. It writes wuxian-extension.json, main.py (a
         capability, an option, a source), AGENT.md and tests/. Read extension_guide first; then edit, extension_load,
-        call its wk_ tools, extension_logs."""
-        return await call(backend.new_extension(id, title, folder))
+        call its wk_ tools, extension_logs. A row with approval_note: the player has to allow it before it runs."""
+        answer = await call(backend.new_extension(id, title, folder))
+        row = answer.get("row") if isinstance(answer, dict) else None
+        presence.registered(row["id"] if isinstance(row, dict) and isinstance(row.get("id"), str) else id)
+        return await noted(answer)
 
     @mcp.tool(annotations=WRITES)
     async def extension_add(path: str) -> dict[str, Any]:
         """Register an existing local extension: the full path of its folder (or of its wuxian-extension.json). A
-        manifest that is not valid fails with its problems; an id another extension has is refused. Answers its row."""
-        return await call(backend.extension_add(path))
+        manifest that is not valid fails with its problems; an id another extension has is refused. Answers its row;
+        with approval_note, the player has to allow it before it runs."""
+        answer = await call(backend.extension_add(path))
+        presence.registered(answer.get("id") if isinstance(answer, dict) else None)
+        return await noted(answer)
 
     @mcp.tool(annotations=WRITES)
     async def extension_remove(id: str) -> dict[str, Any]:
         """Stop a local extension and take it off the registry; its folder and files stay."""
-        return await call(backend.extension_remove(id))
+        answer = await call(backend.extension_remove(id))
+        presence.removed(id)
+        return answer
 
     @mcp.tool(annotations=WRITES)
     async def extension_load(id: str) -> dict[str, Any]:
         """Check a local extension and (re)start it: after every change to its code or manifest. Answers {row,
         check}: check.ok, check.problems (each: level, where, message, hint; fix every error), check.capabilities,
         check.tests (its tests/ run with its Python: ran, failed, output). Then call its wk_ tools (list the tools
-        again if they are new)."""
-        return await call(backend.extension_load(id))
+        again if they are new). It fails with needs_approval until the player has allowed the extension to run."""
+        return await noted(await call(backend.extension_load(id)))
 
     @mcp.tool(annotations=WRITES)
     async def extension_stop(id: str) -> dict[str, Any]:
@@ -635,14 +666,23 @@ def build_server(backend, name="wuxian"):
     async def extension_set(id: str, enabled: bool | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Turn a local extension on or off (off: it stops and its tools go), or set some of its options by name
         (checked against what it declared; a running one is told at once). Example: {"id": "voice", "options":
-        {"volume": 80}}. Change options only when the player asks."""
-        return await call(backend.extension_set(id, enabled, options))
+        {"volume": 80}}. Options: only of an extension you registered in this session (new_extension, extension_add),
+        or in developer mode; any other answers not_allowed, the player sets those in the 无限工坊 App."""
+        if (options is not None and not presence.registers(id)
+                and await kit_tools.mode_of(backend) != "developer"):
+            raise ToolError(f"not_allowed: the options of {id} are the player's to set, on the Extensions (扩展) page of "
+                            "the 无限工坊 App: tell the player which option and which value. You set the options only "
+                            "of an extension you registered in this session (new_extension, extension_add). Turning "
+                            "one on or off (enabled) is not limited.")
+        return await noted(await call(backend.extension_set(id, enabled, options)))
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(annotations=WRITES)
     async def extension_check(id: str) -> dict[str, Any]:
         """Check a local extension without touching the running one: an id, or the full path of a folder that is not
-        registered yet. Its manifest, a start of its own (initialize: the capabilities, sources and options it
-        declares), its tests. Answers {ok, problems, capabilities, tests?}."""
+        registered yet. Its manifest, a start of its own (it runs the extension's command; initialize: the
+        capabilities, sources and options it declares), its tests (they run). Answers {ok, problems, capabilities,
+        tests?}. One the player has not allowed to run, and outside developer mode a folder that is not registered,
+        fails with needs_approval."""
         return await call(backend.extension_check(id))
 
     @mcp.tool(annotations=READ_ONLY)

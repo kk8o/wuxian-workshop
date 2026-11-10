@@ -521,6 +521,7 @@ class McpTools(unittest.TestCase):
         self.assertEqual([c for c in backend.calls if c not in watch],
                          [("status", ()), ("addon_api", ("WuxianKit", True)),  # not running: no call of it, no wk_ tools
                           ("local_manifest", ()),                              # an answer of another shape: none
+                          ("local_extensions", ()),                            # the registry's rows: the same
                           ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
                           ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                           ("respond", ("12.3", {"text": "x"}, 10000))])
@@ -1169,7 +1170,7 @@ class KitTools(unittest.TestCase):
 
     def test_the_overview_lists_the_apps(self):
         """WuxianKit 0.6's manifest has apps: the overview says how one with a prompt starts (its skill), how to wait
-        (`wuxian listen <id>`) and, where WuxianKit has kit.app.open, how to listen for a while through a temporary app,
+        (open it, then `wuxian listen <id> --once`, which only joins) and, where WuxianKit has kit.app.open, how to listen for a while through a temporary app,
         with the sources hear can name; then each app: id, title, temporary, who declared it, topic, what it hears, how it
         starts. Nothing of programs driving an app (an older WuxianKit's driver and launch are not read). The server's
         instructions stay as they were (they are read only up to 2,048 characters)"""
@@ -1202,17 +1203,20 @@ class KitTools(unittest.TestCase):
                       'steps', got)
         for word in ("program", "launch", "driven"):
             self.assertNotIn(word, got)
-        self.assertIn("run `wuxian listen <id>`", got)
-        self.assertIn('open a temporary app: wk_kit_app_open {"app": "<id>", "temp": true, "hear": '
-                      '["<source>:<what>"]}, then `wuxian listen <id>`.', got)
+        self.assertIn('To be woken: first open the app (wk_kit_app_open {"app": "<id>"}), then run `wuxian listen <id> '
+                      '--once`', got)
+        self.assertIn("listen only joins an app that runs and never opens one", got)
+        self.assertIn("run `wuxian listen <id> --once --since <next>` with the number after NEXT", got)
+        self.assertIn('open a temporary app: wk_kit_app_open {"app": "<id>", "temp": {"hear": ["<source>:<what>"]}} '
+                      '(`temp` is its whole declaration), then `wuxian listen <id> --once`.', got)
         self.assertIn("Each hear entry is `<source>:<what>`; the sources now: bus (extension kit), chat (extension "
                       "chat).", got)
         self.assertIn("- `guild` (公会 聊天, from the addon WuxianGuild, topic `app.guild`, hears chat:guild, game:guild): "
                       "start it with its skill `guild-chat`", got)
-        self.assertIn("- `companion` (无限陪玩, declared by an agent, topic `app.companion`, hears game:combat): wait with "
-                      "`wuxian listen companion`", got)
-        self.assertIn("- `peek` (Peek, temporary, declared by an agent, topic `app.peek`, hears chat:guild): wait with "
-                      "`wuxian listen peek`", got)
+        self.assertIn("- `companion` (无限陪玩, declared by an agent, topic `app.companion`, hears game:combat): open it "
+                      '(wk_kit_app_open {"app": "companion"}), then wait with `wuxian listen companion --once`', got)
+        self.assertIn("- `peek` (Peek, temporary, declared by an agent, topic `app.peek`, hears chat:guild): open it "
+                      '(wk_kit_app_open {"app": "peek"}), then wait with `wuxian listen peek --once`', got)
         self.assertIn("- `raid_talk` (副本解说, declared by an agent, topic `app.raid_talk`): start it with its skill "
                       "`raid-talk`", got)
         self.assertNotIn("Bad Id", got)
