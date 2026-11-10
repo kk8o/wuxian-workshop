@@ -1,8 +1,8 @@
 """Local extensions over a real daemon (a FakeGame link; WuxianKit's calls answered here, tests/local/fixture_ext.py as
 the extension): the HTTP routes and their errors, SSE's `event: local`, local_call to a local extension and to the
 game's WuxianKit (see / keep / point only), an extension's own calls, its source's items as journal events, its apps
-declared after kit.ready, the reactions (a game source through the temporary app, a local source directly),
-new_extension, the MCP tools over /mcp and the command line."""
+declared (again after kit.ready only when they changed) and forgotten, the reactions (a game source through the
+temporary app, a local source directly), new_extension, the MCP tools over /mcp and the command line."""
 import asyncio
 import contextlib
 import io
@@ -31,10 +31,11 @@ KIT_MANIFEST = {"protocol": 1, "revision": "r1", "extensions": [
 
 
 class Kit:
-    """WuxianKit in the game as the daemon's Service calls it: what it was asked (calls), the answers of a kit 0.6"""
+    """WuxianKit in the game as the daemon's Service calls it: what it was asked (calls), the answers of a kit 0.7:
+    the apps it was told of (apps: id -> declaration), on: the ids that run"""
 
     def __init__(self, svc):
-        self.svc, self.calls = svc, []
+        self.svc, self.calls, self.apps, self.on = svc, [], {}, set()
 
     def emit(self, topic, data):
         self.svc.on_debug("EVENT", json.dumps({"a": "WuxianKit", "t": topic, "d": data}))
@@ -42,9 +43,21 @@ class Kit:
     async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
         self.calls.append((name, args))
         if name == "kit.app.declare":
+            result = {"app": args["app"], "changed": self.apps.get(args["app"]) != args}
+            self.apps[args["app"]] = json.loads(json.dumps(args))
+        elif name == "kit.apps":
+            result = [dict(id=app, on=app in self.on, local=decl.get("local")) for app, decl in self.apps.items()]
+        elif name == "kit.app.describe":
+            if args["app"] not in self.apps:
+                raise ApiError(400, "call_failed", f"no app {args['app']}\nstack ...")
+            result = {"app": args["app"], "by": "agent", "temp": False, "decl": dict(self.apps[args["app"]], lease=120)}
+        elif name == "kit.app.forget":
+            if self.apps.pop(args["app"], None) is None:
+                raise ApiError(400, "call_failed", f"no app {args['app']}\nstack ...")
+            self.on.discard(args["app"])
             result = {"app": args["app"]}
         elif name == "kit.app.open":
-            if "game:nonsense" in args.get("hear", []):
+            if "game:nonsense" in (args.get("temp") or {}).get("hear", []):
                 raise ApiError(400, "call_failed", "no source game:nonsense\nstack ...")
             result = {"on": True}
         elif name == "kit.app.stop":
@@ -59,7 +72,11 @@ class Kit:
         return [args for n, args in self.calls if n == name]
 
 
-class LocalApi(unittest.TestCase):
+class LocalDaemon:
+    """a daemon of its own for a TestCase class (LETTER: its mutex), WuxianKit's calls answered by a Kit, and the
+    helpers; each test leaves no extension and no reaction behind"""
+    LETTER = "L"
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -73,7 +90,7 @@ class LocalApi(unittest.TestCase):
         (addons / "WoWBridge").mkdir(parents=True)
         MB.install(addons, pool=16)
         cls.handle = daemon.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
-                                  mutex_name=MUTEX + "L")
+                                  mutex_name=MUTEX + cls.LETTER)
         cls.svc = cls.handle.service
         cls.kit = Kit(cls.svc)
         cls.svc.call_exposed = cls.kit.call_exposed
@@ -87,6 +104,8 @@ class LocalApi(unittest.TestCase):
 
     def setUp(self):
         self.kit.calls.clear()
+        self.kit.apps.clear()
+        self.kit.on.clear()
 
     def tearDown(self):
         self.ok("POST", "/api/reactions/clear", {})
@@ -126,6 +145,8 @@ class LocalApi(unittest.TestCase):
         res = self.ok("POST", "/api/addon_events", {"addon": "local", "topic": topic, "since": 0})
         return [e["data"] for e in res["events"]]
 
+
+class LocalApi(LocalDaemon, unittest.TestCase):
     # --- HTTP
 
     def test_http_routes(self):
@@ -172,7 +193,8 @@ class LocalApi(unittest.TestCase):
         self.assertEqual(self.ok("GET", "/api/local")["extensions"], [])
 
     def test_a_slow_start_is_not_the_calls_time(self):
-        """the first call waits for the start (initialize) on top of the capability's own time"""
+        """the first call waits for the start (initialize) on top of the call's time: the capability's own timeout, or
+        timeout_ms when the caller gives one (shorter or longer)"""
         self.add()
         original = self.svc.local.initialize
 
@@ -184,7 +206,11 @@ class LocalApi(unittest.TestCase):
         self.assertEqual(res["result"]["text"], "a")
         msg = self.fails("POST", "/api/local/call", {"cap": "fx.slow", "args": {"seconds": 3}, "timeout_ms": 100},
                          504, "timeout")
-        self.assertIn("within 1 s", msg)                     # its own timeout (1 s) is the longer one
+        self.assertIn("within 0.1 s", msg)                   # what the caller gave, not the longer of the two
+        msg = self.fails("POST", "/api/local/call", {"cap": "fx.slow", "args": {"seconds": 3}}, 504, "timeout")
+        self.assertIn("within 1 s", msg)                     # none given: its own timeout (1 s), not 30 s
+        res = self.ok("POST", "/api/local/call", {"cap": "fx.slow", "args": {"seconds": 1.3}, "timeout_ms": 5000})
+        self.assertEqual(res["result"], {"slept": 1.3})      # given longer than its own: the caller's
 
     def test_sse_tells_of_changes(self):
         req = urllib.request.Request(f"{self.handle.url.rstrip('/')}/api/events?token={self.handle.token}"
@@ -220,7 +246,7 @@ class LocalApi(unittest.TestCase):
         res = self.ok("POST", "/api/local/call", {"cap": "fx.ask", "args": {"cap": "tune.cvar.set"}})
         self.assertEqual((res["result"]["error"]["code"], res["result"]["error"]["data"]), (1, {"reason": "not_allowed"}))
         res = self.ok("POST", "/api/local/call", {"cap": "fx.ask", "args": {"cap": "fx.echo", "args": {"text": "x"}}})
-        self.assertEqual(res["result"]["result"]["caller"], {"by": "extension", "id": "fx"})
+        self.assertEqual(res["result"]["result"]["caller"], {"by": "extension", "id": "fx", "chain": ["ext:fx"]})
         self.ok("POST", "/api/local/call", {"cap": "fx.emit", "args": {"text": "说完"}})
         self.assertTrue(until(lambda: self.events("fx.said")))
         item = self.events("fx.said")[0]
@@ -234,11 +260,43 @@ class LocalApi(unittest.TestCase):
         app = dict(app, local={"id": "fx", "title": title})          # the extension it comes with
         self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")))
         self.assertEqual(self.kit.asked("kit.app.declare"), [app])
+        self.assertNotIn("launch", self.kit.asked("kit.app.declare")[0])
         self.kit.calls.clear()
-        self.kit.emit("kit.ready", {})                     # a login or a reload: declared again
+        self.kit.emit("kit.ready", {})                     # a login or a reload: compared, the same, not declared
+        self.assertTrue(until(lambda: self.kit.asked("kit.app.describe")), self.kit.calls)
+        time.sleep(0.3)
+        self.assertEqual(self.kit.asked("kit.app.declare"), [])
+        self.assertEqual(self.kit.asked("kit.app.describe"), [{"app": "companion"}])
+        self.kit.apps["companion"]["title"] = "别的"        # the game's is not what it took from us: declared again
+        self.kit.calls.clear()
+        self.kit.emit("kit.ready", {})
         self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
         self.assertEqual(self.kit.asked("kit.app.declare"), [app])
-        self.assertNotIn("launch", self.kit.asked("kit.app.declare")[0])
+        self.kit.calls.clear()
+        self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})     # off with the game online: forgotten now
+        self.assertEqual(self.kit.asked("kit.app.forget"), [{"app": "companion"}])
+        self.assertEqual(self.kit.apps, {})
+        self.ok("POST", "/api/local/set", {"id": "fx", "enabled": True})
+        self.assertEqual(self.kit.asked("kit.app.declare"), [app])
+        self.kit.calls.clear()
+        self.ok("POST", "/api/local/remove", {"id": "fx"})
+        self.assertEqual(self.kit.asked("kit.app.forget"), [{"app": "companion"}])
+
+    def test_apps_of_a_kit_before_describe(self):
+        """a WuxianKit without kit.apps and kit.app.describe: the apps are declared at every kit.ready, as before"""
+        app = {"app": "companion", "title": "语音搭子", "prompt": "companion"}
+        answer = self.kit.call_exposed
+
+        async def old(addon, name, args=None, timeout_ms=10000, shared=None):
+            if name in ("kit.apps", "kit.app.describe", "kit.app.forget"):
+                self.kit.calls.append((name, args))
+                raise ApiError(400, "call_failed", f"WuxianKit has no {name}")
+            return await answer(addon, name, args, timeout_ms, shared)
+        with mock.patch.object(self.svc, "call_exposed", old):
+            self.add(apps=[app])
+            self.assertEqual(len(self.kit.asked("kit.app.declare")), 1)
+            self.kit.emit("kit.ready", {})
+            self.assertTrue(until(lambda: len(self.kit.asked("kit.app.declare")) == 2), self.kit.calls)
 
     # --- reactions
 
@@ -251,11 +309,11 @@ class LocalApi(unittest.TestCase):
         self.assertEqual(game["id"], "g")
         self.assertTrue(until(lambda: self.kit.asked("kit.app.open")))
         opened = self.kit.asked("kit.app.open")[-1]
-        self.assertEqual(opened, {"app": "reactions", "title": "反射", "hear": ["game:combat"], "temp": True,
-                                  "hidden": True, "digest": False, "lease": 0, "minutes": 720})
+        self.assertEqual(opened, {"app": "reactions", "lease": 0, "minutes": 720,      # a temporary app: its declaration
+                                  "temp": {"title": "反射", "hear": ["game:combat"], "hidden": True, "digest": False}})
         self.ok("POST", "/api/reactions/set", {"id": "l", "hear": "fx:said", "call": "fx.echo", "args": {"text": "本机"},
                                                "cooldown": 0})
-        self.assertEqual(self.kit.asked("kit.app.open")[-1]["hear"], ["game:combat"])   # a local source: not the game's
+        self.assertEqual(self.kit.asked("kit.app.open")[-1]["temp"]["hear"], ["game:combat"])   # a local source: not the game's
         self.kit.emit("app.reactions", {"app": "reactions", "reason": "item",
                                         "items": [{"id": 1, "source": "game", "kind": "combat", "data": {}}]})
         self.assertTrue(until(lambda: self.reaction("g")["fired"] == 1), self.reaction("g"))
@@ -272,7 +330,7 @@ class LocalApi(unittest.TestCase):
         self.kit.calls.clear()
         self.kit.emit("kit.ready", {})
         self.assertTrue(until(lambda: self.kit.asked("kit.app.open")))
-        self.assertEqual(self.kit.asked("kit.app.open")[-1]["hear"], ["game:quest"])
+        self.assertEqual(self.kit.asked("kit.app.open")[-1]["temp"]["hear"], ["game:quest"])
 
     def reaction(self, rid):
         return next((r for r in self.ok("GET", "/api/reactions")["reactions"] if r["id"] == rid), None)

@@ -1,9 +1,11 @@
 """The reactions engine (local/reactions.py): specs checked with messages for the agent, items matched by source and
 what (topic, kind, prefixed kind, channel, *) and when, cooldowns, owners cleared, the game's hear union told only when
-it changes, and failures kept on the reaction."""
+it changes, failures kept on the reaction, loops (one call of a reaction at a time, MAX_RUNNING of all) and the
+reactions an app declares itself."""
+import asyncio
 import unittest
 
-from wuxianworkshop.local.reactions import MAX_REACTIONS, ReactionError, Reactions
+from wuxianworkshop.local.reactions import MAX_APP_REACTIONS, MAX_REACTIONS, MAX_RUNNING, ReactionError, Reactions
 
 KINDS = {"voice.play": "point", "voice.say": "point", "voice.prepare": "keep", "sense.bags": "see",
          "chat.send": "say", "tune.cvar.set": "do"}
@@ -225,7 +227,7 @@ class Calling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cap, "voice.play")
         self.assertEqual(args, {"pool": "elite", "event": item})
         self.assertIsNot(args["event"], item)
-        self.assertEqual(caller, {"by": "reaction", "id": row["id"]})
+        self.assertEqual(caller, {"by": "workshop", "chain": [f"reaction:{row['id']}"]})
         args["pool"] = "changed"                                 # the reaction's own args stay
         self.assertEqual(self.f.r.list()[0]["args"], {"pool": "elite"})
         r = self.f.r.list()[0]
@@ -246,7 +248,7 @@ class Calling(unittest.IsolatedAsyncioTestCase):
         for dt in (0, 1, 2, 9.9, 0.1):
             self.f.clock.t += dt
             await self.f.r.item(combat())
-        await self.f.r.drain()
+            await self.f.r.drain()                       # a call that is not done would hold the next one back
         counts = {cap: sum(1 for c in self.f.calls if c[0] == cap) for cap in KINDS}
         self.assertEqual(counts["voice.play"], 2)        # at 0 and 12.9
         self.assertEqual(counts["sense.bags"], 5)
@@ -281,7 +283,6 @@ class Calling(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((r["fired"], r["failed"], r["error"]), (2, 1, None))
 
     async def test_calls_run_in_background(self):
-        import asyncio
         gate = asyncio.Event()
 
         async def slow(cap, args, caller):
@@ -295,6 +296,150 @@ class Calling(unittest.IsolatedAsyncioTestCase):
         gate.set()
         await r.drain()
         self.assertEqual(self.f.calls, ["voice.play"])
+
+
+class Loops(unittest.IsolatedAsyncioTestCase):
+    """a reaction calls once at a time; MAX_RUNNING calls of all reactions at once"""
+
+    async def asyncSetUp(self):
+        self.f = Fake()
+        self.gate, self.calls = asyncio.Event(), []
+
+        async def slow(cap, args, caller):
+            self.calls.append(caller["chain"][0])
+            await self.gate.wait()
+
+        self.r = Reactions(slow, self.f.hear, KINDS.get, now=self.f.clock, note=self.f.notes.append)
+
+    async def asyncTearDown(self):
+        self.gate.set()
+        await self.r.drain()
+
+    async def test_not_again_while_its_call_runs(self):
+        await self.r.set({"hear": "game:combat", "call": "voice.play", "cooldown": 0})
+        for _ in range(3):
+            await self.r.item(combat())
+            await asyncio.sleep(0)
+        self.assertEqual(self.calls, ["reaction:r1"])
+        self.assertEqual(self.r.list()[0]["fired"], 1)   # what it missed is not counted, and spends no cooldown
+        self.gate.set()
+        await self.r.drain()
+        await self.r.item(combat())                      # done: the next item calls again
+        await self.r.drain()
+        self.assertEqual(self.calls, ["reaction:r1", "reaction:r1"])
+        self.assertEqual(self.r.list()[0]["fired"], 2)
+
+    async def test_at_most_16_calls_at_once(self):
+        for _ in range(MAX_RUNNING + 2):
+            await self.r.set({"hear": "game:combat", "call": "voice.play", "cooldown": 0})
+        await self.r.item(combat())
+        await asyncio.sleep(0)
+        self.assertEqual(len(self.calls), MAX_RUNNING)
+        rows = self.r.list()
+        self.assertEqual([r["fired"] for r in rows], [1] * MAX_RUNNING + [0, 0])
+        await self.r.item(combat())                      # still full: nothing more, and said once
+        crowded = [n for n in self.f.notes if "calls run at once" in n]
+        self.assertEqual(len(crowded), 1, self.f.notes)
+        self.gate.set()
+        await self.r.drain()
+        await self.r.item(combat())                      # room again: 16 more, and full again is said again
+        await self.r.drain()
+        self.assertEqual(len(self.calls), 2 * MAX_RUNNING)
+        self.assertEqual(len([n for n in self.f.notes if "calls run at once" in n]), 2)
+
+
+class Declared(unittest.IsolatedAsyncioTestCase):
+    """the reactions an app's manifest declares: there while the app runs"""
+
+    SPECS = [{"hear": "game:combat.start", "call": "voice.play", "args": {"pool": "pull"}, "cooldown": 0},
+             {"hear": "voice:said", "call": "voice.prepare", "note": "the next line"}]
+
+    async def asyncSetUp(self):
+        self.f = Fake()
+
+    def ids(self):
+        return [r["id"] for r in self.f.r.list()]
+
+    async def test_set_while_the_app_runs(self):
+        self.assertEqual(await self.f.r.app_started("companion", self.SPECS), [])
+        rows = self.f.r.list()
+        self.assertEqual([(r["id"], r["owner"], r["hear"], r["call"]) for r in rows],
+                         [("companion.1", "companion", "game:combat.start", "voice.play"),
+                          ("companion.2", "companion", "voice:said", "voice.prepare")])
+        self.assertEqual(rows[0]["args"], {"pool": "pull"})
+        self.assertEqual(self.f.hears, [["game:combat.start"]])
+        await self.f.r.item(combat())
+        await self.f.r.drain()
+        self.assertEqual(self.f.calls, [("voice.play", {"pool": "pull"},
+                                         {"by": "workshop", "chain": ["reaction:companion.1"]})])
+        self.assertEqual(await self.f.r.app_started("companion", self.SPECS), [])    # again: nothing changes
+        self.assertEqual(self.f.r.list()[0]["fired"], 1)
+        self.assertEqual(len(self.f.hears), 1)
+        await self.f.r.app_stopped("companion")
+        self.assertEqual(self.ids(), [])
+        self.assertEqual(self.f.hears[-1], [])
+        self.assertEqual(await self.f.r.app_started("companion", self.SPECS), [])    # runs again: back, counts new
+        self.assertEqual(self.ids(), ["companion.1", "companion.2"])
+        self.assertEqual(self.f.r.list()[0]["fired"], 0)
+
+    async def test_other_specs_replace_them(self):
+        await self.f.r.app_started("companion", self.SPECS)
+        await self.f.r.set({"hear": "game:aura", "call": "voice.play", "owner": "companion"})      # the agent's
+        self.assertEqual(await self.f.r.app_started("companion", self.SPECS[:1]), [])
+        self.assertEqual(self.ids(), ["r1", "companion.1"])
+        self.assertEqual(await self.f.r.app_started("companion", []), [])
+        self.assertEqual(self.ids(), ["r1"])
+        await self.f.r.app_started("companion", self.SPECS)
+        await self.f.r.app_stopped("companion")                                     # the agent's go with the app too
+        self.assertEqual(self.ids(), [])
+
+    async def test_bad_specs_said_and_tried_again(self):
+        specs = [self.SPECS[0], {"hear": "game:combat", "call": "later.thing"}, "junk",
+                 {"hear": "game:combat", "call": "chat.send"}]
+        problems = await self.f.r.app_started("companion", specs)
+        self.assertEqual(self.ids(), ["companion.1"])
+        self.assertEqual(len(problems), 3)
+        self.assertIn("reaction 2 of app companion", problems[0])
+        self.assertIn("no capability later.thing", problems[0])
+        self.assertIn("reaction 3 of app companion: a reaction is an object", problems[1])
+        self.assertIn("say capability", problems[2])
+        KINDS["later.thing"] = "point"                    # its extension described itself: the same specs are taken
+        try:
+            problems = await self.f.r.app_started("companion", specs)
+        finally:
+            del KINDS["later.thing"]
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(self.ids(), ["companion.1", "companion.2"])
+        self.assertEqual(await self.f.r.app_started("Not An App", self.SPECS), ["'Not An App' is no app id"])
+
+    async def test_only_the_declared_fields(self):
+        await self.f.r.app_started("companion", [dict(self.SPECS[0], id="mine", owner="guild", fired=9)])
+        row = self.f.r.list()[0]
+        self.assertEqual((row["id"], row["owner"], row["fired"]), ("companion.1", "companion", 0))
+
+    async def test_their_ids_are_theirs(self):
+        await self.f.r.app_started("companion", self.SPECS)
+        with self.assertRaises(ReactionError) as e:
+            await self.f.r.set({"id": "companion.1", "hear": "game:aura", "call": "voice.play"})
+        self.assertIn("declares itself", str(e.exception))
+        self.assertEqual(self.f.r.list()[0]["hear"], "game:combat.start")
+
+    async def test_not_counted_in_the_agents_32(self):
+        many = [{"hear": "game:combat", "call": "voice.play"}] * (MAX_APP_REACTIONS + 3)
+        self.assertEqual(await self.f.r.app_started("companion", many), [])
+        self.assertEqual(len(self.ids()), MAX_APP_REACTIONS)                        # the first 16 of a manifest
+        for _ in range(MAX_REACTIONS):
+            await self.f.r.set({"hear": "game:combat", "call": "voice.play"})
+        with self.assertRaises(ReactionError):
+            await self.f.r.set({"hear": "game:combat", "call": "voice.play"})
+        self.assertEqual(len(self.ids()), MAX_APP_REACTIONS + MAX_REACTIONS)
+
+    async def test_cleared_ones_come_back_when_it_runs_again(self):
+        await self.f.r.app_started("companion", self.SPECS)
+        self.assertEqual(await self.f.r.clear(id="companion.2"), 1)
+        self.assertEqual(self.ids(), ["companion.1"])
+        self.assertEqual(await self.f.r.app_started("companion", self.SPECS), [])
+        self.assertEqual(self.ids(), ["companion.1", "companion.2"])
 
 
 class Owners(unittest.IsolatedAsyncioTestCase):
