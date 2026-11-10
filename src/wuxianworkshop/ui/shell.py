@@ -407,9 +407,11 @@ SITE = "https://wuxianwow.com/"         # the only address the page may open out
 
 
 class PageApi:
-    """what the page may ask of its window (window.pywebview.api): the native folder dialog the 开始 page uses to pick
-    the game folder, and wuxianwow.com in the user's browser. pywebview exposes the public methods only; the shell
-    stays in a private attribute"""
+    """what the page may ask of its window (window.pywebview.api): the native folder dialog (the 开始 page picks the
+    game folder with it, the 扩展 page a local extension's folder), the file dialog for an extension package (.zip),
+    Explorer on a folder the 扩展 page shows (the extensions' home, a listed extension's folder, the packages folder:
+    nothing else), and wuxianwow.com in the user's browser. pywebview exposes the public methods only; the shell stays
+    in a private attribute"""
 
     def __init__(self, shell):
         self._shell = shell
@@ -432,6 +434,52 @@ class PageApi:
         if not picked:
             return ""
         return str(picked[0] if isinstance(picked, (list, tuple)) else picked)
+
+    def pick_file(self, kind="zip"):
+        """the file the user picked, "" when the dialog was cancelled or the kind is not one of FILE_KINDS"""
+        import webview
+        window = self._shell.window
+        if window is None or not isinstance(kind, str) or kind not in FILE_KINDS:
+            return ""
+        zh, en, pattern = FILE_KINDS[kind]
+        picked = window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                           file_types=(f"{tr(zh, en)} ({pattern})",))
+        if not picked:
+            return ""
+        return str(picked[0] if isinstance(picked, (list, tuple)) else picked)
+
+    def open_folder(self, path):
+        """opens a folder in Explorer: True when it did. Only the folders the 扩展 page shows: the extensions' home and
+        each listed extension's folder (what GET /api/local answers now) and the packages folder (packages in the
+        workshop's home, where 打包 writes). Anything else, a folder that is not there, a daemon that does not answer: False, and the
+        page shows the path instead"""
+        if not isinstance(path, str) or not os.path.isabs(path.strip()):
+            return False
+        backend = self._shell.backend
+        info = dict(port=getattr(backend, "port", None), token=getattr(backend, "token", None))
+        if not info["port"] or not info["token"]:
+            return False
+        listing = _request(info, "GET", "/api/local")
+        if not isinstance(listing, dict):
+            return False
+        rows = listing.get("extensions")
+        allowed = [listing.get("home"), str(paths.home() / "packages")]
+        allowed += [row.get("path") for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)]
+        wanted = folder_key(path)
+        if wanted not in {folder_key(a) for a in allowed if isinstance(a, str) and a.strip()}:
+            return False
+        if not os.path.isdir(wanted):
+            return False
+        os.startfile(wanted)
+        return True
+
+
+FILE_KINDS = {"zip": ("扩展包", "Extension package", "*.zip")}       # pick_file's kinds: the dialog's filter
+
+
+def folder_key(path):
+    """a folder's path as open_folder compares it: absolute, no .. left, one case, no trailing separator"""
+    return os.path.normcase(os.path.abspath(path.strip()))
 
 
 class Shell:

@@ -540,5 +540,82 @@ class ClosingAndQuitting(unittest.TestCase):
         self.assertEqual(calls[-1], ("js", "window.wx && wx.go('settings')"))
 
 
+class PageFolders(unittest.TestCase):
+    """PageApi.open_folder opens only the folders the 扩展 page shows (the extensions' home, a listed extension's folder,
+    the packages folder), as the daemon lists them at that moment; PageApi.pick_file is the dialog for a package"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.handle = shell.start_fake()
+        cls.addClassCleanup(cls.handle.stop)
+        cls.home = cls.handle.fake.local_listing()["home"]
+
+    def setUp(self):
+        self.window = Mock()
+        self.api = shell.PageApi(types.SimpleNamespace(backend=self.handle, window=self.window))
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def open(self, path, there=True, api=None):
+        with patch.object(shell.os.path, "isdir", return_value=there), \
+                patch.object(shell.os, "startfile", create=True) as start, \
+                patch.dict(os.environ, {"WUXIAN_HOME": self.tmp.name}):
+            return (api or self.api).open_folder(path), [c.args[0] for c in start.call_args_list]
+
+    def test_the_folders_the_page_shows(self):
+        relay = "D:\\Projects\\relay"                                    # a linked one: its folder is elsewhere
+        for path in (self.home, self.home + "\\voice", relay, os.path.join(self.tmp.name, "packages")):
+            self.assertEqual(self.open(path), (True, [shell.folder_key(path)]), path)
+        self.assertEqual(self.open(self.home.upper() + "\\"), (True, [shell.folder_key(self.home)]))
+        self.assertEqual(self.open(self.home + "\\voice\\..\\notes"), (True, [shell.folder_key(self.home + "\\notes")]))
+
+    def test_nothing_else(self):
+        for path in (self.home + "\\voice\\logs", self.home + "\\nope", os.path.dirname(self.home), "C:\\", "C:\\Windows",
+                     self.home + "\\voice\\..\\..", self.tmp.name, os.path.join(self.tmp.name, "packages", "x"),
+                     "voice", "", "  ", None, 5, ["C:\\"], "\\\\server\\share", "https://wuxianwow.com/",
+                     self.home + "\\voice\\main.py"):
+            self.assertEqual(self.open(path), (False, []), path)
+
+    def test_a_folder_that_is_not_there(self):
+        self.assertEqual(self.open(self.home, there=False), (False, []))
+
+    def test_one_no_longer_listed(self):
+        fake = self.handle.fake
+        row = fake.local_action("add", {"path": "D:\\Work\\gone"})
+        self.assertEqual(self.open("D:\\Work\\gone"), (True, [shell.folder_key("D:\\Work\\gone")]))
+        fake.local_action("remove", {"id": row["id"]})
+        self.assertEqual(self.open("D:\\Work\\gone"), (False, []))
+
+    def test_a_backend_that_cannot_say(self):
+        for backend in (None, StandInBackend(), shell.RemoteBackend(self.handle.url),
+                        types.SimpleNamespace(port=self.handle.port, token="wrong"),
+                        types.SimpleNamespace(port=1, token=self.handle.token)):
+            api = shell.PageApi(types.SimpleNamespace(backend=backend, window=self.window))
+            self.assertEqual(self.open(self.home, api=api), (False, []), backend)
+
+    def test_pick_file(self):
+        webview = types.SimpleNamespace(FileDialog=types.SimpleNamespace(OPEN=10, FOLDER=20))
+        with patch.dict(sys.modules, {"webview": webview}):
+            self.window.create_file_dialog.return_value = ("D:\\Downloads\\herald-0.2.0.zip",)
+            self.assertEqual(self.api.pick_file("zip"), "D:\\Downloads\\herald-0.2.0.zip")
+            self.assertEqual(self.api.pick_file(), "D:\\Downloads\\herald-0.2.0.zip")
+            (kind,), more = self.window.create_file_dialog.call_args
+            self.assertEqual((kind, more["allow_multiple"]), (10, False))
+            self.assertEqual(len(more["file_types"]), 1)
+            self.assertTrue(more["file_types"][0].endswith(" (*.zip)"))
+            self.window.create_file_dialog.return_value = None           # cancelled
+            self.assertEqual(self.api.pick_file("zip"), "")
+            self.window.create_file_dialog.reset_mock()
+            for kind in ("exe", "", None, 5, ["zip"]):                   # no other kind: no dialog
+                self.assertEqual(self.api.pick_file(kind), "")
+            api = shell.PageApi(types.SimpleNamespace(backend=self.handle, window=None))
+            self.assertEqual(api.pick_file("zip"), "")
+            self.window.create_file_dialog.assert_not_called()
+
+    def test_what_the_page_can_call(self):
+        public = sorted(n for n in dir(shell.PageApi) if not n.startswith("_"))
+        self.assertEqual(public, ["open_folder", "open_url", "pick_file", "pick_folder"])
+
+
 if __name__ == "__main__":
     unittest.main()

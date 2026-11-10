@@ -567,6 +567,27 @@ pre.diff .hunk { color: var(--sky); }
 .lx-out-bar b { font-size: 12px; font-weight: 600; color: var(--gold); letter-spacing: .04em; }
 .lx-out { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
 .lx-out pre { margin: 0; padding: 8px 16px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+/* 扩展 · 本机 · 管理: a menu under its button (添加, 更多), the group's head with its buttons, a row's second line, nothing
+   yet with the three ways in, the game addons on 概况, a folder's path where nothing can open it */
+.menu-wrap { position: relative; display: inline-flex; flex: none; }
+.menu { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; display: grid; gap: 1px; min-width: 128px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
+.menu.right { left: auto; right: 0; }
+.menu-item { font: inherit; font-size: 12.5px; text-align: left; white-space: nowrap; color: var(--fg); background: none; border: 0;
+  border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+.menu-item:hover:not(:disabled) { background: var(--panel2); }
+.menu-item:disabled { opacity: .45; cursor: default; }
+.menu-item.bad { color: var(--bad); }
+.mgroup-note { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mgroup .btn { align-self: center; display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.mgroup .btn svg.ico { width: 11px; height: 11px; }
+.lx-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lx-empty { padding: 8px 14px 10px; }
+.lx-empty p { margin: 0 0 8px; }
+.kv dd.lx-game { gap: 6px 12px; }
+.lx-addon { display: inline-flex; align-items: center; gap: 6px; }
+.lx-path { margin: 12px 0 4px; padding: 8px 10px; border-radius: 4px; background: var(--field); border: 1px solid var(--line);
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 
 .checks { list-style: none; margin: 0; padding: 0; }
 .check { display: flex; gap: 12px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line2); }

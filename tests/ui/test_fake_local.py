@@ -3,7 +3,12 @@
 annotate or extends); the pretend extensions cover the states the page words differently; with the setting
 extension_approval "ask" (the default) a start or a check of one that waits answers 403 needs_approval until POST
 /api/local/approve, with "auto" every row is ok, whatever the mode; a pretend output.log starts again at line 1 once it
-is full (--rotate), and its logs answer `reset` as Host.logs."""
+is full (--rotate), and its logs answer `reset` as Host.logs.
+
+Managing them (extensions-home.md, sections 4 and 7): a row also carries origin, author, homepage, requires, unmet and
+addons, the listing carries home; add takes a folder (linked) or a .zip (into the home, waits for the player whatever the
+setting), new answers {row, files, guide}, remove says where the folder went, pack and install answer as pack.pack and
+gameside.install, each with the refusals the page words."""
 import unittest
 from pathlib import Path
 
@@ -12,7 +17,8 @@ from starlette.testclient import TestClient
 from tests.ui.test_fake_api import AUTH, F
 
 ROW = {"id", "title", "version", "path", "enabled", "start", "state", "pid", "started", "exit_code", "error", "capabilities",
-       "sources", "options", "apps", "skills", "adds", "approval", "allowed", "since", "why", "command"}
+       "sources", "options", "apps", "skills", "adds", "approval", "allowed", "since", "why", "command",
+       "origin", "author", "homepage", "requires", "unmet", "addons"}
 STATES = {"off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff"}
 
 
@@ -131,7 +137,7 @@ class Ask(Local):
         r = self.client.post("/api/settings", headers=AUTH, json={"extension_approval": "auto"})
         self.assertEqual((r.status_code, r.json()["extension_approval"]), (200, "auto"))
         self.assertGreater(self.fake.local_revision, before)             # the page reads the rows again
-        self.assertEqual({row["approval"] for row in self.rows().values()}, {"ok"})
+        self.assertEqual({row["id"] for row in self.rows().values() if row["approval"] != "ok"}, {"greeter"})
         self.assertEqual(self.client.get("/api/status", headers=AUTH).json()["daemon"]["extension_approval"], "auto")
         self.client.post("/api/settings", headers=AUTH, json={"extension_approval": "ask"})
         self.assertEqual(self.rows()["facts"]["approval"], "needed")
@@ -178,7 +184,9 @@ class Auto(Local):
 
     def test_nothing_waits(self):
         rows = self.rows()
-        self.assertEqual({row["approval"] for row in rows.values()}, {"ok"})
+        self.assertEqual({row["id"]: row["approval"] for row in rows.values() if row["approval"] != "ok"},
+                         {"greeter": "needed"})                          # from a package: the player allows it once
+        self.assertEqual(self.post("load", id="greeter").status_code, 403)
         self.assertEqual({row["state"] for row in rows.values()}, {"running", "stopped", "exited", "off", "hung", "backoff"})
         r = self.post("load", id="facts")                                # a start allows it by itself
         self.assertEqual((r.status_code, r.json()["row"]["state"]), (200, "running"))
@@ -197,7 +205,8 @@ class CommandLine(unittest.TestCase):
         self.assertEqual((fake.mode, fake.extension_approval, fake.rotate), ("developer", "ask", 400))
         self.assertEqual(fake.settings["extension_approval"], "ask")
         text = Path(F.__file__).read_text(encoding="utf-8")
-        for flag in ('"--mode"', '"--approval"', '"--rotate"', '"--quiet"', '"--token"', '"--port"'):
+        self.assertTrue(fake.addons_known)
+        for flag in ('"--mode"', '"--approval"', '"--rotate"', '"--quiet"', '"--token"', '"--port"', '"--no-game-folder"'):
             self.assertIn(flag, text)
 
     def test_a_value_it_does_not_know_is_ask(self):
