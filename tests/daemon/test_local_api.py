@@ -315,10 +315,10 @@ class LocalApi(unittest.TestCase):
                     return tools, out
 
         tools, out = asyncio.run(go())
-        for name in ("local_extensions", "extension_check", "extension_logs", "extension_guide", "reactions"):
+        for name in ("local_extensions", "extension_logs", "extension_guide", "reactions"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         for name in ("new_extension", "extension_add", "extension_remove", "extension_load", "extension_stop",
-                     "extension_set", "reaction_set", "reaction_clear"):
+                     "extension_set", "extension_check", "reaction_set", "reaction_clear"):   # a check starts a process
             self.assertFalse(tools[name].annotations.read_only_hint, name)
         self.assertFalse([n for n in tools if n.startswith("program") or n == "new_program"])
         self.assertEqual(out["list"].structured_content["extensions"][0]["id"], "fx")
