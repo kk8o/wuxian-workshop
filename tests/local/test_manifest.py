@@ -39,7 +39,7 @@ class Manifest(unittest.TestCase):
         self.assertEqual(m["python"], str(self.folder / "venv/python.exe"))
         self.assertEqual((m["docs"], m["skills"]), (str(self.folder / "AGENT.md"), str(self.folder / "skills")))
         self.assertEqual(m["apps"], [{"app": "companion", "title": "无限陪玩", "prompt": "companion",
-                                      "hear": ["game:combat"]}])
+                                      "hear": ["game:combat"], "reactions": []}])
         self.assertEqual(M.check_manifest(self.folder / M.MANIFEST)[0], m)          # its file names it too
 
     def test_defaults_and_warnings(self):
@@ -130,6 +130,26 @@ class Description(unittest.TestCase):
         self.assertEqual(len([p for p in problems if p["level"] == "warning"]), 3)   # mixed spec, no docs
         self.assertIsNone(M.check_description("voice", [])[0])
 
+    def test_names_and_tools(self):
+        """a capability's name: dotted parts with a letter first each; its tool wk_<id>_<name> at most 48 characters,
+        and no two capabilities of one extension with the same tool"""
+        for good in ("say", "pool.list", "a1.b_2.c", "a" * 48):
+            self.assertIsNone(M.cap_name_problem(good), good)
+        for bad in ("", "Say", "1a", "a..b", ".a", "a.", "a.1b", "a._b", "a-b", "a b", "a" * 49, None, 3):
+            self.assertIn("no capability name", M.cap_name_problem(bad), bad)
+        self.assertEqual(M.tool_name("voice", "pool.list"), "wk_voice_pool_list")
+        fits = "a" * (48 - len("wk_voice_"))
+        self.assertIsNone(M.cap_name_problem(fits, "voice"))
+        self.assertIn("too long", M.cap_name_problem(fits + "a", "voice"))
+        desc, problems = M.check_description("voice", self.good(capabilities=[{"name": fits + "a", "kind": "see"}]))
+        self.assertIsNone(desc)
+        self.assertIn(f"wk_voice_{fits}a", problems[0]["message"])
+        desc, problems = M.check_description("voice", self.good(capabilities=[
+            {"name": "pool.list", "kind": "see"}, {"name": "pool_list", "kind": "see"}, {"name": "pool", "kind": "see"}]))
+        self.assertIsNone(desc)
+        self.assertEqual([p["where"] for p in problems if p["level"] == "error"], ["capability voice.pool_list"])
+        self.assertIn("wk_voice_pool_list is also voice.pool.list's", M.errors_in(problems)[0]["message"])
+
     def test_values(self):
         num = {"kind": "number", "min": 0, "max": 10}
         self.assertIsNone(M.value_problem(num, 5))
@@ -143,9 +163,9 @@ class Description(unittest.TestCase):
         self.assertIsNotNone(M.value_problem(choice, "b"))
 
 
-class Supplements(unittest.TestCase):
-    """annotate and extends (the fourth batch's contract, section 1): what is taken, normalized; what is refused; the
-    calls checked against the description once there is one"""
+class Adds(unittest.TestCase):
+    """adds, an app's reactions and controls, pass (the fifth batch's contract, sections 5 and 11): what is taken,
+    normalized; what is refused; the capabilities named, checked against the description once there is one"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -161,84 +181,189 @@ class Supplements(unittest.TestCase):
         (self.folder / M.MANIFEST).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
         return M.check_manifest(self.folder)
 
-    def test_taken(self):
+    def test_adds_taken(self):
         (self.folder / "skills" / "guild-chat.md").write_text("﻿用 notes.facts", encoding="utf-8")
-        m, problems = self.check(annotate=[{"app": "guild", "call": "facts.lookup"},
-                                           {"app": "raid_1", "call": "facts.raid.look", "wake": "w", "timeout": 10}],
-                                 extends={"guild-chat": "skills/guild-chat.md"})
+        skill = str(self.folder / "skills" / "guild-chat.md")
+        m, problems = self.check(adds={"guild": {"wake": "lookup", "skill": "skills/guild-chat.md"},
+                                       "raid_1": {"wake": {"call": "raid.look", "timeout": 10}},
+                                       "companion": {"skill": "skills/guild-chat.md"}})
         self.assertEqual(problems, [])
-        self.assertEqual(m["annotate"], [{"app": "guild", "call": "facts.lookup", "wake": "wake", "timeout": 3.0},
-                                         {"app": "raid_1", "call": "facts.raid.look", "wake": "w", "timeout": 10.0}])
-        self.assertEqual(m["extends"], {"guild-chat": str(self.folder / "skills" / "guild-chat.md")})
+        self.assertEqual(m["adds"], {"guild": {"wake": {"call": "facts.lookup", "timeout": 3.0}, "skill": skill},
+                                     "raid_1": {"wake": {"call": "facts.raid.look", "timeout": 10.0}, "skill": None},
+                                     "companion": {"wake": None, "skill": skill}})
         m, problems = self.check()
-        self.assertEqual((m["annotate"], m["extends"], problems), ([], {}, []))
+        self.assertEqual((m["adds"], m["pass"], m["apps"], problems), ({}, [], [], []))
+        self.assertNotIn("annotate", m)
+        self.assertNotIn("extends", m)
 
-    def test_annotate_refused(self):
-        cases = [
-            ({"app": "guild"}, "annotate"),                                       # no list
-            ([{"app": f"a{i}", "call": "facts.x"} for i in range(9)], "annotate"),  # more than 8
-            (["guild"], "annotate[0]"),
-            ([{"app": "*", "call": "facts.x"}], "annotate[0].app"),               # no wildcards
-            ([{"app": "Guild", "call": "facts.x"}], "annotate[0].app"),
-            ([{"app": "g" * 25, "call": "facts.x"}], "annotate[0].app"),
-            ([{"app": "guild", "call": "other.lookup"}], "annotate[0].call"),     # not its own
-            ([{"app": "guild", "call": "facts"}], "annotate[0].call"),
-            ([{"app": "guild", "call": "facts.Look"}], "annotate[0].call"),
-            ([{"app": "guild", "call": "facts.x", "wake": "a b"}], "annotate[0].wake"),
-            ([{"app": "guild", "call": "facts.x", "timeout": 11}], "annotate[0].timeout"),
-            ([{"app": "guild", "call": "facts.x", "timeout": 0}], "annotate[0].timeout"),
-            ([{"app": "guild", "call": "facts.x", "timeout": True}], "annotate[0].timeout"),
-            ([{"app": "guild", "call": "facts.x"}, {"app": "guild", "call": "facts.y"}], "annotate[1].app"),
-        ]
-        for value, where in cases:
-            m, problems = self.check(annotate=value)
-            self.assertIsNone(m, value)
-            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], value)
-            self.assertTrue(all(p["hint"] for p in problems), value)
-        m, problems = self.check(annotate=[{"app": "guild", "call": "facts.x", "colour": 1}])
-        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: annotate[0].colour"])
-        self.assertEqual(len(m["annotate"]), 1)
-
-    def test_extends_refused(self):
+    def test_adds_refused(self):
         outside = Path(self.tmp.name).resolve() / "outside.md"
         outside.write_text("x", encoding="utf-8")
         cases = [
-            (["guild-chat"], "extends"),
-            ({"Guild_Chat": "skills/x.md"}, "extends.Guild_Chat"),
-            ({"guild-chat": ""}, "extends.guild-chat"),
-            ({"guild-chat": 3}, "extends.guild-chat"),
-            ({"guild-chat": "../outside.md"}, "extends.guild-chat"),
-            ({"guild-chat": str(outside)}, "extends.guild-chat"),
-            ({"guild-chat": "skills"}, "extends.guild-chat"),                        # a folder
+            (["guild"], "adds"),                                                  # no object
+            ({f"a{i}": {"wake": "x"} for i in range(9)}, "adds"),                 # more than 8
+            ({"*": {"wake": "x"}}, "adds.*"),                                     # no wildcards
+            ({"Guild": {"wake": "x"}}, "adds.Guild"),
+            ({"g" * 25: {"wake": "x"}}, "adds." + "g" * 25),
+            ({"guild": "lookup"}, "adds.guild"),
+            ({"guild": {}}, "adds.guild"),                                        # it adds nothing
+            ({"guild": {"wake": "Look"}}, "adds.guild.wake"),
+            ({"guild": {"wake": "a..b"}}, "adds.guild.wake"),
+            ({"guild": {"wake": 3}}, "adds.guild.wake"),
+            ({"guild": {"wake": {"timeout": 3}}}, "adds.guild.wake"),             # no call
+            ({"guild": {"wake": {"call": "x", "timeout": 11}}}, "adds.guild.wake.timeout"),
+            ({"guild": {"wake": {"call": "x", "timeout": 0}}}, "adds.guild.wake.timeout"),
+            ({"guild": {"wake": {"call": "x", "timeout": True}}}, "adds.guild.wake.timeout"),
+            ({"guild": {"skill": ""}}, "adds.guild.skill"),
+            ({"guild": {"skill": 3}}, "adds.guild.skill"),
+            ({"guild": {"skill": "../outside.md"}}, "adds.guild.skill"),
+            ({"guild": {"skill": str(outside)}}, "adds.guild.skill"),
+            ({"guild": {"skill": "skills"}}, "adds.guild.skill"),                 # a folder
         ]
         for value, where in cases:
-            m, problems = self.check(extends=value)
+            m, problems = self.check(adds=value)
             self.assertIsNone(m, value)
             self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], value)
+            self.assertTrue(all(p["hint"] for p in problems), value)
         (self.folder / "skills" / "bad.md").write_bytes(b"\xff\xfe\x00bad")
-        m, problems = self.check(extends={"guild-chat": "skills/none.md", "companion": "skills/bad.md"})
-        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: extends.companion",
-                                                         f"{M.MANIFEST}: extends.guild-chat"])
-        self.assertEqual(sorted(m["extends"]), ["companion", "guild-chat"])      # kept: the skill says why it is missing
+        m, problems = self.check(adds={"guild": {"skill": "skills/none.md", "colour": 1},
+                                       "companion": {"skill": "skills/bad.md", "wake": {"call": "x", "wait": 2}}})
+        self.assertEqual(where_of(problems, "warning"),
+                         [f"{M.MANIFEST}: adds.companion.wake.wait", f"{M.MANIFEST}: adds.companion.skill",
+                          f"{M.MANIFEST}: adds.guild.colour", f"{M.MANIFEST}: adds.guild.skill"])
+        self.assertEqual(m["adds"]["guild"]["skill"], str(self.folder / "skills" / "none.md"))   # kept: the skill says why
+        self.assertEqual(m["adds"]["companion"]["wake"], {"call": "facts.x", "timeout": 3.0})
+
+    def test_the_old_fields_are_gone(self):
+        m, problems = self.check(annotate=[{"app": "guild", "call": "facts.lookup"}],
+                                 extends={"guild-chat": "skills/guild-chat.md"})
+        self.assertIsNone(m)
+        self.assertEqual(where_of(problems), [f"{M.MANIFEST}: annotate", f"{M.MANIFEST}: extends"])
+        self.assertTrue(all("adds" in p["hint"] for p in problems))
+        self.assertFalse(hasattr(M, "check_annotate") or hasattr(M, "check_extends") or hasattr(M, "annotation_ok"))
+
+    def test_pass(self):
+        m, problems = self.check(**{"pass": ["HF_HOME", "ProgramFiles(x86)", "hf_home", "HTTPS_PROXY"]})
+        self.assertEqual((m["pass"], problems), (["HF_HOME", "ProgramFiles(x86)", "HTTPS_PROXY"], []))
+        for value, where in (("HF_HOME", "pass"), ([f"V{i}" for i in range(17)], "pass"), (["A=1"], "pass[0]"),
+                             (["OK", 3], "pass[1]"), ([""], "pass[0]"), (["1A"], "pass[0]"), (["A B"], "pass[0]")):
+            m, problems = self.check(**{"pass": value})
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], value)
+
+    def app(self, **fields):
+        return self.check(apps=[dict({"app": "companion", "title": "语音搭子", "prompt": "companion"}, **fields)])
+
+    def test_reactions_taken(self):
+        m, problems = self.app(reactions=[
+            {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"]}, "call": "voice.say",
+             "args": {"pool": "elite"}, "cooldown": 30},
+            {"hear": "facts:found", "call": "facts.note", "item": "event", "note": "  what\n it is  for "}])
+        self.assertEqual(problems, [])
+        self.assertEqual(m["apps"][0]["reactions"], [
+            {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"]}, "call": "voice.say",
+             "args": {"pool": "elite"}, "item": None, "cooldown": 30, "note": None},
+            {"hear": "facts:found", "when": None, "call": "facts.note", "args": None, "item": "event", "cooldown": 10,
+             "note": "what it is for"}])
+        self.assertEqual(self.app()[0]["apps"][0]["reactions"], [])
+        self.assertNotIn("controls", self.app()[0]["apps"][0])
+
+    def test_reactions_as_the_engine_checks_them(self):
+        """what a manifest takes, reactions.py takes too (with an owner, and call a capability there is)"""
+        import asyncio
+        from wuxianworkshop.local import reactions as R
+        specs = [{"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"], "kind": "combat.start"},
+                  "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 0},
+                 {"hear": "chat:guild", "call": "facts.note", "item": "event", "note": "why"}]
+        m, _ = self.app(reactions=specs)
+
+        async def kind_of(cap):
+            return "point"
+        engine = R.Reactions(lambda *a, **k: None, lambda *a, **k: None, kind_of)
+        for spec, mine in zip(specs, m["apps"][0]["reactions"]):
+            theirs = asyncio.run(engine._check(dict(spec, owner="companion")))
+            self.assertEqual({k: theirs[k] for k in M.REACTION_FIELDS}, mine)
+
+    def test_reactions_refused(self):
+        ok = {"hear": "game:combat.start", "call": "voice.say"}
+        cases = [
+            ({"hear": "game:combat"}, "reactions"),                               # no list
+            ([ok] * 17, "reactions"),                                             # more than 16
+            (["game:combat"], "reactions[0]"),
+            ([dict(ok, id="r1")], "reactions[0]"),                                # the workshop names it
+            ([dict(ok, owner="companion")], "reactions[0]"),
+            ([dict(ok, colour=1)], "reactions[0]"),
+            ([ok, {"call": "voice.say"}], "reactions[1]"),                        # no hear
+            ([dict(ok, hear=["game:combat"])], "reactions[0]"),
+            ([dict(ok, hear="combat")], "reactions[0]"),
+            ([dict(ok, when={"data": {"a": 1}})], "reactions[0]"),
+            ([dict(ok, when=["kind"])], "reactions[0]"),
+            ([dict(ok, call="say")], "reactions[0]"),                             # a whole capability id
+            ([dict(ok, call="Voice.say")], "reactions[0]"),
+            ([dict(ok, args=["pool"])], "reactions[0]"),
+            ([dict(ok, args={"big": "x" * 5000})], "reactions[0]"),
+            ([dict(ok, item="a b")], "reactions[0]"),
+            ([dict(ok, item="event", args={"event": 1})], "reactions[0]"),
+            ([dict(ok, cooldown=-1)], "reactions[0]"),
+            ([dict(ok, cooldown=True)], "reactions[0]"),
+            ([dict(ok, note="x" * 201)], "reactions[0]"),
+        ]
+        for value, where in cases:
+            m, problems = self.app(reactions=value)
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].{where}"], value)
+            self.assertTrue(all(p["hint"] for p in problems), value)
+
+    def test_controls(self):
+        m, problems = self.app(controls=["stop", {"cmd": "mute", "call": "mute"},
+                                         {"cmd": "again", "label": "再说一遍", "call": "voice.again"},
+                                         {"cmd": "skip", "label": "跳过"}])
+        self.assertEqual(problems, [])
+        self.assertEqual(m["apps"][0]["controls"], ["stop", {"cmd": "mute", "call": "mute"},
+                                                    {"cmd": "again", "label": "再说一遍", "call": "voice.again"},
+                                                    {"cmd": "skip", "label": "跳过"}])
+        m, problems = self.app(controls=[{"cmd": "mute", "label": "静音", "call": "mute", "colour": 1}])
+        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: apps[0].controls[0].colour",
+                                                         f"{M.MANIFEST}: apps[0].controls[0].label"])
+        self.assertEqual(m["apps"][0]["controls"], [{"cmd": "mute", "call": "mute"}])     # WuxianKit's own label
+        cases = [
+            ("stop", "controls"), (["stop"] * 13, "controls"), ([3], "controls[0]"), (["again"], "controls[0]"),
+            ([{"label": "再说"}], "controls[0].cmd"), ([{"cmd": "Again", "label": "再说"}], "controls[0].cmd"),
+            ([{"cmd": "again"}], "controls[0].label"), ([{"cmd": "again", "label": "再 说"}], "controls[0].label"),
+            ([{"cmd": "again", "label": "再说", "call": "facts.Again"}], "controls[0].call"),
+            ([{"cmd": "again", "label": "再说", "call": 3}], "controls[0].call"),
+            (["stop", {"cmd": "stop", "call": "bye"}], "controls[1]"),
+        ]
+        for value, where in cases:
+            m, problems = self.app(controls=value)
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].{where}"], value)
 
     def test_against_the_description(self):
-        m, _ = self.check(annotate=[{"app": "guild", "call": "facts.lookup"}, {"app": "raid", "call": "facts.mark"},
-                                    {"app": "pvp", "call": "facts.ghost"}, {"app": "bg", "call": "facts.bare"}])
-        before = M.annotate_problems(m, None)
-        self.assertEqual([p["level"] for p in before], ["warning"] * 4)
+        m, _ = self.check(adds={"guild": {"wake": "lookup"}, "raid": {"wake": "mark"}, "pvp": {"wake": "ghost"},
+                                "bg": {"wake": "bare"}, "arena": {"skill": "skills/a.md"}},
+                          apps=[{"app": "companion", "controls": ["stop", {"cmd": "mute", "call": "mark"},
+                                                                  {"cmd": "again", "label": "再说", "call": "gone"}],
+                                 "reactions": [{"hear": "game:combat", "call": "facts.mark"},
+                                               {"hear": "game:combat", "call": "facts.missing"},
+                                               {"hear": "game:combat", "call": "voice.say"}]}])
+        before = M.adds_problems(m, None)
+        self.assertEqual([(p["level"], p["where"]) for p in before], [("warning", M.MANIFEST)])
         self.assertIn("has not described itself", before[0]["message"])
-        desc = {"capabilities": [{"name": "lookup", "kind": "see", "args": {"wake": "table?", "text": "string?"}},
+        self.assertIn("bare, ghost, gone, lookup, mark, missing", before[0]["message"])
+        desc = {"capabilities": [{"name": "lookup", "kind": "see", "args": {"wake": "table", "text": "string?"}},
                                  {"name": "mark", "kind": "keep", "args": {"wake": "table"}},
                                  {"name": "bare", "kind": "see", "args": {}}]}
-        after = M.annotate_problems(m, desc)
-        self.assertEqual([(p["level"], p["where"]) for p in after],
-                         [("error", f"{M.MANIFEST}: annotate[1].call"), ("error", f"{M.MANIFEST}: annotate[2].call"),
-                          ("warning", f"{M.MANIFEST}: annotate[3].call")])
-        self.assertIn("an annotation only reads", after[0]["message"])
-        self.assertIn("has no capability facts.ghost", after[1]["message"])
-        ok = [M.annotation_ok(a, desc) for a in m["annotate"]]
-        self.assertEqual(ok, [True, False, False, True])
-        self.assertTrue(all(M.annotation_ok(a, None) for a in m["annotate"]))
+        after = M.adds_problems(m, desc)
+        self.assertEqual([(p["level"], p["where"].partition(": ")[2]) for p in after],
+                         [("warning", "adds.bg.wake"), ("error", "adds.pvp.wake"), ("error", "adds.raid.wake"),
+                          ("error", "apps[0].controls[2].call"), ("error", "apps[0].reactions[1].call")])
+        self.assertIn("takes no argument wake", after[0]["message"])
+        self.assertIn("has no capability facts.ghost (it has: bare, lookup, mark)", after[1]["message"])
+        self.assertIn("a wake's note only reads", after[2]["message"])
+        self.assertIs(M.annotate_problems, M.adds_problems)                # the name host.py still calls
+        self.assertEqual(M.adds_problems(self.check()[0], None), [])       # nothing named: nothing to say
+        self.assertEqual(M.adds_problems(None, None), [])
 
 
 if __name__ == "__main__":

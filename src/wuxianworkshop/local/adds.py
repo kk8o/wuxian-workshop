@@ -6,12 +6,21 @@ r"""What the enabled local extensions add to apps, read from their manifests for
     control_call(host, app, cmd)  the capability a control of the app is bound to
     row(manifest)                 the adds of one manifest for the rows of the API
 
-The fifth batch's contract (work/layers/contract5.md, sections 4 and 5). annotations() and extensions_of() are the
-fourth batch's (the manifest's annotate and extends) and go when the manifest has adds.
+The fifth batch's contract (work/layers/contract5.md, sections 4, 5 and 11). adds() is called for every wake of every
+app (the daemon's frame thread) and the others not much less often, so all of them read one table, kept in
+host.adds_cache until the registry or an enabled extension's manifest changes (their stamps: a few stats, no reads,
+while nothing did; the host sets the cache None whenever the registry is saved, which is also when an extension
+described itself anew). Every answer is a copy.
 
-host.adds_cache is this module's to keep things in: the host sets it None whenever the registry is saved.
+An extension whose command the player has not allowed (registry.approval is not "ok", in player mode: developer mode
+allows it by itself at its first start) adds nothing: no declaration, no wake, no skill supplement, no reaction, no
+bound control. All of it comes when the player allows it (the registry is saved then, so the table is built anew).
+
+annotations() and extensions_of() answer nothing: the fourth batch's names (the manifest's annotate and extends, which
+are gone), kept only while host.py still forwards to them.
 Standard library only.
 """
+import copy
 import os
 
 from . import manifest as M
@@ -20,64 +29,71 @@ from . import manifest as M
 def adds(host, app):
     """[{"ext": id, "title": title, "wake": {"call": "facts.lookup", "timeout": 3.0} or None, "skill": <absolute path
     of the Markdown> or None}] of the enabled extensions whose manifest passes and adds to app, by extension id; a copy
-    each time. Called for every wake of every app, so it reads no manifest while neither the registry nor an enabled
-    extension's manifest changed. (To do: W-F)"""
-    return []
+    each time. Once an extension described itself, a wake that is not a see capability it has is None"""
+    if not isinstance(app, str) or not app:
+        return []
+    return copy.deepcopy(table(host)["adds"].get(app, []))
 
 
 def app_reactions(host, app):
     """[{"ext": id, "hear", "when", "call", "args", "item", "cooldown", "note"}] of the app's reactions, as the
     manifest of the enabled extension that declares it gives them (apps[].reactions, in its order); [] for an app no
-    enabled extension declares. (To do: W-F)"""
-    return []
+    enabled extension declares"""
+    if not isinstance(app, str) or not app:
+        return []
+    return copy.deepcopy(table(host)["reactions"].get(app, []))
 
 
 def control_call(host, app, cmd):
     """{"ext": id, "call": "<id>.<capability>"} when the enabled extension that declares app bound its control cmd to
-    a capability of its own (apps[].controls[] {cmd, label, call}); None otherwise. (To do: W-F)"""
-    return None
+    a capability of its own (apps[].controls[] {cmd, label, call}); None otherwise"""
+    if not isinstance(app, str) or not isinstance(cmd, str):
+        return None
+    found = table(host)["controls"].get((app, cmd))
+    return dict(found) if found else None
 
 
 def row(manifest):
     """a manifest's adds for a row of the API: {app: {"wake": {"call", "timeout"} or None, "skill": <absolute path> or
     None}}; {} without a manifest"""
     value = (manifest or {}).get("adds")
-    return {app: dict(v) for app, v in value.items()} if isinstance(value, dict) else {}
+    return copy.deepcopy(value) if isinstance(value, dict) else {}
 
 
 def declarations(host):
     """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
-    with (local {id, title}: its card in the game has no remove button)"""
-    out = []
-    for e in host.load()["extensions"]:
-        if not e["enabled"]:
-            continue
-        m, _ = M.check_manifest(e["path"])
-        if m is not None and m["id"] == e["id"]:
-            here = {"id": e["id"], "title": m.get("title") or e["id"]}
-            out += [(e["id"], dict(a, local=dict(here))) for a in m["apps"]]
+    with (local {id, title}: its card in the game names the extension). Without what is the workshop's alone: the
+    reactions, and the call of a control"""
+    return copy.deepcopy(table(host)["declarations"])
+
+
+def declaration(app, eid, title):
+    """an app of a manifest as kit.app.declare gets it. A control with a call goes as WuxianKit writes controls: its
+    own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}"""
+    out = {k: v for k, v in app.items() if k != "reactions"}
+    if isinstance(out.get("controls"), list):
+        out["controls"] = [c if isinstance(c, str) else c["cmd"] if c["cmd"] in M.CORE_CONTROLS
+                           else {"cmd": c["cmd"], "label": c.get("label")} for c in out["controls"]]
+    out["local"] = {"id": eid, "title": title}
     return out
 
 
 def enabled_manifests(host):
-    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id)"""
+    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id) and
+    whose command may run (allowed())"""
     out = []
     for e in host.load()["extensions"]:
         if e["enabled"]:
             m, _ = M.check_manifest(e["path"])
-            if m is not None and m["id"] == e["id"]:
+            if m is not None and m["id"] == e["id"] and allowed(host, e):
                 out.append((e, m))
     return out
 
 
-def annotations(host, app):
-    """[{"ext": id, "call": "facts.lookup", "wake": "wake", "timeout": 3.0}] of the enabled extensions that annotate
-    app, by extension id; once an extension described itself, only a call that is a see capability it has. Called
-    for every wake of every app (the daemon's frame thread), so it is a table kept until the registry or an enabled
-    extension's manifest changes: a few stats, no reads, while nothing did"""
-    if not isinstance(app, str) or not app:
-        return []
-    return [dict(a) for a in annotation_table(host).get(app, [])]
+def allowed(host, entry):
+    """whether the extension's command may run as it is now: the registry says the player allowed it, or the daemon is
+    in developer mode (which allows it by itself when it starts)"""
+    return host.reg.approval(entry) == "ok" or host.mode() == "developer"
 
 
 def stamp(path):
@@ -89,33 +105,52 @@ def stamp(path):
     return st.st_mtime_ns, st.st_size
 
 
-def annotation_table(host):
-    """{app: [annotation]} of the enabled extensions, kept while the stamps of the registry and of the enabled
-    extensions' manifests stay (save() drops it at once)"""
+def wake_ok(wake, eid, described):
+    """whether a wake's call may be made: before the extension described itself yes (it starts on the call), after
+    only when it is a see capability it has"""
+    if described is None:
+        return True
+    name = wake["call"][len(eid) + 1:]
+    return any(isinstance(c, dict) and c.get("name") == name and c.get("kind") == "see"
+               for c in described.get("capabilities") or [])
+
+
+def table(host):
+    """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "controls": {(app, cmd):
+    {ext, call}}} of the enabled extensions, kept while the mode and the stamps of the registry and of the enabled
+    extensions' manifests stay (save() drops it at once). Not to be changed: the callers copy what they give out"""
     with host.lock:
-        cache = host.adds_cache
-        if cache is not None and all(stamp(path) == was for path, was in cache[0]):
+        cache, mode = host.adds_cache, host.mode()
+        if cache is not None and cache[2] == mode and all(stamp(path) == was for path, was in cache[0]):
             return cache[1]
         stamps = [(host.registry, stamp(host.registry))]
         stamps += [(path, stamp(path)) for path in (M.locate(e["path"])[1] for e in host.load()["extensions"]
                                                         if e["enabled"])]
-        table = {}
+        built = {"declarations": [], "adds": {}, "reactions": {}, "controls": {}}
         for e, m in enabled_manifests(host):
-            for a in m["annotate"]:
-                if M.annotation_ok(a, e.get("described")):
-                    table.setdefault(a["app"], []).append(dict(ext=e["id"], call=a["call"], wake=a["wake"],
-                                                               timeout=a["timeout"]))
-        for items in table.values():
+            eid, title = e["id"], m.get("title") or e["id"]
+            for app, a in m["adds"].items():
+                wake = a["wake"] if a["wake"] and wake_ok(a["wake"], eid, e.get("described")) else None
+                built["adds"].setdefault(app, []).append(dict(ext=eid, title=title, wake=wake, skill=a["skill"]))
+            for a in m["apps"]:
+                built["declarations"].append((eid, declaration(a, eid, title)))
+                if a["reactions"]:
+                    built["reactions"].setdefault(a["app"], []).extend(dict(r, ext=eid) for r in a["reactions"])
+                for c in a.get("controls") or []:
+                    if isinstance(c, dict) and c.get("call"):
+                        built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}"))
+        for items in built["adds"].values():
             items.sort(key=lambda a: a["ext"])
-        host.adds_cache = (stamps, table)
-        return table
+        host.adds_cache = (stamps, built, mode)
+        return built
+
+
+def annotations(host, app):
+    """nothing: the manifest has no annotate any more (adds() gives the wakes' notes). Kept while host.py forwards"""
+    return []
 
 
 def extensions_of(host, skill):
-    """[{"ext": id, "title": title, "path": <absolute path of the Markdown>}] of the enabled extensions that extend
-    skill (a skill file's name), by extension id"""
-    if not isinstance(skill, str) or not skill:
-        return []
-    out = [dict(ext=e["id"], title=m.get("title") or e["id"], path=m["extends"][skill])
-           for e, m in enabled_manifests(host) if skill in m["extends"]]
-    return sorted(out, key=lambda x: x["ext"])
+    """nothing: the manifest has no extends any more (adds() gives the skills' supplements). Kept while host.py
+    forwards"""
+    return []

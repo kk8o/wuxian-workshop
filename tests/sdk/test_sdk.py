@@ -1,6 +1,7 @@
 """The Python SDK (sdk/python/wuxiankit.py) against a fake 无限工坊 daemon (http.server in a thread): finding the daemon,
 the token, backoff, calls, proposals and wait, events with a list of topics (and a workshop that takes one topic
-only), and an app's stream: open, wakes, repeats dropped, heartbeat, kit.ready, a daemon restart, the end.
+only), Client.open, and an app's stream: it joins an app that runs (never opens one), the cursor (WuxianKit's item
+ids), catching up, wakes without what was given, heartbeat, kit.ready, a daemon restart, the end.
 Standard library only; the clock is fake, so nothing really waits. WUXIANKIT_SDK may name the SDK file; else it is
 looked for as sdk/python/wuxiankit.py above this file."""
 import fnmatch
@@ -55,7 +56,17 @@ class FakeDaemon:
         self.requests = []                    # (path, body, auth, clock time)
         self.link_down = False
         self.lease = 600
-        self.app_on = True
+        self.app_on = True                    # the app demo runs
+        self.app_why = None                   # why it does not
+        self.app_known = True                 # it is declared at all
+        self.app_blocked = None               # kit.app.open: the player blocked it (the words)
+        self.app_items = []                   # what the app heard, oldest first
+        self.app_next = 0                     # the id of the newest of them
+        self.app_sent = 0                     # where the app's wakes got: the next of its last one
+        self.old_kit = False                  # a WuxianKit whose status has no sent
+        self.seq = 0
+        self.fail = {}                        # name -> how many of its next calls fail (link_down)
+        self.truncated = False                # the next poll says events were dropped
         self.proposals = {}
         self.on_call = {}                     # name -> fn(body) run before the answer (scripted turns)
         self.lock = threading.Lock()
@@ -100,12 +111,37 @@ class FakeDaemon:
             self.events.append({"id": self.next_id, "t": 0, "addon": addon, "topic": topic, "data": data, "dropped": 0})
             self.next_id += 1
 
-    def wake(self, ids, reason="urgent", app="demo"):
-        self.emit(f"app.{app}", {"app": app, "reason": reason, "skipped": 0,
-                                 "items": [{"id": i, "time": 1, "source": "game", "kind": "rest"} for i in ids]})
+    def hear(self, *ids):
+        """the app hears items (kit.app.recent has them) and no wake about them reaches the stream"""
+        for i in ids:
+            if all(it["id"] != i for it in self.app_items):
+                self.app_items.append({"id": i, "time": 1, "source": "game", "kind": "rest"})
+        self.app_items.sort(key=lambda it: it["id"])
+        self.app_next = max([self.app_next, *ids])
+
+    def wake(self, ids, reason="urgent", app="demo", after=None, lost=False, **more):
+        """the app sends a wake of the items `ids` (heard now, when they were not before): it covers
+        after < id <= next. lost=True: it does not reach the stream"""
+        ids = list(ids)
+        if after is None:
+            after = min(ids) - 1 if ids else self.app_sent
+        self.hear(*ids)
+        self.seq += 1
+        nxt = max(ids) if ids else self.app_sent
+        self.app_sent = max(self.app_sent, nxt)
+        if not lost:
+            self.emit(f"app.{app}", dict({"app": app, "seq": self.seq, "reason": reason, "skipped": 0, "after": after,
+                                          "next": nxt, "items": [it for it in self.app_items if it["id"] in ids]},
+                                         **more))
 
     def status(self, app):
-        return {"app": app, "title": app, "on": self.app_on, "ends": 99999, "lease": self.lease, "seen": 1}
+        out = {"app": app, "title": app, "on": self.app_on, "ends": 99999, "lease": self.lease, "seen": 1,
+               "next": self.app_next}
+        if not self.old_kit:
+            out["sent"] = self.app_sent
+        if not self.app_on and self.app_why:
+            out["why"] = self.app_why
+        return out
 
     def call(self, body):
         name, args = body.get("name"), body.get("args") or {}
@@ -113,11 +149,21 @@ class FakeDaemon:
             self.on_call[name](body)
         if self.link_down:
             return 409, {"error": {"code": "link_down", "message": "call: no frames come from the game"}}
+        if self.fail.get(name):
+            self.fail[name] -= 1
+            return 409, {"error": {"code": "link_down", "message": "call: no frames come from the game"}}
+        if name in ("kit.app.open", "kit.app.status", "kit.app.recent") and not self.app_known:
+            return 400, {"error": {"code": "call_failed", "message": f"no app {args.get('app')}"}}
         if name == "kit.app.open":
+            if self.app_blocked:
+                return 200, {"ok": True, "result": {"app": args["app"], "on": False, "blocked": self.app_blocked}}
             self.app_on = True
             return 200, {"addon": "WuxianKit", "name": name, "ok": True, "result": self.status(args["app"])}
         if name == "kit.app.status":
             return 200, {"ok": True, "result": self.status(args["app"])}
+        if name == "kit.app.recent":
+            items = [it for it in self.app_items if it["id"] > args.get("since", -1)][-args.get("limit", 50):]
+            return 200, {"ok": True, "result": {"items": items, "next": self.app_next}}
         if name == "kit.app.stop":
             self.app_on = False
             self.emit("kit.app", {"app": args["app"], "on": False, "why": "stopped"})
@@ -151,7 +197,8 @@ class FakeDaemon:
                 hits, nxt = hits[:limit], hits[limit]["id"]
         if not hits and wait:
             self.clock.t += wait                 # the long-poll took its time
-        return 200, {"events": hits, "next": nxt, "truncated": False, "session": 7}
+        truncated, self.truncated = self.truncated, False
+        return 200, {"events": hits, "next": nxt, "truncated": truncated, "session": 7}
 
     # ---- what came
 
@@ -199,12 +246,13 @@ class Base(unittest.TestCase):
         self.json.write_text(json.dumps({"pid": pid, "port": port, "token": token, "started": pid * 1000,
                                          "url": f"http://127.0.0.1:{port}/"}), encoding="utf-8")
 
-    def stream(self, **decl):
-        decl.setdefault("title", "Demo")
-        decl.setdefault("hear", ["game:*"])
-        s = self.kit.app("demo", **decl)
-        self.assertIsNone(s.get(1))                     # opens it and finds nothing yet
+    def stream(self, **how):
+        s = self.kit.app("demo", **how)
+        self.assertIsNone(s.get(1))                     # joins it and finds nothing yet
         return s
+
+    def ids(self, wake):
+        return [i["id"] for i in wake["items"]]
 
 
 class Discovery(Base):
@@ -358,7 +406,7 @@ class OldWorkshop(Base):
     def test_an_app_runs_on_it(self):
         s = self.stream()
         self.fake.wake([1])
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [1])
+        self.assertEqual(self.ids(s.get(1)), [1])
 
     def test_a_new_daemon_is_asked_with_a_list_again(self):
         self.kit.events(["a.b", "c.d"], since=0, wait=0)
@@ -369,48 +417,185 @@ class OldWorkshop(Base):
         self.assertIsNone(self.kit.topic_mode)
 
 
+class Open(Base):
+    def test_open_starts_a_declared_app(self):
+        self.fake.app_on = False
+        st = self.kit.open("demo")
+        self.assertEqual((st["on"], st["lease"]), (True, 600))
+        self.kit.open("demo", minutes=120, lease=900)
+        self.assertEqual([b["args"] for b in self.fake.calls("kit.app.open")],
+                         [{"app": "demo"}, {"app": "demo", "minutes": 120, "lease": 900}])
+
+    def test_one_that_cannot_start(self):
+        self.fake.app_blocked = "the player turned demo off"
+        with self.assertRaises(wk.WuxianError) as cm:
+            self.kit.open("demo")
+        self.assertEqual((cm.exception.code, cm.exception.reason), ("not_started", "the player turned demo off"))
+        self.fake.app_known = False
+        with self.assertRaises(wk.WuxianError) as cm:
+            self.kit.open("demo")
+        self.assertEqual(cm.exception.code, "call_failed")
+
+
 class Apps(Base):
-    def test_open_sends_the_declaration(self):
-        s = self.stream(me=True, controls=["mute", "less", "more"], prompt=None)
-        body = self.fake.calls("kit.app.open")[0]
-        self.assertEqual(body["args"], {"app": "demo", "title": "Demo", "hear": ["game:*"], "me": True,
-                                        "controls": ["mute", "less", "more"]})
+    def test_it_joins_and_never_opens(self):
+        self.fake.wake(range(1, 41), lost=True)          # the app's wakes got to 40 before
+        self.fake.hear(41)                               # heard since, still gathered: its next wake brings it
+        s = self.stream()
         self.assertEqual(s.state, ("connected", ""))
-        self.assertEqual(s.opens, 1)
-        self.assertEqual(s.status["lease"], 600)
+        self.assertEqual((s.cursor, s.status["lease"]), (40, 600))      # from where its last wake ended
         polls = self.fake.polls()
-        self.assertEqual(polls[0]["since"], -1)          # the place is marked before the open
+        self.assertEqual(polls[0]["since"], -1)          # the place is marked before the status is read
         self.assertEqual(polls[1]["topic"], ["app.demo", "kit.app", "kit.ready"])
         self.assertNotEqual(polls[1]["since"], -1)
+        self.fake.wake([41, 42])
+        self.assertEqual(self.ids(s.get(1)), [41, 42])
+        self.assertEqual(s.cursor, 42)
+        self.assertEqual([b["name"] for b in self.fake.calls()], ["kit.app.status"])     # no open, declare or recent
+        self.assertEqual(self.fake.calls()[0]["args"], {"app": "demo"})
+
+    def test_a_kit_without_sent(self):
+        self.fake.old_kit = True
+        self.fake.hear(1, 2, 3)
+        s = self.stream()
+        self.assertEqual(s.cursor, 3)                    # from its newest item on
+        self.fake.wake([4])
+        self.assertEqual(self.ids(s.get(1)), [4])
+        t = self.kit.app("demo", since=1)                # a catch-up reads all it heard
+        w = t.get(1)
+        self.assertEqual((w["reason"], self.ids(w), w["after"], w["next"]), ("catchup", [2, 3, 4], 1, 4))
+
+    def test_an_app_that_does_not_run_ends_it_at_once(self):
+        self.fake.app_on = False
+        for why, ended in (("expired", "expired"), (None, "stopped")):
+            self.fake.app_why = why
+            s = self.kit.app("demo")
+            self.assertIsNone(s.get(100))
+            self.assertEqual(s.ended, ended)
+            self.assertEqual(list(s), [])
+        self.fake.app_known = False                      # no app of this id at all
+        s = self.kit.app("demo")
+        self.assertIsNone(s.get(100))
+        self.assertEqual(s.ended, "stopped")
+        self.assertEqual(len(self.fake.calls("kit.app.status")), 3)     # asked once each: no retry
+        self.assertEqual(self.fake.calls("kit.app.open"), [])
+        self.assertEqual(self.clock.slept, [])
 
     def test_wakes_in_order_and_repeats_dropped(self):
         s = self.stream()
         self.fake.wake([1, 2])
-        self.fake.wake([2, 3], reason="batch")
+        self.fake.wake([2, 3], reason="batch")           # 2 was given
         self.fake.wake([3])                              # nothing new: no wake
         self.fake.wake([], reason="idle")                # an idle wake has no items and still comes
         self.fake.emit("app.other", {"app": "other", "items": [{"id": 9}]})
         got = [s.get(1) for _ in range(3)]
-        self.assertEqual([(w["reason"], [i["id"] for i in w["items"]]) for w in got],
-                         [("urgent", [1, 2]), ("batch", [3]), ("idle", [])])
-        self.assertEqual(got[0]["app"], "demo")
+        self.assertEqual([(w["reason"], self.ids(w)) for w in got], [("urgent", [1, 2]), ("batch", [3]), ("idle", [])])
+        self.assertEqual((got[0]["app"], got[0]["after"], got[0]["next"], got[1]["next"]), ("demo", 0, 2, 3))
         self.assertIsNone(s.get(1))
+        self.assertEqual(s.cursor, 3)
 
-    def test_only_the_last_1000_ids_are_kept(self):
+    def test_ids_as_the_game_writes_them(self):
         s = self.stream()
-        self.fake.wake(range(1, 1002))
-        self.assertEqual(len(s.get(1)["items"]), 1001)
-        self.fake.wake([1, 1001])                        # 1 was forgotten, 1001 not
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [1])
+        self.fake.emit("app.demo", {"app": "demo", "reason": "item", "skipped": 0, "after": 0.0, "next": 2.0,
+                                    "items": [{"id": 1.0}, {"id": 2.0}]})
+        self.fake.emit("app.demo", {"app": "demo", "reason": "full", "skipped": 3, "after": 2.0, "next": 9.0,
+                                    "items": [{"id": 9.0}]})
+        self.fake.emit("app.demo", {"app": "demo", "reason": "old kit", "items": [{"id": 1}]})    # no cursor: as it is
+        self.assertEqual([(w["reason"], self.ids(w)) for w in (s.get(1), s.get(1), s.get(1))],
+                         [("item", [1, 2]), ("full", [9]), ("old kit", [1])])
+        self.assertEqual(s.cursor, 9)
+
+    def test_since_catches_up_first(self):
+        self.fake.wake([1, 2, 3, 4, 5], lost=True)
+        self.fake.hear(6)                                # still gathered: not read ahead of the app's wake
+        s = self.kit.app("demo", since=2)
+        self.assertEqual(s.cursor, 2)
+        self.assertEqual(s.get(1), {"app": "demo", "reason": "catchup", "items": self.fake.app_items[2:5],
+                                    "skipped": 0, "after": 2, "next": 5})
+        self.assertEqual(self.fake.calls("kit.app.recent")[0]["args"], {"app": "demo", "since": 2, "limit": 100})
+        self.assertEqual(s.cursor, 5)
+        self.fake.wake([6])
+        self.assertEqual(self.ids(s.get(1)), [6])
+        self.assertIsNone(s.get(1))
+        self.assertEqual(len(self.fake.calls("kit.app.recent")), 1)
+        t = self.kit.app("demo", since=6)                # the app's wakes got no further: nothing is asked
+        self.assertIsNone(t.get(1))
+        self.assertEqual((t.cursor, t.ended), (6, None))
+        self.assertEqual(len(self.fake.calls("kit.app.recent")), 1)
+
+    def test_since_and_what_the_app_keeps_no_more(self):
+        self.fake.wake([1, 2, 3, 4, 5], lost=True)
+        self.fake.app_items = []                         # its ring let go of them
+        s = self.kit.app("demo", since=2)
+        self.assertIsNone(s.get(1))
+        self.assertEqual(s.cursor, 5)                    # its wakes go on from there
+        self.fake.wake([6])
+        self.assertEqual((self.ids(s.get(1)), len(self.fake.calls("kit.app.recent"))), ([6], 1))
+        t = self.kit.app("demo", since=99)               # past its newest item (another character): from that one on
+        self.assertIsNone(t.get(1))
+        self.assertEqual(t.cursor, 6)
+        self.fake.wake([7])
+        self.assertEqual(self.ids(t.get(1)), [7])
+
+    def test_a_gap_is_caught_up_before_the_wake(self):
+        s = self.stream()
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.fake.wake([2, 3], lost=True)                # this one never came
+        self.fake.wake([4, 5], reason="batch", state={"mood": "calm"}, pace="low", notes={"facts": {"n": 1}})
+        self.fake.hear(6)
+        w = s.get(1)
+        self.assertEqual(w, {"app": "demo", "reason": "catchup", "items": self.fake.app_items[1:3], "skipped": 0,
+                             "after": 1, "next": 3})
+        w = s.get(1)                                     # the wake itself, as it is
+        self.assertEqual((w["reason"], self.ids(w), w["after"], w["next"]), ("batch", [4, 5], 3, 5))
+        self.assertEqual((w["state"], w["pace"], w["notes"]), ({"mood": "calm"}, "low", {"facts": {"n": 1}}))
+        self.assertIsNone(s.get(1))
+        self.assertEqual([b["args"] for b in self.fake.calls("kit.app.recent")],
+                         [{"app": "demo", "since": 1, "limit": 100}])
+        self.fake.wake([6])
+        self.assertEqual(self.ids(s.get(1)), [6])
+
+    def test_a_catch_up_that_fails_keeps_the_wakes(self):
+        s = self.stream()
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.fake.wake([2, 3], lost=True)
+        self.fake.fail["kit.app.recent"] = 2
+        self.fake.wake([4])
+        self.fake.wake([5])
+        self.assertIsNone(s.get(0.5))                    # never raises
+        self.assertEqual(s.state[0], "waiting")
+        got = [s.get(30), s.get(1), s.get(1)]
+        self.assertEqual([(w["reason"], self.ids(w)) for w in got],
+                         [("catchup", [2, 3]), ("urgent", [4]), ("urgent", [5])])       # nothing lost, nothing twice
+        self.assertIsNone(s.get(1))
+        self.assertEqual(s.state, ("connected", ""))
+        self.assertEqual(len(self.fake.calls("kit.app.recent")), 3)
+        self.assertEqual(self.clock.slept[:3], [0.5, 0.5, 2])
+
+    def test_events_the_daemon_dropped(self):
+        s = self.stream()
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.fake.wake([2, 3], lost=True)                # the daemon's journal let go of it before it was read
+        self.fake.hear(4)
+        self.fake.truncated = True
+        self.fake.emit("kit.app", {"app": "other", "on": True})
+        w = s.get(1)
+        self.assertEqual((w["reason"], self.ids(w), w["after"], w["next"]), ("catchup", [2, 3], 1, 3))
+        self.assertEqual(len(self.fake.calls("kit.app.status")), 2)     # where its wakes got is in the status
+        self.fake.wake([4])
+        self.assertEqual(self.ids(s.get(1)), [4])
 
     def test_the_iterator(self):
-        s = self.kit.app("demo", title="Demo", wait=10)
-        self.fake.on_call["kit.app.open"] = lambda b: self.fake.wake([1])
-        self.assertEqual([[i["id"] for i in w["items"]] for w in s], [[1]])     # then 10 s of nothing: it stops
+        s = self.kit.app("demo", wait=10)
+        self.assertEqual(list(s), [])                    # 10 s of nothing: it stops
         self.assertIsNone(s.ended)
+        self.fake.wake([1])
+        self.assertEqual([self.ids(w) for w in s], [[1]])               # the stream goes on, then 10 s of nothing
         self.fake.wake([2])
-        self.assertEqual([i["id"] for i in next(s)["items"]], [2])            # the stream goes on
-        del self.fake.on_call["kit.app.open"]
+        self.assertEqual(self.ids(next(s)), [2])
         t = self.kit.app("demo", wait=10, yield_timeouts=True)
         self.assertIsNone(next(t))
         self.assertIsNone(t.ended)
@@ -418,35 +603,52 @@ class Apps(Base):
     def test_the_heartbeat(self):
         self.fake.lease = 90                              # every 30 s (a third, at least 30)
         s = self.stream()
-        t0 = self.fake.call_times("kit.app.open")[0]
+        t0 = self.fake.call_times("kit.app.status")[0]
         s.get(100)
         beats = [round(t - t0) for t in self.fake.call_times("kit.app.status")]
-        self.assertEqual(beats, [30, 60, 90])
-        self.assertEqual(self.fake.calls("kit.app.status")[0]["args"], {"app": "demo"})
+        self.assertEqual(beats, [0, 30, 60, 90])
+        self.assertEqual(self.fake.calls("kit.app.status")[1]["args"], {"app": "demo"})
         self.assertTrue(all(p["wait"] <= 25 for p in self.fake.polls()))
 
     def test_the_heartbeat_of_a_long_lease(self):
         s = self.stream()                                 # lease 600: every 200 s
-        t0 = self.fake.call_times("kit.app.open")[0]
+        t0 = self.fake.call_times("kit.app.status")[0]
         s.get(450)
-        self.assertEqual([round(t - t0) for t in self.fake.call_times("kit.app.status")], [200, 400])
+        self.assertEqual([round(t - t0) for t in self.fake.call_times("kit.app.status")], [0, 200, 400])
 
-    def test_kit_ready_opens_it_again(self):
+    def test_kit_ready_reads_the_status_again(self):
         s = self.stream()
-        self.fake.emit("kit.ready", {"version": "0.6.0"})
-        self.fake.wake([5])
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [5])
+        self.fake.emit("kit.ready", {"version": "0.8.0"})
         self.assertIsNone(s.get(1))
-        self.assertEqual(s.opens, 2)
-        self.assertEqual(len(self.fake.calls("kit.app.open")), 2)
+        self.assertEqual(len(self.fake.calls("kit.app.status")), 2)
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.fake.app_on, self.fake.app_why = False, "left"             # a login as another character
+        self.fake.emit("kit.ready", {"version": "0.8.0"})
+        self.assertIsNone(s.get(1))
+        self.assertEqual(s.ended, "left")
+        self.assertEqual(self.fake.calls("kit.app.open"), [])
+
+    def test_items_that_start_again(self):
+        s = self.stream()
+        self.fake.wake([1, 2, 3])
+        self.assertEqual(self.ids(s.get(1)), [1, 2, 3])
+        self.fake.app_items, self.fake.app_next, self.fake.app_sent = [], 0, 0     # the saved data started again
+        self.fake.emit("kit.ready", {"version": "0.8.0"})
+        self.assertIsNone(s.get(1))
+        self.assertEqual(s.cursor, 0)
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
 
     def test_replaced_does_not_end_it(self):
         s = self.stream()
         self.fake.emit("kit.app", {"app": "demo", "on": False, "why": "replaced"})
         self.fake.emit("kit.app", {"app": "demo", "on": True, "ends": 123})
         self.fake.wake([1])
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.assertIsNone(s.get(1))
         self.assertIsNone(s.ended)
+        self.assertEqual(len(self.fake.calls("kit.app.status")), 2)     # opened again: its lease may be another
 
     def test_it_ends_when_the_app_stops(self):
         s = self.stream()
@@ -454,11 +656,15 @@ class Apps(Base):
         self.fake.emit("kit.app", {"app": "other", "on": False, "why": "player"})    # another app: nothing
         self.fake.emit("kit.app", {"app": "demo", "on": False, "why": "player"})
         self.fake.wake([2])
-        self.assertEqual([[i["id"] for i in w["items"]] for w in s], [[1]])          # the wake before still comes
+        self.assertEqual([self.ids(w) for w in s], [[1]])               # the wake before still comes
         self.assertEqual(s.ended, "player")
         self.assertIsNone(s.get(1))
         with self.assertRaises(StopIteration):
             next(s)
+        t = self.stream()
+        self.fake.emit("kit.app", {"app": "demo", "on": False, "why": "forgotten"})  # its extension was turned off
+        self.assertIsNone(t.get(1))
+        self.assertEqual(t.ended, "forgotten")
 
     def test_a_heartbeat_that_finds_it_stopped_ends_it(self):
         self.fake.lease = 60
@@ -473,36 +679,40 @@ class Apps(Base):
         self.assertEqual(self.fake.calls("kit.app.stop")[0]["args"], {"app": "demo"})
         self.assertEqual(s.ended, "closed")
         self.assertEqual(list(s), [])
+        self.fake.app_on = True
         t = self.stream()
         with t:
             pass
         self.assertEqual(t.ended, "closed")
         self.assertEqual(len(self.fake.calls("kit.app.stop")), 1)     # close() alone leaves the app running
 
-    def test_link_down_waits_and_opens_once_it_is_back(self):
+    def test_link_down_waits_and_joins_once_it_is_back(self):
         self.fake.link_down = True
-        s = self.kit.app("demo", title="Demo")
+        s = self.kit.app("demo")
         self.assertIsNone(s.get(20))                      # never raises
         self.assertEqual(s.state[0], "waiting")
         self.assertIn("the game is not connected", s.state[1])
         self.assertEqual(self.clock.slept[:3], [1, 2, 5])
+        self.assertIsNone(s.ended)
         self.fake.link_down = False
-        self.fake.on_call["kit.app.open"] = lambda b: self.fake.wake([1])
-        self.assertEqual([i["id"] for i in s.get(30)["items"]], [1])
+        self.assertIsNone(s.get(30))
         self.assertEqual(s.state, ("connected", ""))
-        self.assertEqual(s.opens, 1)
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
+        self.assertEqual(self.fake.calls("kit.app.open"), [])
 
     def test_backoff_while_the_daemon_is_away(self):
         with refuse_port(self.fake.port):
-            s = self.kit.app("demo", title="Demo")
+            s = self.kit.app("demo")
             self.assertIsNone(s.get(30))
         self.assertEqual(self.clock.slept, [1, 2, 5, 10, 10, 2])
         self.assertEqual(s.state[0], "waiting")
         self.assertIn("not running", s.state[1])
         self.assertEqual(self.fake.requests, [])
-        self.fake.on_call["kit.app.open"] = lambda b: self.fake.wake([1])
-        self.assertEqual([i["id"] for i in s.get(30)["items"]], [1])
+        self.assertIsNone(s.get(30))
         self.assertEqual(s.state, ("connected", ""))
+        self.fake.wake([1])
+        self.assertEqual(self.ids(s.get(1)), [1])
 
     def test_no_daemon_json_backs_off_too(self):
         self.json.unlink()
@@ -511,32 +721,37 @@ class Apps(Base):
         self.assertEqual(self.clock.slept[:4], [1, 2, 5, 10])
         self.assertIn("daemon.json", s.state[1])
 
-    def test_a_daemon_restart_starts_from_its_next_event_and_opens_again(self):
+    def test_a_daemon_restart_catches_up(self):
         s = self.stream()
         self.fake.wake([1])
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [1])
-        new = self.daemon()                              # another daemon, its event ids from 1 again
+        self.assertEqual(self.ids(s.get(1)), [1])
+        new = self.daemon()                              # another daemon, its event ids from 1 again; the same game
+        new.wake([1], lost=True)
         for _ in range(5):
             new.emit("kit.feed", {})                     # older than the stream: not given
-        new.wake([99])
+        new.wake([2, 3], lost=True)                      # the app's wakes while no daemon was there
+        new.hear(4)
         with refuse_port(self.fake.port):
             self.write_json(new.port, pid=2)
+            w = s.get(5)
+            self.assertEqual((w["reason"], self.ids(w), w["after"], w["next"]), ("catchup", [2, 3], 1, 3))
             self.assertIsNone(s.get(5))
-            new.wake([1, 2])
-            self.assertEqual([i["id"] for i in s.get(5)["items"]], [2])        # 1 was given already
-        self.assertEqual(len(new.calls("kit.app.open")), 1)
-        self.assertEqual(new.polls()[0]["since"], -1)
-        self.assertEqual(s.opens, 2)
+            new.wake([3, 4])
+            self.assertEqual(self.ids(s.get(5)), [4])    # 3 was given already
+        self.assertEqual(new.polls()[0]["since"], -1)    # its events from the next one on
+        self.assertEqual([b["name"] for b in new.calls()], ["kit.app.status", "kit.app.recent"])     # it is not opened
+        self.assertEqual(new.calls("kit.app.recent")[0]["args"], {"app": "demo", "since": 1, "limit": 100})
 
     def test_a_restart_found_by_the_token(self):
         s = self.stream()
         new = self.daemon()
+        new.wake([1, 2], lost=True)
+        new.emit("kit.app", {"app": "other", "on": True})
         self.write_json(new.port, token=TOKEN, pid=2)
         self.kit._info = dict(self.kit._info, token="stale")  # the old one's token: 401, read again, a new daemon
-        new.on_call["kit.app.open"] = lambda b: new.wake([7])
-        self.assertIsNone(s.get(1))
-        self.assertEqual([i["id"] for i in s.get(1)["items"]], [7])
-        self.assertEqual(len(new.calls("kit.app.open")), 1)
+        self.assertEqual(self.ids(s.get(1)), [1, 2])
+        self.assertEqual(new.calls("kit.app.open"), [])
+        self.assertEqual(len(new.calls("kit.app.status")), 1)
 
 
 if __name__ == "__main__":

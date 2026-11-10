@@ -168,7 +168,7 @@ class Declarations(unittest.TestCase):
     def test_call_outside_a_run(self):
         with self.assertRaises(wk.ExtensionError) as cm:
             self.ext.call("sense.bags")
-        self.assertEqual(cm.exception.code, "not_running")
+        self.assertEqual((cm.exception.code, cm.exception.reason, cm.exception.cap), (1, "down", "sense.bags"))
 
 
 class InMemory(unittest.TestCase):
@@ -183,8 +183,8 @@ class InMemory(unittest.TestCase):
         self.assertEqual([c["name"] for c in d["capabilities"]], ["hello", "boom", "slow", "bags"])
         self.assertEqual(self.t.call("hello", {"name": "Thrall"}),
                          {"text": "hi Thrall", "mood": "calm", "volume": 30, "caller": {"by": "agent"}})
-        self.assertEqual(self.t.call("demo.hello", caller={"by": "reaction", "id": "r1"})["caller"],
-                         {"by": "reaction", "id": "r1"})                 # the full id works too
+        who = {"by": "workshop", "chain": ["reaction:r1"]}
+        self.assertEqual(self.t.call("demo.hello", caller=who)["caller"], who)     # the full id works too
         self.assertEqual(self.t.next_event("said"), {"source": "said", "data": {"text": "Thrall"}})
         self.assertEqual(self.t.next_event()["data"], {"text": "you"})
         self.assertIsNone(self.ext.caller)                               # only inside a capability
@@ -237,7 +237,7 @@ class InMemory(unittest.TestCase):
         self.assertEqual(self.t.call("bags"), {"free": 2})
 
         def down(args):
-            raise wk.ExtensionError("the game is not connected", "link_down")
+            raise wk.ExtensionError("the game is not connected", reason="down")
         self.t.answer("sense.bags", down)
         with self.assertRaises(wk.ExtensionError) as cm:                # its error: this capability failed
             self.t.call("bags")
@@ -284,7 +284,8 @@ class InMemory(unittest.TestCase):
     def test_raw_messages_and_shutdown(self):
         self.assertEqual(self.t.send("frobnicate")["error"]["code"], -32601)
         self.assertEqual(self.t.send("call", {"name": "hello", "args": [1]})["error"],
-                         {"code": -32602, "message": "demo.hello: args is a JSON object"})
+                         {"code": -32602, "message": "demo.hello: args is a JSON object",
+                          "data": {"reason": "bad_args"}})
         self.assertEqual(self.t.shutdown()["result"], {})
 
 
@@ -402,7 +403,7 @@ class Process(unittest.TestCase):
                 others.append(m)
 
     def initialize(self, options=None):
-        mid = self.request("initialize", {"protocol": 1, "workshop": "0.9.13", "id": "voice",
+        mid = self.request("initialize", {"protocol": {"min": 1, "max": 1}, "workshop": "0.9.13", "id": "voice",
                                           "options": options or {}})
         return self.answer_of(mid)
 
@@ -415,9 +416,9 @@ class Process(unittest.TestCase):
 
         others = []                                                 # a call, its event
         ans = self.answer_of(self.request("call", {"name": "say", "args": {"text": "你好"},
-                                                   "caller": {"by": "reaction", "id": "r1"}}), others)
+                                                   "caller": {"by": "player", "app": "companion"}}), others)
         self.assertEqual(ans["result"], {"seconds": 0.2, "mood": "calm", "volume": 40,
-                                         "by": {"by": "reaction", "id": "r1"}})
+                                         "by": {"by": "player", "app": "companion"}})
         if not others:
             others.append(self.get())
         self.assertEqual(others, [{"jsonrpc": "2.0", "method": "event", "params": {"source": "said",
@@ -446,8 +447,10 @@ class Process(unittest.TestCase):
         self.assertEqual(self.answer_of(mid)["result"], {"free": 12})
         mid = self.request("call", {"name": "bags"})
         req = self.get()
-        self.send({"jsonrpc": "2.0", "id": req["id"], "error": {"code": "link_down", "message": "no game"}})
-        self.assertEqual(self.answer_of(mid)["error"], {"code": 1, "message": "sense.bags: no game"})
+        self.send({"jsonrpc": "2.0", "id": req["id"], "error": {"code": 1, "message": "no game",
+                                                                "data": {"reason": "down"}}})
+        self.assertEqual(self.answer_of(mid)["error"], {"code": 1, "message": "sense.bags: no game",
+                                                        "data": {"reason": "failed"}})
 
         self.send({"jsonrpc": "2.0", "method": "options", "params": {"options": {"volume": 70}}})
         self.assertEqual(self.get()["params"], {"source": "said", "data": {"text": "volume 70"}})
@@ -467,7 +470,8 @@ class Process(unittest.TestCase):
     def test_a_failed_setup_and_stdin_closed(self):
         self.start("--fail")
         ans = self.initialize()
-        self.assertEqual(ans["error"], {"code": 1, "message": "setup failed: RuntimeError: no model"})
+        self.assertEqual(ans["error"], {"code": 1, "message": "setup failed: RuntimeError: no model",
+                                        "data": {"reason": "failed"}})
         self.assertEqual(self.p.wait(5), 1)
         self.start()
         self.assertIn("result", self.initialize())

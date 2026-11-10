@@ -512,13 +512,14 @@ def create(addons, name, title=None, notes="", template="basic", interface=INTER
 
 EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 EXT_RESERVED = frozenset({"chat", "game", "route", "sense", "guide", "data", "tune", "gate", "codex", "guides",   # kit's
-                          "local", "wb", "wk"})
+                          "local", "wb", "wk", "kit"})
 EXT_TITLE_MAX = 48                                # bytes
 EXT_FILES = ("wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py")
 
 EXT_MAIN = '''"""{{title}} ({{id}}): a local extension of 无限工坊 (Wuxian Workshop). The workshop starts it (wuxian-extension.json:
 run) and calls its capabilities; the agent sees each one as the tool wk_{{id}}_<name>. How to write one: the workshop's
-extension_guide. After a change: extension_load {"id": "{{id}}"}, call its tools, read extension_logs {"id": "{{id}}"}."""
+extension_guide. After a change: extension_load {"id": "{{id}}"}, call its tools, read extension_logs {"id": "{{id}}"}.
+In player mode the player allows its command once in the workshop's App (Extensions page) before it runs."""
 from wuxiankit import Extension, ExtensionError
 
 ext = Extension()
@@ -526,7 +527,7 @@ ext = Extension()
 # an option the player sets in the workshop's App (Extensions page); get() is its value now
 greeting = ext.option("greeting", kind="text", default="Hello", title="{{option_title}}")
 
-# a source: apps and reactions hear its items as "{{id}}:greeted"
+# a source: reactions hear its items as "{{id}}:greeted" (an app's hear takes the game's sources only)
 greeted = ext.source("greeted", title="{{source_title}}", doc="Each greeting {{id}}.hello gave: {name, text}.")
 
 
@@ -573,6 +574,7 @@ class Hello(unittest.TestCase):
         self.assertEqual([c["name"] for c in d["capabilities"]], ["hello"])
         self.assertEqual([s["name"] for s in d["sources"]], ["greeted"])
         self.assertEqual([o["name"] for o in d["options"]], ["greeting"])
+        self.assertEqual(self.t.check_description(), [])           # what the workshop would find wrong with it
 
     def test_hello(self):
         self.assertEqual(self.t.call("hello", {"name": "Thrall"}), {"text": "Hi, Thrall!"})
