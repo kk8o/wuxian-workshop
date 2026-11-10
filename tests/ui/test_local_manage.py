@@ -177,7 +177,7 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   await st.lxInstall(r);
   out.update = { said: last(st), restart: st.lxRestart(st.lxCur) };
   out.restartKept = st.lxRestart(cur(st, 'herald'));           // it stays said while the page lives
-  // … not before its command is allowed: the same 允许运行, no error
+  // … not before its command is allowed: the same 批准运行, no error
   r = cur(st, 'greeter');
   await st.lxInstall(r);
   out.installAsk = { ask: st.lx.ask, needs: st.lxNeeds(st.lxCur), said: last(st), note: st.lx.note };
@@ -279,7 +279,7 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   calls.length = 0;
   await st.lxAddSubmit();
   out.addRetried = { posts: posts(), dialog: copyOf(st.lxa), sel: st.xp.sel };
-  // 添加 · 安装扩展包
+  // 添加 · 导入扩展包
   picks.asked.length = 0;
   picks.file = 'D:\\Downloads\\scout-1.0.0.zip';
   calls.length = 0;
@@ -410,7 +410,7 @@ class Manage(unittest.TestCase):
     def test_install_waits_for_the_approval(self):
         o = self.out["installAsk"]
         self.assertEqual((o["ask"], o["needs"], o["said"], o["note"]), ("greeter", True, "迎宾 需要批准", None))
-        self.assertEqual(self.out["approved"], {"restart": True, "states": ["current"], "said": "已允许 迎宾 运行"})
+        self.assertEqual(self.out["approved"], {"restart": True, "states": ["current"], "said": "已批准 迎宾"})
 
     def test_install_failed(self):
         self.assertEqual(self.out["installFailed"], {"bad": True, "text": "安装失败：未找到游戏目录"})
@@ -472,7 +472,7 @@ class Manage(unittest.TestCase):
         o = self.out["addPackage"]
         self.assertEqual(o["asked"], [["file", "zip"]])
         self.assertEqual(o["posts"], [["/api/local/add", {"path": "D:\\Downloads\\scout-1.0.0.zip"}]])
-        self.assertEqual((o["sel"], o["origin"], o["said"]), ("l:scout", "扩展文件夹", "已安装 scout"))
+        self.assertEqual((o["sel"], o["origin"], o["said"]), ("l:scout", "扩展文件夹", "已导入 scout"))
         self.assertEqual(self.out["addPackageAgain"], "已更新 scout")
         self.assertEqual(self.out["addPackageRefused"], {"open": True, "kind": "zip", "path": "D:\\Downloads\\bad-1.0.0.zip",
                                                          "busy": False, "error": "扩展包无效：no extension.json in it"})
@@ -544,7 +544,7 @@ class Page(unittest.TestCase):
         self.assertIn('@click="lxMenu(\'add\')"><svg class="ico"><use href="#i-plus"/></svg>添加</button>', head)
         self.assertIn('<div class="menu right" x-show="lx.menu === \'add\'"', head)
         items = re.findall(r'<button class="menu-item" @click="(\w+)\(\)">([^<]+)</button>', head)
-        self.assertEqual(items, [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
+        self.assertEqual(items, [("lxNewOpen", "新建扩展"), ("lxAddFolder", "链接文件夹"), ("lxAddPackage", "导入扩展包")])
         self.assertIn('x-show="lx.home" :title="t(\'扩展文件夹\') + t(\'：\') + lx.home" '
                       '@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg>扩展文件夹</button>', head)
         self.assertNotIn("扩展目录", head)                           # 扩展目录 is the catalog on this page: the folder has its own word
@@ -554,7 +554,7 @@ class Page(unittest.TestCase):
     def test_a_row(self):
         row = self.master[self.master.index('<li class="mitem line"'):self.master.index("</li>")]
         sub = row[row.index('<div class="mitem-sub">'):]
-        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-show="r.linked" x-text="r.linked"></span>',
+        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-show="r.linked" :title="r.linkedTip" x-text="r.linked"></span>',
                       'x-show="r.author" x-text="r.author"', '<span class="xp-where" :title="r.tip" x-text="r.where"></span>'):
             self.assertIn(piece, sub)
         self.assertNotRegex(row, r">[^<]*[\u4e00-\u9fff][^<]*<")   # a row's words come through x-text (no x-t on it)
@@ -562,9 +562,9 @@ class Page(unittest.TestCase):
     def test_nothing_yet(self):
         empty = self.master[self.master.index('<div class="lx-empty"'):]
         self.assertIn('x-show="lx.list && !xpInstalled.length && !lx.error"', empty)
-        self.assertIn("尚未添加扩展。", empty)
+        self.assertIn("还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", empty)
         self.assertEqual(re.findall(r'<button class="btn small" @click="(\w+)\(\)">([^<]+)</button>', empty),
-                         [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
+                         [("lxNewOpen", "新建扩展"), ("lxAddFolder", "链接文件夹"), ("lxAddPackage", "导入扩展包")])
         self.assertNotIn("new_extension", self.master)
 
     def test_the_detail_menu(self):
@@ -604,7 +604,9 @@ class Page(unittest.TestCase):
         d = self.detail
         kv = d[d.index("<dt>状态</dt>"):]
         kv = kv[:kv.index("</dl>")]
-        self.assertIn('<dt>来源</dt><dd x-text="lxOrigin(lxCur) || \'—\'"></dd>', kv)
+        self.assertIn('<dt>来源</dt><dd :title="lxOriginTip(lxCur)" x-text="lxOrigin(lxCur) || \'—\'"></dd>', kv)
+        self.assertIn('<dd x-show="lxCur.origin === \'linked\'"><button class="btn tiny" @click="lxCopyPrompt(lxCur)">'
+                      '复制给 Agent 的第一句话</button></dd>', kv)       # the one being developed: its first message at hand
         self.assertIn('<dt x-show="lxCur.author">作者</dt><dd x-show="lxCur.author" class="selectable" x-text="lxCur.author"></dd>', kv)
         self.assertIn('<dt x-show="lxCur.homepage">主页</dt><dd x-show="lxCur.homepage" class="mono selectable" x-text="lxCur.homepage"></dd>', kv)
         self.assertNotIn("openOut", d)                             # the homepage is words: the page opens nothing of it
@@ -624,7 +626,7 @@ class Page(unittest.TestCase):
         self.assertEqual(re.findall(r'<div class="modal-back" x-show="(\w+)\.open"', d), ["lxa", "lxn", "lxp"])
         self.assertIn('@submit.prevent="lxAddSubmit()"', d)
         self.assertIn('x-model="lxa.path"', d)
-        self.assertIn("lxa.kind === 'zip' ? t('安装扩展包') : t('链接文件夹')", d)
+        self.assertIn("lxa.kind === 'zip' ? t('导入扩展包') : t('链接文件夹')", d)
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxa.error" x-text="lxa.error"></p>', d)
         self.assertIn('@submit.prevent="lxNew()"', d)
         fields = re.findall(r'<label class="field"><span>([^<]+)</span><input x-t class="[^"]+" x-model="lxn\.(\w+)"', d)
@@ -637,7 +639,7 @@ class Page(unittest.TestCase):
     def test_calls_exist(self):
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', self.dialogs))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t"}
-        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen"})
+        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen", "lxCopyIdea"})
         for name in names - {"copy"}:
             self.assertRegex(self.js, r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, name)
         for name in names | {"lxMenu", "lxMenuClose", "lxAddFolder", "lxAddPackage", "lxNewOpen", "lxOpenHome", "lxOpen",
@@ -658,8 +660,8 @@ class Page(unittest.TestCase):
             self.assertIn("\n" + rule, self.css)
 
     def test_the_words_have_their_english(self):
-        for word in ("添加", "链接文件夹", "安装扩展包", "新建扩展", "扩展文件夹", "尚未添加扩展。", "再建一个",
-                     "首次运行前需要批准：关闭此窗口后，在详情中点「允许运行」。", "链接", "主页", "游戏插件",
+        for word in ("添加", "链接文件夹", "导入扩展包", "新建扩展", "扩展文件夹", "还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", "再建一个",
+                     "首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。", "链接", "主页", "游戏插件",
                      "有更新", "同名插件已存在", "游戏目录未知", "重启游戏后生效", "同时安装游戏插件：{names}",
                      "需要无限工坊 {v} 以上", "需要 WuxianKit {v} 以上", "版本不足", "更多", "打包", "移除", "确认移除",
                      "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",

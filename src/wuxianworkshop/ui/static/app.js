@@ -9,7 +9,7 @@
                                           extension_approval}; the app is the development environment only: a "player"
                                           mode left in old settings is switched back to "developer" once (migrateMode).
                                           extension_approval: "ask" (the default: a local extension's command waits for
-                                          the player's 允许运行 before its first run) or "auto" (the workshop allows it by
+                                          the player's 批准运行 before its first run) or "auto" (the workshop allows it by
                                           itself); the mode has no part in it
      GET  /api/logs?tail=1&limit=      -> {entries, next, truncated}: the newest of the backlog at load; then
      GET  /api/events?token=&since=    -> SSE "log" / "status" events, and "local" ({revision, extensions}: the local
@@ -781,7 +781,7 @@ function appState() {
         const game = mods.length ? this.xpJoin(mods) : null, st = this.lxState(r);
         return { key: 'l:' + r.id, title: this.lxTitle(r), aside: r.id, where: this.lxWhere(r), tip: this.lxWhereTip(r),
           version: r.version || '',
-          linked: r.origin === 'linked' ? this.lxOrigin(r) : '', author: r.author || '',
+          linked: r.origin === 'linked' ? this.lxOrigin(r) : '', linkedTip: this.lxOriginTip(r), author: r.author || '',
           pill: { text: st.text, cls: st.cls || 'off' }, count: (r.capabilities || []).length + (game ? game.count : 0) };
       });
       for (const c of this.xpCustom) {         // a package not in the game folder is in 扩展目录; one run from a local one's addon, its row
@@ -1442,7 +1442,7 @@ function appState() {
     },
     // 批准: the workshop runs an extension's command only once the player has allowed it (and again after the command
     // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask).
-    // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动允许)
+    // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动批准)
     lxUnapproved(r) { return !!r && r.allowed !== true && (r.approval === 'needed' || r.approval === 'changed'); },
     lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
     lxApprovalTitle(r) { return r && r.approval === 'changed' ? t('运行命令已变更') : t('需要批准'); },
@@ -1452,13 +1452,13 @@ function appState() {
       return c.map((a) => (/[\s"]/.test(String(a)) || a === '' ? '"' + String(a).replace(/"/g, '\\"') + '"' : String(a))).join(' ');
     },
     lxCanApprove(r) { return !!r && !(r.error && !Array.isArray(r.command)); },   // not a manifest without a command
-    async lxApprove(r) {                       // 允许运行: POST /api/local/approve, the row it answers taken in
+    async lxApprove(r) {                       // 批准运行: POST /api/local/approve, the row it answers taken in
       const fresh = ((r && r.addons) || []).filter((a) => a && a.state === 'missing').map((a) => a.folder);
       const d = await this.lxPost(r, 'approve', null, t('批准失败：'));
       if (!d) return;
       const now = (lxRowOf(d) || {}).addons || [];   // its game addons go in with the yes: a new one needs the game restarted
       if (now.some((a) => a && a.state === 'current' && fresh.includes(a.folder))) this.lxGameSet(r.id, true);
-      this.say(t('已允许 {name} 运行', { name: this.lxTitle(r) }));
+      this.say(t('已批准 {name}', { name: this.lxTitle(r) }));
     },
     lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
     lxCode(c) { return exitCode(c); },
@@ -1496,7 +1496,7 @@ function appState() {
         return d || {};
       } catch (e) {
         if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
-          this.lx.ask = r.id;                  // not an error: the same 允许运行 as a row that says it (which is read again)
+          this.lx.ask = r.id;                  // not an error: the same 批准运行 as a row that says it (which is read again)
           this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
           await this.loadLocal(true);
           return null;
@@ -1574,7 +1574,7 @@ function appState() {
       this.lxScrollEnd();
     },
 
-    // ---- 本机 · 管理: 添加 (链接文件夹 / 安装扩展包 / 新建扩展), 扩展文件夹, and of the one shown 打开文件夹 / 打包 / 移除 and
+    // ---- 本机 · 管理: 添加 (新建扩展 / 链接文件夹 / 导入扩展包), 扩展文件夹, and of the one shown 打开文件夹 / 打包 / 移除 and
     //      its 游戏插件. The folders and files are picked through the shell (pywebview's pick_folder / pick_file) and opened
     //      by it (open_folder, which opens only what the page lists); in a browser the path is typed (lxa) or shown (lxp)
     lxMenu(which) {                            // 'add' (the page bar's) | 'more' (the detail's)
@@ -1587,11 +1587,19 @@ function appState() {
       return t('请先读 {path}\\AGENT.md 和 extension_guide。然后在本机扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id })
         + (addon ? t('游戏插件在 addons\\{addon}：extension_load 会把它装进游戏，新插件完整重启游戏后才会出现，在那之前可以用 load 热加载。', { addon }) : '');
     },
+    lxIdeaPrompt() {                          // the first thing to tell the agent about an idea, before there is an extension
+      return t('用无限工坊做一个扩展，验证这个想法：（在这里写你的想法）。先读 extension_guide，判断放在游戏里、本机还是两边，再按指南新建。改完用 extension_load 载入，用它的 wk_ 工具试，出错时看 extension_logs。');
+    },
+    lxCopyIdea() {
+      this.lx.menu = '';
+      this.copy(this.lxIdeaPrompt(), t('给 Agent 的第一句话'));
+    },
     lxCopyPrompt(r) {
       this.lx.menu = '';
       this.copy(this.lxPrompt(r), t('给 Agent 的第一句话'));
     },
     lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('扩展文件夹'); },   // where its folder is
+    lxOriginTip(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发') : t('由扩展包导入或放进扩展文件夹；移除时移入回收区'); },
     lxBlocked(r) { return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop'); },    // this workshop is too old for it
     lxUnmet(r) {                               // what it requires and is not there, as one line ('' when all is)
       return ((r && r.unmet) || []).map((u) => {
@@ -1712,7 +1720,7 @@ function appState() {
       try { p = await window.pywebview.api.pick_folder(''); } catch (e) { this.say(t('选择文件夹：') + errText(e)); return; }
       if (p) await this.lxAdd(p, 'folder');
     },
-    async lxAddPackage() {                     // 安装扩展包: a .zip, unpacked into the extensions' folder
+    async lxAddPackage() {                     // 导入扩展包: a .zip, unpacked into the extensions' folder
       this.lx.menu = '';
       if (!this.canPickFile) { this.lxa = { open: true, kind: 'zip', path: '', busy: false, error: '' }; return; }
       let p = '';
@@ -1733,7 +1741,7 @@ function appState() {
         this.lxRow(row);
         this.xpSelect('l:' + row.id);
         const name = this.lxTitle(row);
-        this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已更新 {name}', { name }) : t('已安装 {name}', { name }));
+        this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已更新 {name}', { name }) : t('已导入 {name}', { name }));
       } catch (e) {
         this.lxa = { open: true, kind, path, busy: false, error: lxWhy(e) };
       }

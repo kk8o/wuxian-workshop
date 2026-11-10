@@ -1,10 +1,10 @@
 """批准 and the eight states of a local extension on the 扩展 page: app.js run under Node (skipped without it) against a
 stand-in for /api/local* in the shapes of contract5 (sections 7, 8, 11). A row's state reads 已停用 / 未运行 / 启动中 /
 运行中 / 无响应 / 停止中 / 已退出 or 异常退出 / 等待重试 (清单有误 with its error, 待批准 while it waits for the player), with
-since when and why; a row whose approval is needed or changed shows its command and folder with 允许运行 (POST
+since when and why; a row whose approval is needed or changed shows its command and folder with 批准运行 (POST
 /api/local/approve, the row it answers taken in); a start or a check the daemon refuses with 403 needs_approval shows
 the same, not an error; with approval ok nothing of it shows, nor for a row that says allowed (the setting
-extension_approval is "auto"). The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动允许): the form carries
+extension_approval is "auto"). The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动批准): the form carries
 it, "ask" unless the daemon says "auto", and the rows are read again when it changes."""
 import json
 import re
@@ -126,7 +126,7 @@ const paths = () => calls.map((c) => c[0]);
   out.refused = { posts: posts(), reread: paths().includes('/api/local'), note: st.lx.note, ask: st.lx.ask,
                   needs: st.lxNeeds(st.lxCur), said: last(), busy: st.lx.busy, state: st.lxState(st.lxCur).text };
 
-  // 允许运行: the row it answers taken in; then 载入 runs it
+  // 批准运行: the row it answers taken in; then 载入 runs it
   calls.length = 0;
   await st.lxApprove(st.lxCur);
   out.approved = { posts: posts(), reread: paths().includes('/api/local'), approval: st.lxCur.approval, ask: st.lx.ask,
@@ -277,7 +277,7 @@ class Approval(unittest.TestCase):
         a = self.out["approved"]
         self.assertEqual(a["posts"], [["/api/local/approve", {"id": "facts"}]])
         self.assertFalse(a["reread"])                                                    # the row came with the answer
-        self.assertEqual((a["approval"], a["ask"], a["needs"], a["said"], a["state"]), ("ok", "", False, "已允许 图鉴速查 运行", "未运行"))
+        self.assertEqual((a["approval"], a["ask"], a["needs"], a["said"], a["state"]), ("ok", "", False, "已批准 图鉴速查", "未运行"))
         self.assertEqual(self.out["loaded"], {"state": "运行中", "said": "已载入 图鉴速查", "note": None})
 
     def test_a_changed_command(self):
@@ -326,7 +326,7 @@ class Approval(unittest.TestCase):
 
 class Setting(unittest.TestCase):
     """本机扩展批准 in index.html: a select of the 常规 form on the 设置 page, posted with it as extension_approval; the
-    line under it shows with 自动允许 only; the words have their English"""
+    line under it shows with 自动批准 only; the words have their English"""
 
     def setUp(self):
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
@@ -341,7 +341,7 @@ class Setting(unittest.TestCase):
         start = self.form.index('<select class="input" name="extension_approval" x-model="form.extension_approval">')
         select = self.form[start:self.form.index("</select>", start)]
         self.assertEqual(re.findall(r'<option value="(\w+)">([^<]+)</option>', select),
-                         [("ask", "首次运行前询问"), ("auto", "自动允许")])
+                         [("ask", "首次运行前询问"), ("auto", "自动批准")])
         self.assertIn('<p class="muted small" x-show="form.extension_approval === \'auto\'">'
                       "供开发扩展时使用：新扩展不经确认即可运行命令。</p>", self.form)
         self.assertLess(start, self.form.index('type="submit"'))
@@ -352,7 +352,7 @@ class Setting(unittest.TestCase):
 
     def test_the_english(self):
         for zh, en in (("本机扩展批准", "Local extension approval"), ("首次运行前询问", "Ask before the first run"),
-                       ("自动允许", "Allow automatically"),
+                       ("自动批准", "Approve automatically"),
                        ("供开发扩展时使用：新扩展不经确认即可运行命令。",
                         "For developing extensions: a new extension runs its command without confirmation.")):
             self.assertIn(f"'{zh}': '{en}',", self.i18n)
@@ -377,7 +377,7 @@ class Template(unittest.TestCase):
         self.assertIn('x-text="lxCur.path || \'—\'"', card)
         self.assertIn('@click="lxApprove(lxCur)"', card)
         self.assertIn("!lxCanApprove(lxCur)", card)
-        self.assertIn("t('允许运行')", card)
+        self.assertIn("t('批准运行')", card)
 
     def test_the_command_wraps(self):
         rule = self.css[self.css.index(".lx-cmd"):]

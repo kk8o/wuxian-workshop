@@ -59,6 +59,9 @@ out.facts = sel('l:facts');
 out.sysSel = sel('x:kit');
 out.eui = sel('c:wuxiankit-eui');
 out.extLine = st.xpExtLine;
+out.idea = st.lxIdeaPrompt();
+out.originTips = [st.lxOriginTip(st.lx.list[1]), st.lxOriginTip(st.lx.list[0]), st.lxOriginTip(null)];
+out.linkedTips = st.xpInstalled.filter((r) => r.linked).map((r) => r.linkedTip);
 st.lx.list = [];
 out.emptyInstalled = st.xpInstalled.map((r) => r.key);
 console.log(JSON.stringify(out));
@@ -111,6 +114,14 @@ class Groups(unittest.TestCase):
         self.assertEqual((self.out["eui"]["kind"], self.out["eui"]["tag"]), ("custom", "游戏"))
         self.assertEqual(self.out["extLine"], "1 个内置扩展 · 3 个来自其他插件")
 
+    def test_the_idea_and_the_origins(self):
+        idea = self.out["idea"]
+        self.assertTrue(idea.startswith("用无限工坊做一个扩展，验证这个想法：（在这里写你的想法）。先读 extension_guide"), idea)
+        for word in ("extension_load", "wk_", "extension_logs"):
+            self.assertIn(word, idea)
+        self.assertEqual(self.out["originTips"], ["文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发", "由扩展包导入或放进扩展文件夹；移除时移入回收区", ""])
+        self.assertEqual(self.out["linkedTips"], ["文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发"])
+
 
 class Template(unittest.TestCase):
     """index.html: the three groups, the page bar's 添加, a row of 已添加, the 能力 tab of a local extension with a game half"""
@@ -137,8 +148,18 @@ class Template(unittest.TestCase):
     def test_the_page_bar_adds(self):
         self.assertIn('@click="lxMenu(\'add\')"><svg class="ico"><use href="#i-plus"/></svg>添加</button>', self.bar)
         items = re.findall(r'<button class="menu-item" @click="(\w+)\(\)">([^<]+)</button>', self.bar)
-        self.assertEqual(items, [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
+        self.assertEqual(items, [("lxNewOpen", "新建扩展"), ("lxAddFolder", "链接文件夹"), ("lxAddPackage", "导入扩展包")])
         self.assertIn('@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg>扩展文件夹</button>', self.bar)
+
+    def test_the_title_says_what_extensions_are_for(self):
+        self.assertIn('<span class="pg-help" x-t tabindex="0" title="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。" aria-label="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。">'
+                      '<svg class="ico"><use href="#i-info"/></svg></span>', self.bar)
+        empty = self.page[self.page.index('<div class="lx-empty"'):]
+        empty = empty[:empty.index("</div>\n            </div>")]
+        self.assertIn('<button class="btn small primary" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>', empty)
+        self.assertIn('<button class="btn tiny" type="button" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>', self.page)
+        self.assertNotIn("安装扩展包", self.page)            # a package is imported: 安装 is for addons
+        self.assertNotIn("允许运行", self.page)              # the player approves (批准运行, 本机扩展批准)
 
     def test_the_caps_tab_lists_the_game_half(self):
         caps = self.page[self.page.index("<div x-show=\"xpTab === 'caps'\">"):self.page.index('<div class="toolbar lx-out-bar"')]
@@ -147,8 +168,9 @@ class Template(unittest.TestCase):
         self.assertIn('x-for="tool in (xpSel.tools || [])"', caps)
 
     def test_the_words_have_their_english(self):
-        for word in ("内置", "已添加", "扩展目录", "可安装到游戏", "本机", "游戏", "尚未添加扩展。", "在这台电脑上运行，不需要游戏",
-                     "由游戏插件经扩展框架提供", "{a} 个内置扩展 · {b} 个来自其他插件", "随扩展框架提供，在游戏中运行，不能单独移除", "其他插件在游戏中提供的扩展，以及添加到本机的扩展",
+        for word in ("内置", "已添加", "扩展目录", "可安装到游戏", "本机", "游戏", "还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", "在这台电脑上运行，不需要游戏",
+                     "由游戏插件经扩展框架提供", "{a} 个内置扩展 · {b} 个来自其他插件", "扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。", "文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发",
+                     "由扩展包导入或放进扩展文件夹；移除时移入回收区", "导入扩展包", "导入", "已导入 {name}", "批准运行", "已批准 {name}", "自动批准", "交给 Agent", "随扩展框架提供，在游戏中运行，不能单独移除", "其他插件在游戏中提供的扩展，以及添加到本机的扩展",
                      "无限工坊扩展目录中尚未安装到游戏的扩展", "由游戏插件提供，在游戏中运行", "在这台电脑上运行，不需要游戏", "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行"):
             self.assertRegex(self.i18n, r"\n\s*'%s':" % re.escape(word), word)
 
