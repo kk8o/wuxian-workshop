@@ -54,8 +54,13 @@ class Environment(unittest.TestCase):
             self.assertEqual((env["PYTHONPATH"], env["PYTHONUNBUFFERED"], env["PYTHONIOENCODING"]),
                              (str(Path("C:/sdk")), "1", "utf-8"))      # not the daemon's PYTHONPATH
             self.assertEqual({k for k in env if k.upper().startswith(("WUXIAN_", "PYTHON"))},
-                             {"WUXIAN_EXTENSION", "WUXIAN_HOME", "WUXIAN_MUTEX", "PYTHONPATH", "PYTHONUNBUFFERED",
-                              "PYTHONIOENCODING"})
+                             {"WUXIAN_EXTENSION", "WUXIAN_EXTENSION_DATA", "WUXIAN_HOME", "WUXIAN_MUTEX", "PYTHONPATH",
+                              "PYTHONUNBUFFERED", "PYTHONIOENCODING"})
+            # its data folder: in the state folder (the daemon's, or the one given), by its id
+            self.assertEqual(env["WUXIAN_EXTENSION_DATA"], str(home() / "state" / "extensions" / "fx" / "data"))
+            self.assertEqual(P.environment({"id": "fx", "env": {}}, Path("C:/sdk"), Path("C:/st"))[P.DATA_ENV],
+                             str(Path("C:/st") / "extensions" / "fx" / "data"))
+            self.assertEqual(P.data_folder("fx", "C:/st"), Path("C:/st") / "extensions" / "fx" / "data")
             for name in ("PATH", "SYSTEMROOT"):                        # what a process needs to run at all
                 if name in os.environ:
                     self.assertEqual([env[k] for k in self.names(env, name)], [os.environ[name]], name)
@@ -82,6 +87,8 @@ class Environment(unittest.TestCase):
             self.assertEqual((env["WUXIAN_EXTENSION"], env["WUXIAN_HOME"], env["WUXIAN_MUTEX"]),
                              ("fx", str(home()), "mx"))
             self.assertEqual([env[k] for k in self.names(env, "PATH")], ["C:/only"])     # one of each name
+            env = P.environment({"id": "fx", "env": {"WUXIAN_EXTENSION_DATA": "C:/else"}}, Path("C:/sdk"))
+            self.assertEqual(env["WUXIAN_EXTENSION_DATA"], str(home() / "state" / "extensions" / "fx" / "data"))
         with mock.patch.dict(os.environ):
             os.environ.pop("WUXIAN_MUTEX", None)
             env = P.environment({"id": "fx", "env": {}}, Path("C:/sdk"))
@@ -102,7 +109,10 @@ class Processes(HostCase):
                          ("fx", str(self.root / "home"), str(self.root / "sdk"), "utf-8"))
         self.assertEqual((env["FIXTURE_MODE"], env["FIXTURE_EXTRA"]), ("", "caps"))      # the manifest's env
         self.assertLessEqual({k for k in env if k.upper().startswith("WUXIAN_")},
-                             {"WUXIAN_EXTENSION", "WUXIAN_HOME", "WUXIAN_MUTEX"})
+                             {"WUXIAN_EXTENSION", "WUXIAN_EXTENSION_DATA", "WUXIAN_HOME", "WUXIAN_MUTEX"})
+        data = self.root / "state" / "extensions" / "fx" / "data"      # its data folder: there before it started
+        self.assertEqual(env["WUXIAN_EXTENSION_DATA"], str(data))
+        self.assertTrue(data.is_dir())
         self.assertEqual({k for k in env if k.upper().startswith("PYTHON")},
                          {"PYTHONPATH", "PYTHONUNBUFFERED", "PYTHONIOENCODING"})
 

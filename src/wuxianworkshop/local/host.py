@@ -3,6 +3,7 @@ stop, calls, the rows the API shows, what it adds to apps, what an extension ask
 is made of is beside it:
 
     registry.py   the registry, <state>\extensions.json: {revision, extensions: [{id, path, enabled, options, described}]}
+    home.py       the extensions' home folder, <WUXIAN_HOME>\extensions: the folders the workshop keeps itself
     process.py    one process of an extension (Proc): its environment and command, its threads, the end of its tree
     rpc.py        the protocol on its pipe (JSON-RPC 2.0, UTF-8, one object per line): requests, answers, errors
     logs.py       its output, <state>\extensions\<id>\output.log (stderr, stdout that is no protocol, the host's lines)
@@ -15,7 +16,15 @@ An extension starts on the first call of one of its capabilities (start "use"), 
 autostart()); it runs until it is stopped, set off, removed or the daemon ends (close(): shutdown to each, its process
 tree ended after SHUTDOWN_WAIT seconds). One that crashed starts again at its next call. Nothing of it runs before its
 command is approved (allow(): the registry says whether; else it is refused with needs_approval until the player
-confirms it in the App, or, where the player's setting says so (auto()), the workshop approves it by itself).
+confirms it in the App, or, where the player's setting says so (auto()), the workshop approves it by itself; never
+one whose entry has ask, which was not written on this computer), and nothing of one that needs a newer workshop
+than this one (require(): requires_unmet).
+
+An extension is where its folder is. One whose folder is right in the extensions' home folder (Host.home, home.py) is
+kept by the workshop (the row's origin "home"): it is found there without being registered (discover(), before a
+listing and before autostart: registered with ask, so the player allows it once in the App), it goes when its folder
+went, and removing it moves the folder to the home's .removed. Any other is registered by its path (origin "linked":
+extension_add, new_extension), and the workshop never touches its folder.
 
 Where an extension is, is one field, its state (self.runs[id], changed only by to()):
 
@@ -50,9 +59,10 @@ from pathlib import Path
 
 from .. import __version__
 from ..daemon.api import ApiError
-from ..paths import state_dir
+from ..paths import extensions_home, state_dir
 from . import adds as A
 from . import check as C
+from . import home as H
 from . import manifest as M
 from . import process as P
 from . import rpc as R
@@ -70,6 +80,7 @@ STATES = ("off", "stopped", "starting", "running", "hung", "stopping", "exited",
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
 QUIET_CODES = ("stopping", "stopped", "needs_approval", "not_found", "off")   # a start that ended so did not fail
+DISCOVER_EVERY = 2.0                  # seconds between two looks at the extensions' home folder at least (discover)
 
 
 def duration(seconds):
@@ -95,16 +106,28 @@ class Host:
     the extensions changed. python: the interpreter for run ["python", ...] without the manifest's own (default:
     default_python()); sdk: the folder put first on PYTHONPATH (default: sdk_dir()); auto(): whether the workshop
     approves an extension's command by itself now (the daemon's setting extension_approval is "auto"; default: it
-    does not, the player is asked)"""
+    does not, the player is asked). home: the extensions' home folder (default paths.extensions_home()); taken():
+    the ids of the extensions the installed WuxianKit lists, which a folder that is not registered yet cannot have
+    (default: none); kit_version(): the installed WuxianKit's version or None (a manifest's requires.kit is judged
+    by it); addons_dir(): the game's AddOns folder or None while the game folder is not known, and interface(): the
+    client's Interface number or None (both only kept here: installing an extension's game addons reads them)"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
-                 python=None, sdk=None, auto=None):
+                 python=None, sdk=None, auto=None, home=None, taken=None, kit_version=None, addons_dir=None,
+                 interface=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
         self.on_event, self.on_call, self.on_change = on_event, on_call, on_change
         self.python = python
         self.auto = auto or (lambda: False)         # auto(): the workshop approves a command by itself now
+        self.home = Path(home) if home is not None else extensions_home()
+        self.taken = taken or (lambda: ())          # taken(): the ids WuxianKit's extensions have (taken_ids)
+        self.kit_version = kit_version or (lambda: None)
+        self.addons_dir = addons_dir or (lambda: None)
+        self.interface = interface or (lambda: None)
+        self.looked = None            # when discover() last looked at the home folder (time.monotonic())
+        self.passed = {}              # a folder there that was not registered (its path, case folded) -> why, as noted
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
         self.lock = threading.RLock()
         self.reg = Registry(self.root, self.lock, on_save=self.saved,   # extensions.json (registry.py), under self.lock
@@ -254,11 +277,68 @@ class Host:
         except OSError:
             return []
 
+    # what a row says of where the extension is from and what it needs (the manifest's author, homepage, requires and
+    # addons; home.py)
+
+    def taken_ids(self):
+        """the ids a folder that is not registered yet cannot have: those of the installed WuxianKit's extensions
+        (taken(); none when that cannot be asked now). Only add, check and discover use it: a registered extension
+        keeps its id whatever WuxianKit lists later"""
+        try:
+            return tuple(x for x in (self.taken() or ()) if isinstance(x, str))
+        except Exception:
+            return ()
+
+    def kit(self):
+        """the installed WuxianKit's version, or None when it is not known now"""
+        try:
+            v = self.kit_version()
+        except Exception:
+            return None
+        return v if isinstance(v, str) and v else None
+
+    def origin(self, e):
+        """"home": the entry's folder is right in the extensions' home folder, the workshop keeps it; "linked": it is
+        registered by its path and the workshop never touches its folder. Worked out each time, never stored"""
+        return "home" if H.inside(e["path"], self.home) else "linked"
+
+    def unmet(self, m):
+        """what of a manifest's requires this workshop and the installed WuxianKit do not meet (manifest.unmet):
+        [{what, needs, has}]"""
+        return M.unmet((m or {}).get("requires"), self.version, self.kit())
+
+    def unmet_error(self, m):
+        """the ApiError requires_unmet (409) of a manifest that needs a newer workshop than this one, or None. What it
+        needs of WuxianKit does not stop it: that is only in its row's unmet"""
+        short = next((u for u in self.unmet(m) if u["what"] == "workshop"), None)
+        if short is None:
+            return None
+        return ApiError(409, "requires_unmet",
+                        f"{m['id']} needs WuxianWorkshop {short['needs']} or newer, this is {short['has']}: update the "
+                        f"workshop (the WuxianWorkshop App does it); nothing of it runs before that", unmet=[short])
+
+    def require(self, m):
+        """the gate beside allow(): nothing of an extension runs in a workshop older than its manifest's
+        requires.workshop. ApiError requires_unmet (409)"""
+        error = self.unmet_error(m)
+        if error is not None:
+            raise error
+
+    def addon_rows(self, m):
+        """the game addons of an extension as its row shows them: [{folder, version, state}], in the manifest's order.
+        Here nothing is known of the game's AddOns folder yet: version None, state "unknown" (what reads
+        addons_dir() and interface() says missing / outdated / ok / newer / foreign)"""
+        return [dict(folder=name, version=None, state="unknown") for name in (m or {}).get("addons") or []]
+
     def row(self, e):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
         command: what the workshop runs for it, None while its manifest cannot be used; adds: what its manifest adds to
         apps, and allowed: whether any of it is added now (adds.allowed: the player allowed its command, or the
-        workshop allows commands by itself)"""
+        workshop allows commands by itself). origin: "home" (its folder is in the extensions' home folder) or
+        "linked"; author, homepage, requires {workshop?, kit?}: the manifest's; unmet: [{what, needs, has}] of
+        requires that this computer does not meet (a workshop that is too old is also the row's error: it does not
+        start); addons: [{folder, version, state}], its game addons. A manifest that cannot be read: None, None, {},
+        [], []"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -268,7 +348,8 @@ class Host:
             error = (f"its manifest's id is {m['id']} now, it was registered as {e['id']}: extension_remove "
                      f"{e['id']}, then extension_add the folder again")
             m = None
-        state, since, why, pid, started, exit_code, err = self.state_of(e, error)
+        short = self.unmet_error(m) if m is not None else None
+        state, since, why, pid, started, exit_code, err = self.state_of(e, error or (short and short.message))
         desc = e.get("described") or {}
         return dict(id=e["id"], title=(m or {}).get("title") or e["id"], version=(m or {}).get("version"),
                     path=e["path"], enabled=e["enabled"], start=(m or {}).get("start") or "use", state=state,
@@ -278,7 +359,10 @@ class Host:
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
-                    adds=A.row(m), approval=self.reg.approval(e), allowed=A.allowed(self, e))
+                    adds=A.row(m), approval=self.reg.approval(e), allowed=A.allowed(self, e),
+                    origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
+                    requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
+                    addons=self.addon_rows(m))
 
     def rows(self):
         with self.lock:
@@ -290,11 +374,13 @@ class Host:
 
     def listing(self):
         """{revision, extensions: [row], problem: why extensions.json cannot be read or written now (the registry's
-        words; None: it can)}"""
+        words; None: it can), home: the extensions' home folder}. What is in the home folder now is looked at first
+        (discover)"""
+        self.discover()
         with self.lock:
             data = self.load()
             return dict(revision=int(data.get("revision") or 0), extensions=[self.row(e) for e in data["extensions"]],
-                        problem=self.reg.problem)
+                        problem=self.reg.problem, home=str(self.home))
 
     def manifest_entries(self):
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
@@ -362,11 +448,14 @@ class Host:
     def allow(self, e):
         """the gate before anything of a registered extension runs (a start, a check's process, its tests): nothing
         when the registry says its command is approved as it is now. Else, where the setting says so (auto()), the
-        workshop approves it here; otherwise ApiError needs_approval (403)"""
+        workshop approves it here, unless the entry has ask (it came in a package or was found in the extensions'
+        home folder: somebody else may have written it, so only the player allows it, whatever the setting; and
+        again whenever what it runs changed); otherwise ApiError needs_approval (403)"""
         approval = self.reg.approval(e)
         if approval == "ok":
             return
-        if self.auto():
+        ask = bool(e.get("ask"))
+        if self.auto() and not ask:
             self.reg.approve(e["id"], "developer")
             self.note(f"local extension {e['id']}: its command is approved (the setting allows it by itself)")
             return
@@ -374,6 +463,8 @@ class Host:
                        f"{e['id']} " + ("changed the command it starts with since the player confirmed it"
                                         if approval == "changed" else "is new: the player has not confirmed the "
                                                                       "command it starts with")
+                       + (" (it came in a package or was found in the extensions folder, so the workshop does not "
+                          "approve it by itself)" if ask and self.auto() else "")
                        + ". The player confirms it on the Extensions page of the WuxianWorkshop App; nothing of it "
                          "runs before that", approval=approval)
 
@@ -403,8 +494,9 @@ class Host:
 
     def add(self, path):
         """registers an extension by its folder or its manifest (an absolute path): its row (the one there when the
-        folder is registered already). ApiError bad_manifest (with problems), extension_exists (another folder has its
-        id). Started at once when its manifest says start "workshop" """
+        folder is registered already, whatever its manifest says now). ApiError bad_manifest (with problems: an id
+        one of WuxianKit's extensions has is one, taken_ids), extension_exists (another folder has its id). Started
+        at once when its manifest says start "workshop" """
         if not isinstance(path, str) or not path.strip():
             raise ApiError(400, "bad_request", "path: the full path of an extension's folder (or its wuxian-extension.json)")
         p = Path(path.strip())
@@ -412,46 +504,202 @@ class Host:
             raise ApiError(400, "bad_request", f"path: a full path ({path} is not)")
         check_folder(p)
         folder, _ = M.locate(p.resolve())
-        m, problems = M.check_manifest(folder)
+        key = os.path.normcase(str(folder))
+        with self.lock:
+            same = next((e for e in self.load()["extensions"] if os.path.normcase(e["path"]) == key), None)
+            if same is not None:
+                return self.row(same)
+        m, problems = M.check_manifest(folder, taken=self.taken_ids())
         if m is None:
             raise ApiError(400, "bad_manifest", str(M.ManifestError(problems)), problems=problems)
-        key = os.path.normcase(str(folder))
+        e = self.register(folder, m)
+        if m["start"] == "workshop" and e["id"] == m["id"]:
+            self.ensure(m["id"], "start workshop")
+        return self.get(e["id"])
+
+    def register(self, folder, m, ask=False, how="registered"):
+        """a new entry for the extension in `folder`: {id, path, enabled true, options {}, described None}, with
+        ask true when `ask` (it was not written on this computer: a package, or a folder found in the extensions'
+        home folder; allow() then leaves its approval to the player). Saved, noted (`how`: the note's word for what
+        happened) and told (changed()); the entry (a copy). Nothing of it is started here.
+
+        folder: its folder as the registry keeps it, an absolute, resolved path (str or Path). m: its manifest as
+        manifest.check_manifest(folder, taken=host.taken_ids()) gave it; the caller checked it, here only its id is
+        read. A folder that is registered already keeps its entry, which is what comes back (ask is set on it when
+        `ask`; nothing else of it changes: reset() is for a folder whose content was replaced). ApiError
+        extension_exists (409) when another folder has the id"""
+        folder = str(folder)
+        key = os.path.normcase(folder)
         with self.lock:
             data = self.load()
             same = next((e for e in data["extensions"] if os.path.normcase(e["path"]) == key), None)
             if same is not None:
-                return self.row(same)
-            other = next((e for e in data["extensions"] if e["id"] == m["id"]), None)
-            if other is not None:
-                raise ApiError(409, "extension_exists", f"the id {m['id']} is taken by {other['path']}: give this one "
-                                                        f"another id, or extension_remove that one first")
-            e = dict(id=m["id"], path=str(folder), enabled=True, options={}, described=None)
-            data["extensions"].append(e)
-            self.save(data)
-        self.note(f"local extension {m['id']}: registered ({folder})")
+                if not ask or same.get("ask"):
+                    return same
+                same["ask"] = True
+                self.save(data)
+                e = same
+            else:
+                other = next((e for e in data["extensions"] if e["id"] == m["id"]), None)
+                if other is not None:
+                    raise ApiError(409, "extension_exists", f"the id {m['id']} is taken by {other['path']}: give this "
+                                                            f"one another id, or extension_remove that one first")
+                e = dict(id=m["id"], path=folder, enabled=True, options={}, described=None)
+                if ask:
+                    e["ask"] = True
+                data["extensions"].append(e)
+                self.save(data)
+                self.note(f"local extension {m['id']}: {how} ({folder})"
+                          + (": the player allows it on the Extensions page before anything of it runs" if ask else ""))
         self.changed()
-        if m["start"] == "workshop":
-            self.ensure(m["id"], "start workshop")
-        return self.get(m["id"])
+        return self.entry(e["id"])
 
-    def remove(self, eid):
-        """takes an extension off the registry (stopped first; its folder stays)"""
-        e = self.entry(eid)
-        self.stop(e["id"], quiet=True)
+    def reset(self, eid, folder=None):
+        """a registered extension whose folder's content was replaced by another version (a package installed over
+        it) is new again: ask true, its approval and its description gone (the player allows the new one before
+        anything of it runs, and it describes itself again); enabled and options stay, its failed starts are
+        forgotten. folder: where it is now, when that is another path than before (absolute, resolved). Saved, noted
+        and told (changed()); the entry (a copy). ApiError not_found.
+
+        It does not stop anything and does not touch the folder. The caller stops the extension first (stop()), then
+        holds host.lock from before the old folder is moved away (home.trash) until this returns: discover() takes
+        an extension of the home folder whose folder is not there off the registry, and it waits for that lock"""
         with self.lock:
             data = self.load()
-            data["extensions"] = [x for x in data["extensions"] if x["id"] != e["id"]]
+            e = self.entry(eid, data)
+            e.update(ask=True, approved=None, described=None)
+            if folder is not None:
+                e["path"] = str(folder)
             self.save(data)
-            self.runs.pop(e["id"], None)
-            left = self.procs.pop(e["id"], None)       # one that would not end: nothing of it stays here
-            out = self.outputs.pop(e["id"], None)
+            self.forgive(e)
+            self.runs[e["id"]].update(error=None, exit_code=None)
+        self.note(f"local extension {e['id']}: replaced by another version ({e['path']}): the player allows it on the "
+                  f"Extensions page before anything of it runs")
+        self.changed()
+        return self.entry(e["id"])
+
+    def drop(self, e, gone=False):
+        """(under the lock) takes an entry off the registry, with what the host keeps of its extension (which was
+        stopped before): what forgotten() ends, or None when the entry was not there. gone: only if its folder is
+        still not there (discover: looked at again under the lock, so a folder that is being replaced is not taken
+        for one that went)"""
+        data = self.load()
+        there = next((x for x in data["extensions"] if x["id"] == e["id"]
+                      and os.path.normcase(x["path"]) == os.path.normcase(e["path"])), None)
+        if there is None or (gone and os.path.isdir(there["path"])):
+            return None
+        data["extensions"] = [x for x in data["extensions"] if x is not there]
+        self.save(data)
+        self.runs.pop(e["id"], None)
+        left = self.procs.pop(e["id"], None)           # one that would not end: nothing of it stays here
+        return left, self.outputs.pop(e["id"], None)
+
+    def forgotten(self, e, held, why=""):
+        """(not under the lock: a process's end takes it) after drop(): what was left of it is ended, noted, told"""
+        left, out = held
         if left is not None:
             left.kill()
         if out is not None:
             out.close()
-        self.note(f"local extension {e['id']}: no longer registered ({e['path']})")
+        self.note(f"local extension {e['id']}: no longer registered ({e['path']}{why})")
         self.changed()
-        return dict(removed=True, id=e["id"], path=e["path"])
+
+    def remove(self, eid):
+        """takes an extension off the registry (stopped first): {removed: True, id, path, kept}. A linked one's
+        folder stays where it is (kept None). One in the extensions' home folder has its folder moved to the home's
+        .removed (home.trash; kept: where it is now, the newest home.KEPT stay there); ApiError folder_busy (409)
+        when it cannot be moved now: then it is still registered, and stopped"""
+        e = self.entry(eid)
+        home = self.origin(e) == "home"
+        self.stop(e["id"], quiet=True)
+        kept = None
+        with self.lock:                                # (held over the move: discover() sees both or neither)
+            if home and os.path.lexists(e["path"]):
+                try:
+                    kept = str(H.trash(e["path"], self.home, e["id"]))
+                except FileNotFoundError:              # it went meanwhile: nothing to keep
+                    kept = None
+                except OSError as ex:
+                    raise ApiError(409, "folder_busy",
+                                   f"{e['id']} is stopped, but its folder cannot be moved away now ({type(ex).__name__}"
+                                   f": {ex}): a program has it or one of its files open (an editor, a terminal in "
+                                   f"that folder, a process of it that has not ended). Close that and remove it "
+                                   f"again; it is still registered", path=e["path"]) from None
+            held = self.drop(e)
+        if held is not None:
+            self.forgotten(e, held, "" if kept is None else f"; its folder is kept as {kept}")
+        return dict(removed=True, id=e["id"], path=e["path"], kept=kept)
+
+    # --- the extensions' home folder (home.py)
+
+    def discover(self, force=False):
+        """looks at the extensions' home folder: a folder there with a manifest that is not registered (by its path)
+        is registered when its manifest passes its check and nobody has its id ({enabled: true, ask: true}, not
+        approved: the player allows it in the App; noted). One that does not pass, or whose id is taken, is left
+        out (noted once, and again when the reason is another one). A registered extension of the home folder whose
+        folder is not there any more is stopped and taken off the registry (noted). True when the registry changed
+        (saved, told: changed()).
+
+        Called before a listing and before autostart; it looks at most once in DISCOVER_EVERY seconds (force: now).
+        Nothing it finds is started here, and nothing here fails the caller: what went wrong is noted"""
+        now = time.monotonic()
+        with self.lock:
+            if self.closing or (not force and self.looked is not None and now - self.looked < DISCOVER_EVERY):
+                return False
+            self.looked = now
+        try:
+            return self.look()
+        except ApiError as e:                          # the registry cannot be read now: its listing says so
+            if e.code != "registry_unreadable":
+                self.note(f"local extensions: the extensions folder could not be looked at: {first_line(e.message, 300)}")
+        except Exception as e:
+            self.note(f"local extensions: the extensions folder could not be looked at: {e!r}")
+        return False
+
+    def look(self):
+        """(discover) what is in the home folder against the registry; True when the registry changed"""
+        folders = [(Path(os.path.realpath(f)), f.name) for f in H.found(self.home)]
+        taken = self.taken_ids() if folders else ()
+        with self.lock:
+            entries = self.load()["extensions"]
+            known = {os.path.normcase(e["path"]) for e in entries}
+            gone = [e for e in entries if not os.path.isdir(e["path"]) and H.inside(e["path"], self.home)] \
+                if os.path.isdir(self.home) else []    # (a home folder that is not there says nothing of what was in it)
+            for key in set(self.passed) - {os.path.normcase(str(f)) for f, _ in folders}:
+                del self.passed[key]                   # it went, or was repaired and registered: said again if it is back
+        changed = False
+        for e in gone:
+            try:
+                self.stop(e["id"], quiet=True)
+            except ApiError:                           # removed meanwhile
+                continue
+            with self.lock:
+                held = self.drop(e, gone=True)
+            if held is not None:
+                self.forgotten(e, held, "; its folder in the extensions folder is gone")
+                changed = True
+        for folder, name in folders:
+            key = os.path.normcase(str(folder))
+            if key in known:
+                continue
+            m, problems = M.check_manifest(folder, taken=taken)
+            why = None
+            if m is None:
+                first = M.errors_in(problems)[0]
+                why = f"{first['where']}: {first['message']}" + (f" ({first['hint']})" if first.get("hint") else "")
+            else:
+                try:
+                    self.register(folder, m, ask=True, how="found in the extensions folder, registered")
+                    changed = True
+                except ApiError as refused:            # extension_exists: another folder has its id
+                    why = first_line(refused.message, 300)
+            with self.lock:
+                if why is None:
+                    self.passed.pop(key, None)
+                elif self.passed.get(key) != why:
+                    self.passed[key] = why
+                    self.note(f"local extensions: {name} in the extensions folder is not registered: {why}")
+        return changed
 
     def set(self, eid, enabled=None, options=None):
         """enabled false stops it (its capabilities go), true lets it start again (start workshop: now); options: some
@@ -499,7 +747,9 @@ class Host:
     # --- starting (process.py: what a process is started with, and Proc)
 
     def environment(self, m):
-        return P.environment(m, self.sdk)
+        """what its process is started with (process.environment); WUXIAN_EXTENSION_DATA is its data folder in this
+        host's state folder, <state>/extensions/<id>/data, made before the process starts"""
+        return P.environment(m, self.sdk, self.root)
 
     def interpreter(self, m):
         """the Python of an extension (the manifest's, else the workshop's), or None"""
@@ -510,7 +760,9 @@ class Host:
         return P.command(m, env, self.python)
 
     def spawn(self, m, output, on_message=None, on_end=None):
-        """the extension's process, its pipe open (ApiError bad_command / start_failed)"""
+        """the extension's process, its pipe open (ApiError bad_command / start_failed; requires_unmet: no process
+        of one that needs a newer workshop, whoever asks for it)"""
+        self.require(m)
         env = self.environment(m)
         argv = self.command(m, env)
         return P.spawn(m, env, argv, output, on_message or self.on_message, on_end or self.ended)
@@ -548,8 +800,8 @@ class Host:
 
     def ensure(self, eid, why=None, fresh=False, probe=False):
         """a Future of the extension's Proc once it runs: at once when it runs, the start in progress, or a new start.
-        The Future fails at once with ApiError off, needs_approval (allow) or down (it failed to start a moment ago
-        and is not tried again yet: backoff), later with Down when it cannot start. A hung one has its tree ended and
+        The Future fails at once with ApiError off, requires_unmet (require), needs_approval (allow) or down (it
+        failed to start a moment ago and is not tried again yet: backoff), later with Down when it cannot start. A hung one has its tree ended and
         starts again. fresh: an explicit start (extension_load), which forgets its failed starts; probe: nobody
         waits for the process, only for what it describes (describe)"""
         with self.lock:
@@ -572,6 +824,9 @@ class Host:
                                                        f"\"enabled\": true}} turns it on"))
                 return fut
             try:
+                m, _ = M.check_manifest(e["path"])
+                if m is not None and m["id"] == e["id"]:
+                    self.require(m)                    # (a manifest that cannot be used: its start says so)
                 self.allow(e)
             except ApiError as refused:
                 fut.set_exception(refused)
@@ -613,6 +868,10 @@ class Host:
                 if m is None:
                     raise Down(str(M.ManifestError(problems)), problems)
                 raise Down(f"its manifest's id is {m['id']} now: extension_remove {eid}, then extension_add the folder")
+            short = self.unmet_error(m)
+            if short is not None:                      # nothing was started: its row says what it needs
+                blamed = False
+                raise short
             out = self.output(eid)
             with self.lock:
                 if self.closing:
@@ -767,7 +1026,9 @@ class Host:
             out.close()
 
     def autostart(self):
-        """(the daemon's start) the enabled extensions whose manifest says start "workshop" start"""
+        """(the daemon's start) the enabled extensions whose manifest says start "workshop" start. What is in the
+        extensions' home folder is looked at first (discover)"""
+        self.discover(force=True)
         for e in self.load()["extensions"]:
             if not e["enabled"]:
                 continue
@@ -959,13 +1220,15 @@ class Host:
 
     def run_tests(self, m):
         """{ran, failed, output} of `python -m unittest discover -s tests` in the extension's folder, with its Python;
-        None when it has no tests folder or is no Python extension"""
+        None when it has no tests folder or is no Python extension (or needs a newer workshop: nothing of it runs)"""
+        if self.unmet_error(m) is not None:
+            return None
         return C.run_tests(self, m)
 
     def load_(self, eid):
         """extension_load: checked, then (re)started: {row, check}. A manifest that cannot be used leaves a running
         one as it is. An explicit start: its failed starts are forgotten. ApiError needs_approval before the player
-        allowed its command"""
+        allowed its command, requires_unmet when it needs a newer workshop than this one"""
         e = self.entry(eid)
         eid = e["id"]
         if not e["enabled"]:
@@ -977,6 +1240,7 @@ class Host:
                                       f"extension_remove {eid}, then extension_add the folder again"))
             m = None
         if m is not None:
+            self.require(m)                            # requires_unmet: it cannot run here
             self.allow(e)                              # needs_approval before anything of it runs
             self.stop(eid, quiet=True)
             try:
