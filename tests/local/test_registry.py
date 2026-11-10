@@ -547,6 +547,69 @@ class ApprovalTests(Base):
                          self.reg.fingerprint(folder))
         self.assertEqual(self.reg.approve("demo", "player")["approved"]["fingerprint"], self.reg.fingerprint(folder))
 
+    def test_a_manifest_without_addons_has_the_fingerprint_it_always_had(self):
+        """the fingerprint's input is byte for byte what it was before addons counted, for every manifest that names
+        none: an approval stored by an older workshop still holds"""
+        folder = self.add()
+        real = os.path.normcase(os.path.realpath(folder))
+        old = ('{"env":{"FIXTURE_MODE":""},"pass":null,"path":' + json.dumps(real, ensure_ascii=False)
+               + ',"python":null,"run":["python","main.py"]}')
+        before = hashlib.sha256(old.encode("utf-8")).hexdigest()
+        self.assertEqual(self.reg.fingerprint(folder), before)
+        self.reg.approve("demo", "player")
+        for none in ([], None, "WuxianDemo", {"WuxianDemo": 1}, [7, ""]):   # no list of names: as if not there
+            with self.subTest(addons=none):
+                self.manifest(folder, addons=none)
+                self.assertEqual(self.reg.fingerprint(folder), before)
+                self.assertEqual(self.reg.approval(self.reg.entry("demo")), "ok")
+
+    def test_the_addons_it_brings_are_in_the_fingerprint(self):
+        folder = self.add()
+        without = self.reg.fingerprint(folder)
+        self.reg.approve("demo", "player")
+        self.manifest(folder, addons=["WuxianB", "WuxianA"])
+        what = dict(path=os.path.normcase(os.path.realpath(folder)), run=["python", "main.py"], python=None,
+                    env=dict(FIXTURE_MODE=""), addons=["WuxianA", "WuxianB"], **{"pass": None})
+        text = json.dumps(what, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        both = self.reg.fingerprint(folder)
+        self.assertEqual(both, hashlib.sha256(text.encode("utf-8")).hexdigest())
+        self.assertNotEqual(both, without)
+        self.assertEqual(self.reg.approval(self.reg.entry("demo")), "changed")     # an addon more: asked again
+        self.reg.approve("demo", "player")
+        self.manifest(folder, addons=["WuxianA", "WuxianB", "WuxianA"])            # another order, one twice: the same
+        self.assertEqual(self.reg.fingerprint(folder), both)
+        self.assertEqual(self.reg.approval(self.reg.entry("demo")), "ok")
+        self.manifest(folder, addons=["WuxianA"])
+        self.assertEqual(self.reg.approval(self.reg.entry("demo")), "changed")
+        self.manifest(folder, addons=None)
+        self.assertEqual(self.reg.fingerprint(folder), without)
+        self.assertEqual(R.addon_names(dict(addons=["b", "a", "b", "", 3])), ["a", "b"])
+        self.assertEqual((R.addon_names({}), R.addon_names(dict(addons="a")), R.addon_names(None)), ([], [], []))
+
+    def test_ask_is_kept_only_as_true(self):
+        """an entry's ask (it was not written on this computer: only the player allows it) is written and read back;
+        an entry without it is what it always was, in memory and in the file"""
+        self.add("plain")
+        self.add("asked", ask=True)
+        self.add("odd", ask="yes")
+        self.add("no", ask=False)
+        entries = {e["id"]: e for e in self.reg.load()["extensions"]}
+        self.assertEqual({k: e.get("ask", "-") for k, e in entries.items()},
+                         dict(plain="-", asked=True, odd="-", no="-"))
+        self.assertEqual(set(entries["plain"]), {"id", "path", "enabled", "options", "approved", "described"})
+        written = {e["id"]: e for e in self.config()["extensions"]}
+        self.assertEqual({k: e.get("ask", "-") for k, e in written.items()},
+                         dict(plain="-", asked=True, odd="-", no="-"))
+        again = self.registry()
+        self.assertIs(again.entry("asked")["ask"], True)
+        self.assertNotIn("ask", again.entry("plain"))
+        self.assertIs(self.reg.approve("asked", "player")["ask"], True)            # an approval leaves it
+        self.assertIs(self.registry().entry("asked")["ask"], True)
+        self.reg.update_entry("asked", ask=False)
+        self.assertNotIn("ask", self.reg.entry("asked"))
+        self.assertNotIn("ask", {e["id"]: e for e in self.config()["extensions"]}["asked"])
+        self.assertEqual(R.normal_entry(dict(id="x", path="p", ask=1)).get("ask", "-"), "-")
+
     def test_what_runs_changed(self):
         folder = self.add()
         changes = [dict(run=["python", "other.py"]), dict(python=">=3.12"), dict(env=dict(FIXTURE_MODE="x")),

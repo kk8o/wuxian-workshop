@@ -91,8 +91,9 @@ def enabled_manifests(host):
 
 def allowed(host, entry):
     """whether the extension's command may run as it is now: the registry says the player allowed it, or the workshop
-    allows commands by itself (host.auto(): it does so when the extension starts)"""
-    return host.reg.approval(entry) == "ok" or bool(host.auto())
+    allows commands by itself (host.auto(): it does so when the extension starts; never one whose entry has ask, as
+    Host.allow says)"""
+    return host.reg.approval(entry) == "ok" or (bool(host.auto()) and not entry.get("ask"))
 
 
 def stamp(path):

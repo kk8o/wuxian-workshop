@@ -96,7 +96,7 @@ def check(host, ident):
     registered one runs: then its description is the one that one gave, and running is its pid); its tests (a tests
     folder) run with its Python. ApiError needs_approval before anything of it runs that the player has not allowed"""
     e, folder = host.resolve(ident)
-    m, problems = M.check_manifest(folder)
+    m, problems = M.check_manifest(folder, taken=() if e is not None else host.taken_ids())   # (registered: its id is its)
     caps, described, runs = [], None, None
     if m is not None:
         gate(host, e, folder)
@@ -134,8 +134,11 @@ def check(host, ident):
                 problems.append(M.problem("error", "output", "the end of its output:\n" + "\n".join(lines),
                                           "a traceback says what went wrong"))
         except ApiError as a:
-            problems.append(M.problem("error", f"{M.MANIFEST}: run", a.message,
-                                      "run: the command that starts it, relative to the extension folder"))
+            if a.code == "requires_unmet":                 # (Host.require: this workshop is older than it needs)
+                problems.append(M.problem("error", f"{M.MANIFEST}: requires", a.message, ""))
+            else:
+                problems.append(M.problem("error", f"{M.MANIFEST}: run", a.message,
+                                          "run: the command that starts it, relative to the extension folder"))
         finally:
             if proc is not None:
                 proc.shutdown()                            # (process.SHUTDOWN_WAIT as it is now)

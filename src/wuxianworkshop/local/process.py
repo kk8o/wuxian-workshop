@@ -2,7 +2,9 @@ r"""One process of a local extension: what it is started with and how it runs an
 
 Its environment is a short list, not the daemon's own (environment): of the daemon's only the names of ENV_KEEP and
 those the manifest's pass names; PYTHONUNBUFFERED=1 and PYTHONIOENCODING=utf-8; then the manifest's env; then what
-the workshop gives: WUXIAN_EXTENSION=<id>, WUXIAN_HOME (and the daemon's WUXIAN_MUTEX, when it has one) and
+the workshop gives: WUXIAN_EXTENSION=<id>, WUXIAN_HOME (and the daemon's WUXIAN_MUTEX, when it has one),
+WUXIAN_EXTENSION_DATA=<state>\extensions\<id>\data (the folder of its own data, made before it starts: it is not in
+the extension's folder, so another version of the extension keeps it) and
 PYTHONPATH=<the workshop's SDK folder> (before a PYTHONPATH the manifest passed or gave). Its command is the manifest's
 run, its first item found (command: "python" is the manifest's python, else the workshop's own); its cwd is its folder.
 Windows: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, and the process is put in a job object of its own (job_of) whose
@@ -57,6 +59,7 @@ ENV_KEEP = ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC",
             "COMMONPROGRAMFILES", "ALLUSERSPROFILE", "PUBLIC")
 ENV_KEEP_POSIX = ("HOME", "TMPDIR", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME")
 ENV_WORKSHOP = ("WUXIAN_MUTEX",)                      # the daemon's own WUXIAN_* that are handed on as they are
+DATA_ENV = "WUXIAN_EXTENSION_DATA"                    # the folder of an extension's own data (data_folder)
 
 
 def kill_tree(pid):
@@ -179,10 +182,18 @@ def default_python():
     return shutil.which("python") or shutil.which("py")
 
 
-def environment(m, sdk):
-    """the environment of the process of manifest m; sdk: the folder put first on PYTHONPATH. Of the daemon's own
-    environment only ENV_KEEP and the names of the manifest's pass get through (its secrets, its other WUXIAN_* and
-    its PYTHON* do not); then the manifest's env, then what the workshop gives"""
+def data_folder(eid, state=None):
+    """<state>\\extensions\\<id>\\data: the folder of an extension's own data (WUXIAN_EXTENSION_DATA), which is not in
+    its own folder, so another version of the extension finds it as it was. state: the state folder (default: the one
+    under WUXIAN_HOME). Not made here: spawn does that"""
+    return (Path(state) if state is not None else home() / "state") / "extensions" / eid / "data"
+
+
+def environment(m, sdk, state=None):
+    """the environment of the process of manifest m; sdk: the folder put first on PYTHONPATH; state: the state folder
+    its data folder is under (data_folder). Of the daemon's own environment only ENV_KEEP and the names of the
+    manifest's pass get through (its secrets, its other WUXIAN_* and its PYTHON* do not); then the manifest's env,
+    then what the workshop gives"""
     fold = (lambda name: name.upper()) if WINDOWS else (lambda name: name)   # names are not case-sensitive on Windows
     keep = {fold(n) for n in ENV_KEEP + (() if WINDOWS else ENV_KEEP_POSIX)}
     keep |= {fold(n) for n in m.get("pass") or [] if isinstance(n, str)}
@@ -202,12 +213,21 @@ def environment(m, sdk):
         put(name, value)
     put("WUXIAN_EXTENSION", m["id"])
     put("WUXIAN_HOME", str(home()))
+    put(DATA_ENV, str(data_folder(m["id"], state)))
     for name in ENV_WORKSHOP:                         # which workshop it belongs to (a test instance stays one)
         if os.environ.get(name):
             put(name, os.environ[name])
     before = get("PYTHONPATH")                        # only one the manifest passed or gave
     put("PYTHONPATH", str(sdk) + (os.pathsep + before if before else ""))
     return env
+
+
+def make_data_folder(env):
+    """the data folder an environment names (WUXIAN_EXTENSION_DATA) is there: made before anything is started with
+    that environment (OSError when it cannot be made); nothing when it names none"""
+    path = next((v for k, v in env.items() if k.upper() == DATA_ENV), None)
+    if path:
+        os.makedirs(path, exist_ok=True)
 
 
 def interpreter(m, python=None):
@@ -241,9 +261,10 @@ def command(m, env, python=None):
 
 def spawn(m, env, argv, output, on_message, on_end):
     """the process of manifest m started with argv (command) and env (environment), its pipe open, in a job of its own
-    (Windows): its Proc (ApiError start_failed)"""
+    (Windows): its Proc (ApiError start_failed). Its data folder (env's WUXIAN_EXTENSION_DATA) is made first"""
     kw = dict(creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP) if WINDOWS else dict(start_new_session=True)
     try:
+        make_data_folder(env)
         popen = subprocess.Popen(argv, cwd=m["folder"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, **kw)
     except OSError as e:

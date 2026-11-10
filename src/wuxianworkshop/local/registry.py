@@ -2,7 +2,9 @@ r"""The registry of local extensions: what is registered, kept in memory and in 
 
     <state>\extensions.json         the configuration, {revision, extensions: [{id, path, enabled, options, approved}]}:
                                     path the extension's folder, options the values the player set (name -> value),
-                                    approved {fingerprint, at, by} or null (whether its command may run, below)
+                                    approved {fingerprint, at, by} or null (whether its command may run, below);
+                                    ask: true (only written when it is) on one that was not written on this computer:
+                                    installed from a package, or found in the extensions' home folder (below)
     <state>\extensions.json.bak     the configuration as it was before its last change
     <state>\extensions-cache.json   the descriptions, {extensions: {id: {path, described}}}: described is the
                                     extension's last answer to initialize (its capabilities, sources and options), so
@@ -10,8 +12,8 @@ r"""The registry of local extensions: what is registered, kept in memory and in 
                                     because it stopped). It may be lost or damaged: an extension without a description
                                     has not described itself yet, and does at its next start
 
-An entry as load() and entry() give it is both together, {id, path, enabled, options, approved, described}. revision
-goes up by one with every change (the host counts: host.py changed()).
+An entry as load() and entry() give it is both together, {id, path, enabled, options, approved, described} and, on
+those that have it, ask: True. revision goes up by one with every change (the host counts: host.py changed()).
 
 Memory is what counts. The configuration is read at the first use and again only when the file changed under the
 registry (a player's edit, by its time and size); every save() replaces what memory holds and writes the files that
@@ -25,7 +27,11 @@ in its entries) is taken apart at its first read.
 
 Approval: an extension's command runs only once it was allowed as it is now. The fingerprint is the sha256 of the
 canonical JSON (sorted keys) of {path: the folder's real path, run, python, env, pass: as the manifest file has them},
-read from wuxian-extension.json itself; approval(entry) compares it with entry["approved"], approve(id, by) stores it.
+read from wuxian-extension.json itself; a manifest that names game addons (addons, not empty) has one more key there,
+addons: their names, sorted (what the workshop installs into the game with it), and one without has exactly the keys
+above, so what was approved before addons were known stays approved. approval(entry) compares it with
+entry["approved"], approve(id, by) stores it. Whether the workshop may approve by itself is the host's to say (host.py
+allow): never an entry with ask, which the player allows in the App each time its command is another one.
 
 Registry takes the host's lock (one RLock for the registry and the processes) in every method; the host holds it
 around a read that is followed by a write. Standard library only.
@@ -209,12 +215,26 @@ def approved_ok(a):
 
 
 def normal_entry(e):
-    """an entry with every key the rest reads: {id, path, enabled, options, approved, described} (in place)"""
+    """an entry with every key the rest reads: {id, path, enabled, options, approved, described} (in place). ask is
+    there only as True (anything else is taken out: an entry without it is as it always was, in memory and written)"""
     e["enabled"] = e.get("enabled") is not False
     e["options"] = e["options"] if isinstance(e.get("options"), dict) else {}
     e["approved"] = e["approved"] if approved_ok(e.get("approved")) else None
     e["described"] = e["described"] if described_ok(e.get("described")) else None
+    if e.get("ask") is True:
+        e["ask"] = True
+    else:
+        e.pop("ask", None)
     return e
+
+
+def addon_names(raw):
+    """the game addons a manifest file names, as the fingerprint has them: its addons' texts, sorted, each once; []
+    when it names none (or addons is no list)"""
+    names = raw.get("addons") if isinstance(raw, dict) else None
+    if not isinstance(names, list):
+        return []
+    return sorted({n for n in names if isinstance(n, str) and n})
 
 
 def same_folder(a, b):
@@ -540,7 +560,8 @@ class Registry:
 
     def fingerprint(self, folder, kept=True):
         """the fingerprint of what an extension's folder would run as it is now: the sha256 (hex) of the canonical
-        JSON of {path: its real path, run, python, env, pass: as its manifest file has them (null: not there)}; None
+        JSON of {path: its real path, run, python, env, pass: as its manifest file has them (null: not there)}, and
+        addons: the sorted names, only when the manifest file has a list of them that is not empty (addon_names); None
         when the manifest cannot be read. Kept by the manifest's time and size, a stat while nothing changed
         (kept=False: read anyway)"""
         try:
@@ -559,6 +580,9 @@ class Registry:
             if not isinstance(raw, dict):
                 raise ValueError("not an object")
             what = dict({k: raw.get(k) for k in FINGERPRINTED}, path=real)
+            addons = addon_names(raw)
+            if addons:                                  # (none: the very text it always was)
+                what["addons"] = addons
             text = json.dumps(what, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
             value = hashlib.sha256(text.encode("utf-8")).hexdigest()
         except (OSError, ValueError):

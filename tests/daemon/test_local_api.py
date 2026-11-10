@@ -191,7 +191,7 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                 ("POST", "/api/reactions/set", {"hear": "nothing"}, 400, "bad_args")):
             self.fails(method, path, body, status, code)
         res = self.ok("POST", "/api/local/remove", {"id": "fx"})
-        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder)))
+        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder), kept=None))
         self.assertEqual(self.ok("GET", "/api/local")["extensions"], [])
 
     def test_a_slow_start_is_not_the_calls_time(self):
