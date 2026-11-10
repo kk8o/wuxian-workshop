@@ -7,18 +7,22 @@ addon's words in the game and AGENTS.md are in the program's language (i18n.py: 
 create(addons, name, ...) -> dict(name, path, files, template, slash, restart): restart is True because the running
 game does not know the folder yet (hot loading works meanwhile).
 
-新建扩展 (the MCP tool new_extension, `wuxian ext new`): new_extension_files(folder, id, title) makes a local extension
-(local/host.py runs it; data/local-extension.md is the standard): its manifest wuxian-extension.json (run: python
-main.py), main.py on the Python SDK's Extension (a Read capability, an option, a source), AGENT.md for the agents that
-use it and tests/test_main.py on ExtensionTest, which pass as made. sdk_file() is the SDK whose folder the workshop
-puts on the extension's PYTHONPATH.
+新建扩展 (the MCP tool new_extension, `wuxian ext new`): new_extension_files(folder, id, title, addon, taken) makes a
+local extension (local/host.py runs it; data/local-extension.md is the standard): its manifest wuxian-extension.json
+(run: python main.py; requires this workshop's version), main.py on the Python SDK's Extension (a Read capability, an
+option, a source), AGENT.md for the agents that use it and tests/test_main.py on ExtensionTest, which pass as made.
+With addon it brings a game half too: addons/<addon> (.toc and Lua), a WuxianKit extension <id>_game with a Read
+capability and an event, which main.py calls and hears. The ids it takes are the manifest's (local/manifest.py
+id_problem). sdk_file() is the SDK whose folder the workshop puts on the extension's PYTHONPATH.
 """
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
 from .i18n import language, tr
+from .local import manifest as M
 
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{1,39}$")
 TEMPLATES = {"basic": ("斜杠命令 + 存档变量", "slash command + SavedVariables"),
@@ -510,11 +514,12 @@ def create(addons, name, title=None, notes="", template="basic", interface=INTER
 
 # --- 新建扩展: a local extension (wuxian-extension.json; local/host.py runs it) ------------------------------------------
 
-EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
-EXT_RESERVED = frozenset({"chat", "game", "route", "sense", "guide", "data", "tune", "gate", "codex", "guides",   # kit's
-                          "local", "wb", "wk", "kit"})
-EXT_TITLE_MAX = 48                                # bytes
+EXT_ID = M.ID                                     # the manifest's own (local/manifest.py): one list of reserved ids
+EXT_RESERVED = M.RESERVED
+EXT_TITLE_MAX = M.TITLE_MAX                       # bytes
 EXT_FILES = ("wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py")
+EXT_KIT = "0.6.0"                                 # the WuxianKit the game half is written for (Kit:Requires)
+EXT_GAME = "_game"                                # the game half's extension id: <id>_game
 
 EXT_MAIN = '''"""{{title}} ({{id}}): a local extension of 无限工坊 (Wuxian Workshop). The workshop starts it (wuxian-extension.json:
 run) and calls its capabilities; the agent sees each one as the tool wk_{{id}}_<name>. How to write one: the workshop's
@@ -540,15 +545,52 @@ def hello(name="Azeroth"):
     text = f"{greeting.get()}, {name}!"
     greeted.emit({"name": name, "text": text})
     return {"text": text}
-
+{{game_half}}
 
 def setup():
-    """runs once, before the answer to the workshop's initialize: load models, open files here"""
+    """runs once, before the answer to the workshop's initialize: load models, open files here (what the extension
+    keeps goes in ext.data, a folder of its own that an update of the extension leaves alone)"""
     print("{{id}}: ready")                            # print goes to the log (extension_logs)
 
 
 if __name__ == "__main__":
     ext.run(setup)
+'''
+
+# main.py's part for the game half (new_extension with addon): a capability in the game called, an event of it heard
+EXT_MAIN_GAME = '''
+
+# --- the game half: addons/{{addon}}, the WuxianKit extension {{gid}} in the game (AGENT.md: The game half) ---
+
+trail = []                                            # the zones the game half reported, oldest first (at most 20)
+
+
+@ext.see("where", title="{{where_title}}",
+         doc="Returns where the player is in the game, asked of the game half ({{gid}}.where), as {zone, subzone, "
+             "trail}; trail: the zones {{id}}.moved was told of, oldest first.")
+def where():
+    try:
+        now = ext.call("{{gid}}.where")                # a capability in the game, through the workshop
+    except ExtensionError as e:
+        if e.reason != "no_capability":               # down: the game is not running; timeout; ...
+            raise
+        raise ExtensionError('the game half ({{addon}}) is not loaded in the game: extension_install {"id": "{{id}}"}, '
+                             "then the player restarts the game") from None
+    return {"zone": now.get("zone") or "", "subzone": now.get("subzone") or "", "trail": list(trail)}
+
+
+# the game half emits {{gid}}.moved; a reaction hears it and calls this with the item (AGENT.md has the reaction)
+@ext.keep("moved", title="{{moved_title}}", args={"event": "table"},
+          doc="Notes the zone the player entered. For the reaction that hears bus:{{gid}}.moved and passes the item "
+              "as event ({topic, data: {zone, subzone}}). Returns {trail}, how many zones it holds.")
+def moved(event):
+    data = event.get("data") if isinstance(event, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get("zone"), str):
+        raise ExtensionError("event is an item of bus:{{gid}}.moved: {topic, data: {zone, subzone}}")
+    if data["zone"] and data["zone"] not in trail[-1:]:
+        trail.append(data["zone"])
+        del trail[:-20]
+    return {"trail": len(trail)}
 '''
 
 EXT_TEST = '''"""{{id}}'s tests: ExtensionTest runs the extension in memory the way 无限工坊 runs it. extension_check
@@ -571,7 +613,7 @@ class Hello(unittest.TestCase):
 
     def test_what_it_offers(self):
         d = self.t.initialize()
-        self.assertEqual([c["name"] for c in d["capabilities"]], ["hello"])
+        self.assertEqual([c["name"] for c in d["capabilities"]], {{caps}})
         self.assertEqual([s["name"] for s in d["sources"]], ["greeted"])
         self.assertEqual([o["name"] for o in d["options"]], ["greeting"])
         self.assertEqual(self.t.check_description(), [])           # what the workshop would find wrong with it
@@ -592,10 +634,39 @@ class Hello(unittest.TestCase):
     def test_options(self):
         self.t.set_options({"greeting": "Welcome"})
         self.assertEqual(self.t.call("hello", {"name": "Jaina"}), {"text": "Welcome, Jaina!"})
-
+{{game_tests}}
 
 if __name__ == "__main__":
     unittest.main()
+'''
+
+# tests/test_main.py's part for the game half: the game's answers are given (answers=), nothing here needs the game
+EXT_TEST_GAME = '''
+
+class GameHalf(unittest.TestCase):
+    """the game half ({{gid}}) as the tests stand in for it: answers= is what ext.call gets from the game"""
+
+    def setUp(self):
+        main.trail.clear()
+        self.t = ExtensionTest(main.ext, setup=main.setup,
+                               answers={"{{gid}}.where": {"zone": "Elwynn Forest", "subzone": "Goldshire"}})
+        self.addCleanup(self.t.close)
+
+    def test_where(self):
+        self.assertEqual(self.t.call("where"), {"zone": "Elwynn Forest", "subzone": "Goldshire", "trail": []})
+        self.assertEqual(self.t.calls[-1]["cap"], "{{gid}}.where")
+        del self.t.answers["{{gid}}.where"]                # the addon is not in the game: no such capability
+        with self.assertRaises(ExtensionError) as cm:
+            self.t.call("where")
+        self.assertIn("extension_install", cm.exception.message)
+
+    def test_moved(self):
+        item = {"source": "bus", "topic": "{{gid}}.moved", "data": {"zone": "Westfall", "subzone": ""}}
+        for _ in range(2):                                         # as the reaction calls it; the same zone once
+            self.assertEqual(self.t.call("moved", {"event": item}, caller={"by": "workshop"}), {"trail": 1})
+        self.assertEqual(self.t.call("where")["trail"], ["Westfall"])
+        with self.assertRaises(ExtensionError):
+            self.t.call("moved", {"event": {"data": {}}})
 '''
 
 EXT_AGENT = """# {{title}} ({{id}})
@@ -603,12 +674,12 @@ EXT_AGENT = """# {{title}} ({{id}})
 <!-- For agents that use this extension: wk_docs {"extension": "{{id}}"} shows this file. Keep it true when the
 extension changes. How to write and debug a local extension: the workshop's tool extension_guide. -->
 
-{{title}} runs on this computer, outside the game: a local extension of 无限工坊. Its tools work without the game.
+{{title}} runs on this computer, outside the game: a local extension of 无限工坊. {{needs_game}}
 
 ## Tools
 
 - `wk_{{id}}_hello` `{name?}`: returns `{text}`, a greeting for `name` (default Azeroth).
-
+{{game_tools}}
 ## Sources
 
 - `{{id}}:greeted`: each greeting `hello` gave: `{name, text}`.
@@ -616,6 +687,96 @@ extension changes. How to write and debug a local extension: the workshop's tool
 ## Options
 
 - `greeting` (text, default `Hello`): the word before the name.
+{{game_section}}"""
+
+EXT_AGENT_TOOLS = """- `wk_{{id}}_where`: returns `{zone, subzone, trail}`: where the player is, asked of the game half, and the zones
+  `moved` was told of (oldest first). Needs the game and the game half in it.
+- `wk_{{id}}_moved` `{event}`: notes the zone of an item of `bus:{{gid}}.moved`; for the reaction below, not for you.
+"""
+
+EXT_AGENT_GAME = """
+## The game half
+
+`addons/{{addon}}` is this extension's addon in the game: the WuxianKit extension `{{gid}}` (WuxianKit {{kit}} or newer).
+无限工坊 installs it into the game's AddOns once the player has allowed the extension, and again when its files
+changed (`extension_load {"id": "{{id}}"}`, or `extension_install {"id": "{{id}}"}` at any time). The game finds a new
+addon only when it starts: the first time, the player restarts the game. Later changes to its Lua: `extension_load`,
+then `load {"target": "{{addon}}"}` (the workshop's hot load) or a UI reload.
+
+- `wk_{{gid}}_where`: returns `{zone, subzone}`, where the player is (a Read capability in the game).
+- the event `{{gid}}.moved` `{zone, subzone}`: the player entered another zone or subzone. The tool `events`
+  shows it (`{"topic": "{{gid}}.*"}`); reactions hear it as `bus:{{gid}}.moved`.
+
+The two halves work through the workshop:
+
+- the local half calls the game half: `ext.call("{{gid}}.where")` in `main.py` (`wk_{{id}}_where`). The reason
+  `no_capability` means the addon is not loaded in the game, `down` that the game is not running.
+- the local half hears the game half through a reaction, which calls `{{id}}.moved` with each item:
+
+      reaction_set {"hear": "bus:{{gid}}.moved", "call": "{{id}}.moved", "item": "event", "cooldown": 0}
+
+  A reaction set this way lasts until the workshop exits: set it again in a new session, or declare it in an app of
+  the manifest (`apps[].reactions`), which sets it while that app runs.
+"""
+
+EXT_TOC = """## Interface: {{interface}}
+## Title: {{title}}
+## Notes: {{notes}}
+## Version: 0.1.0
+## Dependencies: WuxianKit
+## OptionalDeps: WoWBridge
+## LoadOnDemand: 1
+## X-WuxianKit-Extension: {{gid}}
+## X-Made-With: {{made_with}}
+
+{{addon}}.lua
+"""
+
+EXT_LUA = """-- {{title}}: the game half of the local extension {{id}} (无限工坊), a WuxianKit extension ({{gid}}). The agent sees
+-- each capability as the tool wk_{{gid}}_<name>; the local half (main.py) calls them with ext.call("{{gid}}.<name>") and
+-- hears the events through a reaction (bus:{{gid}}.<topic>). 无限工坊 installs this folder into the game's AddOns
+-- (extension_load, extension_install); WuxianKit loads it at login (## LoadOnDemand, ## X-WuxianKit-Extension). How to
+-- write one: WuxianKit's skill kit-extension and its ARCHITECTURE.md.
+local addonName, ns = ...
+WoWBridgeNS = WoWBridgeNS or {}                     -- the workshop's hot load (load {{addon}}) hands this file the same ns
+WoWBridgeNS[addonName] = ns
+local Kit = WuxianKit
+if not (Kit and Kit.Requires and Kit:Requires("{{kit}}")) then return end
+
+local L = Kit:Words {                               -- the player's words; L"KEY" in declarations, L.KEY at run time
+\tzhCN = { TITLE = "{{lua_title}}", WHERE = "所在地区" },
+\tenUS = { TITLE = "{{lua_title}}", WHERE = "Where the player is" },
+}
+
+local version = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(addonName, "Version") or nil
+
+local ext = Kit:Extension("{{gid}}", { title = L"TITLE", version = version, addon = addonName,
+\tnotes = "The game half of the local extension {{id}}" })
+
+-- Kit:Clean: a text of the game as one plain line; nil for none (and for a secret value)
+local function Where()
+\treturn { zone = Kit:Clean(GetZoneText()) or "", subzone = Kit:Clean(GetSubZoneText()) or "" }
+end
+
+-- a Read capability: the tool wk_{{gid}}_where, ext.call("{{gid}}.where") in main.py
+ext:See("where", { title = L"WHERE", doc = "Returns where the player is: {zone, subzone}",
+\trun = function() return Where() end })
+
+-- an event: Emit hands {{gid}}.moved to the agent (events) and to the reactions that hear bus:{{gid}}.moved
+ext:Event("moved", { doc = "The player entered another zone or subzone: {zone, subzone}",
+\tdata = { zone = "string", subzone = "string" } })
+
+-- game events reach the extension while it is on. ext:On adds a handler each time it is called and a hot load runs
+-- this file again, so the handlers are added once and call what the latest run left in ns
+function ns.Moved(self)
+\tself:Emit("moved", Where())
+end
+if not ns.hooked then
+\tns.hooked = true
+\tfor _, event in ipairs({ "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA" }) do
+\t\text:On(event, function(self) ns.Moved(self) end)
+\tend
+end
 """
 
 
@@ -627,43 +788,92 @@ def sdk_file():
     return Path(__file__).resolve().parents[2] / "sdk" / "python" / "wuxiankit.py"
 
 
-def check_extension_id(eid):
-    """None, or why eid cannot be a local extension's id"""
-    if not isinstance(eid, str) or not EXT_ID.match(eid):
-        return tr("id：小写字母、数字和 _，字母开头，最多 24 个字符",
-                  "id: lowercase letters, digits and _, a letter first, at most 24 characters")
-    if eid in EXT_RESERVED:
-        return tr(f"id 不能是 {eid}：WuxianKit 的扩展或工坊自己用了这个名字",
-                  f"the id cannot be {eid}: a WuxianKit extension or the workshop itself has that name")
-    return None
+def check_extension_id(eid, taken=()):
+    """None, or why eid cannot be a local extension's id (local/manifest.py id_problem: the form, the reserved ids,
+    and taken, the ids of the extensions the installed WuxianKit lists)"""
+    bad = M.id_problem(eid, "id", taken)
+    return f"id: {bad['message']}: {bad['hint']}" if bad else None
 
 
-def new_extension_files(folder, eid, title=None):
+def game_extension_id(eid):
+    """the id of a local extension's game half, <id>_game: a WuxianKit extension cannot have the local one's id (the
+    tools wk_<id>_... are one namespace). A long id is cut so that it stays an id (24 characters)"""
+    return eid[:24 - len(EXT_GAME)].rstrip("_") + EXT_GAME
+
+
+def workshop_version():
+    """this workshop's version as a manifest's requires takes it (dot-separated numbers: 0.9.13 of 0.9.13-dev), or
+    None"""
+    from . import __version__
+    m = re.match(r"\d{1,6}(\.\d{1,6}){0,3}", str(__version__))
+    return m.group(0) if m and M.version_tuple(m.group(0)) else None
+
+
+def new_extension_files(folder, eid, title=None, addon=None, taken=()):
     """makes a local extension's folder (new, or empty): wuxian-extension.json, main.py (a Read capability hello, an
-    option, a source), AGENT.md and tests/test_main.py, whose tests pass as made. The paths made, relative to the
-    folder ("tests/test_main.py"). ScaffoldError code bad_request (a relative folder, a bad id or title) or
-    folder_not_empty"""
+    option, a source), AGENT.md and tests/test_main.py, whose tests pass as made. The manifest requires this workshop's
+    version. taken: the ids of the extensions the installed WuxianKit lists, which the id cannot be.
+
+    addon (a folder name, such as WuxianVoice): the extension brings a game half too, addons/<addon>/<addon>.toc and
+    <addon>.lua, a WuxianKit extension <id>_game (game_extension_id) with a Read capability (where) and an event
+    (moved); the manifest names it in addons and requires WuxianKit, main.py calls the capability and takes the event
+    from a reaction, AGENT.md says how the two halves work together.
+
+    The paths made, relative to the folder ("tests/test_main.py"). ScaffoldError code bad_request (a relative folder, a
+    bad id, title or addon name) or folder_not_empty; nothing is left of a folder that was refused"""
     folder = Path(folder)
     if not folder.is_absolute():
         raise ScaffoldError(tr(f"文件夹要写完整路径（{folder} 不是）", f"folder: a full path ({folder} is not)"),
                             "bad_request")
-    why = check_extension_id(eid)
+    why = check_extension_id(eid, taken)
     if why:
         raise ScaffoldError(why, "bad_request")
     title = " ".join((eid if title is None else str(title)).split())
     if not title or len(title.encode("utf-8")) > EXT_TITLE_MAX:
         raise ScaffoldError(tr(f"标题不能为空，最多 {EXT_TITLE_MAX} 字节（约 16 个汉字）",
                                f"title: not empty, at most {EXT_TITLE_MAX} bytes"), "bad_request")
+    gid = None
+    if addon is not None:
+        if not isinstance(addon, str) or not M.ADDON_FOLDER.match(addon):
+            raise ScaffoldError(tr(f"addon：游戏插件的文件夹名（字母、数字、_ . ! -，最多 64 个字符；{addon!r} 不是）",
+                                   f"addon: the game addon's folder name (letters, digits, _ . ! and -, at most 64 "
+                                   f"characters; {addon!r} is not)"), "bad_request")
+        gid = game_extension_id(eid)
+        if gid in set(taken or ()):
+            raise ScaffoldError(tr(f"游戏那一半的扩展 id {gid} 已经有了（wk_kit_extensions 列着）：换一个 id",
+                                   f"the game half's extension id {gid} is taken (wk_kit_extensions lists it): choose "
+                                   f"another id"), "bad_request")
     if folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
         raise ScaffoldError(tr(f"{folder} 已经有东西了：新扩展要一个新的或空的文件夹",
                                f"{folder} is not empty: a new extension needs a new or empty folder"),
                             "folder_not_empty")
-    manifest = {"id": eid, "title": title, "version": "0.1.0", "run": ["python", "main.py"], "start": "use"}
-    en = language() == "en"                       # the player's words: the option's, the source's, the capability's title
+    requires = {"workshop": workshop_version(), "kit": EXT_KIT if addon else None}
+    manifest = {"id": eid, "title": title, "version": "0.1.0",
+                "requires": {k: v for k, v in requires.items() if v}, "run": ["python", "main.py"], "start": "use"}
+    if not manifest["requires"]:
+        del manifest["requires"]
+    if addon:
+        manifest["addons"] = [addon]
+    en = language() == "en"                       # the player's words: the option's, the source's, the capabilities' titles
     words = {"{{id}}": eid, "{{option_title}}": "Greeting" if en else "问候语",
-             "{{source_title}}": "Greeted" if en else "打了招呼", "{{cap_title}}": "Say hello" if en else "打招呼"}
+             "{{source_title}}": "Greeted" if en else "打了招呼", "{{cap_title}}": "Say hello" if en else "打招呼",
+             "{{caps}}": '["hello", "where", "moved"]' if addon else '["hello"]',
+             "{{needs_game}}": "Its tools work without the game, but for `where`, which asks its game half."
+                               if addon else "Its tools work without the game."}
+    if addon:
+        words.update({"{{gid}}": gid, "{{addon}}": addon, "{{kit}}": EXT_KIT, "{{interface}}": str(INTERFACE),
+                      "{{where_title}}": "Where the player is" if en else "所在地区",
+                      "{{moved_title}}": "Note a zone entered" if en else "记下到过的地区",
+                      "{{lua_title}}": title.replace("\\", "\\\\").replace('"', '\\"'),
+                      "{{notes}}": f"The game half of the local extension {eid} (the WuxianKit extension {gid})" if en
+                                   else f"本机扩展 {eid} 在游戏里的那一半（WuxianKit 扩展 {gid}）",
+                      "{{made_with}}": "Wuxian Workshop" if en else "无限工坊"})
+    parts = {"{{game_half}}": EXT_MAIN_GAME, "{{game_tests}}": EXT_TEST_GAME, "{{game_tools}}": EXT_AGENT_TOOLS,
+             "{{game_section}}": EXT_AGENT_GAME}
 
     def fill(text, in_code=True):
+        for k, part in parts.items():             # the game half's parts first: they hold words too
+            text = text.replace(k, part if addon else "")
         text = text.replace("{{title}}", title.replace("\\", "/").replace('"', "'") if in_code else title)
         for k, v in words.items():
             text = text.replace(k, v)
@@ -674,7 +884,23 @@ def new_extension_files(folder, eid, title=None):
         "AGENT.md": fill(EXT_AGENT, in_code=False),
         "tests/test_main.py": fill(EXT_TEST),
     }
-    (folder / "tests").mkdir(parents=True, exist_ok=True)
-    for name, text in texts.items():
-        (folder / name).write_text(text, encoding="utf-8", newline="\n")
-    return list(EXT_FILES)
+    if addon:
+        texts[f"{M.ADDONS_DIR}/{addon}/{addon}.toc"] = fill(EXT_TOC, in_code=False)
+        texts[f"{M.ADDONS_DIR}/{addon}/{addon}.lua"] = fill(EXT_LUA, in_code=False)
+    new = not folder.exists()
+    try:
+        for name, text in texts.items():
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_text(text, encoding="utf-8", newline="\n")
+        problems = [p for p in M.check_manifest(folder, taken)[1] if p["level"] == "error"]
+        if problems:                              # an addon name that is the workshop's, WuxianKit's or the game's own
+            p = problems[0]
+            raise ScaffoldError(f"{p['where']}: {p['message']}: {p['hint']}", "bad_request")
+    except (OSError, ScaffoldError):
+        for made in ([folder] if new else list(folder.iterdir())):
+            if made.is_dir():
+                shutil.rmtree(made, ignore_errors=True)
+            else:
+                made.unlink(missing_ok=True)
+        raise
+    return list(texts)

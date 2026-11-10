@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from wuxianworkshop import extensions as X
 from wuxianworkshop.local import manifest as M
 
 GUIDE = Path(__file__).resolve().parents[2] / "src" / "wuxianworkshop" / "data" / "local-extension.md"
@@ -25,7 +26,8 @@ class Guide(unittest.TestCase):
         seen = set()
         for i, d in enumerate(self.manifests()):
             folder = self.root / f"m{i}"
-            for rel in (d.get("python"), "AGENT.md", *(a.get("skill") for a in d.get("adds", {}).values())):
+            for rel in (d.get("python"), "AGENT.md", *(a.get("skill") for a in d.get("adds", {}).values()),
+                        *(f"{M.ADDONS_DIR}/{name}/{name}.toc" for name in d.get("addons", []))):
                 if rel:
                     (folder / rel).parent.mkdir(parents=True, exist_ok=True)
                     (folder / rel).write_text("# x\n", encoding="utf-8")
@@ -34,12 +36,17 @@ class Guide(unittest.TestCase):
             m, problems = M.check_manifest(folder)
             self.assertEqual(problems, [], d["id"])
             self.assertEqual(m["id"], d["id"])
+            self.assertEqual(m["addons"], d.get("addons", []))              # the game half, where the tree has it
             seen |= set(d)
             seen |= {f"apps.{k}" for a in d.get("apps", []) for k in a}
             seen |= {f"adds.{k}" for a in d.get("adds", {}).values() for k in a}
         for field in ("id", "title", "version", "notes", "run", "python", "env", "pass", "start", "docs", "skills",
                       "apps", "adds", "apps.reactions", "apps.controls", "adds.wake", "adds.skill"):
             self.assertIn(field, seen)                                      # each field is shown once at least
+        fields = self.text.split("### The environment")[0].split("```")[-1]     # the list under the first manifest
+        for field in M.FIELDS:                                              # every field of the manifest is shown,
+            self.assertIn(field, seen)                                      # and the list says what it is
+            self.assertIn(f"`{field}`", fields)
 
     def test_what_the_examples_come_to(self):
         """the two examples as the workshop reads them: an app with reactions and bound controls, and what one
@@ -68,6 +75,36 @@ class Guide(unittest.TestCase):
             self.assertNotIn(word, self.text)
         for word in M.RESERVED:
             self.assertRegex(self.text, rf"\b{word}\b")
+
+    def test_the_home_and_the_packages(self):
+        """what the extensions' home brought: where an extension lives, who is asked, packages, requires, the game
+        half, removing; with the numbers and names the code has"""
+        for word in ("`home`", "`linked`", "`origin`", "wuxian ext dir", "extension_pack", "wuxian ext pack",
+                     "extension_install", "wuxian ext install", "extension_remove", "`pack.exclude`", "`skipped`",
+                     "`sha256`", "bad_package", "package_too_big", "extension_exists", "`requires`", "`unmet`",
+                     "requires_unmet", "`addons`", "addons/<Name>/", "<id>_game", "bus:<id>_game.", "addon_exists",
+                     "needs_approval", "no_addons", "no_game_folder", "`foreign`", "`restart`", '`load {"target":',
+                     "folder_busy", ".removed", "WUXIAN_EXTENSION_DATA", "`ext.data`", "## X-WuxianKit-Extension",
+                     "kit-extension", "at every install and every update"):
+            self.assertIn(word, self.text)
+        kinds = re.search(r"an addon's kinds of file only: `([^`]+)`", self.text).group(1).split()
+        self.assertEqual(sorted(kinds), sorted(X.KINDS))
+        self.assertIn(f"at most {M.ADDONS_MOST} names", self.text)
+        self.assertIn(f"at most {M.AUTHOR_MAX} bytes", self.text)
+        self.assertIn(f'{{"workshop": "0.9.13", "kit": "{self.manifests()[0]["requires"]["kit"]}"}}', self.text)
+        self.assertEqual(sorted(self.manifests()[0]["requires"]), sorted(M.REQUIRES))
+
+    def test_what_a_package_leaves_out(self):
+        """the guide's list and limits are the packer's, and the mark is the game side's"""
+        try:
+            from wuxianworkshop.local import gameside, pack
+        except ImportError:                                 # a checkout before local/pack.py and local/gameside.py
+            self.skipTest("local/pack.py and local/gameside.py are not here yet")
+        flat = " ".join(self.text.replace("`", " ").split())
+        self.assertIn(" " + " ".join(pack.EXCLUDE) + " ", flat)             # all of it, in the packer's order
+        self.assertEqual((pack.MAX_ZIP, pack.MAX_UNPACKED, pack.MAX_FILES), (64 << 20, 256 << 20, 8000))
+        for word in ("64 MB", "256 MB", "8,000", f"`{gameside.MARK}`"):
+            self.assertIn(word, self.text)
 
 
 if __name__ == "__main__":
