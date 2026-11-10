@@ -188,7 +188,7 @@ class Parser(unittest.TestCase):
             self.assertEqual(cli.cmd_wk(c, self.parse("wk", "voice.say", '{"text": "hi"}')[0]), 0)
             self.assertEqual(cli.cmd_reaction(c, self.parse("reaction", "list")[0]), 0)
             self.assertEqual(cli.cmd_reaction(c, self.parse("reaction", "clear")[0]), 0)
-        self.assertEqual(c.asked, [("voice.say", {"text": "hi"}, 30000), ("clear", None, None)])
+        self.assertEqual(c.asked, [("voice.say", {"text": "hi"}, None), ("clear", None, None)])
         lines = out.getvalue().splitlines()
         self.assertEqual(json.loads("\n".join(lines[:3])), {"seconds": 1.5})
         self.assertEqual(lines[3:], ["r1: game:combat -> voice.play (owner companion), fired 2; error: not heard: away",

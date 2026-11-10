@@ -79,8 +79,8 @@ join a WuxianKit app that runs and print its wakes until it ends. It never opens
 lines on stdout:
   OPEN <status JSON>   once: the app runs (kit.app.status)
   {"t": ..., "topic": "app.<app>", "data": {app, reason, items, skipped, after, next, ...}}
-                       a wake, one JSON line each. reason "catchup": items no wake brought here (the ones after
-                       --since, or after a gap), read back from the app's last items
+                       a wake, one JSON line each. reason "catchup": items the app's wakes brought while nothing
+                       listened here (the ones after --since, or a gap), read back from the app's last items
   NEXT <item id>       after each batch of wakes: the newest item so far, the --since of the next run
   END <why>            the app does not run (any more): stopped, player, expired, left, extension ... Nothing is
                        tried again: open the app before the next listen
@@ -164,7 +164,8 @@ def build_parser():
     p.add_argument("app", help="the app's id (lowercase letters, digits and _)")
     p.add_argument("--since", type=int, default=None, metavar="N",
                    help="go on after item N: the NEXT of the last run (or the `next` in wk_kit_app_open's answer). What "
-                        "the app heard after it comes first, as a wake with reason \"catchup\". Without it: from now on")
+                        "the app's wakes brought after it comes first, as a wake with reason \"catchup\". Without it: "
+                        "from the app's last wake on")
     p.add_argument("--once", action="store_true", help="exit after the first batch of wakes (it prints NEXT <item id>: "
                                                        "run it again with --since <item id>)")
     p.add_argument("--max", type=float, default=None, metavar="S",
@@ -257,7 +258,8 @@ def build_parser():
     p = sub.add_parser("wk", help="call a capability: a local extension's, or the game's WuxianKit's (see, keep, point)")
     p.add_argument("cap", help="its id, <extension>.<name>: voice.say, sense.bags")
     p.add_argument("args", nargs="?", help="its arguments as a JSON object")
-    p.add_argument("--timeout-ms", type=int, default=30000)
+    p.add_argument("--timeout-ms", type=int, default=None, help="how long to wait for its answer (default: the time "
+                                                                "the capability declares, 30 seconds without one)")
     p = sub.add_parser("reaction", help="reactions: an item heard calls a capability, without the agent")
     act = p.add_subparsers(dest="action", metavar="<action>", required=True)
     q = act.add_parser("list", help="the reactions set now")
@@ -564,13 +566,19 @@ class Done(Exception):
         self.code = code
 
 
+CATCHUP = 100       # the items a catch-up asks kit.app.recent for: all an app keeps (WuxianKit's ring)
+
+
 class Listening:
     """one `wuxian listen <app>`: it joins a WuxianKit app that runs (it never opens one) and prints its wakes.
 
-    The cursor is WuxianKit's item id: --since N, else the `next` of the app's status (from now on). The ids of the
-    daemon's journal (self.at) only say where its events are read from and are never printed, so a daemon that starts
-    again (its journal from 1) neither loses nor repeats an item: what may have been missed is read with kit.app.recent
-    and printed as a wake `catchup`, and what a wake repeats is left out by its ids.
+    The cursor is WuxianKit's item id: --since N, else the `sent` of the app's status (where its last wake ended:
+    what it heard since and still gathers comes with its next wake; a WuxianKit without `sent` gives `next`). The ids
+    of the daemon's journal (self.at) only say where its events are read from and are never printed, so a daemon that
+    starts again (its journal from 1) neither loses nor repeats an item: what may have been missed is read with
+    kit.app.recent, only up to where the app's wakes got (the status's `sent`, or the `after` of the wake that showed
+    the gap: the rest comes with a wake, when the app sends it), and printed as a wake `catchup`; what a wake repeats
+    is left out by its ids.
 
     stdout: OPEN <status> once; each wake as one JSON line {t, topic, data}; NEXT <item id> after each batch of them;
     END <why> when the app does not run (any more); TIMEOUT after --max seconds (NEXT before it when the cursor is
@@ -584,6 +592,7 @@ class Listening:
         self.deadline = None if limit is None else clock() + max(1.0, limit)
         self.cursor = since                 # the newest item id printed or passed over; None until the status gave it
         self.missed = since is not None     # wakes may have been missed: kit.app.recent from the cursor on
+        self.sent = None                    # where the app's wakes got (the status's sent): a catch-up reads up to it
         self.at = None                      # where the daemon's journal is read from (its own ids)
         self.joined = self.opened = self.woke = False
         self.every = self.beat = None       # the heartbeat: every so many seconds, the next one
@@ -644,7 +653,8 @@ class Listening:
         return status
 
     def join(self):
-        """read the status (the first time: OPEN); the cursor is its `next` when --since gave none"""
+        """read the status (the first time: OPEN); the cursor is its `sent` (`next` without one) when --since gave
+        none"""
         self.joined = False
         status = self.status()
         if status is None:
@@ -652,9 +662,10 @@ class Listening:
         if not self.opened:
             self.opened = True
             self.out("OPEN " + json.dumps(status, ensure_ascii=False))
-        newest = status.get("next")
+        newest, sent = status.get("next"), status.get("sent")
+        self.sent = whole(sent) if is_number(sent) else None
         if self.cursor is None:
-            self.cursor = whole(newest) if is_number(newest) else 0
+            self.cursor = self.sent if self.sent is not None else whole(newest) if is_number(newest) else 0
         elif is_number(newest) and newest < self.cursor:
             # the app's items here end before the cursor (another character, saved data that started again): from
             # the cursor on every wake would count as a repeat
@@ -667,12 +678,17 @@ class Listening:
         self.out(json.dumps(dict(t=t, topic=self.topic, data=data), ensure_ascii=False))
         self.woke = True
 
-    def catch_up(self, trigger=None):
-        """what the app heard after the cursor, read with kit.app.recent: printed as one wake `catchup` (with the
-        state, pace, quiet and notes of the wake that showed the gap, when one did). False: it cannot be read now (the
-        status is read again first, then this)"""
+    def catch_up(self, upto=None):
+        """the items after the cursor that the app's wakes brought and that did not get here, read with
+        kit.app.recent and printed as one wake `catchup`: up to `upto` (the `after` of the wake that showed the gap,
+        which is printed after it), else up to the status's `sent`; what the app heard later comes with a wake. (A
+        WuxianKit without `sent`: all it heard.) False: it cannot be read now (the status is read again first, then
+        this)"""
+        upto = self.sent if upto is None else upto
+        if upto is not None and upto <= self.cursor:
+            return True
         try:
-            res = self.kit("kit.app.recent", app=self.app, since=self.cursor)
+            res = self.kit("kit.app.recent", app=self.app, since=self.cursor, limit=CATCHUP)
         except ApiError as e:
             if e.status == 401:
                 raise
@@ -681,19 +697,22 @@ class Listening:
             return False
         res = res if isinstance(res, dict) else {}
         items = res.get("items")
-        items = [i for i in items if isinstance(i, dict) and is_number(i.get("id")) and i["id"] > self.cursor] \
-            if isinstance(items, list) else []
+        items = [i for i in items if isinstance(i, dict) and is_number(i.get("id")) and i["id"] > self.cursor
+                 and (upto is None or i["id"] <= upto)] if isinstance(items, list) else []
         if items:
-            newest = whole(max(items[-1]["id"], res["next"] if is_number(res.get("next")) else 0))
-            data = dict(app=self.app, reason="catchup", items=items, skipped=0, after=self.cursor, next=newest)
-            data.update({k: trigger[k] for k in ("state", "pace", "quiet", "notes") if trigger and k in trigger})
-            self.show(round(wall(), 3), data)
+            newest = upto if upto is not None else \
+                whole(max(items[-1]["id"], res["next"] if is_number(res.get("next")) else 0))
+            self.show(round(wall(), 3),
+                      dict(app=self.app, reason="catchup", items=items, skipped=0, after=self.cursor, next=newest))
             self.cursor = newest
+        elif upto is not None:
+            self.cursor = upto              # the app keeps them no more: its wakes go on from there
         return True
 
     def wake(self, e):
         """one wake: {..., items, skipped, after, next} covers the items after < id <= next. A gap before it (after is
-        past the cursor) is caught up first; what the cursor already passed is left out, a wake of only that entirely.
+        past the cursor) is caught up first, up to its after; what the cursor already passed is left out, a wake of
+        only that entirely.
         A wake that brings nothing (idle) is printed as it is"""
         if self.cursor is None or self.held:
             self.held.append(e)
@@ -702,7 +721,7 @@ class Listening:
         if not isinstance(data, dict) or not is_number(data.get("next")):
             self.show(e.get("t"), data)                     # not as WuxianKit sends them: as it is
             return
-        if is_number(data.get("after")) and data["after"] > self.cursor and not self.catch_up(data):
+        if is_number(data.get("after")) and data["after"] > self.cursor and not self.catch_up(whole(data["after"])):
             self.held.append(e)
             return
         items = data["items"] if isinstance(data.get("items"), list) else []
@@ -771,8 +790,9 @@ class Listening:
             self.lost(e)
             return
         self.at = res["next"]
-        if res.get("truncated"):              # the journal let go of events before they were read
-            self.missed = True
+        if res.get("truncated"):              # the journal let go of events before they were read: where the app's
+            self.missed = True                # wakes got by now is in its status
+            self.joined, self.retry = False, 0.0
         for e in res["events"]:
             topic, data = e.get("topic"), e.get("data") if isinstance(e.get("data"), dict) else {}
             if topic == self.topic:

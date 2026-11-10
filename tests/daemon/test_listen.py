@@ -27,13 +27,17 @@ class Game:
     """the game with WuxianKit's app `guild`: a clock that moves by what is waited for, the items the app heard (each
     from its time on), whether it runs, when the link is down"""
 
-    def __init__(self, heard=(), lease=90, on=True, why=None, known=True):
+    def __init__(self, heard=(), lease=90, on=True, why=None, known=True, sent=None):
         self.now, self.lease, self.on, self.why, self.known = 1000.0, lease, on, why, known
         self.ring = [(1000.0, item(n)) for n in heard]
+        self.sents = [(1000.0, sent)]         # where the app's wakes got, from each time on (None: a WuxianKit before `sent`)
         self.stops, self.down, self.calls = [], [], []
 
     def hear(self, at, *ids):
         self.ring += [(1000.0 + at, item(n)) for n in ids]
+
+    def send(self, at, upto):
+        self.sents.append((1000.0 + at, upto))
 
     def stop(self, at, why):
         self.stops.append((1000.0 + at, why))
@@ -61,12 +65,15 @@ class Game:
             why = next((why for at, why in self.stops if at <= self.now), None if self.on else self.why or "")
             out = {"app": "guild", "title": "公会聊天", "on": why is None, "lease": self.lease,
                    "next": heard[-1]["id"] if heard else 0}
+            sent = [n for at, n in self.sents if at <= self.now][-1]
+            if sent is not None:
+                out["sent"] = sent
             if why:
                 out["why"] = why
             return {"result": out}
         assert name == "kit.app.recent", name               # never kit.app.open
         since = args.get("since") or 0
-        return {"result": {"items": [i for i in heard if i["id"] > since][-50:],
+        return {"result": {"items": [i for i in heard if i["id"] > since][-(args.get("limit") or 50):],
                            "next": heard[-1]["id"] if heard else since}}
 
 
@@ -260,7 +267,8 @@ class Cursor(unittest.TestCase):
             "app": "guild", "reason": "catchup", "items": [item(43), item(44)], "skipped": 0, "after": 41, "next": 44}}])
         self.assertEqual([out[0][:5]] + out[2:], ["OPEN ", "NEXT 44"])
         self.assertEqual([(name, args) for name, args, _ in game.calls],
-                         [("kit.app.status", {"app": "guild"}), ("kit.app.recent", {"app": "guild", "since": 41})])
+                         [("kit.app.status", {"app": "guild"}),
+                          ("kit.app.recent", {"app": "guild", "since": 41, "limit": 100})])
 
     def test_since_with_nothing_missed(self):
         game = Game(heard=[40, 44])
@@ -276,12 +284,47 @@ class Cursor(unittest.TestCase):
         note = [{"from": "codex", "text": "a note"}]
         daemon = Daemon(game, [(20, "app.guild", wake(42, 43, pace="lively", quiet=False, state={"zone": "x"},
                                                       notes=note))])
+        game.hear(20, 44)                           # heard after that wake: it comes with the next one
         code, out, _ = listen(daemon, "--once")
-        self.assertEqual(wakes(out), [{"t": 1020.0, "topic": "app.guild", "data": {
-            "app": "guild", "reason": "catchup", "items": [item(41), item(42), item(43)], "skipped": 0, "after": 40,
-            "next": 43, "pace": "lively", "quiet": False, "state": {"zone": "x"}, "notes": note}}])
-        self.assertEqual(out[-1], "NEXT 43")        # the wake that showed the gap: all of it is in the catch-up
-        self.assertEqual(game.calls[-1][:2], ("kit.app.recent", {"app": "guild", "since": 40}))
+        self.assertEqual(wakes(out), [
+            {"t": 1020.0, "topic": "app.guild", "data": {
+                "app": "guild", "reason": "catchup", "items": [item(41), item(42)], "skipped": 0, "after": 40,
+                "next": 42}},
+            {"t": 1020.0, "topic": "app.guild", "data": wake(42, 43, pace="lively", quiet=False, state={"zone": "x"},
+                                                             notes=note)}])
+        self.assertEqual(out[-1], "NEXT 43")
+        self.assertEqual(game.calls[-1][:2], ("kit.app.recent", {"app": "guild", "since": 40, "limit": 100}))
+
+    def test_without_since_from_the_last_wake_on(self):
+        game = Game(heard=[40, 41, 42], sent=40)    # 41 and 42 are heard and not sent yet (the app gathers them)
+        game.hear(10, 43)
+        code, out, _ = listen(Daemon(game, [(10, "app.guild", wake(40, 41, 42, 43))]), "--once")
+        self.assertEqual(([ids(w) for w in wakes(out)], out[-1]), ([[41, 42, 43]], "NEXT 43"))
+        self.assertNotIn("kit.app.recent", game.names())
+
+    def test_since_catches_up_to_the_last_wake(self):
+        game = Game(heard=[40, 41, 42, 43, 44], sent=42)                      # 43 and 44 are not sent yet
+        game.hear(10, 45)
+        daemon = Daemon(game, [(10, "app.guild", wake(42, 43, 44, 45))])
+        code, out, _ = listen(daemon, "--since", "40", "--max", "30")
+        self.assertEqual([(w["data"]["reason"], ids(w), w["data"]["after"], w["data"]["next"]) for w in wakes(out)],
+                         [("catchup", [41, 42], 40, 42), ("item", [43, 44, 45], 42, 45)])
+        self.assertEqual(out[1:], [out[1], "NEXT 42", out[3], "NEXT 45", "NEXT 45", "TIMEOUT"])
+        self.assertEqual(game.names().count("kit.app.recent"), 1)
+
+    def test_since_at_the_last_wake_reads_nothing_back(self):
+        game = Game(heard=[40, 41, 42], sent=40)
+        daemon = Daemon(game, [(10, "app.guild", wake(40, 41, 42))])
+        code, out, _ = listen(daemon, "--once", "--since", "40")
+        self.assertEqual(([(w["data"]["reason"], ids(w)) for w in wakes(out)], out[-1]), ([("item", [41, 42])], "NEXT 42"))
+        self.assertNotIn("kit.app.recent", game.names())
+
+    def test_items_the_app_keeps_no_more(self):
+        game = Game(heard=[50], sent=44)            # 11 to 44 were sent and left the app's ring
+        daemon = Daemon(game, [(10, "app.guild", wake(44, 50))])
+        code, out, _ = listen(daemon, "--once", "--since", "10")
+        self.assertEqual(([(w["data"]["reason"], ids(w)) for w in wakes(out)], out[-1]), ([("item", [50])], "NEXT 50"))
+        self.assertEqual(game.names().count("kit.app.recent"), 1)
 
     def test_repeats_are_left_out(self):
         game = Game(heard=[40, 41, 42, 43])
@@ -365,7 +408,7 @@ class Away(unittest.TestCase):
         game.away(10, 18)
         daemon = Daemon(game, [(10, "app.guild", wake(41, 42)), (12, "app.guild", wake(42, reason="idle"))])
         code, out, err = listen(daemon, "--max", "40")
-        self.assertEqual([(w["data"]["reason"], ids(w)) for w in wakes(out)], [("catchup", [41, 42]), ("idle", [])])
+        self.assertEqual([(w["data"]["reason"], ids(w)) for w in wakes(out)], [("catchup", [41]), ("item", [42]), ("idle", [])])
         self.assertEqual(out[-3:], ["NEXT 42", "NEXT 42", "TIMEOUT"])
         self.assertEqual(err.count("kit.app.recent"), 1)
 
@@ -409,6 +452,14 @@ class Away(unittest.TestCase):
     def test_the_journal_let_go_of_events(self):
         game = Game(heard=[40])
         game.hear(10, 41)
+        daemon = Daemon(game, [(10, "chat.line", {}), (10, "chat.line", {})], lost=2)
+        code, out, _ = listen(daemon, "--once")
+        self.assertEqual(([(w["data"]["reason"], ids(w)) for w in wakes(out)], out[-1]), ([("catchup", [41])], "NEXT 41"))
+
+    def test_the_journal_let_go_of_a_wake(self):
+        game = Game(heard=[40], sent=40)
+        game.hear(10, 41, 42)
+        game.send(10, 41)                           # the wake with 41 was among what the journal let go of
         daemon = Daemon(game, [(10, "chat.line", {}), (10, "chat.line", {})], lost=2)
         code, out, _ = listen(daemon, "--once")
         self.assertEqual(([(w["data"]["reason"], ids(w)) for w in wakes(out)], out[-1]), ([("catchup", [41])], "NEXT 41"))

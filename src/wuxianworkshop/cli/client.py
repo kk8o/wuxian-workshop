@@ -209,8 +209,8 @@ class DaemonClient:
     def local_manifest(self):
         return self.get("/api/local/manifest")
 
-    def local_call(self, cap, args=None, timeout_ms=30000, caller=None):
-        wait = 600 + START_WAIT        # the daemon times the call out itself: the longer of timeout_ms and the capability's own
+    def local_call(self, cap, args=None, timeout_ms=None, caller=None):
+        wait = 600 + START_WAIT        # the daemon times the call out itself: timeout_ms when given, else the capability's own
         return self.post("/api/local/call", cap=cap, args=args, timeout_ms=timeout_ms, caller=caller, timeout=wait)
 
     def reactions(self):

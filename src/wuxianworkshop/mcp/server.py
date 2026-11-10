@@ -169,7 +169,7 @@ class HttpBackend:
     async def local_manifest(self):
         return await self._call("local_manifest")
 
-    async def local_call(self, cap, args=None, timeout_ms=30000, caller=None):
+    async def local_call(self, cap, args=None, timeout_ms=None, caller=None):
         return await self._call("local_call", cap, args, timeout_ms, caller)
 
     async def extension_add(self, path):
