@@ -17,6 +17,7 @@ from ..daemon.api import ApiError
 from . import manifest as M
 from .logs import Output, clock, tail
 from .process import CREATE_NO_WINDOW, WINDOWS
+from .registry import check_folder
 from .rpc import FAILED, Down
 
 TESTS_TIMEOUT = 120.0         # seconds the extension's tests may take (check)
@@ -45,6 +46,7 @@ def resolve(host, ident):
     p = Path(ident)
     if not p.is_absolute():
         host.entry(ident)                                  # not_found
+    check_folder(p)
     folder, _ = M.locate(p)
     key = os.path.normcase(str(folder.resolve()))
     same = next((e for e in host.load()["extensions"] if os.path.normcase(e["path"]) == key), None)

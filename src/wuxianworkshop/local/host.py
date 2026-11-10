@@ -42,7 +42,7 @@ from .logs import (LINE_MAX, LOG_MAX, LOGS_MOST, TAIL, Lines, Output, check_wind
                    output_path, tail, window)
 from .process import (CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, KILL_WAIT, SHUTDOWN_WAIT,  # noqa: F401
                       WINDOWS, Proc, default_python, kill_tree, sdk_dir)
-from .registry import (REPLACE_WAITS, Registry, check_options, option_rows, replace_retrying,  # noqa: F401
+from .registry import (REPLACE_WAITS, Registry, check_folder, check_options, option_rows, replace_retrying,  # noqa: F401
                        write_json)
 from .rpc import BAD_ARGS, FAILED, INIT_TIMEOUT, NO_METHOD, REASONS, Down, RpcError, call_error  # noqa: F401
 
@@ -298,6 +298,7 @@ class Host:
         p = Path(path.strip())
         if not p.is_absolute():
             raise ApiError(400, "bad_request", f"path: a full path ({path} is not)")
+        check_folder(p)
         folder, _ = M.locate(p.resolve())
         m, problems = M.check_manifest(folder)
         if m is None:

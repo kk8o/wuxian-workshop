@@ -47,6 +47,13 @@ def write_json(path, data):
 
 # --- an entry's options ----------------------------------------------------------------------------------------------
 
+def check_folder(path):
+    """refuses a folder that is not on this computer: a path that starts with two backslashes (UNC) or is on a
+    network drive (GetDriveType DRIVE_REMOTE): ApiError(400, "not_allowed", ...). Called with the path as given,
+    before anything of it is read (Host.add, check.resolve). (To do: W-B)"""
+    return None
+
+
 def option_rows(e):
     """the options an entry's extension described, each with its value now (the player's, else its default)"""
     desc = e.get("described") or {}
