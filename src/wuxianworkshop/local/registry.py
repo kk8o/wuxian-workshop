@@ -147,6 +147,16 @@ class Registry:
                 return e, next((c for c in caps if c["name"] == name), None)
         return None
 
+    def approval(self, entry):
+        """"ok", "needed" or "changed": whether the player allowed this entry's command as it is now (the fingerprint
+        of its folder and its manifest's run, python, env and pass against entry["approved"]). (To do: W-B)"""
+        return "ok"
+
+    def approve(self, eid, by):
+        """the entry's command as it is now is allowed: approved {fingerprint, at, by} ("player" or "developer");
+        saves. (To do: W-B)"""
+        return None
+
     def kind_of(self, cap_id):
         """see / keep / point of a capability of a local extension (as it last described itself), else None"""
         found = self.capability(cap_id)

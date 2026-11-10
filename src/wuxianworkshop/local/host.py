@@ -33,6 +33,7 @@ from pathlib import Path
 from .. import __version__
 from ..daemon.api import ApiError
 from ..paths import state_dir
+from . import adds as A
 from . import check as C
 from . import manifest as M
 from . import process as P
@@ -55,17 +56,19 @@ def duration(seconds):
 class Host:
     """the registered local extensions and their processes. root: the state folder (default paths.state_dir());
     note(text): a line for the daemon's log; on_event(id, item): an item of an extension's source; on_call(id, cap,
-    args): an extension's call of a capability, a Future of its result (ApiError for a refusal); on_change(revision):
+    args, chain): an extension's call of a capability (chain: the caller chain of the call it is serving, a list
+    of strings), a Future of its result (ApiError for a refusal); on_change(revision):
     the extensions changed. python: the interpreter for run ["python", ...] without the manifest's own (default:
     default_python()); sdk: the folder put first on PYTHONPATH (default: sdk_dir())"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
-                 python=None, sdk=None):
+                 python=None, sdk=None, mode=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
         self.on_event, self.on_call, self.on_change = on_event, on_call, on_change
         self.python = python
+        self.mode = mode or (lambda: "developer")   # mode(): the daemon's mode now, "player" or "developer"
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
         self.lock = threading.RLock()
         self.reg = Registry(self.root, self.lock, on_save=self.saved)   # extensions.json (registry.py), under self.lock
@@ -76,7 +79,7 @@ class Host:
         self.lines = {}               # output path -> Lines
         self.listeners = {}
         self.closing = False
-        self.annotate_cache = None    # (stamps, {app: [annotation]}): annotations() without reading every manifest
+        self.adds_cache = None        # adds.py's own: what it keeps until the registry is saved (saved())
 
     # --- telling of changes
 
@@ -126,7 +129,7 @@ class Host:
 
     def saved(self):
         """(the registry's on_save) the file was written: the annotations are worked out again"""
-        self.annotate_cache = None
+        self.adds_cache = None
 
     @property
     def revision(self):
@@ -202,7 +205,8 @@ class Host:
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
                     annotate=[dict(a) for a in (m or {}).get("annotate") or []],
-                    extends=sorted((m or {}).get("extends") or {}))
+                    extends=sorted((m or {}).get("extends") or {}), adds=A.row(m),
+                    approval=self.reg.approval(e))
 
     def rows(self):
         with self.lock:
@@ -241,79 +245,38 @@ class Host:
                             sources=[dict(s) for s in desc.get("sources") or []], options=self.option_rows(e),
                             apps=[dict(a) for a in (m or {}).get("apps") or []],
                             annotate=[dict(a) for a in (m or {}).get("annotate") or []],
-                            extends=dict((m or {}).get("extends") or {})))
+                            extends=dict((m or {}).get("extends") or {}), adds=A.row(m)))
         return dict(revision=int(data.get("revision") or 0), extensions=out)
 
+    # what the enabled extensions add to apps (adds.py): the declarations of their apps, the wake notes and skill
+    # supplements (the manifest's adds), an app's reactions, a control bound to a capability
+
     def declarations(self):
-        """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
-        with (local {id, title}: its card in the game has no remove button)"""
-        out = []
-        for e in self.load()["extensions"]:
-            if not e["enabled"]:
-                continue
-            m, _ = M.check_manifest(e["path"])
-            if m is not None and m["id"] == e["id"]:
-                here = {"id": e["id"], "title": m.get("title") or e["id"]}
-                out += [(e["id"], dict(a, local=dict(here))) for a in m["apps"]]
-        return out
+        return A.declarations(self)
 
     def enabled_manifests(self):
-        """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id)"""
-        out = []
-        for e in self.load()["extensions"]:
-            if e["enabled"]:
-                m, _ = M.check_manifest(e["path"])
-                if m is not None and m["id"] == e["id"]:
-                    out.append((e, m))
-        return out
+        return A.enabled_manifests(self)
 
-    def annotations(self, app):
-        """[{"ext": id, "call": "facts.lookup", "wake": "wake", "timeout": 3.0}] of the enabled extensions that annotate
-        app, by extension id; once an extension described itself, only a call that is a see capability it has. Called
-        for every wake of every app (the daemon's frame thread), so it is a table kept until the registry or an enabled
-        extension's manifest changes: a few stats, no reads, while nothing did"""
-        if not isinstance(app, str) or not app:
-            return []
-        return [dict(a) for a in self.annotation_table().get(app, [])]
+    def adds(self, app):
+        return A.adds(self, app)
 
-    @staticmethod
-    def stamp(path):
-        """(mtime_ns, size) of a file, or None when it is not there"""
-        try:
-            st = os.stat(path)
-        except (OSError, ValueError):
-            return None
-        return st.st_mtime_ns, st.st_size
+    def app_reactions(self, app):
+        return A.app_reactions(self, app)
 
-    def annotation_table(self):
-        """{app: [annotation]} of the enabled extensions, kept while the stamps of the registry and of the enabled
-        extensions' manifests stay (save() drops it at once)"""
+    def control_call(self, app, cmd):
+        return A.control_call(self, app, cmd)
+
+    def annotations(self, app):           # the fourth batch's; goes with the manifest's annotate
+        return A.annotations(self, app)
+
+    def extensions_of(self, skill):       # the fourth batch's; goes with the manifest's extends
+        return A.extensions_of(self, skill)
+
+    def approve(self, eid, by="player"):
+        """the player (or developer mode) allows this extension's command to run (registry.approve); its row"""
         with self.lock:
-            cache = self.annotate_cache
-            if cache is not None and all(self.stamp(path) == was for path, was in cache[0]):
-                return cache[1]
-            stamps = [(self.registry, self.stamp(self.registry))]
-            stamps += [(path, self.stamp(path)) for path in (M.locate(e["path"])[1] for e in self.load()["extensions"]
-                                                            if e["enabled"])]
-            table = {}
-            for e, m in self.enabled_manifests():
-                for a in m["annotate"]:
-                    if M.annotation_ok(a, e.get("described")):
-                        table.setdefault(a["app"], []).append(dict(ext=e["id"], call=a["call"], wake=a["wake"],
-                                                                   timeout=a["timeout"]))
-            for items in table.values():
-                items.sort(key=lambda a: a["ext"])
-            self.annotate_cache = (stamps, table)
-            return table
-
-    def extensions_of(self, skill):
-        """[{"ext": id, "title": title, "path": <absolute path of the Markdown>}] of the enabled extensions that extend
-        skill (a skill file's name), by extension id"""
-        if not isinstance(skill, str) or not skill:
-            return []
-        out = [dict(ext=e["id"], title=m.get("title") or e["id"], path=m["extends"][skill])
-               for e, m in self.enabled_manifests() if skill in m["extends"]]
-        return sorted(out, key=lambda x: x["ext"])
+            self.reg.approve(eid, by)
+        return self.get(eid)
 
     def capability(self, cap_id):
         """(entry, the described capability or None) of a capability id whose extension is registered; None when no
@@ -635,8 +598,10 @@ class Host:
         if self.on_call is None:
             proc.respond(rid, error=dict(code=FAILED, message="calls are not available here", data=dict(reason="failed")))
             return
+        chain = params.get("chain")       # the chain of the call the extension is serving, as its SDK passes it on
+        chain = [x for x in chain if isinstance(x, str)][:8] if isinstance(chain, list) else []
         try:
-            fut = self.on_call(proc.id, cap, args)
+            fut = self.on_call(proc.id, cap, args, chain)
         except Exception as e:
             fut = Future()
             fut.set_exception(e)
@@ -655,9 +620,16 @@ class Host:
 
     # --- calls
 
-    def call(self, proc, name, args, caller):
-        """a call of a capability of a running Proc: a Future of its result (RpcError / ApiError)"""
+    def call(self, proc, name, args, caller, deadline_ms=None):
+        """a call of a capability of a running Proc: a Future of its result (RpcError / ApiError). deadline_ms: how
+        long the caller still waits, told to the extension (To do: W-A)"""
         return proc.request("call", dict(name=name, args=args or {}, caller=caller or {"by": "agent"}))
+
+    def cancel_call(self, proc, fut, ping=False):
+        """the caller of call()'s Future waits no longer: the extension is told cancel {id}, its answer is dropped
+        and the Future ends (reason cancelled) unless it is done. ping: the call timed out, so the extension is asked
+        ping; one that does not answer within 5 s is hung (killed and started again at its next call). (To do: W-A)"""
+        fut.cancel()
 
     def call_sync(self, cap_id, args=None, caller=None, timeout=30.0):
         """(tests, scripts) a capability's result, waiting here; ApiError as local_call raises it"""

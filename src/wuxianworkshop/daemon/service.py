@@ -165,7 +165,8 @@ class Service:
         self.tracing = asyncio.Lock()         # one trace at a time: they share the game-side frame
         self.history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wuxian-history")
         self.history_big = set()             # addons too big to keep: said once
-        self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), on_event=self.local_event,
+        self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), mode=lambda: self.mode,
+                               on_event=self.local_event,
                                on_call=self.extension_calls, on_change=self.local_changed)   # local/host.py
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
                                    note=lambda text: self.journal.add("INFO", text),
@@ -1560,8 +1561,9 @@ class Service:
         self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": "local.changed", "d": {"revision": revision}}))
         self.soon(self.reactor.refresh())
 
-    def extension_calls(self, eid, cap, args):
-        """(an extension's reader thread) its call {cap, args}: a Future of the result (ApiError as local_call's)"""
+    def extension_calls(self, eid, cap, args, chain=None):
+        """(an extension's reader thread) its call {cap, args}: a Future of the result (ApiError as local_call's).
+        chain: the caller chain of the call it is serving (To do: W-C: caller.chain = chain + ["ext:<eid>"], loop)"""
         async def value():
             return (await self.local_call(cap, args, caller={"by": "extension", "id": eid}))["result"]
         fut = self.soon(value())
