@@ -116,7 +116,7 @@ class Groups(unittest.TestCase):
 
     def test_the_idea_and_the_origins(self):
         idea = self.out["idea"]
-        self.assertTrue(idea.startswith("用无限工坊验证一个想法：（在这里写你的想法）。先调用 wuxian 的 guide，"), idea)
+        self.assertTrue(idea.startswith("用无限工坊验证一个想法：\n（在这里写你的想法）\n\n先调用 wuxian 的 guide，"), idea)
         for word in ("从最省事的一档开始", "需要我操作时告诉我", "结论（能做 / 有条件能做 / 不能做）和依据"):
             self.assertIn(word, idea)
         for word in ("extension_guide", "extension_load", "做一个扩展"):       # the route says what to make, if anything
@@ -154,12 +154,13 @@ class Template(unittest.TestCase):
         self.assertIn('@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg>扩展文件夹</button>', self.bar)
 
     def test_the_title_says_what_extensions_are_for(self):
-        self.assertIn('<span class="pg-help" x-t tabindex="0" title="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。" aria-label="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。">'
+        self.assertIn('<span class="pg-help" x-t tabindex="0" title="说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。" aria-label="说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。">'
                       '<svg class="ico"><use href="#i-info"/></svg></span>', self.bar)
         empty = self.page[self.page.index('<div class="lx-empty"'):]
         empty = empty[:empty.index("</div>\n            </div>")]
-        self.assertIn('<button class="btn small primary" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>', empty)
-        self.assertIn('<button class="btn tiny" type="button" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>', self.page)
+        self.assertIn('<button class="btn small primary" @click="lxNewOpen()">新建扩展</button>', empty)   # the idea is typed there
+        self.assertNotIn("lxCopyIdea", self.page)
+        self.assertIn('<textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea"', self.page)
         self.assertNotIn("安装扩展包", self.page)            # a package is imported: 安装 is for addons
         self.assertNotIn("允许运行", self.page)              # the player approves (批准运行, 本机扩展批准)
 
@@ -171,8 +172,8 @@ class Template(unittest.TestCase):
         self.assertIn('x-for="tool in (xpSel.tools || [])"', caps)
 
     def test_the_words_have_their_english(self):
-        for word in ("内置", "已添加", "扩展目录", "可安装到游戏", "本机", "游戏", "还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", "在这台电脑上运行，不需要游戏",
-                     "由游戏插件经扩展框架提供", "{a} 个内置扩展 · {b} 个来自其他插件", "扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。", "文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发",
+        for word in ("内置", "已添加", "扩展目录", "可安装到游戏", "本机", "游戏", "还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。", "在这台电脑上运行，不需要游戏",
+                     "由游戏插件经扩展框架提供", "{a} 个内置扩展 · {b} 个来自其他插件", "说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。", "文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发",
                      "由扩展包导入或放进扩展文件夹；移除时移入回收区", "导入扩展包", "导入", "已导入 {name}", "批准运行", "已批准 {name}", "自动批准", "交给 Agent", "随扩展框架提供，在游戏中运行，不能单独移除", "其他插件在游戏中提供的扩展，以及添加到本机的扩展",
                      "无限工坊扩展目录中尚未安装到游戏的扩展", "由游戏插件提供，在游戏中运行", "在这台电脑上运行，不需要游戏", "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行"):
             self.assertRegex(self.i18n, r"\n\s*'%s':" % re.escape(word), word)

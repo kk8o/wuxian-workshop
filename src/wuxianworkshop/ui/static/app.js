@@ -188,6 +188,11 @@ const LX_LIMIT = 200;                          // 本机扩展's log: the lines 
 const LX_KEEP = 500;                           // … and kept, the newest
 const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
 const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extension's states with a process
+const LX_SAMPLES = [                           // 新建扩展 · 示例: an idea of each kind (in the game, with a program on this
+  { name: '游戏内提醒', idea: '背包剩余不足 5 格时，在屏幕中央提醒我' },          // computer, with another addon's data); keys,
+  { name: '接入本机程序', idea: '收到密语时，让电脑把内容读出来' },               // translated where they are shown
+  { name: '读取其他插件', idea: '读取任务指引插件当前这一步，告诉我接下来该做什么' },
+];
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
 const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
                               apps: [], skills: [], adds: {}, approval: 'ok', command: null, since: null, why: null,
@@ -310,7 +315,10 @@ function appState() {
                                                // game: by id, true once game addons went in that need the game restarted
     lxa: { open: false, kind: 'folder', path: '', busy: false, error: '' },   // 扩展 · 本机 · 添加: the path typed (no shell
                                                // to pick with), or the one that was refused (kind: folder | zip)
-    lxn: { open: false, id: '', title: '', addon: '', where: 'local', busy: false, error: '' },   // 扩展 · 新建扩展
+    lxn: { open: false, mode: 'idea', idea: '', sent: false, more: false, task: '', id: '', title: '', addon: '', where: 'local',
+           busy: false, error: '', result: null },   // 扩展 · 新建扩展. mode idea (交给 Agent): the idea typed, sent once it
+                                               // was copied, more: the whole message shown; mode manual (手动创建): the
+                                               // form, then result with task, what to build in what was made
     lxp: { open: false, path: '' },            // 扩展 · 本机: a folder's path shown (no shell to open it with)
     lout: { id: null, run: null, next: 0, top: 0, total: 0, gen: 0, text: '', count: 0, busy: false, again: false,
             loaded: false, error: '', follow: true, after: 0 },   // 扩展 · 本机: the log of the one shown (its lines are
@@ -1641,21 +1649,42 @@ function appState() {
       this.lx.menu = this.lx.menu === which ? '' : which;
     },
     lxMenuClose(which) { if (this.lx.menu === which) this.lx.menu = ''; },
-    lxPrompt(r) {                              // the first thing to tell the agent about a local extension (as promptFor of an addon)
-      if (!r || !r.id) return '';
+    lxPrompt(r, what) {                        // the first thing to tell the agent about a local extension (as promptFor of an
+      if (!r || !r.id) return '';              // addon); what: the feature typed, or a place to write it
       const addon = r.addon || (((r.addons || [])[0] || {}).folder) || '';
+      what = String(what || '').trim().replace(/[。．.\s]+$/, '') || t('（在这里写你想要的功能）');
       if (r.where === 'game') {                // in the game only: its AGENT.md is the addon's, the game's tools read it
-        return t('请先读 {path}\\addons\\{addon}\\AGENT.md 和 guide {"topic": "game-extension"}。然后在扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查、安装到游戏并在运行中的游戏里加载），用 wk_{id}_ 开头的工具试用，出错时看 errors 和 logs。需要我操作时告诉我，再用 extension_wait 等我完成。', { path: r.path, addon, id: r.id });
+        return t('请先读 {path}\\addons\\{addon}\\AGENT.md 和 guide {"topic": "game-extension"}。然后在扩展 {id} 里实现：{what}。改完用 wuxian 的 extension_load 载入（会检查、安装到游戏并在运行中的游戏里加载），用 wk_{id}_ 开头的工具试用，出错时看 errors 和 logs。需要我操作时告诉我，再用 extension_wait 等我完成。', { path: r.path, addon, id: r.id, what });
       }
-      return t('请先读 {path}\\AGENT.md 和 guide {"topic": "local-extension"}。然后在本机扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id })
+      return t('请先读 {path}\\AGENT.md 和 guide {"topic": "local-extension"}。然后在本机扩展 {id} 里实现：{what}。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id, what })
         + (addon ? t('游戏插件在 addons\\{addon}：extension_load 会把它装进游戏，新插件完整重启游戏后才会出现，在那之前可以用 load 热加载。', { addon }) : '');
     },
-    lxIdeaPrompt() {                          // the first thing to tell the agent about an idea, before there is an extension
-      return t('用无限工坊验证一个想法：（在这里写你的想法）。先调用 wuxian 的 guide，按它判断从哪一档做起，从最省事的一档开始；需要我操作时告诉我。最后给我结论（能做 / 有条件能做 / 不能做）和依据。');
+    lxIdeaPrompt(idea) {                       // the first thing to tell the agent about an idea, before there is an extension:
+      const said = String(idea || '').trim() || t('（在这里写你的想法）');   // the idea on its own line, then how to go about it
+      return t('用无限工坊验证一个想法：') + '\n' + said + '\n\n'
+        + t('先调用 wuxian 的 guide，按它判断从哪一档做起，从最省事的一档开始；需要我操作时告诉我。最后给我结论（能做 / 有条件能做 / 不能做）和依据。');
     },
-    lxCopyIdea() {
-      this.lx.menu = '';
-      this.copy(this.lxIdeaPrompt(), t('给 Agent 的第一句话'));
+    get lxSamples() { return LX_SAMPLES; },    // 新建扩展 · 示例
+    lxSample(s) {                              // an example goes into the box, to be changed or sent as it is
+      this.lxn.idea = t(s.idea);
+      this.lxIdeaFocus();
+    },
+    lxIdeaFocus() {                            // once the dialog is shown (it fades in: not yet on the next tick)
+      setTimeout(() => { const el = (this.$refs || {}).lxidea; if (el && el.focus) el.focus(); }, 60);
+    },
+    async lxIdeaCopy() {                       // 复制给 Agent: the message with the idea in it; the dialog then says what comes next
+      const idea = this.lxn.idea.trim();
+      if (!idea) return;
+      await this.copy(this.lxIdeaPrompt(idea), t('给 Agent 的第一句话'));
+      this.lxn.sent = true;
+    },
+    get lxNoAgent() {                          // the agents were read and none has the workshop's server: 接入 Agent first
+      const list = this.agents.list;
+      return !!list && !list.some((h) => h.state === 'ok' || h.state === 'other');
+    },
+    lxToConnect() {
+      this.lxn.open = false;
+      this.go('connect');
     },
     lxCopyPrompt(r) {
       this.lx.menu = '';
@@ -1810,9 +1839,13 @@ function appState() {
       }
     },
     lxAddSubmit() { return this.lxAdd(this.lxa.path, this.lxa.kind); },
-    lxNewOpen() {
+    lxNewOpen(mode) {                          // 新建扩展: 交给 Agent unless 'manual'; an idea typed and not copied yet is kept
       this.lx.menu = '';
-      this.lxn = { open: true, id: '', title: '', addon: '', where: 'local', busy: false, error: '', result: null };
+      const idea = this.lxn.sent || this.lxn.result ? '' : this.lxn.idea || '';
+      this.lxn = { open: true, mode: mode === 'manual' ? 'manual' : 'idea', idea, sent: false, more: false, task: '',
+        id: '', title: '', addon: '', where: 'local', busy: false, error: '', result: null };
+      this.loadAgents(true);                   // for the next steps: whether an agent is connected at all
+      if (this.lxn.mode === 'idea') this.lxIdeaFocus();
     },
     async lxNew() {                            // POST /api/local/new {id, title?, where?, addon?} -> {row, files, guide},
       const id = this.lxn.id.trim(), title = this.lxn.title.trim();   // selected; the dialog then shows what comes next
@@ -1830,7 +1863,9 @@ function appState() {
         const path = (row && row.path) || '';
         const files = ((d && d.files) || []).map((f) => (path && f.startsWith(path) ? f.slice(path.length + 1) : f));
         const made = ((((row && row.addons) || [])[0] || {}).folder) || addon;   // the addon's name, made from the id if not typed
-        this.lxn = { open: true, id: '', title: '', addon: '', where: 'local', busy: false, error: '',
+        const task = this.lxn.idea.trim();       // what was typed under 交给 Agent is what to build in it
+        this.lxn = { open: true, mode: 'manual', idea: '', sent: false, more: false, task, id: '', title: '', addon: '',
+          where: 'local', busy: false, error: '',
           result: { id, path, files, addon: made, where: (row && row.where) || where, needs: this.lxUnapproved(row) } };
         if (row) { this.lxRow(row); this.xpSelect('l:' + row.id); } else await this.loadLocal(true);
         this.say(t('已创建 {name}', { name: row ? this.lxTitle(row) : id }));
@@ -2346,13 +2381,14 @@ function appState() {
 
     // ---- the agents (agents.py through /api/agents): one click registers this program with Claude Code, Codex, Cursor,
     // Trae and WorkBuddy
-    async loadAgents() {
+    async loadAgents(quiet) {                  // quiet: asked in passing (新建扩展), a failure leaves things as they were
       try {
         const d = await this.api('/api/agents');
         this.agents.list = d.hosts || [];
         this.agents.program = d.program || null;
         this.agents.manual = d.manual || {};
       } catch (e) {
+        if (quiet) return;
         if (this.agents.list === null) this.agents.list = [];
         this.say(t('读取 Agent 失败：') + errText(e));
       }

@@ -690,7 +690,7 @@
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
-        <span class="pg-help" x-t tabindex="0" title="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。" aria-label="扩展让 Agent 借助无限工坊的框架与通道快速做出原型、验证想法：游戏中的部分经扩展框架接入，本机的部分由工坊运行，能力都以 wk_ 工具提供给 Agent。"><svg class="ico"><use href="#i-info"/></svg></span>
+        <span class="pg-help" x-t tabindex="0" title="说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。" aria-label="说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。"><svg class="ico"><use href="#i-info"/></svg></span>
         <span class="muted" x-text="extSummary"></span>
         <div class="spacer"></div>
         <span class="menu-wrap" @click.outside="lxMenuClose('add')">
@@ -756,10 +756,9 @@
             <p class="small bad-text pad" x-show="lx.error" x-text="lx.error"></p>
             <p class="small bad-text pad selectable" x-show="lx.problem" x-text="t('登记表异常：') + lx.problem"></p>
             <div class="lx-empty" x-show="lx.list && !xpInstalled.length && !lx.error">
-              <p class="small muted">还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。</p>
+              <p class="small muted">还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。</p>
               <div class="row tight wrap">
-                <button class="btn small primary" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>
-                <button class="btn small" @click="lxNewOpen()">新建扩展</button>
+                <button class="btn small primary" @click="lxNewOpen()">新建扩展</button>
                 <button class="btn small" @click="lxAddFolder()">链接文件夹</button>
                 <button class="btn small" @click="lxAddPackage()">导入扩展包</button>
               </div>
@@ -1089,13 +1088,49 @@
         </div>
       </div>
 
-      <!-- 本机扩展 · 新建扩展（对话框） -->
+      <!-- 扩展 · 新建扩展（对话框）。交给 Agent：写下想法，复制成给 Agent 的第一句话，再说接下来做什么；
+           手动创建：填标识与运行位置，生成清单与模板文件 -->
       <div class="modal-back" x-show="lxn.open" x-transition.opacity @keydown.escape.window="lxn.open = false" @click.self="lxn.open = false">
         <div class="modal">
           <div class="modal-head"><span>新建扩展</span><button x-t class="x" @click="lxn.open = false" title="关闭（Esc）">✕</button></div>
+          <div class="tabs" x-show="!lxn.sent && !lxn.result">
+            <button class="tab" type="button" :class="{on: lxn.mode === 'idea'}" @click="lxn.mode = 'idea'">交给 Agent</button>
+            <button class="tab" type="button" :class="{on: lxn.mode === 'manual'}" @click="lxn.mode = 'manual'">手动创建</button>
+          </div>
           <div class="modal-body">
-            <form class="form" @submit.prevent="lxNew()" x-show="!lxn.result">
-              <p class="small muted lx-idea">把想法交给 Agent，由它新建并调试：<button class="btn tiny" type="button" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>；也可以在下方填写标识后自己创建。</p>
+            <div x-show="lxn.mode === 'idea' && !lxn.sent">
+              <p class="lx-lead">用一两句话描述想实现的功能，不必考虑实现方式。</p>
+              <p class="small muted lx-note">Agent 会查证游戏接口是否支持，判断在游戏内还是本机实现，新建扩展并调试，最后给出能否实现的结论与依据。</p>
+              <textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea" placeholder="例如：背包剩余不足 5 格时，在屏幕中央提醒我" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>
+              <div class="lx-samples">
+                <span class="muted">示例</span>
+                <template x-for="s in lxSamples" :key="s.name">
+                  <button class="btn tiny" type="button" :title="t(s.idea)" x-text="t(s.name)" @click="lxSample(s)"></button>
+                </template>
+              </div>
+              <button class="lx-more" type="button" :aria-expanded="lxn.more" @click="lxn.more = !lxn.more">发给 Agent 的完整内容</button>
+              <pre class="selectable lx-prompt" x-show="lxn.more" x-text="lxIdeaPrompt(lxn.idea)"></pre>
+              <div class="row end">
+                <div class="spacer"></div>
+                <button class="btn" type="button" @click="lxn.open = false">取消</button>
+                <button x-t class="btn primary" type="button" title="Ctrl+Enter" :disabled="!lxn.idea.trim()" @click="lxIdeaCopy()">复制给 Agent</button>
+              </div>
+            </div>
+            <div class="result ok" x-show="lxn.mode === 'idea' && lxn.sent">
+              <div>已复制。接下来：</div>
+              <ol class="steps">
+                <li>在已接入无限工坊的 Agent 对话中粘贴并发送。<span class="muted lx-hint" x-show="lxNoAgent">尚未检测到已接入的 Agent：<button class="btn tiny" type="button" @click="lxToConnect()">接入 Agent</button></span></li>
+                <li>Agent 先查证能否实现，再新建扩展并调试；新建的扩展显示在「已添加」中。</li>
+                <li>需要批准运行或重启游戏时，Agent 会说明，扩展详情中也有提示。</li>
+              </ol>
+              <div class="row end">
+                <div class="spacer"></div>
+                <button class="btn" type="button" @click="lxn.sent = false">返回修改</button>
+                <button class="btn primary" type="button" @click="lxn.open = false">完成</button>
+              </div>
+            </div>
+            <form class="form" @submit.prevent="lxNew()" x-show="lxn.mode === 'manual' && !lxn.result">
+              <p class="small muted lx-lead">生成清单与模板文件，之后自行编写，或交给 Agent 继续。</p>
               <label class="field"><span>标识</span><input x-t class="input mono" x-model="lxn.id" placeholder="小写字母开头，可含数字与下划线"></label>
               <label class="field"><span>名称</span><input x-t class="input" x-model="lxn.title" placeholder="可以不填"></label>
               <div class="field"><span>运行位置</span>
@@ -1118,14 +1153,16 @@
               <div x-t class="result ok">
                 <div>已创建 <span class="mono selectable" x-text="lxn.result.path"></span>：<span class="mono" x-text="lxn.result.files.join(t('、'))"></span></div>
                 <ol class="steps">
-                  <li>交给 Agent：<button class="btn tiny" @click="copy(lxPrompt(lxn.result), t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
+                  <li>交给 Agent：
+                    <textarea x-t class="input lx-task" rows="2" x-model="lxn.task" placeholder="要实现的功能"></textarea>
+                    <button class="btn tiny" :disabled="!lxn.task.trim()" @click="copy(lxPrompt(lxn.result, lxn.task), t('给 Agent 的第一句话'))">复制给 Agent</button></li>
                   <li>用编辑器打开它：<button class="btn tiny" @click="lxOpen(lxn.result.path)">打开文件夹</button></li>
                   <li x-show="lxn.result.needs">首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。</li>
                   <li x-show="lxn.result.where === 'game'">载入时安装到游戏；新插件在游戏重启后由游戏载入。</li>
                 </ol>
                 <div class="row end">
                   <div class="spacer"></div>
-                  <button class="btn" @click="lxNewOpen()">再建一个</button>
+                  <button class="btn" @click="lxNewOpen('manual')">再建一个</button>
                   <button class="btn primary" @click="lxn.open = false">完成</button>
                 </div>
               </div>

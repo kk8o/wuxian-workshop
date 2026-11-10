@@ -123,7 +123,17 @@ a.sb-item:hover { background: var(--panel2); color: var(--fg); text-decoration: 
 .pg-help { display: inline-flex; align-items: center; flex: none; color: var(--faint); cursor: help; margin-left: -4px; }
 .pg-help:hover, .pg-help:focus { color: var(--muted); outline: none; }
 .pg-help svg.ico { width: 15px; height: 15px; }
-.lx-idea { margin: 0 0 4px; line-height: 1.9; }
+.lx-lead { margin: 10px 0 8px; line-height: 1.7; }   /* 新建扩展: what the tab is for, above its fields */
+.lx-lead + .lx-note { margin: -4px 0 10px; line-height: 1.7; }   /* … and what the agent does with it */
+textarea.lx-idea { min-height: 92px; line-height: 1.6; }
+.lx-samples { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; font-size: 12px; }
+.lx-more { font: inherit; font-size: 12px; color: var(--muted); background: transparent; border: 0; padding: 4px 0; cursor: pointer; }
+.lx-more:hover { color: var(--fg); }
+.lx-more::before { content: "▸ "; } .lx-more[aria-expanded="true"]::before { content: "▾ "; }
+pre.lx-prompt { margin: 2px 0 0; padding: 8px 10px; max-height: 170px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit;
+                font-size: 12px; line-height: 1.6; color: var(--muted); background: var(--field); border: 1px solid var(--line); border-radius: 5px; }
+.lx-hint { display: block; margin-top: 4px; }   /* 新建扩展, after copying: no agent has the workshop's server yet */
+textarea.lx-task { display: block; margin: 6px 0; min-height: 50px; }
 .lx-where-hint { margin: -6px 0 0 106px; }   /* under the 运行位置 choices: the field's label column and gap */
 .row.wrap { flex-wrap: wrap; }
 .pagebar h1 { font-size: 15px; font-weight: 600; margin: 0; color: var(--fg); letter-spacing: .02em; white-space: nowrap; }

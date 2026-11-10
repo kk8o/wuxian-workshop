@@ -343,7 +343,7 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   await st.lxNew();
   out.createdOdd = posts();
   out.whereHints = ['game', 'local', 'both'].map((w) => st.lxWhereHint(w));
-  st.lxNewOpen();
+  st.lxNewOpen('manual');
   st.lxn.id = 'my_tool';
   await st.lxNew();
   out.createFailed = copyOf(st.lxn);
@@ -352,6 +352,48 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   await st.lxNew();
   out.createNothing = posts().length;
   st.lxn.open = false;
+
+  // 新建扩展 · 交给 Agent: the idea typed goes into the first message; once copied, the dialog says what comes next
+  const copied = [];
+  const went = [];
+  const go0 = st.go;
+  st.copy = (text, what) => { copied.push([text, what]); };
+  st.go = (id) => { went.push(id); };
+  st.lxNewOpen();
+  const blank = st.lxIdeaPrompt(st.lxn.idea);
+  await st.lxIdeaCopy();                                        // nothing typed: nothing copied
+  const idle = [copied.length, st.lxn.sent];
+  st.lxSample(st.lxSamples[1]);
+  const sample = st.lxn.idea;
+  st.lxn.idea = '  背包快满时提醒我 \n';
+  st.lxn.open = false;
+  st.lxNewOpen();                                               // typed and not copied yet: still there
+  const kept = st.lxn.idea;
+  await st.lxIdeaCopy();
+  const sent = copyOf(st.lxn);
+  st.lxNewOpen();                                               // copied: the next one starts empty
+  const afterSent = st.lxn.idea;
+  st.lxn.idea = '读出密语。';                                     // typed here, then made by hand: it is what to build
+  st.lxn.mode = 'manual';
+  st.lxn.id = 'carry';
+  calls.length = 0;
+  await st.lxNew();
+  const carried = { posts: posts(), mode: st.lxn.mode, idea: st.lxn.idea, task: st.lxn.task,
+                    prompt: st.lxPrompt(st.lxn.result, st.lxn.task), bare: st.lxPrompt(st.lxn.result, ' 。 ') };
+  st.lxNewOpen('manual');
+  const again = [st.lxn.mode, st.lxn.task, st.lxn.result];
+  const noAgent = [null, [], [{ state: 'absent' }, { state: 'missing' }, { state: 'error' }], [{ state: 'absent' }, { state: 'ok' }],
+                   [{ state: 'other' }]].map((list) => { st.agents.list = list; return st.lxNoAgent; });
+  st.agents.list = null;
+  st.said.length = 0;
+  st.lxNewOpen();                                               // the agents are asked in passing: a failure says nothing
+  await settle();
+  const quiet = [st.agents.list, st.said.length];
+  st.lxToConnect();
+  out.idea = { blank, idle, sample, samples: st.lxSamples.map((s) => [s.name, s.idea]), kept, copied, sent, afterSent, carried,
+               again, noAgent, quiet, went, open: st.lxn.open };
+  st.copy = () => {};
+  st.go = go0;
 
   // the menus: one at a time
   st.lx.menu = '';
@@ -506,7 +548,8 @@ class Manage(unittest.TestCase):
 
     def test_new(self):
         o = self.out
-        self.assertEqual(o["newOpen"], [{"open": True, "id": "", "title": "", "addon": "", "where": "local", "busy": False,
+        self.assertEqual(o["newOpen"], [{"open": True, "mode": "idea", "idea": "", "sent": False, "more": False, "task": "",
+                                         "id": "", "title": "", "addon": "", "where": "local", "busy": False,
                                          "error": "", "result": None}, ""])
         c = o["created"]
         self.assertEqual(c["posts"], [["/api/local/new", {"id": "my_tool", "where": "both", "addon": "MyTool"}]])
@@ -523,9 +566,39 @@ class Manage(unittest.TestCase):
         self.assertEqual((c["addons"], c["will"]), ([["MyTool", "未安装"]], "MyTool"))
         self.assertEqual(o["createdNamed"], [[["/api/local/new", {"id": "named", "title": "有名字"}]], "有名字", "local", ""])
         self.assertEqual(o["createdOdd"], [["/api/local/new", {"id": "odd"}]])
-        self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "where": "local",
+        self.assertEqual(o["createFailed"], {"open": True, "mode": "manual", "idea": "", "sent": False, "more": False,
+                                             "task": "", "id": "my_tool", "title": "", "addon": "", "where": "local",
                                              "busy": False, "result": None, "error": "标识已被占用，请先移除同名扩展"})
         self.assertEqual(o["createNothing"], 0)
+
+    def test_the_idea_goes_to_the_agent(self):
+        o = self.out["idea"]
+        tail = "先调用 wuxian 的 guide，按它判断从哪一档做起，从最省事的一档开始；需要我操作时告诉我。最后给我结论（能做 / 有条件能做 / 不能做）和依据。"
+        self.assertEqual(o["blank"], "用无限工坊验证一个想法：\n（在这里写你的想法）\n\n" + tail)
+        self.assertEqual(o["idle"], [0, False])
+        self.assertEqual(o["samples"], [["游戏内提醒", "背包剩余不足 5 格时，在屏幕中央提醒我"],     # one of each kind
+                                        ["接入本机程序", "收到密语时，让电脑把内容读出来"],
+                                        ["读取其他插件", "读取任务指引插件当前这一步，告诉我接下来该做什么"]])
+        self.assertEqual(o["sample"], "收到密语时，让电脑把内容读出来")
+        self.assertEqual(o["kept"], "  背包快满时提醒我 \n")
+        self.assertEqual(o["copied"], [["用无限工坊验证一个想法：\n背包快满时提醒我\n\n" + tail, "给 Agent 的第一句话"]])
+        sent = o["sent"]
+        self.assertEqual((sent["open"], sent["mode"], sent["sent"], sent["result"]), (True, "idea", True, None))
+        self.assertEqual(o["afterSent"], "")
+
+    def test_the_idea_is_what_to_build_when_made_by_hand(self):
+        c = self.out["idea"]["carried"]
+        self.assertEqual(c["posts"], [["/api/local/new", {"id": "carry"}]])
+        self.assertEqual((c["mode"], c["idea"], c["task"]), ("manual", "", "读出密语。"))
+        self.assertIn("在本机扩展 carry 里实现：读出密语。改完用 wuxian 的 extension_load 载入", c["prompt"])     # one full stop
+        self.assertIn("在本机扩展 carry 里实现：（在这里写你想要的功能）。改完用", c["bare"])
+        self.assertEqual(self.out["idea"]["again"], ["manual", "", None])
+
+    def test_whether_an_agent_is_connected(self):
+        o = self.out["idea"]
+        self.assertEqual(o["noAgent"], [False, True, True, False, False])      # not read yet: nothing is said
+        self.assertEqual(o["quiet"], [None, 0])
+        self.assertEqual((o["went"], o["open"]), (["connect"], False))
 
     def test_new_in_the_game_only(self):
         g = self.out["createdGame"]
@@ -600,9 +673,9 @@ class Page(unittest.TestCase):
     def test_nothing_yet(self):
         empty = self.master[self.master.index('<div class="lx-empty"'):]
         self.assertIn('x-show="lx.list && !xpInstalled.length && !lx.error"', empty)
-        self.assertIn("还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", empty)
-        self.assertEqual(re.findall(r'<button class="btn small" @click="(\w+)\(\)">([^<]+)</button>', empty),
-                         [("lxNewOpen", "新建扩展"), ("lxAddFolder", "链接文件夹"), ("lxAddPackage", "导入扩展包")])
+        self.assertIn("还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。", empty)
+        self.assertEqual(re.findall(r'<button class="btn small( primary)?" @click="(\w+)\(\)">([^<]+)</button>', empty),
+                         [(" primary", "lxNewOpen", "新建扩展"), ("", "lxAddFolder", "链接文件夹"), ("", "lxAddPackage", "导入扩展包")])
         self.assertNotIn("new_extension", self.master)
 
     def test_the_detail_menu(self):
@@ -668,6 +741,27 @@ class Page(unittest.TestCase):
         self.assertIn("lxa.kind === 'zip' ? t('导入扩展包') : t('链接文件夹')", d)
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxa.error" x-text="lxa.error"></p>', d)
         self.assertIn('@submit.prevent="lxNew()"', d)
+        new = d[d.index('<div class="modal-back" x-show="lxn.open"'):d.index('<div class="modal-back" x-show="lxp.open"')]
+        self.assertEqual(re.findall(r'<button class="tab" type="button" :class="\{on: lxn\.mode === \'(\w+)\'\}" '
+                                    r'@click="lxn\.mode = \'(\w+)\'">([^<]+)</button>', new),
+                         [("idea", "idea", "交给 Agent"), ("manual", "manual", "手动创建")])      # the idea first
+        self.assertIn('<div class="tabs" x-show="!lxn.sent && !lxn.result">', new)
+        self.assertIn('<textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea" '
+                      'placeholder="例如：背包剩余不足 5 格时，在屏幕中央提醒我" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>', new)
+        self.assertIn('<template x-for="s in lxSamples" :key="s.name">', new)
+        self.assertIn('<button class="btn tiny" type="button" :title="t(s.idea)" x-text="t(s.name)" @click="lxSample(s)"></button>', new)
+        self.assertIn('<pre class="selectable lx-prompt" x-show="lxn.more" x-text="lxIdeaPrompt(lxn.idea)"></pre>', new)
+        self.assertIn(':disabled="!lxn.idea.trim()" @click="lxIdeaCopy()">复制给 Agent</button>', new)
+        self.assertIn('<div class="result ok" x-show="lxn.mode === \'idea\' && lxn.sent">', new)
+        self.assertIn('<span class="muted lx-hint" x-show="lxNoAgent">尚未检测到已接入的 Agent：<button class="btn tiny" type="button" '
+                      '@click="lxToConnect()">接入 Agent</button></span>', new)
+        self.assertIn('<button class="btn" type="button" @click="lxn.sent = false">返回修改</button>', new)
+        self.assertIn('<form class="form" @submit.prevent="lxNew()" x-show="lxn.mode === \'manual\' && !lxn.result">', new)
+        self.assertIn('<textarea x-t class="input lx-task" rows="2" x-model="lxn.task" placeholder="要实现的功能"></textarea>', new)
+        self.assertIn('<button class="btn tiny" :disabled="!lxn.task.trim()" '
+                      '@click="copy(lxPrompt(lxn.result, lxn.task), t(\'给 Agent 的第一句话\'))">复制给 Agent</button>', new)
+        self.assertIn('<button class="btn" @click="lxNewOpen(\'manual\')">再建一个</button>', new)
+        self.assertNotIn("x-html", new)
         fields = re.findall(r'<label class="field"[^>]*><span>([^<]+)</span><input x-t class="[^"]+" x-model="lxn\.(\w+)"', d)
         self.assertEqual(fields, [("标识", "id"), ("名称", "title"), ("游戏插件", "addon")])
         self.assertIn('<div class="field"><span>运行位置</span>', d)             # where it runs: one of three, 本机 unless chosen
@@ -685,7 +779,8 @@ class Page(unittest.TestCase):
     def test_calls_exist(self):
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', self.dialogs))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t"}
-        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen", "lxCopyIdea", "lxWhereHint"})
+        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen", "lxWhereHint",
+                                 "lxIdeaCopy", "lxIdeaPrompt", "lxSample", "lxToConnect"})
         for name in names - {"copy"}:
             self.assertRegex(self.js, r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, name)
         for name in names | {"lxMenu", "lxMenuClose", "lxAddFolder", "lxAddPackage", "lxNewOpen", "lxOpenHome", "lxOpen",
@@ -702,11 +797,16 @@ class Page(unittest.TestCase):
 
     def test_the_menu_has_its_style(self):
         for rule in (".menu-wrap {", ".menu {", ".menu.right {", ".menu-item {", ".menu-item.bad {", ".mgroup-note {",
-                     ".lx-empty {", ".lx-addon {", ".lx-path {"):
+                     ".lx-empty {", ".lx-addon {", ".lx-path {", ".lx-lead {", "textarea.lx-idea {", ".lx-samples {", ".lx-more {",
+                     "pre.lx-prompt {", ".lx-hint {", "textarea.lx-task {"):
             self.assertIn("\n" + rule, self.css)
 
     def test_the_words_have_their_english(self):
-        for word in ("添加", "链接文件夹", "导入扩展包", "新建扩展", "扩展文件夹", "还没有扩展。把想法交给 Agent，它会新建扩展、载入并试用。", "再建一个",
+        for word in ("添加", "链接文件夹", "导入扩展包", "新建扩展", "扩展文件夹", "还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。", "再建一个",
+                     "手动创建", "复制给 Agent", "示例", "游戏内提醒", "接入本机程序", "读取其他插件", "发给 Agent 的完整内容",
+                     "已复制。接下来：", "在已接入无限工坊的 Agent 对话中粘贴并发送。", "尚未检测到已接入的 Agent：", "返回修改",
+                     "要实现的功能", "生成清单与模板文件，之后自行编写，或交给 Agent 继续。", "（在这里写你的想法）",
+                     "（在这里写你想要的功能）",
                      "首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。", "链接", "主页", "游戏插件",
                      "有更新", "同名插件已存在", "游戏目录未知", "重启游戏后生效", "同时安装游戏插件：{names}",
                      "需要无限工坊 {v} 以上", "需要 WuxianKit {v} 以上", "版本不足", "更多", "打包", "移除", "确认移除",
