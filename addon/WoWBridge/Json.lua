@@ -53,7 +53,7 @@ local function Encode(v, depth)
 	return Encode(ok and s or ("<" .. t .. ">"), 0)
 end
 
--- (value, depth): the JSON text; depth defaults to 6 levels
+-- (value, depth): the JSON text; depth defaults to 6 levels (API.lua writes an event's data to WoWBridge.EVENT_DEPTH)
 function Json.Encode(v, depth)
 	return Encode(v, depth or 6)
 end

@@ -1,5 +1,5 @@
 r"""The host of local extensions: the registered extensions and their processes, as the daemon uses them (Host: start,
-stop, calls, the rows the API shows, the annotations and skill supplements, what an extension asks and tells). What it
+stop, calls, the rows the API shows, what it adds to apps, what an extension asks and tells). What it
 is made of is beside it:
 
     registry.py   the registry, <state>\extensions.json: {revision, extensions: [{id, path, enabled, options, described}]}
@@ -165,7 +165,7 @@ class Host:
         self.reg.save(data)
 
     def saved(self):
-        """(the registry's on_save) the file was written: the annotations are worked out again"""
+        """(the registry's on_save) the file was written: what the extensions add to apps is worked out again"""
         self.adds_cache = None
 
     @property
@@ -254,7 +254,9 @@ class Host:
 
     def row(self, e):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
-        command: what the workshop runs for it, None while its manifest cannot be used"""
+        command: what the workshop runs for it, None while its manifest cannot be used; adds: what its manifest adds to
+        apps, and allowed: whether any of it is added now (adds.allowed: the player allowed its command, or the daemon
+        is in developer mode)"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -274,9 +276,7 @@ class Host:
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
-                    annotate=[dict(a) for a in (m or {}).get("annotate") or []],
-                    extends=sorted((m or {}).get("extends") or {}), adds=A.row(m),
-                    approval=self.reg.approval(e))
+                    adds=A.row(m), approval=self.reg.approval(e), allowed=A.allowed(self, e))
 
     def rows(self):
         with self.lock:
@@ -297,8 +297,8 @@ class Host:
     def manifest_entries(self):
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
         notes, state "on", runtime "local", path, docs, skills, capabilities: [{id, kind, title, doc, args, timeout}],
-        sources: [{name, title, doc}], options: [opt + value], apps: [declaration], annotate: [{app, call, wake,
-        timeout}], extends: {skill: absolute path}}. One whose manifest cannot be read now keeps what it described"""
+        sources: [{name, title, doc}], options: [opt + value], apps: [declaration], adds: {app: {wake, skill}},
+        allowed}. One whose manifest cannot be read now keeps what it described"""
         out = []
         with self.lock:
             data = self.load()
@@ -316,8 +316,7 @@ class Host:
                                           for c in desc.get("capabilities") or []],
                             sources=[dict(s) for s in desc.get("sources") or []], options=self.option_rows(e),
                             apps=[dict(a) for a in (m or {}).get("apps") or []],
-                            annotate=[dict(a) for a in (m or {}).get("annotate") or []],
-                            extends=dict((m or {}).get("extends") or {}), adds=A.row(m)))
+                            adds=A.row(m), allowed=A.allowed(self, e)))
         return dict(revision=int(data.get("revision") or 0), extensions=out)
 
     # what the enabled extensions add to apps (adds.py): the declarations of their apps, the wake notes and skill
@@ -337,12 +336,6 @@ class Host:
 
     def control_call(self, app, cmd):
         return A.control_call(self, app, cmd)
-
-    def annotations(self, app):           # the fourth batch's; goes with the manifest's annotate
-        return A.annotations(self, app)
-
-    def extensions_of(self, skill):       # the fourth batch's; goes with the manifest's extends
-        return A.extensions_of(self, skill)
 
     def approve(self, eid, by="player"):
         """the player (or developer mode) allows this extension's command to run (registry.approve); its row. Its
@@ -997,7 +990,7 @@ class Host:
                                               "a traceback says what went wrong"))
             except ApiError as a:
                 problems.append(M.problem("error", "start", a.message, ""))
-            problems += M.annotate_problems(m, self.entry(eid).get("described"))
+            problems += M.adds_problems(m, self.entry(eid).get("described"))
         check = dict(ok=False, problems=problems, capabilities=caps)
         if m is not None:
             tests = self.run_tests(m)

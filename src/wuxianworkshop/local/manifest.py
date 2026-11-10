@@ -575,5 +575,3 @@ def adds_problems(manifest, described):
                                "declare \"wake\": \"table\" in its args"))
     return out
 
-
-annotate_problems = adds_problems      # the name host.py and check.py call until they are moved over

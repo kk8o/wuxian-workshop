@@ -1032,7 +1032,7 @@ class KitTools:
 
     async def read_rows(self, tabulate=True):
         """what the registry says of each local extension now (backend.local_extensions: {extensions: [row]}, a row's
-        enabled, state, approval, since, why, command, adds), for the table's states and for wk_docs. No event tells of
+        enabled, state, approval, allowed, since, why, command, adds), for the table's states and for wk_docs. No event tells of
         a state, so wk_docs reads them each time. A backend without it, or an answer this module cannot read: the last
         ones stand"""
         ask = getattr(self.backend, "local_extensions", None)
@@ -1056,9 +1056,13 @@ class KitTools:
 
     def with_adds(self, ext):
         """a local extension's entry with what it adds to apps (adds_of reads it): its registry row's adds once that is
-        read, else the entry's own"""
+        read, else the entry's own; nothing while the daemon says it is not allowed (allowed false: the player has
+        not allowed its command, so its wakes carry no notes and its sections are not the skill's)"""
         row = self.local_rows.get(ext["id"])
-        return dict(ext, adds=row["adds"]) if isinstance(row, dict) and isinstance(row.get("adds"), dict) else ext
+        said = row if isinstance(row, dict) and isinstance(row.get("adds"), dict) else ext
+        if said.get("allowed") is False:
+            return dict(ext, adds={})
+        return ext if said is ext else dict(ext, adds=said["adds"])
 
     async def local_current(self, wait=False):
         if not self.has_local() or not self.local_due():

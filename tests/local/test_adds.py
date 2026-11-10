@@ -181,11 +181,12 @@ class AddsTests(unittest.TestCase):
             self.assertEqual((len(self.host.adds("guild")), len(self.host.app_reactions("companion")),
                               self.host.control_call("companion", "mute")), (1, 2, {"ext": "fx", "call": "fx.emit"}))
 
-    def test_the_fourth_batchs_names(self):
-        """annotations() and extensions_of() answer nothing now (host.py still forwards to them)"""
+    def test_the_fourth_batchs_names_are_gone(self):
         self.add("fx", adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})
-        self.assertEqual((self.host.annotations("guild"), self.host.extensions_of("guild-chat")), ([], []))
-        self.assertEqual((self.host.get("fx")["annotate"], self.host.get("fx")["extends"]), ([], []))
+        row = self.host.get("fx")
+        for name in ("annotations", "extensions_of"):
+            self.assertFalse(hasattr(self.host, name) or hasattr(A, name), name)
+        self.assertFalse({"annotate", "extends"} & (set(row) | set(self.host.manifest_entries()["extensions"][0])))
 
 
 if __name__ == "__main__":

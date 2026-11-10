@@ -361,7 +361,7 @@ class Adds(unittest.TestCase):
         self.assertIn("takes no argument wake", after[0]["message"])
         self.assertIn("has no capability facts.ghost (it has: bare, lookup, mark)", after[1]["message"])
         self.assertIn("a wake's note only reads", after[2]["message"])
-        self.assertIs(M.annotate_problems, M.adds_problems)                # the name host.py still calls
+        self.assertFalse(hasattr(M, "annotate_problems"))                 # the fourth batch's name
         self.assertEqual(M.adds_problems(self.check()[0], None), [])       # nothing named: nothing to say
         self.assertEqual(M.adds_problems(None, None), [])
 

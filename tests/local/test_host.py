@@ -58,7 +58,7 @@ class HostTests(unittest.TestCase):
                           row["capabilities"]), ("fx", "测试 fx", "0.1.0", True, "use", "stopped", []))
         self.assertEqual(set(row), {"id", "title", "version", "path", "enabled", "start", "state", "since", "why",
                                     "pid", "started", "exit_code", "error", "command", "capabilities", "sources",
-                                    "options", "apps", "skills", "annotate", "extends", "adds", "approval"})
+                                    "options", "apps", "skills", "adds", "approval", "allowed"})
         self.assertEqual(row["command"], [os.path.abspath(sys.executable), "main.py"])    # what the workshop runs
         self.assertLessEqual(abs(row["since"] - time.time()), 60)
         self.assertEqual(self.host.add(str(folder / "wuxian-extension.json"))["id"], "fx")   # the same folder: no change

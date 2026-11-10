@@ -139,7 +139,7 @@ def check(host, ident):
                 proc.shutdown()                            # (process.SHUTDOWN_WAIT as it is now)
             out.close()
     if m is not None:
-        problems += M.annotate_problems(m, described if described is not None else (e or {}).get("described"))
+        problems += M.adds_problems(m, described if described is not None else (e or {}).get("described"))
     result = dict(ok=False, problems=problems, capabilities=caps)
     if runs is not None:
         result["running"] = runs.pid

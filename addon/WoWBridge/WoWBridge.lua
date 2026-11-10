@@ -29,6 +29,7 @@ local WAIT_SAY = 15       -- not connected this long after entering the world: t
 local WB = {}
 _G.WoWBridge = WB
 WB.VERSION = VERSION
+WB.EVENT_DEPTH = 8        -- the levels of tables written of an event's data (API.lua; 6 before 0.9.13, which said none)
 WB.Dump = ns.Agent.Dump   -- (value, depth, bytes): a readable dump of a table, for code an agent runs
 function WB.ToggleConsole(which) ns.Console.Toggle(which) end   -- the debug window (/wb log, the key binding)
 

@@ -328,6 +328,20 @@ class LocalExtensions(unittest.TestCase):
         self.assertIn("## Adds", doc)
         self.assertIn("- It adds notes to the wakes of the app `guild` (voice.status)", doc)
         self.assertNotIn("annotate", overview + doc)
+
+        class Rows(Backend):                 # the daemon's rows: one it says is not allowed adds nothing
+            async def local_extensions(self):
+                return {"extensions": [dict(id=e["id"], enabled=True, state="stopped", adds=e["adds"],
+                                            approval="ok" if e["id"] == "aaa" else "needed",
+                                            allowed=e["id"] == "aaa") for e in local["extensions"]]}
+        waiting = self.tools(Rows(kit_manifest(apps), local, addons=addons))
+        doc = asyncio.run(waiting.call("wk_docs", {"skill": "guild-chat"})).content[0].text
+        self.assertIn("本机扩展「甲」的补充", doc)
+        self.assertNotIn("本机扩展「声音」的补充", doc)
+        overview = asyncio.run(waiting.overview())
+        self.assertIn("- `guild-chat` (app guild): Answer the guild（本机补充：aaa）", overview)
+        self.assertIn("- `voice` (声音, 5 tools): before using them", overview)
+        self.assertNotIn("carries `notes`", overview)
         plain = self.tools(Backend(kit_manifest(apps), self.voice(), addons=addons))
         self.assertNotIn("carries `notes`", asyncio.run(plain.overview()))
         self.assertTrue(asyncio.run(plain.call("wk_docs", {"skill": "guild-chat"})).content[0].text

@@ -16,8 +16,6 @@ An extension whose command the player has not allowed (registry.approval is not 
 allows it by itself at its first start) adds nothing: no declaration, no wake, no skill supplement, no reaction, no
 bound control. All of it comes when the player allows it (the registry is saved then, so the table is built anew).
 
-annotations() and extensions_of() answer nothing: the fourth batch's names (the manifest's annotate and extends, which
-are gone), kept only while host.py still forwards to them.
 Standard library only.
 """
 import copy
@@ -145,12 +143,3 @@ def table(host):
         return built
 
 
-def annotations(host, app):
-    """nothing: the manifest has no annotate any more (adds() gives the wakes' notes). Kept while host.py forwards"""
-    return []
-
-
-def extensions_of(host, skill):
-    """nothing: the manifest has no extends any more (adds() gives the skills' supplements). Kept while host.py
-    forwards"""
-    return []

@@ -8,6 +8,9 @@
 --                                  the agent answers with `respond`; callback(reply) then, or callback(nil, "timeout") when
 --                                  no answer came in `timeout` seconds (default 60), or callback(nil, "dropped") when it
 --                                  could not go (the link busy); returns the request id
+-- An event's data is written to WoWBridge.EVENT_DEPTH levels of tables (8; a table past them goes as the text "<table>"),
+-- a call's answer to one more (its result is one level in). An addon that sizes what it sends reads the number
+-- (WuxianKit does: a wake carries its items' data five levels down); a WoWBridge before 0.9.13 wrote 6 and said none.
 -- An event goes out as an EVENT message {"a":addon,"t":topic,"d":data[,"x":events dropped before it][,"r":request id,
 -- "w":seconds the request still waits]} (Json.lua), at most RATE a second for an addon (BURST at once), its data at most
 -- MAX bytes; while the link is not online the last KEEP wait (a request among them that has to go is called back
@@ -107,7 +110,7 @@ local function Send(self, topic, data, request, timeout)
 	end
 	e.tokens = e.tokens - 1
 	e.topics[topic] = (e.topics[topic] or 0) + 1
-	local body = Json.Encode(data)
+	local body = Json.Encode(data, WB.EVENT_DEPTH)
 	if #body > MAX then body = ('{"cut":true,"bytes":%d}'):format(#body) end
 	local item = { entry = e, request = request, deadline = request and now + timeout,
 		text = '{"a":' .. Json.Encode(self.addon) .. ',"t":' .. Json.Encode(topic) .. ',"d":' .. body
@@ -197,7 +200,7 @@ function WB.Call(addon, name, args)
 		return Json.Encode({ ok = false, error = ("%s has no %s (%s)"):format(tostring(addon), tostring(name), known) })
 	end
 	local ok, value = xpcall(function() return x.fn(args) end, Traceback)
-	if ok then return Json.Encode({ ok = true, result = value }, 8) end
+	if ok then return Json.Encode({ ok = true, result = value }, WB.EVENT_DEPTH + 1) end
 	return Json.Encode({ ok = false, error = value })
 end
 

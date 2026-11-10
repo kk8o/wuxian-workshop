@@ -135,6 +135,25 @@ class EndToEnd(unittest.TestCase):
         s.run(6)
         self.assertEqual(self.events(topic="big")[0]["data"]["cut"], True)
 
+    def test_an_event_goes_eight_levels_deep(self):
+        """an event's data is written to WoWBridge.EVENT_DEPTH levels of tables (8: WuxianKit's wake has a route
+        step's place at its seventh), a table past them as the text "<table>"; a call's answer to one more"""
+        s = self.s
+        self.assertEqual(s.lua.eval(b"WoWBridge.EVENT_DEPTH"), 8)
+        s.lua.execute(b'function Deep(n) local t = { n = n } if n > 1 then t.d = Deep(n - 1) end return t end '
+                      b'FooWB:Emit("deep", Deep(9)) FooWB:Expose("deep", function() return Deep(9) end, "nine levels")')
+        s.run(6)
+
+        def levels(v):
+            return 1 + levels(v["d"]) if isinstance(v, dict) else 0
+
+        def last(v):
+            return last(v["d"]) if isinstance(v, dict) and "d" in v else v
+        data = self.events(topic="deep")[0]["data"]
+        self.assertEqual((levels(data), last(data)), (8, "<table>"))
+        res = asyncio.run(self.svc.call_exposed("Foo", "deep", {}))["result"]
+        self.assertEqual((levels(res), last(res)), (8, "<table>"))               # (its ninth is {ok, result})
+
     def test_call_and_addon_api(self):
         svc = self.svc
         res = asyncio.run(svc.call_exposed("Foo", "double", {"n": 21, "s": "两 ]] |x"}))
