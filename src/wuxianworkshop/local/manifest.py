@@ -38,7 +38,8 @@ capability's; an argument's spec as WuxianKit's capabilities write it (mcp/kit.p
 any, a | b for either, words that are no type names an enumeration, a trailing ? optional. src = {name, title, doc};
 opt = {name, kind: boolean | text | number | choice, title, default, hint?, choices?: [{value, label}], min?, max?,
 step?, unit?}. say and do (proposals the player confirms) come in a later step: refused now (bad_capability).
-The checks the SDK makes too (names, specs, option values) are validate.py's. Standard library only.
+The checks the SDK makes too (names, specs, option values, the whole description: check_description and its parts) are
+validate.py's, under their names here as well. Standard library only.
 """
 import copy
 import json
@@ -47,18 +48,17 @@ from pathlib import Path
 
 from . import reactions as R
 from .validate import (ARG_NAME, ARG_NAME_HINT, CAP_NAME, CAP_NAME_HINT, CAP_NAME_MAX, DEFAULTS, KINDS,  # noqa: F401
-                       OPTION_KINDS, OPTION_NAME, OPTION_NAME_HINT, SOURCE_NAME, SOURCE_NAME_HINT, SPEC_HINT, TEXT_MOST,
-                       TIMEOUT_DEFAULT, TIMEOUT_MOST, TITLE_MAX, TOOL_NAME_MAX, TYPES, arg_problem, cap_name_problem,
-                       finite, text_of, timeout_problem, tool_name, value_problem)
+                       LATER_KINDS, OPTION_KINDS, OPTION_NAME, OPTION_NAME_HINT, PROTOCOL, SOURCE_NAME, SOURCE_NAME_HINT,
+                       SPEC_HINT, TEXT_MOST, TIMEOUT_DEFAULT, TIMEOUT_MOST, TITLE_MAX, TOOL_NAME_MAX, TYPES, arg_problem,
+                       cap_name_problem, check_capability, check_description, check_option, check_source, errors_in,
+                       finite, problem, text_of, timeout_problem, tool_name, value_problem)
 
 MANIFEST = "wuxian-extension.json"
-PROTOCOL = 1
 ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 APP_ID = ID
 KIT_EXTENSIONS = ("chat", "game", "route", "sense", "guide", "data", "tune", "gate", "codex", "guides")
 RESERVED = KIT_EXTENSIONS + ("local", "wb", "wk", "kit")
 NOTES_MAX = 400
-LATER_KINDS = ("say", "do")            # proposals: a later step
 NOT_IN_APP = ("temp", "driver", "launch")
 STARTS = ("use", "workshop")
 KIT_APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")   # an app id as WuxianKit writes it
@@ -86,14 +86,6 @@ class ManifestError(Exception):
         self.problems = problems
         first = next((p for p in problems if p["level"] == "error"), problems[0])
         super().__init__(f"{first['where']}: {first['message']}" + (f" ({first['hint']})" if first.get("hint") else ""))
-
-
-def problem(level, where, message, hint=""):
-    return dict(level=level, where=where, message=message, hint=hint)
-
-
-def errors_in(problems):
-    return [p for p in problems if p["level"] == "error"]
 
 
 def locate(path):
@@ -585,185 +577,3 @@ def adds_problems(manifest, described):
 
 
 annotate_problems = adds_problems      # the name host.py and check.py call until they are moved over
-
-
-# --- the description: initialize's answer ----------------------------------------------------------------------------
-
-def check_description(eid, answer):
-    """(description or None, problems) of an extension's answer to initialize: {capabilities: [{id, name, kind,
-    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt]}"""
-    out = []
-    where = "initialize"
-    if not isinstance(answer, dict):
-        return None, [problem("error", where, "initialize must answer a JSON object",
-                              "{protocol: 1, capabilities: [...], sources: [...], options: [...]}")]
-    if answer.get("protocol") != PROTOCOL or isinstance(answer.get("protocol"), bool):
-        out.append(problem("error", f"{where}: protocol", f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks 1",
-                           "answer protocol 1 (the Python library does)"))
-    caps, names = [], set()
-    raw_caps = answer.get("capabilities", [])
-    if not isinstance(raw_caps, list):
-        out.append(problem("error", f"{where}: capabilities", "capabilities is a list", "[{name, kind, title, doc, args}]"))
-        raw_caps = []
-    for i, c in enumerate(raw_caps):
-        cap = check_capability(eid, c, i, names, out)
-        if cap is not None:
-            caps.append(cap)
-            names.add(cap["name"])
-    sources, snames = [], set()
-    raw_sources = answer.get("sources", [])
-    if not isinstance(raw_sources, list):
-        out.append(problem("error", f"{where}: sources", "sources is a list", "[{name, title, doc}]"))
-        raw_sources = []
-    for i, s in enumerate(raw_sources):
-        at = f"source {i + 1}"
-        if not isinstance(s, dict) or not isinstance(s.get("name"), str) or not SOURCE_NAME.match(s["name"]):
-            out.append(problem("error", at, f"{(s or {}).get('name') if isinstance(s, dict) else s!r} is no source name",
-                               SOURCE_NAME_HINT))
-            continue
-        at = f"source {eid}:{s['name']}"
-        if s["name"] in snames:
-            out.append(problem("error", at, "declared twice", "one entry per source"))
-            continue
-        title = text_of(s.get("title") if s.get("title") is not None else s["name"], TITLE_MAX)
-        if title is None:
-            out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"说完一句\""))
-            continue
-        doc = s.get("doc") if isinstance(s.get("doc"), str) else ""
-        if not doc.strip():
-            out.append(problem("warning", at, "it has no doc", "say what an item of it means and what its data holds"))
-        snames.add(s["name"])
-        sources.append(dict(name=s["name"], title=title, doc=doc.strip()))
-    options, onames = [], set()
-    raw_opts = answer.get("options", [])
-    if not isinstance(raw_opts, list):
-        out.append(problem("error", f"{where}: options", "options is a list", "[{name, kind, title, default}]"))
-        raw_opts = []
-    for i, o in enumerate(raw_opts):
-        opt = check_option(o, i, onames, out)
-        if opt is not None:
-            options.append(opt)
-            onames.add(opt["name"])
-    desc = dict(capabilities=caps, sources=sources, options=options)
-    return (None if errors_in(out) else desc), out
-
-
-def check_capability(eid, c, i, names, out):
-    at = f"capability {i + 1}"
-    if not isinstance(c, dict):
-        out.append(problem("error", at, "a capability is a JSON object", "{name, kind, title, doc, args}"))
-        return None
-    name = c.get("name")
-    why = cap_name_problem(name, eid)
-    if why:
-        out.append(problem("error", at, why, CAP_NAME_HINT + f"; its tool wk_{eid}_<name> has at most {TOOL_NAME_MAX} "
-                                                              "characters"))
-        return None
-    at = f"capability {eid}.{name}"
-    if name in names:
-        out.append(problem("error", at, "declared twice", "one entry per capability"))
-        return None
-    same = sorted(n for n in names if tool_name(eid, n) == tool_name(eid, name))
-    if same:
-        out.append(problem("error", at, f"its tool {tool_name(eid, name)} is also {eid}.{same[0]}'s",
-                           "a tool's name has _ for the dots, so a.b and a_b are one tool: rename one of them"))
-        return None
-    kind = c.get("kind")
-    if kind in LATER_KINDS:
-        out.append(problem("error", at, f"kind {kind} (bad_capability): say and do are proposals the player confirms, "
-                                        "not available to local extensions yet",
-                           "see: reads; keep: stores on this computer; point: shows or tells the player something"))
-        return None
-    if kind not in KINDS:
-        out.append(problem("error", at, f"kind {kind!r} (bad_capability)",
-                           "see (reads, changes nothing), keep (stores on this computer) or point (shows or tells the "
-                           "player something)"))
-        return None
-    title = text_of(c.get("title") if c.get("title") is not None else name, TITLE_MAX)
-    if title is None:
-        out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"说一句\""))
-        return None
-    doc = c.get("doc") if isinstance(c.get("doc"), str) else ""
-    if not doc.strip():
-        out.append(problem("warning", at, "it has no doc",
-                           "the agent picks tools by their docs: say what it does, what it answers, when to use it"))
-    args = c.get("args") or {}
-    if not isinstance(args, dict):
-        out.append(problem("error", f"{at}: args", "args is an object, name -> spec", '{"text": "string", "n": "number?"}'))
-        return None
-    for aname, spec in args.items():
-        if not ARG_NAME.match(aname):
-            out.append(problem("error", f"{at}: args.{aname}", "not an argument name", ARG_NAME_HINT))
-            return None
-        bad, warn = arg_problem(spec)
-        if bad:
-            out.append(problem("error", f"{at}: args.{aname}", bad, SPEC_HINT))
-            return None
-        if warn:
-            out.append(problem("warning", f"{at}: args.{aname}", warn, "write either types or words"))
-    timeout = c.get("timeout", TIMEOUT_DEFAULT)
-    if timeout is None:
-        timeout = TIMEOUT_DEFAULT
-    why = timeout_problem(timeout)
-    if why:
-        out.append(problem("error", f"{at}: timeout", why,
-                           "answer within 30 s; split long work into a capability that starts it and a source that "
-                           "tells when it is done"))
-        return None
-    return dict(id=f"{eid}.{name}", name=name, kind=kind, title=title, doc=doc.strip(), args=dict(args),
-                timeout=timeout)
-
-
-def check_option(o, i, names, out):
-    at = f"option {i + 1}"
-    if not isinstance(o, dict) or not isinstance(o.get("name"), str) or not OPTION_NAME.match(o["name"]):
-        out.append(problem("error", at, "an option needs a name", OPTION_NAME_HINT))
-        return None
-    name = o["name"]
-    at = f"option {name}"
-    if name in names:
-        out.append(problem("error", at, "declared twice", "one entry per option"))
-        return None
-    kind = o.get("kind", "boolean")
-    if kind not in OPTION_KINDS:
-        out.append(problem("error", at, f"kind {kind!r}", "boolean, text, number or choice"))
-        return None
-    title = text_of(o.get("title") if o.get("title") is not None else name, TITLE_MAX)
-    if title is None:
-        out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"音量\""))
-        return None
-    opt = dict(name=name, kind=kind, title=title)
-    if isinstance(o.get("hint"), str) and o["hint"].strip():
-        opt["hint"] = o["hint"].strip()
-    if kind == "number":
-        for k in ("min", "max", "step"):
-            if o.get(k) is not None:
-                if not finite(o[k]):
-                    out.append(problem("error", f"{at}: {k}", f"{k} is a number", "such as 0, 100, 1"))
-                    return None
-                opt[k] = o[k]
-        if "min" in opt and "max" in opt and opt["min"] > opt["max"]:
-            out.append(problem("error", at, "min is more than max", "swap them"))
-            return None
-        if isinstance(o.get("unit"), str) and o["unit"].strip():
-            opt["unit"] = o["unit"].strip()
-    if kind == "choice":
-        choices = o.get("choices")
-        if not isinstance(choices, list) or not choices:
-            out.append(problem("error", f"{at}: choices", "a choice option lists its choices",
-                               '[{"value": "fast", "label": "快"}, {"value": "slow", "label": "慢"}]'))
-            return None
-        kept = []
-        for ch in choices:
-            if not isinstance(ch, dict) or not (isinstance(ch.get("value"), str) or finite(ch.get("value"))):
-                out.append(problem("error", f"{at}: choices", "each choice is {value, label}", "value a text or a number"))
-                return None
-            kept.append(dict(value=ch["value"], label=text_of(ch.get("label"), TITLE_MAX) or str(ch["value"])))
-        opt["choices"] = kept
-    default = o.get("default", DEFAULTS[kind](opt))
-    why = value_problem(opt, default)
-    if why:
-        out.append(problem("error", f"{at}: default", why, "the default must be a value the option takes"))
-        return None
-    opt["default"] = default
-    return opt

@@ -35,8 +35,10 @@ computer. The agent calls its capabilities as the tools wk_<extension>_<name>:
 
     ext.run(setup=load_model)                          # answers the workshop until it says shutdown
 
-ExtensionTest runs an Extension in memory, the way the workshop would, for unit tests. The protocol (JSON-RPC 2.0, one
-object per line) is in the class docstring of Extension and in 无限工坊's extension_guide.
+ExtensionTest runs an Extension the way the workshop would, over the same lines, for unit tests. The protocol (JSON-RPC
+2.0, one object per line) is in the class docstring of Extension and in 无限工坊's extension_guide. What a declaration
+may be (names, argument specs, options) is checked by the same text the workshop checks it with: the block between
+the two "shared" marker lines below, a copy of the workshop's local/validate.py.
 
 An AI app (a local voice companion, a chat helper, ...) reaches the player's game through 无限工坊's daemon, which runs
 on this computer, and the WuxianKit addon in the game:
@@ -47,15 +49,19 @@ on this computer, and the WuxianKit addon in the game:
     kit.call("sense.character")                        # a capability: its result
     p = kit.propose([("chat.send", {"channel": "guild", "text": "hi"})], title="Say hi")
     kit.wait(p["id"])                                  # the proposal once it ended (done, declined, ...)
-    for wake in kit.app("companion", title="Voice companion", hear=["game:*"], me=True,
-                        controls=["mute", "unmute", "less", "more"]):
-        ...                                            # {app, reason, items, skipped, pace?, quiet?}
+    kit.open("companion", minutes=120)                 # start a declared app (one that runs goes on)
+    for wake in kit.app("companion"):
+        ...                                            # {app, seq, reason, items, skipped, after, next, ...}
 
-Client.app opens the app (kit.app.open with the declaration, WuxianKit ARCHITECTURE.md section 10), sends the
-heartbeat (kit.app.status) so the app is not taken for gone, long-polls its wakes, opens it again after a UI reload
-(kit.ready), a restart of the daemon or a failed open, drops items it gave already, and ends when the app stops for
-any reason but "replaced". It never raises while the daemon or the game is away: it waits and tries again (1, 2, 5,
-then every 10 s); `stream.state` tells why it waits.
+Client.app joins an app that runs; it never opens or declares one (Client.open starts a declared app; an app is
+declared by a local extension's manifest, by an addon, or with kit.call("kit.app.declare", {...}); WuxianKit
+ARCHITECTURE.md section 10). Its cursor is WuxianKit's item id: `since=N` goes on after item N (what was heard
+meanwhile comes first, as one wake with reason "catchup"), without it the stream starts where the app's last wake
+ended. The stream sends the heartbeat (kit.app.status) so the app is not taken for gone, long-polls its wakes, reads
+the status again after a UI reload (kit.ready) or a restart of the daemon, catches up on what it may have missed
+(kit.app.recent), leaves out items it gave already, and ends when the app does not run (any more) for any reason but
+"replaced". It never raises while the daemon or the game is away: it waits and tries again (1, 2, 5, then every
+10 s); `stream.state` tells why it waits.
 
 Daemon: POST /api/call {addon, name, args, timeout_ms} -> {addon, name, ok, result}; POST /api/addon_events {addon,
 topic, since, limit, wait} -> {events: [{id, t, addon, topic, data, dropped}], next, truncated, session}; errors
@@ -69,6 +75,7 @@ import fnmatch
 import inspect
 import itertools
 import json
+import math
 import os
 import queue
 import re
@@ -82,9 +89,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = ["Client", "AppStream", "WuxianError", "daemon_json_path", "read_daemon_json", "cover_glob", "FINAL",
-           "Extension", "ExtensionError", "ExtensionTest", "Option", "Source", "check_args", "parse_spec"]
+           "Extension", "ExtensionError", "ExtensionTest", "Option", "Source", "check_args", "parse_spec",
+           "check_description"]
 
 ADDON = "WuxianKit"
 FINAL = frozenset({"done", "failed", "declined", "expired", "undone"})     # a proposal's end states
@@ -92,8 +100,8 @@ BACKOFF = (1.0, 2.0, 5.0, 10.0)        # seconds to wait after the 1st, 2nd, 3rd
 CALL_TIMEOUT_MS = 10000
 POLL_WAIT = 25.0                       # seconds one long-poll waits at most
 ASK_EVERY = 15.0                       # wait(): seconds it waits for kit.proposal before it asks the game itself
-LEASE = 600                            # an app's lease when the open answer gives none
-SEEN_KEPT = 1000                       # item ids remembered to drop repeats
+LEASE = 600                            # an app's lease when its status gives none
+CATCHUP = 100                          # the items a catch-up asks kit.app.recent for: all an app keeps
 
 
 def daemon_json_path(override: Union[str, os.PathLike, None] = None) -> Path:
@@ -347,45 +355,66 @@ class Client:
 
     # ---- apps
 
-    def app(self, app_id: str, decl: Optional[dict] = None, *, wait: Optional[float] = None,
-            yield_timeouts: bool = False, **more) -> "AppStream":
-        """an AI app's wakes (ARCHITECTURE.md section 10): opens it with kit.app.open {app, **decl} and iterates over
-        its wakes {app, reason, items, skipped, pace?, quiet?}. decl (a dict, and the keywords, which win over it):
-        title, hear, see, digest, pace, urgent, controls, say, me, lease, minutes, options, prompt (None values are
-        left out; an app opened before needs none). wait: seconds one next() blocks at most (None: until a wake); after it, next()
-        gives None with yield_timeouts=True, else the iteration stops (the stream stays open: iterate again to go on)"""
-        if decl is not None and not isinstance(decl, dict):
-            raise TypeError("decl: the app's declaration as a dict (or keywords)")
-        merged = dict(decl or {}, **more)
-        merged.pop("app", None)
-        return AppStream(self, app_id, {k: v for k, v in merged.items() if v is not None}, wait=wait,
-                         yield_timeouts=yield_timeouts)
+    def open(self, app_id: str, minutes: Optional[float] = None, lease: Optional[float] = None) -> dict:
+        """start a declared app (kit.app.open {app, minutes?, lease?}): its status {on, ends, lease, next, ...}. One
+        that runs goes on (with the new minutes / lease when given). WuxianError code not_started: it cannot start now
+        (the player blocked it, ...); code call_failed: no app of this id is declared"""
+        args: dict = {"app": app_id}
+        for k, v in (("minutes", minutes), ("lease", lease)):
+            if v is not None:
+                args[k] = v
+        ans = self.call("kit.app.open", args)
+        ans = ans if isinstance(ans, dict) else {}
+        if ans.get("on") is False:
+            raise WuxianError(str(ans.get("blocked") or ans.get("why") or f"the app {app_id} did not start"),
+                              "not_started")
+        return ans
+
+    def app(self, app_id: str, *, since: Optional[int] = None, wait: Optional[float] = None,
+            yield_timeouts: bool = False) -> "AppStream":
+        """the wakes of an AI app that runs (ARCHITECTURE.md section 10): {app, seq, reason, items, skipped, after,
+        next, state?, pace?, quiet?, notes?}; a wake covers the items after < id <= next. It joins only: an app that
+        does not run ends the stream at once (stream.ended tells why); Client.open starts one. since: the id of the
+        last item you handled (a wake's next): what the app's wakes brought after it comes first, as one wake with
+        reason "catchup"; None: from where its last wake ended (what it heard since and still gathers comes with its
+        next wake). wait: seconds one next() blocks at most (None: until a wake); after it, next() gives None with
+        yield_timeouts=True, else the iteration stops (the stream stays open: iterate again to go on)"""
+        return AppStream(self, app_id, since=since, wait=wait, yield_timeouts=yield_timeouts)
+
+
+def _id(v) -> Optional[int]:
+    """an item id as the game's JSON gives it (12 or 12.0): 12; None for anything else"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return int(v)
 
 
 class AppStream:
-    """the wakes of one app; see Client.app. Attributes: state ("connected" | "waiting", reason); ended (None while it
-    runs; why it stopped: stopped, player, expired, left, extension, closed, ...); status (the last kit.app.open or
-    kit.app.status answer); opens (how many times it was opened)"""
+    """the wakes of one app that runs; see Client.app. Attributes: cursor (the id of the last item given or passed
+    over: pass it as since to go on later; None until the app's status was read, unless since was given); state
+    ("connected" | "waiting", reason); ended (None while it listens; else why it ended: stopped, player, expired,
+    left, extension, forgotten, closed, ...); status (the last kit.app.status answer)"""
 
-    def __init__(self, client: Client, app_id: str, decl: dict, *, wait: Optional[float] = None,
+    def __init__(self, client: Client, app_id: str, *, since: Optional[int] = None, wait: Optional[float] = None,
                  yield_timeouts: bool = False):
-        self.client, self.id, self.decl = client, app_id, decl
+        self.client, self.id = client, app_id
         self.wait, self.yield_timeouts = wait, yield_timeouts
         self.topic = f"app.{app_id}"
         self.topics = [self.topic, "kit.app", "kit.ready"]
         self.state: tuple[str, str] = ("waiting", "not connected yet")
         self.ended: Optional[str] = None
         self.status: dict = {}
-        self.opens = 0
-        self.since = -1
+        self.cursor: Optional[int] = None if since is None else max(0, int(since))
+        self._at = -1                                    # the place in the daemon's events (-1: not marked yet)
         self._daemon: Optional[tuple] = None
-        self._need_open = True
+        self._joined = False                             # the status was read since the last doubt about the app
+        self._missed = since is not None                 # wakes may have passed: catch up before the next poll
+        self._sent: Optional[int] = None                 # where the app's wakes got (the status's sent)
+        self._held: list = []                            # wakes that wait for a catch-up that failed
         self._beat_at = 0.0                              # when the next heartbeat is due
         self._fails = 0
         self._retry_at = 0.0
         self._pending: collections.deque = collections.deque()
-        self._seen: collections.deque = collections.deque()
-        self._seen_set: set = set()
 
     # ---- iteration
 
@@ -438,73 +467,78 @@ class AppStream:
         if now < self._retry_at:                         # backing off: sleep until then (or the budget is spent)
             c.sleep(max(0.0, min(budget, self._retry_at - now)))
             return
+        fails = self._fails
         try:
             c.info()
+            self._check_daemon()
+            if self._at == -1:                           # mark the place first: no wake between status and poll is lost
+                self._at = c.events(self.topics, since=-1, wait=0, limit=1).get("next", -1)
+            if not self._joined or c.clock() >= self._beat_at:
+                self._join()                             # the heartbeat too
+                if self.ended is not None:
+                    return
+            if self._missed:
+                self._catch_up()
+                self._missed = False
+            if self._held:
+                held, self._held = self._held, []
+                for data in held:
+                    self._wake(data)
+                if self._held:                           # the catch-up failed again: _wake set the backoff
+                    return
+            if self._pending:
+                return self._ok()
+            ans = c.events(self.topics, since=self._at, wait=max(0.0, min(budget, self._beat_at - c.clock())))
         except WuxianError as e:
             return self._fail(e.reason)
-        self._check_daemon()
-        if self._need_open:
-            try:
-                self._open()
-            except WuxianError as e:
-                return self._fail(e.reason)
-        if c.clock() >= self._beat_at:
-            try:
-                self._heartbeat()
-            except WuxianError as e:
-                return self._fail(e.reason)
-            if self.ended is not None:
-                return
-        w = max(0.0, min(budget, self._beat_at - c.clock()))
-        try:
-            ans = c.events(self.topics, since=self.since, wait=w)
-        except WuxianError as e:
-            return self._fail(e.reason)
-        if self._check_daemon():                          # the answer came from another daemon: from the start
+        if self._check_daemon():                         # the answer came from another daemon: from the start
             return
         nxt = ans.get("next")
         if isinstance(nxt, int) and not isinstance(nxt, bool):
-            self.since = nxt
+            self._at = nxt
+        if ans.get("truncated"):                         # the daemon dropped events we did not read: where the app's
+            self._missed, self._joined = True, False     # wakes got by now is in its status
         for ev in ans["events"]:
             self._take(ev)
             if self.ended is not None:
                 break
-        self._ok()
+        if self._fails == fails:
+            self._ok()
 
     def _check_daemon(self) -> bool:
         """True when the daemon is another one than the last time: its event ids start again, so the stream asks from
-        the next one to come and opens the app again"""
+        the next one to come, reads the app's status and catches up"""
         ident = self.client.daemon
         if self._daemon is not None and ident != self._daemon:
-            self._daemon, self.since, self._need_open = ident, -1, True
+            self._daemon, self._at, self._joined, self._missed = ident, -1, False, True
             return True
         self._daemon = ident
         return False
 
-    def _open(self) -> None:
+    def _join(self) -> None:
+        """read the app's status (which is its heartbeat as well): it runs, or the stream ends"""
         c = self.client
-        if self.since == -1:                              # mark the place first: no wake between open and poll is lost
-            self.since = c.events(self.topics, since=-1, wait=0, limit=1).get("next", -1)
-        ans = c.call("kit.app.open", dict(self.decl, app=self.id))
-        ans = ans if isinstance(ans, dict) else {}
-        if ans.get("on") is False:
-            raise WuxianError(str(ans.get("blocked") or ans.get("why") or ans.get("error")         # blocked: it cannot start now
-                                  or f"the app {self.id} did not start"),
-                              "not_started")
+        self._joined = False
+        try:
+            ans = c.call("kit.app.status", {"app": self.id})
+        except WuxianError as e:
+            if e.code != "call_failed":
+                raise
+            self.ended = "stopped"                       # the game knows no app of this id
+            return
+        if not isinstance(ans, dict) or not ans:
+            raise WuxianError("kit.app.status gave no status", "bad_answer")
         self.status = ans
-        self._need_open = False
-        self.opens += 1
-        self._beat_at = c.clock() + self.beat_every
-
-    def _heartbeat(self) -> None:
-        c = self.client
-        ans = c.call("kit.app.status", {"app": self.id})
-        ans = ans if isinstance(ans, dict) else {}
-        self._beat_at = c.clock() + self.beat_every
-        if ans:
-            self.status = ans
-        if ans.get("on") is False:                        # it stopped and the kit.app event did not reach us
+        if not ans.get("on"):
             self.ended = str(ans.get("why") or "stopped")
+            return
+        self._beat_at = c.clock() + self.beat_every
+        nxt, self._sent = _id(ans.get("next")), _id(ans.get("sent"))
+        if self.cursor is None:                          # a WuxianKit without sent: from its newest item on
+            self.cursor = self._sent if self._sent is not None else nxt or 0
+        elif nxt is not None and nxt < self.cursor:      # the app's items end before the cursor (another character,
+            self.cursor = nxt                            # saved data that started again): every wake would be a repeat
+        self._joined = True
 
     @property
     def beat_every(self) -> float:
@@ -513,40 +547,76 @@ class AppStream:
         lease = lease if isinstance(lease, (int, float)) and not isinstance(lease, bool) and lease > 0 else LEASE
         return max(30.0, lease / 3)
 
+    def _catch_up(self, upto: Optional[int] = None) -> None:
+        """the items after the cursor that the app's wakes brought and that did not get here (kit.app.recent), as one
+        wake with reason "catchup": up to `upto` (the `after` of the wake that showed the gap, which is given after
+        it), else up to the status's sent; what the app heard later comes with a wake, when the app sends it. (A
+        WuxianKit without sent: all it heard.)"""
+        upto = self._sent if upto is None else upto
+        if upto is not None and upto <= self.cursor:
+            return
+        try:
+            res = self.client.call("kit.app.recent", {"app": self.id, "since": self.cursor, "limit": CATCHUP})
+        except WuxianError:
+            self._joined = False                         # the status first, then this again
+            raise
+        res = res if isinstance(res, dict) else {}
+        got = res.get("items") if isinstance(res.get("items"), list) else []
+        ids = [(_id(it.get("id")), it) for it in got if isinstance(it, dict)]
+        items = [it for n, it in ids if n is not None and n > self.cursor and (upto is None or n <= upto)]
+        if items:
+            newest = upto if upto is not None else max(_id(items[-1]["id"]), _id(res.get("next")) or 0)
+            self._pending.append(dict(app=self.id, reason="catchup", items=items, skipped=0, after=self.cursor,
+                                      next=newest))
+            self.cursor = newest
+        elif upto is not None:
+            self.cursor = upto                           # the app keeps them no more: its wakes go on from there
+
     def _take(self, ev: dict) -> None:
         topic, data = ev.get("topic"), ev.get("data")
-        if topic == "kit.ready":                          # a login or a UI reload: open it again
-            self._need_open = True
+        if topic == "kit.ready":                         # a login or a UI reload: does the app still run?
+            self._joined = False
             return
         if not isinstance(data, dict):
             return
         if topic == "kit.app" and data.get("app") == self.id:
-            if data.get("on") is False and data.get("why") != "replaced":
+            if data.get("on") is not False:              # opened again, or changed
+                self._joined = False
+            elif data.get("why") != "replaced":
                 self.ended = str(data.get("why") or "stopped")
-            elif data.get("on") is True and data.get("ends") is not None:
-                self.status = dict(self.status, on=True, ends=data["ends"])
             return
-        if topic != self.topic:
-            return
-        items = data.get("items")
-        if isinstance(items, list):
-            fresh = [it for it in items if not self._repeat(it)]
-            if items and not fresh:
-                return                                    # every item given already
-            data = dict(data, items=fresh)
-        self._pending.append(data)
+        if topic == self.topic:
+            self._wake(data)
 
-    def _repeat(self, item) -> bool:
-        key = item.get("id") if isinstance(item, dict) else None
-        if key is None or isinstance(key, (dict, list)):
-            return False
-        if key in self._seen_set:
-            return True
-        self._seen.append(key)
-        self._seen_set.add(key)
-        while len(self._seen) > SEEN_KEPT:
-            self._seen_set.discard(self._seen.popleft())
-        return False
+    def _wake(self, data: dict) -> None:
+        """one wake of the app: {..., items, skipped, after, next} covers the items after < id <= next. A gap before
+        it (after is past the cursor) is caught up first, up to its after; it comes without the items given already,
+        not at all when it only repeats. A wake that brings nothing (idle) comes as it is"""
+        if self._held:                                   # in order, behind the ones that wait
+            self._held.append(data)
+            return
+        nxt, after = _id(data.get("next")), _id(data.get("after"))
+        if nxt is None or self.cursor is None:           # no cursor in it: as it is
+            self._pending.append(data)
+            return
+        if after is not None and after > self.cursor:
+            try:
+                self._catch_up(after)
+            except WuxianError as e:
+                self._held.append(data)
+                self._fail(e.reason)
+                return
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        skipped = (_id(data.get("skipped")) or 0) > 0
+        if (items or skipped) and nxt <= self.cursor:
+            return                                       # given already
+        cursor = self.cursor
+        fresh = [it for it in items if not (isinstance(it, dict) and _id(it.get("id")) is not None
+                                            and _id(it["id"]) <= cursor)]
+        self.cursor = max(cursor, nxt)
+        if items and not fresh and not skipped:
+            return
+        self._pending.append(data if len(fresh) == len(items) else dict(data, items=fresh))
 
     # ---- state and backoff
 
@@ -563,52 +633,94 @@ class AppStream:
 
 # ---- local extensions ------------------------------------------------------------------------------------------------
 
-PROTOCOL = 1
 MANIFEST = "wuxian-extension.json"       # a local extension's manifest, in its folder
-KINDS = ("see", "keep", "point")         # Read, Store, Guide; say / do (proposals) come later
-OPTION_KINDS = ("boolean", "text", "number", "choice")
-ARG_TYPES = {"string": "string", "number": "number", "boolean": "boolean", "table": "table", "any": "any"}
-CAP_NAME = re.compile(r"^[a-z][a-z0-9_.]*$")
-OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-BAD_ARGS, NO_CAPABILITY, FAILED = -32602, -32601, 1      # a call's error codes
+BAD_ARGS, NO_CAPABILITY, FAILED, BUSY, CANCELLED = -32602, -32601, 1, 2, 3     # a call's error codes
+REASONS = {BAD_ARGS: "bad_args", NO_CAPABILITY: "no_capability", FAILED: "failed", BUSY: "busy",
+           CANCELLED: "cancelled"}       # error.data.reason of each code
 PARSE_ERROR, BAD_REQUEST = -32700, -32600
-TIMEOUT_DEFAULT, TIMEOUT_MAX = 30, 600   # seconds the workshop waits for a capability
 CALL_WAIT = 120.0                        # seconds ext.call waits for the workshop's answer
 SHUTDOWN_GRACE = 3.0                     # seconds run() lets running calls finish after shutdown
 HELD_EVENTS = 100                        # events kept until initialize is answered
 
+# What a declaration may be and how a call's arguments are checked: the text 无限工坊 checks them with, copied from
+# its src/wuxianworkshop/local/validate.py by scripts/sync_sdk_validate.py (a test compares the two). Change it there,
+# never here.
+# ---- shared: begin ---------------------------------------------------------------------------------------------------
+CAP_NAME = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")     # say, pool.list: dotted parts, a letter first each
+CAP_NAME_MAX = 48
+TOOL_NAME_MAX = 48                     # the agent's tool wk_<extension id>_<name, dots as _>
+SOURCE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,47}$")
+KINDS = ("see", "keep", "point")       # Read, Store, Guide; say / do (proposals) come later
+OPTION_KINDS = ("boolean", "text", "number", "choice")
+TYPES = ("string", "number", "boolean", "table", "any")
+TIMEOUT_DEFAULT, TIMEOUT_MOST = 30, 600      # seconds the workshop waits for a capability
+TEXT_MOST = 2000                       # characters of a text option's value
+TITLE_MAX = 48                         # bytes, as WuxianKit takes a title
+CAP_NAME_HINT = "lowercase letters, digits, _ and dots, a letter first in every part (say, pool.list)"
+SOURCE_NAME_HINT = "lowercase letters, digits and _, a letter first, at most 24 characters (said)"
+OPTION_NAME_HINT = "lowercase letters, digits and _, a letter first, at most 32 characters"
+ARG_NAME_HINT = "letters, digits and _, no digit first, at most 48 characters"
+SPEC_HINT = ("string number boolean table any; a|b for either; words that are no type names are the values it may "
+             "take; a trailing ? makes it optional")
 
-class ExtensionError(Exception):
-    """raise ExtensionError("why") in a capability: the call fails with code 1 (failed) and the message, which the agent
-    reads, so say what went wrong and what to do. ExtensionError(message, -32602) says the arguments were wrong.
-    ext.call raises it when the capability it called failed: code is that error's code (-32602 bad arguments, -32601
-    no such capability, 1 failed, or the workshop's own such as "timeout", "down"), cap the capability's id"""
 
-    def __init__(self, message: str, code: Union[int, str] = FAILED, cap: Optional[str] = None):
-        super().__init__(message)
-        self.message, self.code, self.cap = str(message), code, cap
-
-    def __repr__(self):
-        return f"ExtensionError({self.message!r}, {self.code!r}, {self.cap!r})"
+def text_of(value, most=None):
+    """a one-line text, stripped; None when it is no text (or longer than `most` bytes of UTF-8)"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = " ".join(value.split())
+    return value if most is None or len(value.encode("utf-8")) <= most else None
 
 
-def parse_spec(text: str) -> dict:
+def finite(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def tool_name(eid, name):
+    """the agent's tool of the capability `name` of the extension `eid`"""
+    return f"wk_{eid}_{name.replace('.', '_')}"
+
+
+def cap_name_problem(name, eid=None):
+    """why `name` is no capability name (None: it is one); with the extension's id, also that its tool name fits"""
+    if not isinstance(name, str) or not CAP_NAME.match(name) or len(name) > CAP_NAME_MAX:
+        return f"{name!r} is no capability name"
+    if isinstance(eid, str) and len(tool_name(eid, name)) > TOOL_NAME_MAX:
+        return (f"{name!r} is too long a capability name: its tool {tool_name(eid, name)} has more than {TOOL_NAME_MAX} "
+                "characters")
+    return None
+
+
+def parse_spec(text):
     """an argument's spec, as WuxianKit writes them: "string", "number", "boolean", "table" (a JSON object or array) or
     "any", several of those ("string|number"), or else the strings it may be ("fast|slow"); a "?" after it makes it
     optional. -> {text, optional, types: [...]} or {text, optional, enum: [...]}; ValueError for a bad spec"""
-    if not isinstance(text, str) or not text or text == "?":
+    if not isinstance(text, str) or not text.strip() or text == "?":
         raise ValueError(f"an argument's spec is a string such as \"string\" or \"number?\", not {text!r}")
     optional = text.endswith("?")
     parts = (text[:-1] if optional else text).split("|")
     if any(not p or p.strip() != p for p in parts):
         raise ValueError(f"{text!r}: the parts between | are names, without spaces, none empty")
-    if all(p in ARG_TYPES for p in parts):
+    if all(p in TYPES for p in parts):
         return {"text": text, "optional": optional, "types": parts}
     return {"text": text, "optional": optional, "enum": parts}
 
 
-def _json_type(v) -> str:
+def arg_problem(spec):
+    """why an argument's spec cannot be read (None: it can), and a warning (or None)"""
+    try:
+        parsed = parse_spec(spec)
+    except ValueError as e:
+        return str(e), None
+    if "enum" in parsed and any(p in TYPES for p in parsed["enum"]):
+        return None, (f"{spec!r} mixes types and words: it is read as an enumeration of the strings "
+                      f"{', '.join(parsed['enum'])}")
+    return None, None
+
+
+def json_type(v):
     if v is None:
         return "null"
     if isinstance(v, bool):
@@ -622,41 +734,325 @@ def _json_type(v) -> str:
     return type(v).__name__
 
 
-def _arg_text(specs: dict) -> str:
+def args_text(specs):
     return ", ".join(f"{n} ({s['text']})" for n, s in sorted(specs.items())) or "no arguments"
+
+
+def args_problem(cap_id, specs, args):
+    """what a call brought, checked against the capability's parsed specs ({name: parse_spec(...)}) the way WuxianKit
+    checks them -> (a copy of the declared ones that came, None), or (None, why not): a missing one, a wrong type, a
+    string not among the choices, one that is not declared. null counts as left out"""
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return None, f"{cap_id}: args is a JSON object"
+    out = {}
+    for name, spec in specs.items():
+        v = args.get(name)
+        if v is None:
+            if not spec["optional"]:
+                return None, f"{cap_id}: {name} is missing ({spec['text']})"
+            continue
+        got = json_type(v)
+        if "types" in spec:
+            if "any" not in spec["types"] and got not in spec["types"]:
+                return None, f"{cap_id}: {name} is a {' or '.join(spec['types'])}, not a {got}"
+        elif not isinstance(v, str) or v not in spec["enum"]:
+            return None, (f"{cap_id}: {name} is one of {'|'.join(spec['enum'])}, not "
+                          f"{json.dumps(v, ensure_ascii=False, default=str)}")
+        out[name] = v
+    for name, v in args.items():
+        if name not in specs and v is not None:
+            return None, f"{cap_id}: no argument {name} (it takes {args_text(specs)})"
+    return out, None
+
+
+def timeout_problem(timeout):
+    """why `timeout` is not the seconds a capability may take (None: it is)"""
+    if not finite(timeout) or not 0 < timeout <= TIMEOUT_MOST:
+        return f"timeout is seconds, more than 0 and at most {TIMEOUT_MOST}"
+    return None
+
+
+DEFAULTS = {"boolean": lambda o: False, "text": lambda o: "", "number": lambda o: o.get("min", 0),
+            "choice": lambda o: o["choices"][0]["value"] if o.get("choices") else None}
+
+
+def value_problem(opt, value):
+    """why value is not one the option takes (None: it is); opt = {kind, min?, max?, choices?: [{value}]}"""
+    kind = opt["kind"]
+    if kind == "boolean":
+        return None if isinstance(value, bool) else "true or false"
+    if kind == "text":
+        if not isinstance(value, str):
+            return "a text"
+        return None if len(value) <= TEXT_MOST else f"at most {TEXT_MOST} characters"
+    if kind == "number":
+        if not finite(value):
+            return "a number"
+        if "min" in opt and value < opt["min"] or "max" in opt and value > opt["max"]:
+            return f"a number from {opt.get('min', '-inf')} to {opt.get('max', 'inf')}"
+        return None
+    values = [c["value"] for c in opt.get("choices") or []]
+    return None if value in values and not isinstance(value, bool) else "one of " + ", ".join(map(repr, values))
+
+
+# --- the description: initialize's answer. Every finding is a problem {level: "error" | "warning", where, message, hint}
+
+PROTOCOL = 1                           # the protocol version a description is written in
+LATER_KINDS = ("say", "do")            # proposals: a later step
+
+
+def problem(level, where, message, hint=""):
+    return dict(level=level, where=where, message=message, hint=hint)
+
+
+def errors_in(problems):
+    return [p for p in problems if p["level"] == "error"]
+
+
+def check_description(eid, answer):
+    """(description or None, problems) of an extension's answer to initialize: {capabilities: [{id, name, kind,
+    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt]}"""
+    out = []
+    where = "initialize"
+    if not isinstance(answer, dict):
+        return None, [problem("error", where, "initialize must answer a JSON object",
+                              "{protocol: 1, capabilities: [...], sources: [...], options: [...]}")]
+    if answer.get("protocol") != PROTOCOL or isinstance(answer.get("protocol"), bool):
+        out.append(problem("error", f"{where}: protocol", f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks 1",
+                           "answer protocol 1 (the Python library does)"))
+    caps, names = [], set()
+    raw_caps = answer.get("capabilities", [])
+    if not isinstance(raw_caps, list):
+        out.append(problem("error", f"{where}: capabilities", "capabilities is a list", "[{name, kind, title, doc, args}]"))
+        raw_caps = []
+    for i, c in enumerate(raw_caps):
+        cap = check_capability(eid, c, i, names, out)
+        if cap is not None:
+            caps.append(cap)
+            names.add(cap["name"])
+    sources, snames = [], set()
+    raw_sources = answer.get("sources", [])
+    if not isinstance(raw_sources, list):
+        out.append(problem("error", f"{where}: sources", "sources is a list", "[{name, title, doc}]"))
+        raw_sources = []
+    for i, s in enumerate(raw_sources):
+        src = check_source(eid, s, i, snames, out)
+        if src is not None:
+            sources.append(src)
+            snames.add(src["name"])
+    options, onames = [], set()
+    raw_opts = answer.get("options", [])
+    if not isinstance(raw_opts, list):
+        out.append(problem("error", f"{where}: options", "options is a list", "[{name, kind, title, default}]"))
+        raw_opts = []
+    for i, o in enumerate(raw_opts):
+        opt = check_option(o, i, onames, out)
+        if opt is not None:
+            options.append(opt)
+            onames.add(opt["name"])
+    desc = dict(capabilities=caps, sources=sources, options=options)
+    return (None if errors_in(out) else desc), out
+
+
+def check_capability(eid, c, i, names, out):
+    at = f"capability {i + 1}"
+    if not isinstance(c, dict):
+        out.append(problem("error", at, "a capability is a JSON object", "{name, kind, title, doc, args}"))
+        return None
+    name = c.get("name")
+    why = cap_name_problem(name, eid)
+    if why:
+        out.append(problem("error", at, why, CAP_NAME_HINT + f"; its tool wk_{eid}_<name> has at most {TOOL_NAME_MAX} "
+                                                              "characters"))
+        return None
+    at = f"capability {eid}.{name}"
+    if name in names:
+        out.append(problem("error", at, "declared twice", "one entry per capability"))
+        return None
+    same = sorted(n for n in names if tool_name(eid, n) == tool_name(eid, name))
+    if same:
+        out.append(problem("error", at, f"its tool {tool_name(eid, name)} is also {eid}.{same[0]}'s",
+                           "a tool's name has _ for the dots, so a.b and a_b are one tool: rename one of them"))
+        return None
+    kind = c.get("kind")
+    if kind in LATER_KINDS:
+        out.append(problem("error", at, f"kind {kind} (bad_capability): say and do are proposals the player confirms, "
+                                        "not available to local extensions yet",
+                           "see: reads; keep: stores on this computer; point: shows or tells the player something"))
+        return None
+    if kind not in KINDS:
+        out.append(problem("error", at, f"kind {kind!r} (bad_capability)",
+                           "see (reads, changes nothing), keep (stores on this computer) or point (shows or tells the "
+                           "player something)"))
+        return None
+    title = text_of(c.get("title") if c.get("title") is not None else name, TITLE_MAX)
+    if title is None:
+        out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"说一句\""))
+        return None
+    doc = c.get("doc") if isinstance(c.get("doc"), str) else ""
+    if not doc.strip():
+        out.append(problem("warning", at, "it has no doc",
+                           "the agent picks tools by their docs: say what it does, what it answers, when to use it"))
+    args = c.get("args") or {}
+    if not isinstance(args, dict):
+        out.append(problem("error", f"{at}: args", "args is an object, name -> spec", '{"text": "string", "n": "number?"}'))
+        return None
+    for aname, spec in args.items():
+        if not ARG_NAME.match(aname):
+            out.append(problem("error", f"{at}: args.{aname}", "not an argument name", ARG_NAME_HINT))
+            return None
+        bad, warn = arg_problem(spec)
+        if bad:
+            out.append(problem("error", f"{at}: args.{aname}", bad, SPEC_HINT))
+            return None
+        if warn:
+            out.append(problem("warning", f"{at}: args.{aname}", warn, "write either types or words"))
+    timeout = c.get("timeout", TIMEOUT_DEFAULT)
+    if timeout is None:
+        timeout = TIMEOUT_DEFAULT
+    why = timeout_problem(timeout)
+    if why:
+        out.append(problem("error", f"{at}: timeout", why,
+                           "answer within 30 s; split long work into a capability that starts it and a source that "
+                           "tells when it is done"))
+        return None
+    return dict(id=f"{eid}.{name}", name=name, kind=kind, title=title, doc=doc.strip(), args=dict(args),
+                timeout=timeout)
+
+
+def check_source(eid, s, i, names, out):
+    at = f"source {i + 1}"
+    if not isinstance(s, dict) or not isinstance(s.get("name"), str) or not SOURCE_NAME.match(s["name"]):
+        out.append(problem("error", at, f"{(s or {}).get('name') if isinstance(s, dict) else s!r} is no source name",
+                           SOURCE_NAME_HINT))
+        return None
+    at = f"source {eid}:{s['name']}"
+    if s["name"] in names:
+        out.append(problem("error", at, "declared twice", "one entry per source"))
+        return None
+    title = text_of(s.get("title") if s.get("title") is not None else s["name"], TITLE_MAX)
+    if title is None:
+        out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"说完一句\""))
+        return None
+    doc = s.get("doc") if isinstance(s.get("doc"), str) else ""
+    if not doc.strip():
+        out.append(problem("warning", at, "it has no doc", "say what an item of it means and what its data holds"))
+    return dict(name=s["name"], title=title, doc=doc.strip())
+
+
+def check_option(o, i, names, out):
+    at = f"option {i + 1}"
+    if not isinstance(o, dict) or not isinstance(o.get("name"), str) or not OPTION_NAME.match(o["name"]):
+        out.append(problem("error", at, "an option needs a name", OPTION_NAME_HINT))
+        return None
+    name = o["name"]
+    at = f"option {name}"
+    if name in names:
+        out.append(problem("error", at, "declared twice", "one entry per option"))
+        return None
+    kind = o.get("kind", "boolean")
+    if kind not in OPTION_KINDS:
+        out.append(problem("error", at, f"kind {kind!r}", "boolean, text, number or choice"))
+        return None
+    title = text_of(o.get("title") if o.get("title") is not None else name, TITLE_MAX)
+    if title is None:
+        out.append(problem("error", at, "its title is some text of at most 48 bytes", "\"音量\""))
+        return None
+    opt = dict(name=name, kind=kind, title=title)
+    if isinstance(o.get("hint"), str) and o["hint"].strip():
+        opt["hint"] = o["hint"].strip()
+    if kind == "number":
+        for k in ("min", "max", "step"):
+            if o.get(k) is not None:
+                if not finite(o[k]):
+                    out.append(problem("error", f"{at}: {k}", f"{k} is a number", "such as 0, 100, 1"))
+                    return None
+                opt[k] = o[k]
+        if "min" in opt and "max" in opt and opt["min"] > opt["max"]:
+            out.append(problem("error", at, "min is more than max", "swap them"))
+            return None
+        if isinstance(o.get("unit"), str) and o["unit"].strip():
+            opt["unit"] = o["unit"].strip()
+    if kind == "choice":
+        choices = o.get("choices")
+        if not isinstance(choices, list) or not choices:
+            out.append(problem("error", f"{at}: choices", "a choice option lists its choices",
+                               '[{"value": "fast", "label": "快"}, {"value": "slow", "label": "慢"}]'))
+            return None
+        kept = []
+        for ch in choices:
+            if not isinstance(ch, dict) or not (isinstance(ch.get("value"), str) or finite(ch.get("value"))):
+                out.append(problem("error", f"{at}: choices", "each choice is {value, label}", "value a text or a number"))
+                return None
+            kept.append(dict(value=ch["value"], label=text_of(ch.get("label"), TITLE_MAX) or str(ch["value"])))
+        opt["choices"] = kept
+    default = o.get("default", DEFAULTS[kind](opt))
+    why = value_problem(opt, default)
+    if why:
+        out.append(problem("error", f"{at}: default", why, "the default must be a value the option takes"))
+        return None
+    opt["default"] = default
+    return opt
+# ---- shared: end -----------------------------------------------------------------------------------------------------
+
+
+class ExtensionError(Exception):
+    """raise ExtensionError("why") in a capability: the call fails with code 1 (failed) and the message, which the agent
+    reads, so say what went wrong and what to do. ExtensionError(message, BAD_ARGS) says the arguments were wrong.
+    ext.call raises it when the capability it called failed: code is that error's code (-32602 bad arguments, -32601
+    no such capability, 1 failed, 2 busy, 3 cancelled), reason the workshop's word for it (error.data.reason: timeout,
+    down, starting, failed, bad_args, no_capability, busy, paused, cancelled, not_allowed, needs_approval, loop), cap
+    the capability's id"""
+
+    def __init__(self, message: str, code: int = FAILED, cap: Optional[str] = None, reason: Optional[str] = None):
+        super().__init__(message)
+        self.message, self.code, self.cap = str(message), code, cap
+        self.reason = reason or REASONS.get(code, "failed")
+
+    def __repr__(self):
+        return f"ExtensionError({self.message!r}, {self.code!r}, {self.cap!r}, {self.reason!r})"
 
 
 def check_args(cap_id: str, specs: dict, args) -> dict:
     """what a call brought, checked against the capability's parsed specs ({name: parse_spec(...)}) the way WuxianKit
     checks them: a copy of the declared ones that came (null counts as left out). ExtensionError code -32602 for a
     missing one, a wrong type, a string not among the choices, or one that is not declared"""
-    if args is None:
-        args = {}
-    if not isinstance(args, dict):
-        raise ExtensionError(f"{cap_id}: args is a JSON object", BAD_ARGS)
-    out = {}
-    for name, spec in specs.items():
-        v = args.get(name)
-        if v is None:
-            if not spec["optional"]:
-                raise ExtensionError(f"{cap_id}: {name} is missing ({spec['text']})", BAD_ARGS)
-            continue
-        got = _json_type(v)
-        if "types" in spec:
-            if "any" not in spec["types"] and got not in spec["types"]:
-                raise ExtensionError(f"{cap_id}: {name} is a {' or '.join(spec['types'])}, not a {got}", BAD_ARGS)
-        elif not isinstance(v, str) or v not in spec["enum"]:
-            raise ExtensionError(f"{cap_id}: {name} is one of {'|'.join(spec['enum'])}, not "
-                                 f"{json.dumps(v, ensure_ascii=False, default=str)}", BAD_ARGS)
-        out[name] = v
-    for name, v in args.items():
-        if name not in specs and v is not None:
-            raise ExtensionError(f"{cap_id}: no argument {name} (it takes {_arg_text(specs)})", BAD_ARGS)
+    out, why = args_problem(cap_id, specs, args)
+    if why:
+        raise ExtensionError(why, BAD_ARGS)
     return out
 
 
 def _first_paragraph(doc: Optional[str]) -> str:
     return " ".join((inspect.cleandoc(doc or "").split("\n\n") or [""])[0].split())
+
+
+def _declared(problems: list) -> None:
+    """a declaration's problems, as the shared checks found them: ValueError for the first error (warnings pass: the
+    workshop's extension_check and ExtensionTest.check_description show them)"""
+    for p in errors_in(problems):
+        raise ValueError(f"{p['where']}: {p['message']}" + (f" ({p['hint']})" if p["hint"] else ""))
+
+
+def _line(msg: dict) -> bytes:
+    return (json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+def _error_of(code: int, message: str, reason: Optional[str] = None) -> dict:
+    return {"code": code, "message": message, "data": {"reason": reason or REASONS.get(code, "failed")}}
+
+
+def _raise(err, cap: Optional[str] = None):
+    """an answer's error {code, message, data: {reason}} as an ExtensionError"""
+    if not isinstance(err, dict):
+        err = {"message": str(err)}
+    code = err.get("code")
+    code = code if isinstance(code, int) and not isinstance(code, bool) else FAILED
+    data = err.get("data")
+    reason = data.get("reason") if isinstance(data, dict) and isinstance(data.get("reason"), str) else None
+    raise ExtensionError(str(err.get("message") or "failed"), code, cap, reason)
 
 
 class Option:
@@ -681,8 +1077,9 @@ class Option:
 
 
 class Source:
-    """a stream of items apps and reactions hear as "<extension>:<name>"; each item's kind is "<extension>.<name>".
-    emit(data) sends one (data: a JSON object), from any thread"""
+    """a stream of items that reactions hear as "<extension>:<name>" (an app's hear takes the game's sources only: a
+    reaction, the app's own in the manifest or one the agent set, is what acts on a local source); each item's kind is
+    "<extension>.<name>". emit(data) sends one (data: a JSON object), from any thread"""
 
     def __init__(self, ext: "Extension", name: str, desc: dict):
         self.ext, self.name, self.desc = ext, name, desc
@@ -695,22 +1092,35 @@ class Source:
 
 
 class Extension:
-    """a local extension: declare options, sources and capabilities, then run(). Capabilities run in worker threads
-    (at most `workers` at once, the rest wait), so a slow one does not hold up the others; guard shared state with a
-    lock of your own. folder: where wuxian-extension.json is (default: the current folder, which is the extension's
-    folder when the workshop starts it).
+    """a local extension: declare options, sources and capabilities, then run(). Capabilities run in worker threads, at
+    most `workers` at once (a call beyond that is refused with 2 busy), so a slow one does not hold up the others;
+    guard shared state with a lock of your own. folder: where wuxian-extension.json is (default: the current folder,
+    which is the extension's folder when the workshop starts it). A declaration the workshop would refuse (a bad name,
+    spec, timeout, option) raises ValueError at once: the checks are the workshop's own.
 
-    The protocol (what run() speaks on stdin / stdout; stderr is the log). JSON-RPC 2.0, UTF-8, one object per line.
+    The protocol, version 1 (what run() speaks on stdin / stdout; stderr is the log). JSON-RPC 2.0, UTF-8, one object
+    per line.
       workshop -> extension, requests:
-        initialize {protocol: 1, workshop, id, options: {name: value}}
+        initialize {protocol: {min, max}, workshop, id, options: {name: value}}
           -> {protocol: 1, capabilities: [{name, kind, title, doc, args, timeout?}], sources: [{name, title, doc}],
               options: [{name, kind, title, default, hint?, choices?, min?, max?, step?, unit?}]}
-        call {name, args, caller: {by: "agent" | "reaction" | "extension", id?}} -> any JSON
-          | error {code: -32602 bad arguments, -32601 no such capability, 1 failed; message}
+          (1 is not within min..max: an error, and the extension exits with 1)
+        call {name, args, caller: {by, id?, app?, chain?}, deadline_ms?} -> any JSON | error
+          caller.by: "agent" (a tool call), "extension" (id called it with ext.call), "workshop" (a reaction, or the
+          note of a wake of the app `app`), "player" (the player clicked a control of the app `app`); caller.chain: how
+          the call came about, oldest first ("reaction:<id>", "wake:<app>", "ext:<id>"; the workshop refuses a fifth
+          hop with the reason loop); deadline_ms: how long the workshop still waits
+        ping {} -> {} (within 5 s, or the workshop takes the extension for hung; run() answers it by itself)
         shutdown {} -> {}, then the extension exits
-      workshop -> extension, notification: options {options: {name: value}} (all of them, after the player changed one)
+      workshop -> extension, notifications:
+        options {options: {name: value}} (all of them, after the player changed one)
+        cancel {id} (the workshop no longer waits for the call `id`: ext.cancelled() turns True; its answer is dropped)
       extension -> workshop, notification: event {source: name, data: {...}}
-      extension -> workshop, request: call {cap: "<capability id>", args} -> its result | error {code, message}"""
+      extension -> workshop, request: call {cap: "<capability id>", args, chain?} -> its result | error
+        (chain: caller.chain of the call being served, unchanged; ext.call sends it by itself)
+      an error: {code, message, data: {reason}}; code -32602 bad_args, -32601 no_capability, 1 failed, 2 busy,
+        3 cancelled; from the workshop, reason is one of timeout, down, starting, failed, bad_args, no_capability, busy,
+        paused, cancelled, not_allowed, needs_approval, loop"""
 
     def __init__(self, id: Optional[str] = None, *, folder: Union[str, os.PathLike, None] = None, workers: int = 8):
         self.folder = Path(folder) if folder is not None else Path.cwd()
@@ -724,22 +1134,24 @@ class Extension:
         title = self.manifest.get("title")
         self.title: Optional[str] = title if isinstance(title, str) else self.id
         self.workshop: Optional[str] = None              # the workshop's version, from initialize
+        self.workers = max(1, int(workers))
         self._caps: dict = {}
         self._sources: dict = {}
         self._options: dict = {}
         self._values: dict = {}
         self._on_options: list = []
-        self._lock = threading.RLock()                   # values, pending calls
+        self._lock = threading.RLock()                   # values, pending calls, running jobs
         self._wlock = threading.Lock()                   # one line at a time on stdout
-        self._write: Optional[Callable[[str], None]] = None
+        self._write: Optional[Callable[[bytes], None]] = None
         self._ready = False                              # initialize answered
         self._held: list = []                            # events before that
         self._setup: Optional[Callable[[], Any]] = None
         self._set_up = False
         self._reader: Optional[int] = None               # the thread that reads stdin (ext.call there would hang)
         self._ids = itertools.count(1)
-        self._pending: dict = {}                         # ext.call id -> [threading.Event, answer]
-        self._slots = threading.BoundedSemaphore(max(1, int(workers)))
+        self._pending: dict = {}                         # ext.call id -> [threading.Event, answer, the job it is for]
+        self._slots = threading.BoundedSemaphore(self.workers)
+        self._running: dict = {}                         # the workshop's call id -> its job {id, cancel, deadline, caller}
         self._jobs = 0
         self._jobs_cond = threading.Condition()
         self._local = threading.local()
@@ -752,58 +1164,38 @@ class Extension:
         """a setting the player changes in 无限工坊: kind boolean, text, number (min, max, step, unit) or choice (choices:
         a list of values, of (value, label) pairs or of {value, label}, or a {value: label} dict). default: False, "",
         min or 0, or the first choice when not given"""
-        if not isinstance(name, str) or not OPTION_NAME.match(name):
-            raise ValueError(f"option {name!r}: lowercase letters, digits and _, a letter first")
-        if name in self._options:
-            raise ValueError(f"option {name}: declared twice")
-        if kind not in OPTION_KINDS:
-            raise ValueError(f"option {name}: kind is one of {', '.join(OPTION_KINDS)}, not {kind!r}")
-        desc: dict = {"name": name, "kind": kind, "title": title or name}
-        if kind == "choice":
+        o: dict = {"name": name, "kind": kind}
+        for k, v in (("title", title), ("hint", hint), ("min", min), ("max", max), ("step", step), ("unit", unit),
+                     ("default", default)):
+            if v is not None:
+                o[k] = v
+        if choices is not None:
             if isinstance(choices, dict):
-                choices = [{"value": v, "label": str(lab)} for v, lab in choices.items()]
+                choices = list(choices.items())
             norm = []
-            for c in choices or []:
+            for c in choices:
                 if isinstance(c, dict):
                     norm.append({"value": c.get("value"), "label": str(c.get("label", c.get("value")))})
                 elif isinstance(c, (tuple, list)) and len(c) == 2:
                     norm.append({"value": c[0], "label": str(c[1])})
                 else:
                     norm.append({"value": c, "label": str(c)})
-            if not norm or not all(isinstance(c["value"], (str, int, float)) for c in norm):
-                raise ValueError(f"option {name}: a choice option needs choices (strings or numbers)")
-            desc["choices"] = norm
-            values = [c["value"] for c in norm]
-            if default is None:
-                default = values[0]
-            elif default not in values:
-                raise ValueError(f"option {name}: the default {default!r} is not one of the choices")
-        elif kind == "boolean":
-            default = bool(default) if default is not None else False
-        elif kind == "text":
-            default = "" if default is None else default
-            if not isinstance(default, str):
-                raise ValueError(f"option {name}: a text option's default is a string")
-        else:
-            if default is None:
-                default = min if min is not None else 0
-            if isinstance(default, bool) or not isinstance(default, (int, float)):
-                raise ValueError(f"option {name}: a number option's default is a number")
-        desc["default"] = default
-        for k, v in (("hint", hint), ("min", min), ("max", max), ("step", step), ("unit", unit)):
-            if v is not None:
-                desc[k] = v
+            o["choices"] = norm
+        out: list = []
+        desc = check_option(o, len(self._options), set(self._options), out)
+        _declared(out)
         opt = Option(self, name, desc)
         self._options[name] = opt
         return opt
 
     def source(self, name: str, *, title: Optional[str] = None, doc: str = "") -> Source:
-        """a stream of items others hear as "<extension>:<name>". doc: for the agent, what an item means and its fields"""
-        if not isinstance(name, str) or not CAP_NAME.match(name):
-            raise ValueError(f"source {name!r}: lowercase letters, digits, _ and ., a letter first")
-        if name in self._sources:
-            raise ValueError(f"source {name}: declared twice")
-        src = Source(self, name, {"name": name, "title": title or name, "doc": doc or ""})
+        """a stream of items reactions hear as "<extension>:<name>". doc: for the agent, what an item means and its
+        fields"""
+        out: list = []
+        desc = check_source(self.id or "?", {"name": name, "title": title, "doc": doc}, len(self._sources),
+                            set(self._sources), out)
+        _declared(out)
+        src = Source(self, name, desc)
         self._sources[name] = src
         return src
 
@@ -838,22 +1230,20 @@ class Extension:
         return deco
 
     def _add(self, kind, name, fn, title, doc, args, timeout):
-        if not isinstance(name, str) or not CAP_NAME.match(name):
-            raise ValueError(f"capability {name!r}: lowercase letters, digits, _ and ., a letter first")
-        if name in self._caps:
-            raise ValueError(f"capability {name}: declared twice")
+        if args is not None and not isinstance(args, dict):
+            raise ValueError(f"capability {name!r}: args is a dict, name -> spec")
         args = dict(args or {})
-        specs = {}
-        for a, text in args.items():
-            if not isinstance(a, str) or not ARG_NAME.match(a):
-                raise ValueError(f"capability {name}: the argument name {a!r} is not a Python name")
-            try:
-                specs[a] = parse_spec(text)
-            except ValueError as e:
-                raise ValueError(f"capability {name}, argument {a}: {e}") from None
-        if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-                                    or not 0 < timeout <= TIMEOUT_MAX):
-            raise ValueError(f"capability {name}: timeout is seconds, more than 0 and at most {TIMEOUT_MAX}")
+        for a in args:
+            if not isinstance(a, str):
+                raise ValueError(f"capability {name!r}: the argument name {a!r} is not a string")
+        told = {"name": name, "kind": kind, "title": title, "args": args,
+                "doc": doc if doc is not None else _first_paragraph(fn.__doc__)}
+        if timeout is not None:
+            told["timeout"] = timeout
+        out: list = []
+        cap = check_capability(self.id or "?", told, len(self._caps), set(self._caps), out)
+        _declared(out)
+        specs = {a: parse_spec(text) for a, text in args.items()}
         try:
             params = inspect.signature(fn).parameters
         except (TypeError, ValueError):
@@ -871,8 +1261,7 @@ class Extension:
                 if p.default is inspect.Parameter.empty and p.name not in specs and p.kind in (
                         p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY, p.POSITIONAL_ONLY):
                     raise TypeError(f"capability {name}: {fn.__name__}() needs {p.name}, which args does not declare")
-        desc = {"name": name, "kind": kind, "title": title or name, "doc": doc if doc is not None
-                else _first_paragraph(fn.__doc__), "args": args}
+        desc = {"name": name, "kind": kind, "title": cap["title"], "doc": cap["doc"], "args": args}
         if timeout is not None:
             desc["timeout"] = timeout
         self._caps[name] = {"desc": desc, "specs": specs, "fn": fn}
@@ -896,42 +1285,69 @@ class Extension:
         with self._lock:
             return {n: self._values.get(n, o.desc["default"]) for n, o in self._options.items()}
 
+    # ---- in a capability (on the thread that runs it)
+
     @property
     def caller(self) -> Optional[dict]:
-        """in a capability: who called it, {by: "agent" | "reaction" | "extension", id?}; None elsewhere"""
-        return getattr(self._local, "caller", None)
+        """who called this capability: {by, id?, app?, chain?}; None outside one. by: "agent" (a tool call),
+        "extension" (the extension `id`, with ext.call), "workshop" (a reaction, or a wake's note for the app `app`),
+        "player" (a control of the app `app` that the player clicked). chain: how the call came about, oldest first"""
+        job = getattr(self._local, "job", None)
+        return job["caller"] if job else None
+
+    def cancelled(self) -> bool:
+        """True once the workshop no longer waits for this call (it took too long there, or whoever asked is gone):
+        stop the work and return. Whatever the capability then returns, the call answers 3 cancelled. Ask it between
+        the steps of long work; False outside a capability"""
+        job = getattr(self._local, "job", None)
+        return bool(job and job["cancel"].is_set())
+
+    def remaining(self) -> Optional[float]:
+        """seconds the workshop still waits for this call (0.0 once the time is up); None when it named no deadline,
+        and outside a capability"""
+        job = getattr(self._local, "job", None)
+        if not job or job["deadline"] is None:
+            return None
+        return max(0.0, job["deadline"] - time.monotonic())
 
     # ---- calling other capabilities
 
-    def call(self, cap: str, args: Optional[dict] = None, *, timeout: float = CALL_WAIT) -> Any:
+    def call(self, cap: str, args: Optional[dict] = None, *, timeout: float = CALL_WAIT,
+             chain: Optional[list] = None) -> Any:
         """another capability, through the workshop: one in the game ("sense.bags") or of a local extension
-        ("voice.say"); Read, Store and Guide only. Waits for its result; ExtensionError when it failed (code and message
-        as the workshop gave them; "timeout" after `timeout` seconds; "not_running" outside a running extension).
-        Call it from a capability, a thread of your own or on_options, not from setup"""
-        if self._write is None or not self._ready:
-            raise ExtensionError("ext.call works while the extension runs, after initialize (not in setup)",
-                                 "not_running", cap)
+        ("voice.say"); Read, Store and Guide only. Waits for its result; ExtensionError when it failed: code, message
+        and reason as the workshop gave them (see ExtensionError), or the reason "timeout" after `timeout` seconds,
+        "cancelled" when the call this capability serves was cancelled meanwhile, "starting" before initialize is
+        answered, "down" outside a running extension. Inside a capability it passes on the chain of the call being
+        served (caller.chain), which is how the workshop stops loops; from a thread of your own that works for a call,
+        pass chain=ext.caller.get("chain") yourself. Call it from a capability, a thread of your own or on_options,
+        not from setup"""
+        if self._write is None:
+            raise ExtensionError("ext.call works while the extension runs", FAILED, cap, "down")
+        if not self._ready:
+            raise ExtensionError("ext.call works after initialize is answered (not in setup)", FAILED, cap, "starting")
         if threading.get_ident() == self._reader:
-            raise ExtensionError("ext.call cannot run on the thread that reads the workshop's messages", "not_running",
-                                 cap)
+            raise ExtensionError("ext.call cannot run on the thread that reads the workshop's messages", FAILED, cap)
+        job = getattr(self._local, "job", None)
+        if chain is None and job and job["caller"]:
+            chain = job["caller"].get("chain")
+        params: dict = {"cap": cap, "args": args if args is not None else {}}
+        if isinstance(chain, (list, tuple)) and chain:
+            params["chain"] = list(chain)
         with self._lock:
             mid = next(self._ids)
-            slot = [threading.Event(), None]
+            slot = [threading.Event(), None, job]
             self._pending[mid] = slot
         try:
-            self._send({"jsonrpc": "2.0", "id": mid, "method": "call",
-                        "params": {"cap": cap, "args": args if args is not None else {}}})
+            self._send({"jsonrpc": "2.0", "id": mid, "method": "call", "params": params})
             if not slot[0].wait(timeout):
-                raise ExtensionError(f"{cap}: no answer from the workshop in {timeout:g} s", "timeout", cap)
+                raise ExtensionError(f"{cap}: no answer from the workshop in {timeout:g} s", FAILED, cap, "timeout")
         finally:
             with self._lock:
                 self._pending.pop(mid, None)
         answer = slot[1] or {}
-        err = answer.get("error")
-        if err is not None:
-            if not isinstance(err, dict):
-                err = {"message": str(err)}
-            raise ExtensionError(str(err.get("message") or "failed"), err.get("code", FAILED), cap)
+        if answer.get("error") is not None:
+            _raise(answer["error"], cap)
         return answer.get("result")
 
     # ---- running
@@ -942,19 +1358,30 @@ class Extension:
         keeps a copy of file descriptor 1 for the protocol and points 1 at stderr (os.dup / os.dup2, Windows too), and
         sys.stdout at sys.stderr: print(), C libraries writing to fd 1 and child processes all go to the log. Output
         before run() (a library imported at the top of the module) cannot be caught: import such libraries in setup.
-        A setup that raises fails initialize and the process exits with 1"""
-        self._setup = setup
+        A setup that raises, or a workshop that speaks another protocol, fails initialize and the process exits with 1"""
         proto_in, proto_out = _take_stdio()
 
-        def write(line: str) -> None:
-            proto_out.write(line.encode("utf-8"))
+        def write(line: bytes) -> None:
+            proto_out.write(line)
             proto_out.flush()
 
-        self._attach(write)
+        self._attach(write, setup)
+        if self._serve(proto_in, write):
+            sys.exit(1)
+
+    def _attach(self, write: Callable[[bytes], None], setup: Optional[Callable[[], Any]] = None) -> None:
+        with self._lock:
+            self._write, self._ready, self._held, self._set_up = write, False, [], False
+            if setup is not None:
+                self._setup = setup
+
+    def _serve(self, lines: Iterable[bytes], write: Callable[[bytes], None], grace: float = SHUTDOWN_GRACE) -> bool:
+        """answer the workshop's lines (attached to `write` before) until shutdown or their end; True when initialize
+        failed. What still runs then is told to stop (cancel) and given `grace` seconds"""
         self._reader = threading.get_ident()
         failed = False
         try:
-            for raw in proto_in:
+            for raw in lines:
                 raw = raw.strip()
                 if not raw:
                     continue
@@ -964,35 +1391,33 @@ class Extension:
                     self._error(None, PARSE_ERROR, f"not a JSON line: {e}")
                     continue
                 end = self._receive(msg)
-                if end == "failed":
-                    failed = True
                 if end:
+                    failed = end == "failed"
                     break
         except KeyboardInterrupt:
             pass
         finally:
-            self._settle(SHUTDOWN_GRACE)
-            self._detach()
+            with self._lock:
+                running = list(self._running)
+            for rid in running:
+                self._cancel(rid)
+            self._settle(grace)
+            self._detach(write)
             self._reader = None
-        if failed:
-            sys.exit(1)
+        return failed
 
-    def _attach(self, write: Callable[[str], None], setup: Optional[Callable[[], Any]] = None) -> None:
+    def _detach(self, write: Optional[Callable[[bytes], None]] = None) -> None:
         with self._lock:
-            self._write, self._ready, self._held, self._set_up = write, False, [], False
-            if setup is not None:
-                self._setup = setup
-
-    def _detach(self) -> None:
-        with self._lock:
+            if write is not None and self._write is not write:
+                return                                   # attached to another one meanwhile
             self._write, self._ready = None, False
             pending, self._pending = self._pending, {}
         for slot in pending.values():                    # ext.call still waiting: the workshop is gone
-            slot[1] = {"error": {"code": "down", "message": "the workshop stopped talking to this extension"}}
+            slot[1] = {"error": _error_of(FAILED, "the workshop stopped talking to this extension", "down")}
             slot[0].set()
 
     def _send(self, msg: dict) -> None:
-        line = json.dumps(msg, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
+        line = _line(msg)
         with self._wlock:
             write = self._write
             if write is None:
@@ -1002,8 +1427,10 @@ class Extension:
             except (OSError, ValueError):                # the workshop closed the pipe
                 pass
 
-    def _error(self, mid, code, message: str) -> None:
-        self._send({"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}})
+    def _error(self, mid, code: int, message: str, reason: Optional[str] = None) -> None:
+        if code not in REASONS and code not in (PARSE_ERROR, BAD_REQUEST):
+            code = FAILED                                # the protocol has these codes only
+        self._send({"jsonrpc": "2.0", "id": mid, "error": _error_of(code, message, reason)})
 
     def _emit(self, source: str, data: dict) -> None:
         if not isinstance(data, dict):
@@ -1018,7 +1445,7 @@ class Extension:
         self._send(msg)
 
     def _receive(self, msg) -> Optional[str]:
-        """one message from the workshop; "stop" after shutdown, "failed" after a failed setup"""
+        """one message from the workshop; "stop" after shutdown, "failed" after a failed initialize"""
         if not isinstance(msg, dict):
             self._error(None, BAD_REQUEST, "a message is a JSON object")
             return None
@@ -1036,6 +1463,11 @@ class Extension:
             return self._initialize(mid, params)
         if method == "call":
             self._call(mid, params)
+        elif method == "cancel":
+            self._cancel(params.get("id"))
+        elif method == "ping":
+            if "id" in msg:
+                self._send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "options":
             self._set_values(params.get("options"))
             values = self.options
@@ -1054,6 +1486,12 @@ class Extension:
                 if isinstance(values, dict) else {}
 
     def _initialize(self, mid, params: dict) -> Optional[str]:
+        asked = params.get("protocol")
+        low, high = (asked.get("min"), asked.get("max")) if isinstance(asked, dict) else (asked, asked)
+        if not (finite(low) and finite(high) and low <= PROTOCOL <= high):
+            self._error(mid, FAILED, f"this extension speaks protocol {PROTOCOL} (wuxiankit {__version__}), the workshop "
+                                     f"{json.dumps(asked, default=str)}: update whichever is older")
+            return "failed"
         if isinstance(params.get("id"), str) and params["id"]:
             self.id = params["id"]
         self.workshop = params.get("workshop")
@@ -1083,35 +1521,64 @@ class Extension:
                                             f"{', '.join(sorted(self._caps)) or 'none'})")
             return
         cid = f"{self.id}.{cap['desc']['name']}"
-        try:
-            args = check_args(cid, cap["specs"], params.get("args"))
-        except ExtensionError as e:
-            self._error(mid, BAD_ARGS, e.message)
+        args, why = args_problem(cid, cap["specs"], params.get("args"))
+        if why:
+            self._error(mid, BAD_ARGS, why)
             return
-        caller = params.get("caller")
-        self._spawn(self._run_cap, mid, cid, cap, args, caller if isinstance(caller, dict) else None)
+        if not self._slots.acquire(blocking=False):      # never wait in line: the workshop decides what to do
+            self._error(mid, BUSY, f"{cid}: {self.id} runs {self.workers} calls already; try again in a moment")
+            return
+        caller, ms = params.get("caller"), params.get("deadline_ms")
+        job = {"id": mid, "cancel": threading.Event(), "caller": caller if isinstance(caller, dict) else None,
+               "deadline": time.monotonic() + max(0.0, ms) / 1000 if finite(ms) else None}
+        with self._lock:
+            self._running[mid] = job
+        self._spawn(self._run_cap, job, cid, cap, args)
 
-    def _run_cap(self, mid, cid: str, cap: dict, args: dict, caller: Optional[dict]) -> None:
-        self._local.caller = caller
+    def _cancel(self, rid) -> None:
+        """the workshop no longer waits for the call `rid`: its capability can see it, an ext.call it waits in ends"""
+        try:
+            with self._lock:
+                job = self._running.get(rid)
+                if job is None:
+                    return
+                job["cancel"].set()
+                waiting = [slot for slot in self._pending.values() if slot[2] is job]
+        except TypeError:                                # an id that is no id
+            return
+        for slot in waiting:
+            slot[1] = {"error": _error_of(CANCELLED, "the call this one was made for was cancelled")}
+            slot[0].set()
+
+    def _run_cap(self, job: dict, cid: str, cap: dict, args: dict) -> None:
+        mid, error, result = job["id"], None, None
+        self._local.job = job
         try:
             result = cap["fn"](**args)
         except ExtensionError as e:
             if e.cap is not None:                        # from an ext.call inside: this capability failed
-                self._error(mid, FAILED, f"{e.cap}: {e.message}")
+                error = (FAILED, f"{e.cap}: {e.message}", None)
             else:
-                self._error(mid, e.code, e.message)
-            return
+                error = (e.code, e.message, e.reason)
         except Exception as e:
             print(f"{cid} failed:", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
-            self._error(mid, FAILED, f"{type(e).__name__}: {e}")
-            return
+            error = (FAILED, f"{type(e).__name__}: {e}", None)
         finally:
-            self._local.caller = None
-        try:
-            self._send({"jsonrpc": "2.0", "id": mid, "result": result})
-        except (TypeError, ValueError) as e:
-            self._error(mid, FAILED, f"{cid}: the result is not JSON ({e})")
+            self._local.job = None
+            with self._lock:
+                if self._running.get(mid) is job:
+                    del self._running[mid]
+            self._slots.release()
+        if job["cancel"].is_set():
+            self._error(mid, CANCELLED, f"{cid}: cancelled")
+        elif error is not None:
+            self._error(mid, *error)
+        else:
+            try:
+                self._send({"jsonrpc": "2.0", "id": mid, "result": result})
+            except (TypeError, ValueError) as e:
+                self._error(mid, FAILED, f"{cid}: the result is not JSON ({e})")
 
     @staticmethod
     def _run_hook(fn, values) -> None:
@@ -1127,8 +1594,7 @@ class Extension:
 
         def job():
             try:
-                with self._slots:
-                    fn(*args)
+                fn(*args)
             finally:
                 with self._jobs_cond:
                     self._jobs -= 1
@@ -1158,17 +1624,45 @@ def _take_stdio():
     return proto_in, proto_out
 
 
+class _Lines:
+    """the lines one side writes to the other in memory: put(bytes), iterated until close()"""
+
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
+
+    def put(self, line: bytes) -> None:
+        self._q.put(line)
+
+    def close(self) -> None:
+        self._q.put(None)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> bytes:
+        line = self._q.get()
+        if line is None:
+            raise StopIteration
+        return line
+
+
 class ExtensionTest:
-    """an Extension run in memory the way the workshop runs it, for unit tests: no process, the same messages (each one
-    through JSON). answers: what the extension's ext.call gets, by capability id, a value or fn(args) (raise
-    ExtensionError in it for an error); a capability without one fails with -32601.
+    """an Extension run the way the workshop runs it, for unit tests: no process, but the same peer: every message
+    crosses as a line of JSON bytes, read by the loop run() reads stdin with. answers: what the extension's ext.call
+    gets, by capability id, a value or fn(args) (raise ExtensionError in it for an error); a capability without one
+    fails with -32601.
 
         t = ExtensionTest(main.ext, setup=main.setup, options={"volume": 50}, answers={"sense.bags": {"free": 3}})
         t.call("say", {"text": "hi"})                  # its result; ExtensionError(message, code) when it failed
+        t.call("say", {"text": "hi"}, caller={"by": "player", "app": "companion"}, deadline_ms=3000)
         t.next_event("said")                           # {source, data}; t.events has them all
-        t.calls                                        # [{cap, args}] the extension called
+        t.calls                                        # [{cap, args, chain?}] the extension called
         t.set_options({"volume": 20})                  # waits for its on_options handlers
-        t.close()                                      # or: with ExtensionTest(...) as t:"""
+        rid = t.start("long")                          # a call that goes on: t.cancel(rid), then t.result(rid)
+        t.check_description()                          # the problems the workshop would find in its description
+        t.close()                                      # or: with ExtensionTest(...) as t:
+
+    exited: None while the extension answers; 0 once its loop ended (shutdown, close), 1 after a failed initialize"""
 
     def __init__(self, ext: Extension, *, setup: Optional[Callable[[], Any]] = None, options: Optional[dict] = None,
                  answers: Optional[dict] = None, id: Optional[str] = None, timeout: float = 10.0):
@@ -1177,15 +1671,21 @@ class ExtensionTest:
         self.options = dict(options or {})
         self.answers: dict = dict(answers or {})
         self.events: list = []                           # {source, data}, in order
-        self.calls: list = []                            # {cap, args} the extension called
+        self.calls: list = []                            # {cap, args, chain?} the extension called
         self.described: Optional[dict] = None            # the initialize answer
+        self.exited: Optional[int] = None
         self._next_event = 0
         self._answers: dict = {}
+        self._read_all = False                           # every line the extension wrote was read
         self._cond = threading.Condition()
         self._ids = itertools.count(1)
-        self._q: queue.Queue = queue.Queue()
-        ext._attach(self._q.put, setup=setup)
-        self._thread = threading.Thread(target=self._workshop, daemon=True, name="wuxiankit-test")
+        self._in = _Lines()                              # workshop -> extension
+        self._out = _Lines()                             # extension -> workshop
+        self._write = self._out.put
+        ext._attach(self._write, setup)
+        self._serving = threading.Thread(target=self._serve, daemon=True, name="wuxiankit-test-extension")
+        self._thread = threading.Thread(target=self._workshop, daemon=True, name="wuxiankit-test-workshop")
+        self._serving.start()
         self._thread.start()
 
     def __enter__(self):
@@ -1194,14 +1694,21 @@ class ExtensionTest:
     def __exit__(self, *exc):
         self.close()
 
-    # ---- the workshop's side
+    # ---- the two ends
+
+    def _serve(self) -> None:
+        failed = True
+        try:
+            failed = self.ext._serve(self._in, self._write, grace=0)
+        finally:
+            with self._cond:
+                self.exited = 1 if failed else 0
+                self._cond.notify_all()
+            self._out.close()
 
     def _workshop(self) -> None:
-        while True:
-            line = self._q.get()
-            if line is None:
-                return
-            msg = json.loads(line)
+        for line in self._out:
+            msg = json.loads(line.decode("utf-8"))
             method = msg.get("method")
             if method is None:
                 with self._cond:
@@ -1213,68 +1720,113 @@ class ExtensionTest:
                     self._cond.notify_all()
             elif method == "call":
                 self._answer(msg)
+        with self._cond:
+            self._read_all = True
+            self._cond.notify_all()
 
     def _answer(self, msg: dict) -> None:
         p = msg.get("params") or {}
         cap, args = p.get("cap"), p.get("args") or {}
         with self._cond:
-            self.calls.append({"cap": cap, "args": args})
+            self.calls.append(dict({"cap": cap, "args": args}, **({"chain": p["chain"]} if "chain" in p else {})))
         out = {"jsonrpc": "2.0", "id": msg.get("id")}
         if cap not in self.answers:
-            out["error"] = {"code": NO_CAPABILITY, "message": f"no capability {cap} (ExtensionTest: give its answer "
-                                                              f"in answers= or with answer())"}
+            out["error"] = _error_of(NO_CAPABILITY, f"no capability {cap} (ExtensionTest: give its answer in answers= "
+                                                    f"or with answer())")
         else:
             a = self.answers[cap]
             try:
                 out["result"] = a(args) if callable(a) else a
             except ExtensionError as e:
-                out["error"] = {"code": e.code, "message": e.message}
-        self.ext._receive(json.loads(json.dumps(out)))
+                out["error"] = _error_of(e.code, e.message, e.reason)
+        self._in.put(_line(out))
 
     def answer(self, cap: str, value) -> None:
         """what the extension's ext.call(cap) gets from now on: a value or fn(args)"""
         self.answers[cap] = value
 
+    def _await(self, mid, what: str, timeout: Optional[float] = None) -> dict:
+        wait = self.timeout if timeout is None else timeout
+        with self._cond:
+            self._cond.wait_for(lambda: mid in self._answers or self._read_all, wait)
+            if mid in self._answers:
+                return self._answers.pop(mid)
+            if self._read_all:
+                raise AssertionError(f"{what}: the extension ended (exit code {self.exited}) without an answer")
+            raise AssertionError(f"{what}: no answer in {wait:g} s")
+
     # ---- requests
+
+    def post(self, method: str, params: Optional[dict] = None) -> int:
+        """one request as the workshop sends it, not waited for: its id (for result)"""
+        mid = next(self._ids)
+        self._in.put(_line({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}}))
+        return mid
 
     def send(self, method: str, params: Optional[dict] = None, timeout: Optional[float] = None) -> dict:
         """one request as the workshop sends it; the extension's raw answer {jsonrpc, id, result | error}"""
-        mid = next(self._ids)
-        msg = json.loads(json.dumps({"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}}))
-        self.ext._receive(msg)
-        wait = self.timeout if timeout is None else timeout
-        with self._cond:
-            if not self._cond.wait_for(lambda: mid in self._answers, wait):
-                raise AssertionError(f"{method}: no answer in {wait:g} s")
-            return self._answers.pop(mid)
+        return self._await(self.post(method, params), method, timeout)
 
     def notify(self, method: str, params: Optional[dict] = None) -> None:
         """one notification as the workshop sends it"""
-        self.ext._receive(json.loads(json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}})))
+        self._in.put(_line({"jsonrpc": "2.0", "method": method, "params": params or {}}))
 
-    def initialize(self, options: Optional[dict] = None) -> dict:
+    def ping(self, timeout: Optional[float] = None) -> dict:
+        """ping, as the workshop asks whether the extension still answers: {} (every line sent before was read by then)"""
+        ans = self.send("ping", None, timeout)
+        if "error" in ans:
+            _raise(ans["error"])
+        return ans.get("result")
+
+    def initialize(self, options: Optional[dict] = None, protocol: Optional[dict] = None) -> dict:
         """initialize (call() does it first when it has not run): the extension's description; ExtensionError when
-        setup failed"""
+        setup failed or the protocol range (default {min: 1, max: 1}) leaves its version out"""
         if options is not None:
             self.options = dict(options)
-        ans = self.send("initialize", {"protocol": PROTOCOL, "workshop": "test", "id": self.id, "options": self.options})
+        ans = self.send("initialize", {"protocol": protocol or {"min": PROTOCOL, "max": PROTOCOL}, "workshop": "test",
+                                       "id": self.id, "options": self.options})
         if "error" in ans:
-            raise ExtensionError(ans["error"].get("message", ""), ans["error"].get("code", FAILED))
+            _raise(ans["error"])
         self.described = ans["result"]
         return self.described
 
-    def call(self, name: str, args: Optional[dict] = None, *, caller: Optional[dict] = None,
-             timeout: Optional[float] = None) -> Any:
-        """a capability by its name (or full id): its result; ExtensionError(message, code) when it failed"""
+    def check_description(self) -> list:
+        """the problems [{level: "error" | "warning", where, message, hint}] the workshop finds in what initialize
+        answered (its extension_check lists the same); [] when there is none"""
+        if self.described is None:
+            self.initialize()
+        return check_description(self.id, self.described)[1]
+
+    def start(self, name: str, args: Optional[dict] = None, *, caller: Optional[dict] = None,
+              deadline_ms: Optional[float] = None) -> int:
+        """a call that is not waited for: its id, for cancel(id) and result(id)"""
         if self.described is None:
             self.initialize()
         if name.startswith(self.id + "."):
             name = name[len(self.id) + 1:]
-        ans = self.send("call", {"name": name, "args": args if args is not None else {},
-                                 "caller": caller or {"by": "agent"}}, timeout)
+        params = {"name": name, "args": args if args is not None else {}, "caller": caller or {"by": "agent"}}
+        if deadline_ms is not None:
+            params["deadline_ms"] = deadline_ms
+        return self.post("call", params)
+
+    def cancel(self, rid: int) -> None:
+        """cancel {id}, as the workshop sends it once it no longer waits for that call; back when the extension read
+        it. result(rid) then raises ExtensionError code 3 as soon as the capability returned"""
+        self.notify("cancel", {"id": rid})
+        self.ping()
+
+    def result(self, rid: int, timeout: Optional[float] = None) -> Any:
+        """what the call `rid` answered: its result; ExtensionError(message, code) when it failed"""
+        ans = self._await(rid, f"call {rid}", timeout)
         if "error" in ans:
-            raise ExtensionError(ans["error"].get("message", ""), ans["error"].get("code", FAILED))
+            _raise(ans["error"])
         return ans.get("result")
+
+    def call(self, name: str, args: Optional[dict] = None, *, caller: Optional[dict] = None,
+             timeout: Optional[float] = None, deadline_ms: Optional[float] = None) -> Any:
+        """a capability by its name (or full id): its result; ExtensionError(message, code) when it failed. caller:
+        {by: "agent" | "extension" | "workshop" | "player", id?, app?, chain?} (default {by: "agent"})"""
+        return self.result(self.start(name, args, caller=caller, deadline_ms=deadline_ms), timeout)
 
     def set_options(self, options: dict) -> None:
         """the player changed the options (all of them): the options notification; waits for on_options"""
@@ -1282,8 +1834,7 @@ class ExtensionTest:
             self.initialize()
         self.options = dict(options)
         self.notify("options", {"options": self.options})
-        if not self.ext._settle(self.timeout):
-            raise AssertionError(f"on_options still running after {self.timeout:g} s")
+        self.settle()
 
     def next_event(self, source: Optional[str] = None, timeout: Optional[float] = None) -> dict:
         """the next event (of this source) not given by next_event before, waiting for it; AssertionError after
@@ -1303,9 +1854,12 @@ class ExtensionTest:
             return self.events[i]
 
     def settle(self, timeout: Optional[float] = None) -> None:
-        """waits until no capability or on_options handler runs"""
-        if not self.ext._settle(self.timeout if timeout is None else timeout):
-            raise AssertionError("the extension is still busy")
+        """waits until the extension read every line sent so far and no capability or on_options handler runs"""
+        wait = self.timeout if timeout is None else timeout
+        if self.exited is None:
+            self.ping(wait)
+        if not self.ext._settle(wait):
+            raise AssertionError(f"the extension is still busy after {wait:g} s")
 
     def shutdown(self) -> dict:
         """shutdown, as the workshop ends it: the answer"""
@@ -1314,6 +1868,6 @@ class ExtensionTest:
         return ans
 
     def close(self) -> None:
-        if self.ext._write == self._q.put:
-            self.ext._detach()
-        self._q.put(None)
+        self._in.close()                                 # stdin closed: the loop ends and detaches
+        if threading.current_thread() is not self._serving:
+            self._serving.join(self.timeout)
