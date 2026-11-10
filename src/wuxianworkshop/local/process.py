@@ -50,8 +50,12 @@ WINDOWS = sys.platform == "win32"
 # the daemon's own environment variables an extension's process gets (Windows: whatever their case)
 ENV_KEEP = ("SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC", "TEMP", "TMP", "USERPROFILE",
             "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "NUMBER_OF_PROCESSORS",
-            "PROCESSOR_ARCHITECTURE", "LANG")
-ENV_KEEP_POSIX = ("HOME", "TMPDIR", "LC_ALL", "LC_CTYPE")
+            "PROCESSOR_ARCHITECTURE", "LANG",
+            # who and where: without USERNAME getpass.getuser() goes on to `import pwd`, which Windows has not (torch
+            # does at import); the rest is what libraries find the system's folders by
+            "USERNAME", "USERDOMAIN", "COMPUTERNAME", "OS", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+            "COMMONPROGRAMFILES", "ALLUSERSPROFILE", "PUBLIC")
+ENV_KEEP_POSIX = ("HOME", "TMPDIR", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME")
 ENV_WORKSHOP = ("WUXIAN_MUTEX",)                      # the daemon's own WUXIAN_* that are handed on as they are
 
 

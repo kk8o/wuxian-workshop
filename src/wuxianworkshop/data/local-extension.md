@@ -77,10 +77,12 @@ A field the manifest does not know is an error, so a typo does not pass in silen
 
 The process does not get the player's whole environment. It starts with a short list of the system's variables
 (`SYSTEMROOT WINDIR SYSTEMDRIVE PATH PATHEXT COMSPEC TEMP TMP USERPROFILE HOMEDRIVE HOMEPATH APPDATA LOCALAPPDATA
-PROGRAMDATA NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE LANG`), the ones the manifest's `pass` names (as the player
-has them: `HF_HOME`, a proxy, a key the player keeps in the environment), the manifest's `env`, and the workshop's
-own: `WUXIAN_EXTENSION=<id>`, `WUXIAN_HOME`, `PYTHONPATH` (the folder of `wuxiankit.py` first), `PYTHONUNBUFFERED=1`
-and `PYTHONIOENCODING=utf-8`. A variable the code reads and none of these gives is not there: name it in `pass`.
+PROGRAMDATA NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE LANG USERNAME USERDOMAIN COMPUTERNAME OS PROGRAMFILES
+PROGRAMFILES(X86) PROGRAMW6432 COMMONPROGRAMFILES ALLUSERSPROFILE PUBLIC`), the ones the manifest's `pass` names
+(as the player has them: `HF_HOME`, a proxy, a key the player keeps in the environment), the manifest's `env`, and
+the workshop's own: `WUXIAN_EXTENSION=<id>`, `WUXIAN_HOME`, `PYTHONPATH` (the folder of `wuxiankit.py` first),
+`PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-8`. A variable the code reads and none of these gives is not there:
+name it in `pass`.
 
 Once started it keeps running; after a crash the next call starts it again (after several failed starts in a row the
 workshop waits 1, 5, 30, then 120 seconds between tries); when the workshop exits it sends `shutdown`.

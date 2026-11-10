@@ -59,6 +59,13 @@ class Environment(unittest.TestCase):
             for name in ("PATH", "SYSTEMROOT"):                        # what a process needs to run at all
                 if name in os.environ:
                     self.assertEqual([env[k] for k in self.names(env, name)], [os.environ[name]], name)
+        # who the player is: without it getpass.getuser() goes on to `import pwd`, which Windows has not
+        who = "USERNAME" if P.WINDOWS else "LOGNAME"
+        with mock.patch.dict(os.environ, {who: "player", "PROGRAMFILES(X86)": "C:/pf86"}):
+            env = P.environment({"id": "fx", "env": {}}, Path("C:/sdk"))
+            self.assertEqual([env[k] for k in self.names(env, who)], ["player"])
+            self.assertEqual([env[k] for k in self.names(env, "PROGRAMFILES(X86)")], ["C:/pf86"] if P.WINDOWS else [])
+        with mock.patch.dict(os.environ, daemon):
             # what the manifest's pass names (whatever its case on Windows); a name that is not set is none
             passed = "my_tool_home" if P.WINDOWS else "MY_TOOL_HOME"
             env = P.environment({"id": "fx", "env": {}, "pass": [passed, "PYTHONPATH", "NOT_SET", 7]}, Path("C:/sdk"))
