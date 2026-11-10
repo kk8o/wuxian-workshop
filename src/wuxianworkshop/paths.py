@@ -4,6 +4,7 @@ r"""Where the companion keeps its run-time files, outside the repository:
     %LOCALAPPDATA%\WuxianWorkshop\snaps   PNGs of the snap command
     %LOCALAPPDATA%\WuxianWorkshop\state   install.json, command.txt, say.txt, companion.stop, daemon.json, settings.json
     %LOCALAPPDATA%\WuxianWorkshop\history kept versions of addons (agent/history.py)
+    %LOCALAPPDATA%\WuxianWorkshop\extensions  the local extensions the workshop keeps: one folder each (local/home.py)
 
 WUXIAN_HOME in the environment replaces the %LOCALAPPDATA%\WuxianWorkshop root (tests point it at a temporary folder).
 Each function makes its folder when it is missing.
@@ -45,6 +46,12 @@ def state_dir():
 def history_dir():
     """the kept versions of addons (agent/history.py)"""
     return _folder("history")
+
+
+def extensions_home():
+    """the folder of the local extensions the workshop keeps itself: one folder each, found there without being
+    registered (local/home.py); .removed and .incoming inside are its own"""
+    return _folder("extensions")
 
 
 def daemon_file():

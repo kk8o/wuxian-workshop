@@ -3,7 +3,8 @@ says of itself when it starts (its answer to initialize). Every finding is a pro
 message, hint}: where names the file and field (or the capability), message says what is wrong, hint how to fix it; the
 words are for the agent that writes the extension.
 
-    {"id": "voice", "title": "声音", "version": "0.1.0", "notes": "...",
+    {"id": "voice", "title": "声音", "version": "0.1.0", "notes": "...", "author": "...", "homepage": "https://...",
+     "requires": {"workshop": "0.9.13", "kit": "0.6.0"}, "addons": ["WuxianVoice"], "pack": {"exclude": ["models/*"]},
      "run": ["python", "-m", "voice"], "python": "tts/.venv/Scripts/python.exe", "env": {"K": "V"}, "pass": ["HF_HOME"],
      "start": "use" | "workshop", "docs": "AGENT.md", "skills": "skills",
      "adds": {"guild": {"wake": "lookup", "skill": "skills/guild-chat.md"}},
@@ -11,8 +12,12 @@ words are for the agent that writes the extension.
                "controls": ["stop", {"cmd": "mute", "label": "静音", "call": "mute"}],
                "reactions": [{"hear": "game:combat.start", "call": "voice.say", "args": {"pool": "elite"}}]}]}
 
-id:^[a-z][a-z0-9_]{0,23}$, not a WuxianKit extension's (chat game route sense guide data tune gate codex guides) and not
-local, wb or wk. title: at most 48 bytes. run: the argv, relative to the folder; a first item "python" is the manifest's
+id:^[a-z][a-z0-9_]{0,23}$, not a WuxianKit extension's (chat game route sense guide data tune gate codex guides, and
+the ids the installed WuxianKit lists: taken) and not local, wb or wk. title: at most 48 bytes. author: a short text;
+homepage: an http(s) address. requires: the lowest versions it runs with, {workshop?, kit?}, each dot-separated numbers
+(unmet() says which are not met). addons: its game half, the names of addon folders it brings in addons/<Name>/ (each
+with its .toc; at most ADDONS_MOST), which the workshop installs into the game's AddOns (local/gameside.py). pack:
+{exclude: [patterns]}, what `wuxian ext pack` leaves out besides its own list (local/pack.py). run: the argv, relative to the folder; a first item "python" is the manifest's
 `python` (relative to the folder), else the workshop's own interpreter. env: variables set for the process; pass: at
 most PASS_MOST names of the player's environment variables it also gets (the process starts with a short list of the
 system's, not with the whole environment). start: use (the default: started by the first call of one of its
@@ -74,7 +79,17 @@ CONTROL_FIELDS = ("cmd", "label", "call")
 CONTROL_CMD = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 PASS_MOST = 16
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_()]{0,63}$")
-FIELDS = ("id", "title", "version", "notes", "run", "python", "env", "pass", "start", "docs", "skills", "apps", "adds")
+FIELDS = ("id", "title", "version", "notes", "author", "homepage", "requires", "addons", "pack", "run", "python", "env",
+          "pass", "start", "docs", "skills", "apps", "adds")
+AUTHOR_MAX = 64
+HOMEPAGE_MAX = 200
+REQUIRES = ("workshop", "kit")                      # what a manifest may ask a lowest version of
+VERSION = re.compile(r"^\d{1,6}(\.\d{1,6}){0,3}$")
+ADDONS_DIR = "addons"                               # <folder>/addons/<Name>/: the game half
+ADDONS_MOST = 8
+ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")   # as extensions.FOLDER
+ADDONS_TAKEN = ("wuxiankit",)                       # besides the workshop's own (installer.addons.OURS) and Blizzard_*
+EXCLUDE_MOST = 64
 REMOVED = {"annotate": "adds says it now: {\"<app>\": {\"wake\": \"<capability name>\"}}",
            "extends": "adds says it now: {\"<app>\": {\"skill\": \"skills/<file>.md\"}}, by the app's id"}
 
@@ -96,8 +111,9 @@ def locate(path):
     return p, p / MANIFEST
 
 
-def id_problem(value, where="id"):
-    """the problem with an extension's id, or None"""
+def id_problem(value, where="id", taken=()):
+    """the problem with an extension's id, or None. taken: the ids of the extensions the installed WuxianKit lists (the
+    game's own and other addons'), which a local extension cannot have either"""
     if not isinstance(value, str) or not ID.match(value):
         return problem("error", where, f"{value!r} is not an extension id",
                        "lowercase letters, digits and _, a letter first, at most 24 characters (voice, my_tool)")
@@ -105,13 +121,40 @@ def id_problem(value, where="id"):
         return problem("error", where, f"{value!r} is taken",
                        "WuxianKit's own extensions (" + ", ".join(KIT_EXTENSIONS) + ") and local, wb, wk, kit are "
                        "reserved: choose another id")
+    if value in set(taken or ()):
+        return problem("error", where, f"{value!r} is taken",
+                       "an extension of WuxianKit in this game has that id (wk_kit_extensions lists them): choose "
+                       "another id")
     return None
 
 
-def check_manifest(path):
-    """(manifest or None, problems) of an extension's folder (or its manifest file). The manifest as the host uses it:
-    {id, title, version, notes, run, python, env, pass, start, docs, skills, apps, adds, folder, file}; docs and skills
-    absolute paths or None, python an absolute path or None, pass [names], adds {app: {wake: {call: "<id>.<name>",
+def version_tuple(v):
+    """a version of dot-separated numbers as a tuple to compare; None when it is not one"""
+    if not isinstance(v, str) or not VERSION.match(v.strip()):
+        return None
+    return tuple(int(p) for p in v.strip().split("."))
+
+
+def unmet(requires, workshop=None, kit=None):
+    """what of a manifest's requires is not met by these versions: [{what: "workshop" | "kit", needs, has}]. A version
+    that is not known (None), or not dot-separated numbers (a development build), is not judged"""
+    out = []
+    for what, has in (("workshop", workshop), ("kit", kit)):
+        needs = (requires or {}).get(what)
+        a, b = version_tuple(needs), version_tuple(has)
+        if a is None or b is None:
+            continue
+        n = max(len(a), len(b))
+        if b + (0,) * (n - len(b)) < a + (0,) * (n - len(a)):
+            out.append(dict(what=what, needs=needs, has=has))
+    return out
+
+
+def check_manifest(path, taken=()):
+    """(manifest or None, problems) of an extension's folder (or its manifest file); taken: id_problem's. The manifest
+    as the host uses it: {id, title, version, notes, author, homepage, requires, addons, pack, run, python, env, pass,
+    start, docs, skills, apps, adds, folder, file}; author and homepage a text or None, requires {workshop?, kit?},
+    addons [names] (maybe none), pack {exclude: [patterns]}; docs and skills absolute paths or None, python an absolute path or None, pass [names], adds {app: {wake: {call: "<id>.<name>",
     timeout} | None, skill: absolute path | None}}, every app with reactions [{hear, when, call, args, item, cooldown,
     note}] (maybe none) and its controls as written (strings, or {cmd, label?, call?} with call a capability's name
     without the id)"""
@@ -143,7 +186,7 @@ def check_manifest(path):
             out.append(problem("warning", field(name), "this field means nothing to 无限工坊",
                                "the fields: " + ", ".join(sorted(FIELDS))))
     eid = d.get("id")
-    bad = id_problem(eid, field("id"))
+    bad = id_problem(eid, field("id"), taken)
     if bad:
         out.append(bad)
     title = d.get("title") if d.get("title") is not None else eid
@@ -157,6 +200,19 @@ def check_manifest(path):
     notes = d.get("notes")
     if notes is not None and text_of(notes, NOTES_MAX) is None:
         out.append(problem("error", field("notes"), "notes are one line of text", "what the extension does, briefly"))
+    author = d.get("author")
+    if author is not None and text_of(author, AUTHOR_MAX) is None:
+        out.append(problem("error", field("author"), f"author is a short text (at most {AUTHOR_MAX} bytes)",
+                           "who wrote the extension: a name"))
+    homepage = d.get("homepage")
+    if homepage is not None and not (isinstance(homepage, str) and len(homepage) <= HOMEPAGE_MAX
+                                     and re.match(r"^https?://[^\s\"'<>]+$", homepage)):
+        out.append(problem("error", field("homepage"), "homepage is an http(s) address",
+                           '"https://example.com/my-extension"'))
+        homepage = None
+    requires = check_requires(d.get("requires"), field("requires"), out)
+    addons = check_addons(d.get("addons"), folder, field("addons"), out)
+    pack = check_pack(d.get("pack"), field("pack"), out)
     run = d.get("run")
     if not isinstance(run, list) or not run or not all(isinstance(a, str) for a in run) or not run[0].strip():
         out.append(problem("error", field("run"), "run is the command that starts it, a list of arguments",
@@ -197,12 +253,114 @@ def check_manifest(path):
     apps = check_apps(d.get("apps"), field("apps"), out)
     adds = check_adds(d.get("adds"), eid, folder, field("adds"), out)
     manifest = dict(id=eid, title=title, version=text_of(version, 32) if version is not None else None,
-                    notes=text_of(notes, NOTES_MAX) if notes is not None else None, run=list(run or []),
+                    notes=text_of(notes, NOTES_MAX) if notes is not None else None,
+                    author=text_of(author, AUTHOR_MAX) if author is not None else None, homepage=homepage,
+                    requires=requires, addons=addons, pack=pack, run=list(run or []),
                     python=str(python_path) if python_path is not None else None, env=dict(env), start=start,
                     docs=str(docs) if docs else None, skills=str(skills) if skills else None, apps=apps, adds=adds,
                     folder=str(folder), file=str(file))
     manifest["pass"] = passed
     return (None if errors_in(out) else manifest), out
+
+
+def check_requires(requires, where, out):
+    """a manifest's requires as kept: {workshop?: version, kit?: version}"""
+    if requires is None:
+        return {}
+    if not isinstance(requires, dict):
+        out.append(problem("error", where, "requires is the lowest versions the extension runs with",
+                           '{"workshop": "0.9.13", "kit": "0.6.0"}; leave out what does not matter'))
+        return {}
+    kept = {}
+    for name in sorted(requires, key=str):
+        value = requires[name]
+        if name not in REQUIRES:
+            out.append(problem("warning", f"{where}.{name}", "this means nothing to 无限工坊",
+                               "requires knows: " + ", ".join(REQUIRES)))
+        elif version_tuple(value) is None:
+            out.append(problem("error", f"{where}.{name}", f"{value!r} is not a version",
+                               'dot-separated numbers, such as "0.9.13"'))
+        else:
+            kept[name] = value.strip()
+    return kept
+
+
+def addon_toc(folder):
+    """the .toc of an addon folder an extension brings: <Name>.toc, else <Name>_<flavour>.toc; None when there is none"""
+    folder = Path(folder)
+    exact = folder / f"{folder.name}.toc"
+    if exact.is_file():
+        return exact
+    try:
+        found = sorted(p for p in folder.glob(f"{folder.name}_*.toc") if p.is_file())
+    except OSError:
+        return None
+    return found[0] if found else None
+
+
+def check_addons(addons, folder, where, out):
+    """a manifest's addons as kept: the names of the addon folders in <folder>/addons, each there with its .toc"""
+    if addons is None:
+        return []
+    hint = (f'["WuxianVoice"]: the folder {ADDONS_DIR}/WuxianVoice with WuxianVoice.toc in it; 无限工坊 installs it '
+            f"into the game's AddOns")
+    if not isinstance(addons, list) or not all(isinstance(a, str) for a in addons):
+        out.append(problem("error", where, "addons is the names of the addon folders the extension brings", hint))
+        return []
+    if len(addons) > ADDONS_MOST:
+        out.append(problem("error", where, f"at most {ADDONS_MOST} addons", "one addon is the usual"))
+        return []
+    from ..installer.addons import OURS
+    ours = {name.lower() for name in OURS} | set(ADDONS_TAKEN)
+    kept, seen = [], set()
+    for i, name in enumerate(addons):
+        at = f"{where}[{i}]"
+        if not ADDON_FOLDER.match(name):
+            out.append(problem("error", at, f"{name!r} is not an addon folder's name",
+                               "letters, digits, _ . ! and -, at most 64 characters, no path: " + hint))
+            continue
+        low = name.lower()
+        if low in ours or low.startswith("blizzard_") or low.startswith("wowbridge"):
+            out.append(problem("error", at, f"{name} is not an extension's to bring",
+                               "无限工坊's, WuxianKit's and the game's own addons are not part of an extension: name "
+                               "the addon after the extension, such as WuxianVoice"))
+            continue
+        if low in seen:
+            out.append(problem("error", at, f"{name} is named twice", "name each addon once"))
+            continue
+        seen.add(low)
+        source = Path(folder) / ADDONS_DIR / name
+        if not source.is_dir():
+            out.append(problem("error", at, f"there is no {source}",
+                               f"the addon's files go in {ADDONS_DIR}/{name}/ of the extension folder"))
+            continue
+        if addon_toc(source) is None:
+            out.append(problem("error", at, f"there is no {name}.toc in {source}",
+                               "an addon folder needs a .toc named after it"))
+            continue
+        kept.append(name)
+    return kept
+
+
+def check_pack(pack, where, out):
+    """a manifest's pack as kept: {exclude: [patterns]}"""
+    if pack is None:
+        return dict(exclude=[])
+    hint = '{"exclude": ["models/*", "*.wav"]}: patterns of paths relative to the extension folder, / between parts'
+    if not isinstance(pack, dict):
+        out.append(problem("error", where, "pack says what a package of the extension leaves out", hint))
+        return dict(exclude=[])
+    for name in sorted(set(pack) - {"exclude"}, key=str):
+        out.append(problem("warning", f"{where}.{name}", "this means nothing to 无限工坊", "pack knows: exclude"))
+    exclude = pack.get("exclude")
+    if exclude is None:
+        return dict(exclude=[])
+    if (not isinstance(exclude, list) or len(exclude) > EXCLUDE_MOST
+            or not all(isinstance(p, str) and p.strip() and len(p) <= 200 and "\\" not in p and not p.startswith("/")
+                       and ".." not in p.split("/") for p in exclude)):
+        out.append(problem("error", f"{where}.exclude", f"exclude is at most {EXCLUDE_MOST} patterns", hint))
+        return dict(exclude=[])
+    return dict(exclude=[p.strip() for p in exclude])
 
 
 def locate_file(folder, given, default, is_dir, where, out):
