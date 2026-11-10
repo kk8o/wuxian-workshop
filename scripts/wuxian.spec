@@ -37,7 +37,7 @@ packs = SRC / "wuxianworkshop" / "data"                      # the content packs
 if packs.is_dir():
     datas.append((str(packs), "wuxianworkshop/data"))
 sdk = ROOT / "sdk" / "python" / "wuxiankit.py"               # _internal/sdk: put first on the PYTHONPATH of the local
-                                                             # extensions the daemon starts (local/host.py sdk_dir)
+                                                             # extensions the daemon starts (local/process.py sdk_dir)
 if sdk.is_file():
     datas.append((str(sdk), "sdk"))
 

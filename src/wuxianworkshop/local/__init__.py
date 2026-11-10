@@ -3,7 +3,12 @@ extension is a process on this computer (any language) that speaks JSON-RPC over
 sources, options, docs and apps are the same things in both, and the agent sees both as wk_<extension>_<name> tools.
 
     manifest.py    wuxian-extension.json, read and checked; the checks of an extension's description (initialize)
-    host.py        the registry (<state>\\extensions.json), the processes, the protocol, calls, logs
+    host.py        the host (Host): the registered extensions and their processes as the daemon uses them, made of
+    registry.py      the registry (<state>\\extensions.json)
+    process.py       one process of an extension (Proc), its environment and command
+    rpc.py           the protocol on its pipe: requests, answers, errors
+    logs.py          its output (<state>\\extensions\\<id>\\output.log)
+    check.py         check: a process of its own started and initialized, the extension's tests
     reactions.py   reactions: an item heard (a game source through a temporary app, or a local source) calls a
                    capability (see / keep / point) without the agent
 """
