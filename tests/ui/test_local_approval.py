@@ -289,7 +289,7 @@ class Template(unittest.TestCase):
         self.js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     def test_the_card(self):
-        start = self.part.index('<div class="lx-approve" x-show="lxNeeds(lxCur)">')
+        start = self.part.index('<div class="lx-approve" x-show="lxNeeds(lxCur) && lxCanApprove(lxCur)">')
         card = self.part[start:self.part.index('<div class="xp-note', start)]
         self.assertIn('x-text="lxApprovalTitle(lxCur)"', card)
         self.assertIn('<code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code>', card)

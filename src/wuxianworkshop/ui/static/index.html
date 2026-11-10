@@ -844,8 +844,8 @@
                         x-text="lxBusy(lxCur, 'check') ? t('检查中…') : t('检查')"></button>
               </div>
             </div>
-            <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次 -->
-            <div class="lx-approve" x-show="lxNeeds(lxCur)">
+            <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次。清单有误、算不出命令时只留下面的错误条 -->
+            <div class="lx-approve" x-show="lxNeeds(lxCur) && lxCanApprove(lxCur)">
               <div class="lx-approve-head">
                 <div class="grow">
                   <b x-text="lxApprovalTitle(lxCur)"></b>
