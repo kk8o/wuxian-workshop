@@ -24,6 +24,7 @@ START_TIMEOUT = 30.0         # the desktop program takes longer than `serve` to 
 
 START_WAIT = 200    # seconds a call of a local extension may wait for it to start (initialize: 180 s) on top of its own
 LOAD_WAIT = 330     # seconds extension_load / extension_check may take: a start (180 s) and its tests (120 s)
+PACK_WAIT = 180     # seconds a package may take: packing a folder, unpacking one (64 MB, 8000 files), a game addon
 AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
                     # (service.PIECE_WAIT), and a piece may wait out its timeout before that
 WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
@@ -182,8 +183,8 @@ class DaemonClient:
     def local_extensions(self):
         return self.get("/api/local")
 
-    def extension_add(self, path):
-        return self.request("POST", "/api/local/add", body=dict(path=path), timeout=60)   # post(path=...) is the route
+    def extension_add(self, path):               # a folder, a manifest or a package (.zip); post(path=...) is the route
+        return self.request("POST", "/api/local/add", body=dict(path=path), timeout=PACK_WAIT)
 
     def extension_remove(self, id):
         return self.post("/api/local/remove", id=id, timeout=60)
@@ -200,8 +201,15 @@ class DaemonClient:
     def extension_check(self, id):
         return self.post("/api/local/check", id=id, timeout=LOAD_WAIT)
 
-    def new_extension(self, id, title=None, folder=None):
-        return self.post("/api/local/new", id=id, title=title, folder=folder, timeout=60)
+    def new_extension(self, id, title=None, folder=None, addon=None):
+        more = {"addon": addon} if addon else {}       # said only when given (a daemon before it reads no such field)
+        return self.post("/api/local/new", id=id, title=title, folder=folder, timeout=60, **more)
+
+    def extension_pack(self, id, to=None):
+        return self.post("/api/local/pack", id=id, timeout=PACK_WAIT, **({"to": to} if to else {}))
+
+    def extension_install(self, id):
+        return self.post("/api/local/install", id=id, timeout=PACK_WAIT)
 
     def extension_logs(self, id, since=0, limit=200):
         return self.get("/api/local/logs", id=id, since=since, limit=limit)

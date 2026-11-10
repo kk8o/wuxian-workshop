@@ -30,8 +30,9 @@
     wuxian install [--no-clean] [--game DIR]  install the addon
     wuxian update [check|download|apply]      the program's updates (an installed copy; apply restarts it)
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
-    wuxian ext list | add <path> | remove <id> | load <id> | stop <id> | set <id> [--on|--off] [--option k=v]
-               | check <id|path> | new <id> [--title T] | logs <id> [-f]   local extensions (on this computer)
+    wuxian ext list | add <folder|manifest|zip> | remove <id> | load <id> | stop <id> | set <id> [--on|--off]
+               [--option k=v] | check <id|path> | new <id> [--title T] [--addon Name] | pack <id> [--to PATH]
+               | install <id> | dir | logs <id> [-f]   local extensions (on this computer), their packages, game addons
     wuxian wk <capability> ['<json args>']    call a capability: a local extension's, or WuxianKit's in the game
     wuxian reaction list | set '<json>' | clear [--id X] [--owner A]   reactions: an item heard calls a capability
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
@@ -223,15 +224,20 @@ def build_parser():
     p.add_argument("--notes", default="", help="one line about it")
     p.add_argument("--template", choices=("basic", "window"), default="basic")
     p = sub.add_parser("ext", help="local extensions (WuxianKit's extensions on this computer): list, add, remove, load, "
-                                    "stop, set, check, new, logs")
+                                    "stop, set, check, new, pack, install, dir, logs")
     act = p.add_subparsers(dest="action", metavar="<action>", required=True)
     q = act.add_parser("list", help="the registered local extensions and their state")
     q.add_argument("--json", action="store_true", help="print JSON")
-    q = act.add_parser("add", help="register an extension: its folder (or its wuxian-extension.json)")
-    q.add_argument("path")
-    q = act.add_parser("remove", help="take an extension off the registry (stopped first; its folder stays)")
+    q = act.add_parser("add", help="add an extension: its folder or its wuxian-extension.json (linked: the folder "
+                                   "stays where it is), or a package (.zip: unpacked into the extensions folder, the "
+                                   "player allows it in the App before it runs)")
+    q.add_argument("path", help="a folder, a wuxian-extension.json or a package's .zip")
+    q = act.add_parser("remove", help="take an extension off the registry (stopped first): a linked folder stays, one "
+                                      "in the extensions folder moves to its .removed; the game addons it installed "
+                                      "are deleted")
     q.add_argument("id")
-    q = act.add_parser("load", help="check an extension and (re)start it, run its tests")
+    q = act.add_parser("load", help="check an extension and (re)start it, run its tests; its game addons are installed "
+                                    "first when they are missing or differ")
     q.add_argument("id")
     q = act.add_parser("stop", help="stop an extension")
     q.add_argument("id")
@@ -245,10 +251,21 @@ def build_parser():
     q = act.add_parser("check", help="check an extension (an id, or a folder) without touching the running one")
     q.add_argument("id")
     q.add_argument("--json", action="store_true", help="print JSON")
-    q = act.add_parser("new", help="a new extension from the template (default folder: %%WUXIAN_HOME%%\\extensions\\<id>)")
+    q = act.add_parser("new", help="a new extension from the template (default folder: <id> in the extensions folder, "
+                                   "see `ext dir`)")
     q.add_argument("id")
     q.add_argument("--title", help="the name the player sees (default: the id)")
     q.add_argument("--folder", help="the full path of its folder (new or empty)")
+    q.add_argument("--addon", metavar="NAME", help="with a game addon of this folder name (addons\\NAME in its folder, "
+                                                   "installed into the game with the extension)")
+    q = act.add_parser("pack", help="pack an extension's folder into a package (<id>-<version>.zip) for `ext add`")
+    q.add_argument("id")
+    q.add_argument("--to", metavar="PATH", help="a folder, or the .zip itself (default: %%WUXIAN_HOME%%\\packages)")
+    q.add_argument("--json", action="store_true", help="print JSON")
+    q = act.add_parser("install", help="install or update an extension's game addons now (one the player allowed; a "
+                                       "new addon needs a game restart)")
+    q.add_argument("id")
+    act.add_parser("dir", help="print the extensions folder: a package unpacks there, a folder put there is found")
     q = act.add_parser("logs", help="an extension's output (its stderr and the workshop's lines on its starts and ends)")
     q.add_argument("id")
     q.add_argument("--follow", "-f", action="store_true", help="keep printing new lines (Ctrl+C ends it)")
@@ -992,10 +1009,31 @@ def ext_since(t, now=None):
     return time.strftime("%H:%M:%S" if same_day else "%m-%d %H:%M", time.localtime(t))
 
 
+EXT_ADDON = {"unknown": "the game's folder is not known",
+             "broken": "its folder in the extension is missing or has no .toc",
+             "missing": "not in the game: `wuxian ext install {id}` installs it (so does `ext load`)",
+             "current": "installed",
+             "differs": "the game has another version: `wuxian ext install {id}` updates it (so does `ext load`)",
+             "foreign": "the game has an addon of this name that is not this extension's: it is left alone"}
+
+
+def ext_unmet(u):
+    """one of a row's unmet ({what, needs, has}): what the extension requires and does not find"""
+    what, needs, has = u.get("what"), u.get("needs"), u.get("has")
+    if what == "workshop":
+        return f"needs 无限工坊 {needs} or newer (this is {has}): it does not start before that"
+    if what == "kit":
+        return f"needs WuxianKit {needs} or newer (the game has {has})"
+    return f"needs {what} {needs} or newer (there is {has})"
+
+
 def ext_lines(r, now=None):
     """one local extension for `wuxian ext list` and the answers of add / load / stop / set: its line (id, state, since
-    when, title, capabilities, folder), then indented what is wrong with it: its approval when the player has to give
-    it (needed, changed), why it is in this state (exited, backoff, hung), its error (a manifest that cannot be read)"""
+    when, title and version, capabilities, home (in the extensions folder) or linked, folder), then indented what is
+    wrong with it: its approval when the player has to give it (needed, changed; not when the workshop allows it by
+    itself), what it requires and does not find (unmet), why it is in this state (exited, backoff, hung), its error (a
+    manifest that cannot be read), and its game addons with their states. A row of an older daemon has no version,
+    origin, unmet or addons: its lines are as they were"""
     state = r["state"]
     if state == "exited" and r.get("exit_code") is not None:
         state += f" with code {r['exit_code']}"
@@ -1004,12 +1042,22 @@ def ext_lines(r, now=None):
     if r["state"] in ("starting", "running", "hung", "stopping") and r.get("pid"):
         state += f" (pid {r['pid']})"
     caps = len(r.get("capabilities") or [])
-    lines = [f"{r['id']:<16} {state:<34} {r['title']}  [{caps} capabilities]  {r['path']}"]
-    if r.get("approval") in EXT_APPROVAL:
+    version = f" {r['version']}" if r.get("version") else ""
+    origin = f"{r['origin']}  " if r.get("origin") else ""
+    lines = [f"{r['id']:<16} {state:<34} {r['title']}{version}  [{caps} capabilities]  {origin}{r['path']}"]
+    if r.get("approval") in EXT_APPROVAL and r.get("allowed") is not True:
         lines.append(f"    {EXT_APPROVAL[r['approval']]}")
+    for u in r.get("unmet") or []:
+        if isinstance(u, dict) and not (u.get("what") == "workshop" and r.get("error")):   # the error says that one
+            lines.append(f"    {ext_unmet(u)}")
     for text in (r.get("why"), r.get("error")):
         if text:
             lines.extend(f"    {line}" for line in str(text).splitlines())
+    for g in r.get("addons") or []:
+        if isinstance(g, dict):
+            name = " ".join(str(x) for x in (g.get("folder"), g.get("version")) if x)
+            said = EXT_ADDON.get(g.get("state"), str(g.get("state"))).replace("{id}", str(r["id"]))
+            lines.append(f"    game addon {name}: {said}")
     return lines
 
 
@@ -1018,6 +1066,25 @@ def print_ext(r, lead=""):
     print(lead + lines[0])
     for line in lines[1:]:
         print(line)
+
+
+def print_game_side(res):
+    """what an answer (ext load, ext install) says of the extension's game addons, when it says any: each one with
+    what was done ({folder, state: installed | current, was, version}), whether the game has to be restarted, and
+    the daemon's hint"""
+    for g in res.get("addons") or []:
+        if isinstance(g, dict):
+            name = " ".join(str(x) for x in (g.get("folder"), g.get("version")) if x)
+            was = f" (it was {g['was']})" if g.get("state") == "installed" and g.get("was") else ""
+            print(f"game addon {name}: {g.get('state')}{was}")
+    if res.get("restart"):
+        print("restart the game: it finds new addons and new files only when it starts")
+    if res.get("hint") and isinstance(res["hint"], str):
+        print(res["hint"])
+
+
+def size_text(n):
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{n / 1024:.1f} KB" if n >= 1024 else f"{n} bytes"
 
 
 def option_value(text):
@@ -1057,20 +1124,61 @@ def cmd_ext(client, args):
         for r in res["extensions"]:
             print_ext(r)
         if not res["extensions"]:
-            print("no local extensions registered: `wuxian ext new <id>` makes one, `wuxian ext add <folder>` registers one")
+            print("no local extensions registered: `wuxian ext new <id>` makes one, `wuxian ext add <folder or .zip>` "
+                  "adds one")
+        return 0
+    if a == "dir":
+        home = client.local_extensions().get("home")
+        if not home:
+            say_error("the daemon does not say where its extensions folder is (an older one: update 无限工坊)")
+            return 1
+        print(home)
         return 0
     if a == "add":
-        print_ext(client.extension_add(str(Path(args.path).resolve())), "registered: ")
+        res = client.extension_add(str(Path(args.path).resolve()))
+        package = res.get("package") if isinstance(res.get("package"), dict) else None
+        print_ext(res, "installed: " if package else "registered: ")     # a package's row says the player allows it
+        if package and package.get("replaced"):
+            print(f"    the folder it replaced is kept: {package['replaced']}")
         return 0
     if a == "remove":
         res = client.extension_remove(args.id)
-        print(f"{res['id']} is no longer registered ({res['path']}; its files stay)")
+        kept = f"its folder moved to {res['kept']}" if res.get("kept") else f"{res['path']}; its files stay"
+        print(f"{res['id']} is no longer registered ({kept})")
+        for g in res.get("addons") or []:
+            if isinstance(g, dict) and g.get("removed"):
+                history = f" (kept: `wuxian history {g.get('folder')}` {g['kept']})" if g.get("kept") else ""
+                print(f"    game addon {g.get('folder')}: deleted from the game's AddOns{history}")
+            elif isinstance(g, dict):
+                print(f"    game addon {g.get('folder')}: left in the game's AddOns (it is not this extension's)")
         return 0
     if a == "load":
         res = client.extension_load(args.id)
         print_check(res["check"])
+        print_game_side(res)
         print_ext(res["row"])
         return 0 if res["check"].get("ok") else 1
+    if a == "install":
+        res = client.extension_install(args.id)
+        print_game_side(res)
+        if not res.get("addons"):
+            print(f"{res.get('id', args.id)}: no game addons to install")
+        return 0
+    if a == "pack":
+        res = client.extension_pack(args.id, str(Path(args.to).resolve()) if args.to else None)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        print(f"packed {res.get('id', args.id)} {res.get('version') or ''}".rstrip() + f": {res.get('file')}")
+        skipped = res.get("skipped")
+        skipped = len(skipped) if isinstance(skipped, (list, tuple, dict)) else skipped
+        facts = [size_text(res["size"]) if is_number(res.get("size")) else None,
+                 f"{res['files']} files" if is_number(res.get("files")) else None,
+                 f"{skipped} left out" if is_number(skipped) and skipped else None,
+                 f"sha256 {res['sha256']}" if res.get("sha256") else None]
+        if any(facts):
+            print("    " + ", ".join(f for f in facts if f))
+        return 0
     if a == "stop":
         print_ext(client.extension_stop(args.id))
         return 0
@@ -1090,7 +1198,7 @@ def cmd_ext(client, args):
             print_check(res)
         return 0 if res.get("ok") else 1
     if a == "new":
-        res = client.new_extension(args.id, args.title, args.folder)
+        res = client.new_extension(args.id, args.title, args.folder, args.addon)
         print(f"made {res['row']['path']}: {', '.join(Path(f).name for f in res['files'])}")
         print(res.get("guide", ""))
         return 0
