@@ -56,18 +56,22 @@ class HostTests(unittest.TestCase):
         row, folder = self.add()
         self.assertEqual((row["id"], row["title"], row["version"], row["enabled"], row["start"], row["state"],
                           row["capabilities"]), ("fx", "测试 fx", "0.1.0", True, "use", "stopped", []))
-        self.assertEqual(set(row), {"id", "title", "version", "path", "enabled", "start", "state", "pid", "started",
-                                    "exit_code", "error", "capabilities", "sources", "options", "apps", "skills",
-                                    "annotate", "extends", "adds", "approval"})
+        self.assertEqual(set(row), {"id", "title", "version", "path", "enabled", "start", "state", "since", "why",
+                                    "pid", "started", "exit_code", "error", "command", "capabilities", "sources",
+                                    "options", "apps", "skills", "annotate", "extends", "adds", "approval"})
+        self.assertEqual(row["command"], [os.path.abspath(sys.executable), "main.py"])    # what the workshop runs
+        self.assertLessEqual(abs(row["since"] - time.time()), 60)
         self.assertEqual(self.host.add(str(folder / "wuxian-extension.json"))["id"], "fx")   # the same folder: no change
         self.assertEqual(self.host.revision, 1)
         res = self.host.call_sync("fx.echo", {"text": "你好"}, {"by": "agent"})       # its first call starts it
         self.assertEqual((res["text"], res["caller"], res["ext"]), ("你好", {"by": "agent"}, "fx"))
-        self.assertEqual(res["init"], {"protocol": 1, "workshop": "9.9.9", "id": "fx", "options": {}})
+        self.assertEqual(res["init"], {"protocol": {"min": 1, "max": 1}, "workshop": "9.9.9", "id": "fx",
+                                       "options": {}})
         self.assertEqual(res["path0"], str(self.sdk))
         self.assertEqual(os.path.normcase(res["cwd"]), os.path.normcase(str(folder)))
         row = self.host.get("fx")
         self.assertEqual((row["state"], row["sources"]), ("running", ["said"]))
+        self.assertIn("ready in", row["why"])
         self.assertIn("fx.echo", row["capabilities"])
         self.assertEqual(row["options"], [{"name": "volume", "kind": "number", "title": "音量", "default": 50, "min": 0,
                                            "max": 100, "value": 50}])
@@ -193,7 +197,9 @@ class HostTests(unittest.TestCase):
         self.assertIn("exited before it answered initialize", e.exception.message)
         self.assertIn("RuntimeError: the fixture cannot start", e.exception.message)    # the end of its output
         row = self.host.get("die")
-        self.assertEqual(row["state"], "failed")
+        self.assertEqual((row["state"], row["pid"]), ("backoff", None))
+        self.assertIn("exited before it answered initialize", row["error"])
+        self.assertIn("1 time in a row", row["why"])
         self.add("say", mode="say")
         with self.assertRaises(H.Down) as e:
             self.host.ensure("say").result(30)
@@ -204,11 +210,12 @@ class HostTests(unittest.TestCase):
             with self.assertRaises(H.Down) as e:
                 self.host.ensure("mute").result(30)
         self.assertIn("did not answer initialize within 1 s", e.exception.message)
-        # a manifest broken after it was registered: failed, its error said
+        # a manifest broken after it was registered: stopped, its error said, and no command
         (self.root / "ext" / "die" / "wuxian-extension.json").write_text("{", encoding="utf-8")
         row = self.host.get("die")
-        self.assertEqual(row["state"], "failed")
+        self.assertEqual((row["state"], row["command"]), ("stopped", None))
         self.assertIn("not valid JSON", row["error"])
+        self.assertIn("not valid JSON", row["why"])
 
     def test_check_and_load(self):
         passing = "import unittest\nclass T(unittest.TestCase):\n    def test_sdk(self):\n        import sys\n" \
@@ -228,9 +235,12 @@ class HostTests(unittest.TestCase):
         self.host.add(str(folder))
         self.host.call_sync("cx.echo", {"text": "a"})
         pid = self.host.get("cx")["pid"]
-        res = self.host.check("cx")                           # does not touch the running one
+        res = self.host.check("cx")                           # does not touch the running one, and starts no second
         self.assertTrue(res["ok"], res)
         self.assertEqual(self.host.get("cx")["pid"], pid)
+        self.assertEqual(res["running"], pid)
+        self.assertIn("cx.echo", res["capabilities"])
+        self.assertEqual([(p["level"], p["where"]) for p in res["problems"]], [("warning", "process")])
         res = self.host.load_("cx")                           # restarts it
         self.assertTrue(res["check"]["ok"], res)
         self.assertEqual(res["row"]["state"], "running")
@@ -314,6 +324,8 @@ class Small(unittest.TestCase):
         self.assertEqual(H.call_error(H.RpcError(-32602, "n"), "a.b").code, "bad_args")
         self.assertEqual(H.call_error(H.RpcError(-32601, "n"), "a.b").code, "no_capability")
         self.assertEqual(H.call_error(H.RpcError(7, "n"), "a.b").code, "failed")
+        self.assertEqual((H.call_error(H.RpcError(2, "n"), "a.b").code, H.call_error(H.RpcError(3, "n"), "a.b").code),
+                         ("busy", "cancelled"))
         self.assertEqual(H.call_error(ValueError("x"), "a.b").code, "failed")
 
 
