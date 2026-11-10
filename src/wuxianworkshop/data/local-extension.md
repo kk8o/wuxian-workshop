@@ -358,6 +358,7 @@ kept, addons}`.
 - The game addons the workshop installed for it are deleted from AddOns (`addons: [{folder, removed, kept}]`; a
   version of each stays in the workshop's history, `wuxian history`). One without its mark is left. When the game's
   folder is not known they stay where they are.
+- What it kept in `ext.data` stays: an extension of that id added again finds it.
 - Remove what the player asked to remove, nothing else.
 
 ## Python
@@ -437,7 +438,8 @@ The library:
   `@ext.on_options` runs `fn(values)` after the player changed them; `ext.options` is all values.
 - `ext.source(name, title=, doc=)` -> `src.emit(data)`, from any thread.
 - `ext.data`: a `Path`, the folder for what the extension keeps (`WUXIAN_EXTENSION_DATA`; see Packages), made when
-  it is first asked for. In a test, point `WUXIAN_EXTENSION_DATA` at a temporary folder first.
+  it is first asked for. `extension_load` and `extension_check` run `tests/` with an empty temporary folder
+  there; when you run the tests yourself, point `WUXIAN_EXTENSION_DATA` at a temporary folder first.
 - `ext.call(cap, args, timeout=120)`: a capability of the game (`sense.bags`) or of a local extension (`voice.say`),
   Read, Store and Guide only; returns its result or raises `ExtensionError` (`.code`, `.message`, `.reason`: the
   protocol's word, `down` when the game is away, `timeout`, `loop`, ...). Not in `setup`.

@@ -17,12 +17,13 @@ registered one, and uses run_tests and check_description from here. Standard lib
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from ..daemon.api import ApiError
 from . import manifest as M
 from .logs import Output, clock, tail
-from .process import CREATE_NO_WINDOW, WINDOWS
+from .process import CREATE_NO_WINDOW, DATA_ENV, WINDOWS
 from .registry import check_folder
 from . import rpc as R
 from .rpc import INIT_TIMEOUT, Down
@@ -168,7 +169,8 @@ def check_message(proc, msg):
 
 def run_tests(host, m):
     """{ran, failed, output} of `python -m unittest discover -s tests` in the extension's folder, with its Python;
-    None when it has no tests folder or is no Python extension"""
+    None when it has no tests folder or is no Python extension. The tests get a data folder of their own
+    (WUXIAN_EXTENSION_DATA: an empty temporary one, gone afterwards), never the one the extension keeps things in"""
     folder = Path(m["folder"])
     if not (folder / "tests").is_dir():
         return None
@@ -177,9 +179,11 @@ def run_tests(host, m):
         return None
     kw = dict(creationflags=CREATE_NO_WINDOW) if WINDOWS else {}
     try:
-        done = subprocess.run([python, "-m", "unittest", "discover", "-s", "tests"], cwd=str(folder),
-                              env=host.environment(m), stdin=subprocess.DEVNULL, capture_output=True,
-                              timeout=TESTS_TIMEOUT, **kw)
+        with tempfile.TemporaryDirectory(prefix="wuxian-ext-data-", ignore_cleanup_errors=True) as data:
+            env = dict(host.environment(m), **{DATA_ENV: data})
+            done = subprocess.run([python, "-m", "unittest", "discover", "-s", "tests"], cwd=str(folder),
+                                  env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                  timeout=TESTS_TIMEOUT, **kw)
     except subprocess.TimeoutExpired as e:
         text = ((e.stderr or b"") + (e.stdout or b"")).decode("utf-8", "replace")
         return dict(ran=0, failed=1, output=f"the tests took more than {TESTS_TIMEOUT:.0f} s\n" + text[-TESTS_OUTPUT:])

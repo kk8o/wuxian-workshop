@@ -3,8 +3,10 @@ processes of the fixture and the real registry. approved: who the registry was t
 change(id): its manifest starts it with something else now (what the player confirmed is not what would run)."""
 import json
 import re
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from wuxianworkshop.daemon.api import ApiError
@@ -12,6 +14,10 @@ from wuxianworkshop.local import process as P
 
 from .util import HostCase, gone, make_extension, until
 
+DATA_TEST = ("import os\nimport unittest\nfrom pathlib import Path\n\n\nclass T(unittest.TestCase):\n"
+             "    def test_it(self):\n        d = Path(os.environ['WUXIAN_EXTENSION_DATA'])\n"
+             "        self.assertEqual((d.is_dir(), list(d.iterdir())), (True, []))\n"
+             "        (d / 'written.txt').write_text('x', encoding='utf-8')\n")
 A_TEST = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(True)\n"
 
 
@@ -213,6 +219,15 @@ class Check(GateCase):
             self.assertLess(time.monotonic() - t0, 8)
         self.assertTrue(res["ok"], res["problems"])
         self.assertTrue(gone(self.check_pids()[0]))
+
+    def test_its_tests_get_a_data_folder_of_their_own(self):
+        self.add(tests={"test_data.py": DATA_TEST})
+        kept = P.data_folder("fx", self.host.root)
+        res = self.host.check("fx")
+        self.assertEqual((res["tests"]["ran"], res["tests"]["failed"]), (1, 0), res["tests"]["output"])
+        self.assertFalse((kept / "written.txt").exists())              # not in the folder the extension keeps
+        self.assertEqual([p for p in Path(tempfile.gettempdir()).glob("wuxian-ext-data-*") if p.is_dir()
+                          and (p / "written.txt").exists()], [])       # and the temporary one is gone
 
 
 if __name__ == "__main__":
