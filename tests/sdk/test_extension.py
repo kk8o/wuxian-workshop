@@ -165,6 +165,34 @@ class Declarations(unittest.TestCase):
             self.assertEqual(wk.Extension("mine", folder=d).id, "mine")
         self.assertEqual(wk.Extension("x", folder=Path(d) / "gone").manifest, {})
 
+    def test_the_data_folder(self):
+        """ext.data: the folder the workshop names (WUXIAN_EXTENSION_DATA), else the same place under WUXIAN_HOME (or
+        %LOCALAPPDATA%\\WuxianWorkshop); made when asked for, not before"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("WUXIAN_EXTENSION", "WUXIAN_EXTENSION_DATA", "WUXIAN_HOME")}
+            with mock.patch.dict(os.environ, dict(env, WUXIAN_EXTENSION_DATA=str(root / "given" / "data")), clear=True):
+                ext = wk.Extension("voice", folder=d)
+                self.assertFalse((root / "given").exists())                 # not made by the declaration
+                self.assertEqual(ext.data, root / "given" / "data")
+                self.assertTrue((root / "given" / "data").is_dir())
+                (ext.data / "kept.json").write_text("{}", encoding="utf-8")
+                self.assertEqual([p.name for p in ext.data.iterdir()], ["kept.json"])     # asked again: as it was
+                self.assertEqual(wk.Extension(folder=root / "gone").data, root / "given" / "data")    # the id is not needed
+            with mock.patch.dict(os.environ, dict(env, WUXIAN_HOME=str(root / "home")), clear=True):
+                self.assertEqual(wk.Extension("voice", folder=d).data,
+                                 root / "home" / "state" / "extensions" / "voice" / "data")
+                self.assertTrue((root / "home" / "state" / "extensions" / "voice" / "data").is_dir())
+                self.assertEqual(wk.daemon_json_path().parent, root / "home" / "state")   # beside daemon.json's folder
+                for eid in (None, "Bad", "../up", "a" * 25):
+                    with self.assertRaises(ValueError, msg=eid):
+                        wk.Extension(eid, folder=root / "gone").data
+                self.assertEqual(sorted(p.name for p in (root / "home" / "state" / "extensions").iterdir()), ["voice"])
+            with mock.patch.dict(os.environ, dict(env, LOCALAPPDATA=str(root / "local")), clear=True):
+                self.assertEqual(wk.Extension("voice", folder=d).data,
+                                 root / "local" / "WuxianWorkshop" / "state" / "extensions" / "voice" / "data")
+
     def test_call_outside_a_run(self):
         with self.assertRaises(wk.ExtensionError) as cm:
             self.ext.call("sense.bags")

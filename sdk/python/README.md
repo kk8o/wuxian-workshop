@@ -106,6 +106,7 @@ ext.run(setup=load_model)                              # setup 在回答 initial
 - `ext.cancelled()`：工坊不再等这次调用（超时了，或问的人走了）时为真；长活在步骤之间问一下。`ext.remaining()`：工坊还等多少秒，不知道时是 `None`。
 - `ext.call("sense.bags")` 经工坊调别的能力（读取、存储、指引三类），失败抛 `ExtensionError`：`.code`、`.message`、`.reason`（协议的一个词：`timeout`、`down`、`starting`、`failed`、`bad_args`、`no_capability`、`busy`、`paused`、`cancelled`、`not_allowed`、`needs_approval`、`loop`）。
 - `ext.on_options(fn)` 在玩家改了选项后调用。
+- `ext.data`：扩展自己存东西的文件夹（`Path`，用到时建）。工坊在环境变量 `WUXIAN_EXTENSION_DATA` 里给它（`<工坊目录>\state\extensions\<扩展>\data`），在扩展的文件夹之外：更新扩展不丢，打扩展包也不带上。手动运行、没有这个变量时按 `WUXIAN_HOME` 算出同一个位置；测试里把 `WUXIAN_EXTENSION_DATA` 指到临时文件夹。
 - 来源只有反射听得到（清单里应用自己的，或 Agent 用 `reaction_set` 设的）；应用的 `hear` 只收游戏里的来源。
 
 测试用 `ExtensionTest(ext, setup=..., options=..., answers=...)`：不起进程，在内存里按协议 `initialize`、`call`（可以带 `caller=`、`deadline_ms=`）、`ping`，收 `event`，给扩展发出的 `call` 回假答；`start` / `cancel` / `result` 测取消，`check_description()` 给出工坊会挑的毛病。

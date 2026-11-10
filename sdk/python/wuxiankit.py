@@ -1285,6 +1285,25 @@ class Extension:
         with self._lock:
             return {n: self._values.get(n, o.desc["default"]) for n, o in self._options.items()}
 
+    @property
+    def data(self) -> Path:
+        """the folder for what this extension keeps (what it learned, a cache, a database), made when it is asked for.
+        The workshop names it in WUXIAN_EXTENSION_DATA: <its home>\\state\\extensions\\<id>\\data, outside the
+        extension's folder, so an update of the extension (which replaces that folder) leaves it alone and a package
+        of the extension does not carry it. Without the variable (run by hand, a test) it is the same place, worked out
+        from WUXIAN_HOME as daemon_json_path does; an extension with no id has none (ValueError). A test that must
+        not write there sets WUXIAN_EXTENSION_DATA to a folder of its own"""
+        given = os.environ.get("WUXIAN_EXTENSION_DATA")
+        if given:
+            path = Path(given)
+        elif isinstance(self.id, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,23}", self.id):
+            path = daemon_json_path().parent / "extensions" / self.id / "data"
+        else:
+            raise ValueError(f"data: the extension has no id to keep a folder under ({self.id!r}): run it in its "
+                             f"folder (wuxian-extension.json), or set WUXIAN_EXTENSION or WUXIAN_EXTENSION_DATA")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     # ---- in a capability (on the thread that runs it)
 
     @property
