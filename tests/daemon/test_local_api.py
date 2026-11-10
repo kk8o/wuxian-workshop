@@ -2,12 +2,15 @@
 the extension): the HTTP routes and their errors, SSE's `event: local`, local_call to a local extension and to the
 game's WuxianKit (see / keep / point only), an extension's own calls, its source's items as journal events, its apps
 declared (again after kit.ready only when they changed) and forgotten, the reactions (a game source through the
-temporary app, a local source directly), new_extension, the MCP tools over /mcp and the command line."""
+temporary app, a local source directly), new_extension, the MCP tools over /mcp and the command line; and packages and
+the game half of an extension (/api/local/pack, /api/local/install, a .zip given to /api/local/add), whose game addons
+go into the FakeGame's AddOns folder."""
 import asyncio
 import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -23,11 +26,23 @@ from wuxianworkshop.cli import main as cli
 from wuxianworkshop.core import mailbox as MB
 from wuxianworkshop.daemon import server as daemon
 from wuxianworkshop.daemon.api import ApiError
+from wuxianworkshop.local import pack as K
 
 KIT_MANIFEST = {"protocol": 1, "revision": "r1", "extensions": [
     {"id": "sense", "state": "on", "capabilities": [{"id": "sense.bags", "kind": "see", "title": "背包", "args": {}}]},
     {"id": "tune", "state": "on", "capabilities": [{"id": "tune.cvar.set", "kind": "do", "title": "设置", "args": {}}]},
     {"id": "guide", "state": "off", "capabilities": [{"id": "guide.note", "kind": "point", "title": "提示"}]}]}
+ZED_MANIFEST = {"protocol": 1, "revision": "r2", "extensions": [{"id": "zed", "state": "on", "capabilities": []}]}
+
+
+def with_game(folder, eid, name, addon_version="1.2.0", **fields):
+    """an extension's folder with a game addon (addons/<name>: a .toc and core.lua), written over what is there"""
+    side = Path(folder) / "addons" / name
+    side.mkdir(parents=True, exist_ok=True)
+    (side / f"{name}.toc").write_text(f"## Interface: 16001\n## Title: {name}\n## Version: {addon_version}\n\ncore.lua\n",
+                                      encoding="utf-8", newline="\n")
+    (side / "core.lua").write_text("print('core')\n", encoding="utf-8", newline="\n")
+    return make_extension(folder, eid, addons=[name], **fields)
 
 
 class Kit:
@@ -97,6 +112,7 @@ class LocalDaemon:
         cls.kit = Kit(cls.svc)
         cls.svc.call_exposed = cls.kit.call_exposed
         cls.svc.kit_manifest_known = lambda: KIT_MANIFEST
+        cls.addons = addons
 
     @classmethod
     def tearDownClass(cls):
@@ -191,8 +207,158 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                 ("POST", "/api/reactions/set", {"hear": "nothing"}, 400, "bad_args")):
             self.fails(method, path, body, status, code)
         res = self.ok("POST", "/api/local/remove", {"id": "fx"})
-        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder), kept=None))
+        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder), kept=None, addons=[]))
         self.assertEqual(self.ok("GET", "/api/local")["extensions"], [])
+
+    # --- packages and the game half
+
+    def row(self, eid):
+        return next(r for r in self.ok("GET", "/api/local")["extensions"] if r["id"] == eid)
+
+    def test_what_the_host_knows_of_the_game(self):
+        host = self.svc.local
+        self.assertEqual(host.taken_ids(), ("sense", "tune", "guide"))         # WuxianKit's own extensions
+        self.assertEqual(Path(host.game_addons()), self.addons)
+        self.assertIsNone(host.kit())                                          # (this manifest does not say)
+        host.client_interface()                                                # never an error
+        folder = make_extension(self.root / "ext" / "zed", "zed")
+        with mock.patch.object(self.svc, "kit_manifest_known", return_value=dict(ZED_MANIFEST, kit="0.7.1")):
+            self.assertEqual((host.taken_ids(), host.kit()), (("zed",), "0.7.1"))
+            self.assertIn("zed", self.fails("POST", "/api/local/add", {"path": str(folder)}, 400, "bad_manifest"))
+        self.ok("POST", "/api/local/add", {"path": str(folder)})               # free again: it is added
+
+    def test_pack_and_install(self):
+        self.add()
+        folder = with_game(self.root / "ext" / "gx", "gx", "WuxianGx")
+        row = self.ok("POST", "/api/local/add", {"path": str(folder)})
+        self.assertEqual(row["addons"], [dict(folder="WuxianGx", version="1.2.0", state="missing")])
+        res = self.ok("POST", "/api/local/install", {"id": "gx"})
+        self.assertEqual(res, dict(id="gx", restart=True, addons=[dict(folder="WuxianGx", state="installed",
+                                                                       was="missing", version="1.2.0", kept=None)],
+                                   hint="WuxianGx: new in the game's AddOns, restart the game to load it"))
+        self.assertTrue((self.addons / "WuxianGx" / "core.lua").is_file())
+        self.assertEqual(self.row("gx")["addons"], [dict(folder="WuxianGx", version="1.2.0", state="current")])
+        res = self.ok("POST", "/api/local/install", {"id": "gx"})
+        self.assertEqual((res["addons"][0]["state"], res["restart"], res["hint"]), ("current", False, None))
+        res = self.ok("POST", "/api/local/load", {"id": "gx"})                 # a load says the same three
+        self.assertEqual((res["addons"][0]["state"], res["restart"], res["hint"], res["check"]["ok"]),
+                         ("current", False, None, True))
+        res = self.ok("POST", "/api/local/load", {"id": "fx"})
+        self.assertEqual((res["addons"], res["restart"], res["hint"]), ([], False, None))
+        packed = self.ok("POST", "/api/local/pack", {"id": "gx"})
+        self.assertEqual(sorted(packed), ["file", "files", "id", "sha256", "size", "skipped", "unpacked", "version"])
+        self.assertEqual((packed["id"], packed["version"], packed["file"]),
+                         ("gx", "0.1.0", str(self.root / "home" / "packages" / "gx-0.1.0.zip")))
+        self.assertEqual(K.read(packed["file"])["id"], "gx")
+        there = self.root / "there"
+        self.assertEqual(self.ok("POST", "/api/local/pack", {"id": "gx", "to": str(there)})["file"],
+                         str(there / "gx-0.1.0.zip"))
+        self.assertEqual(self.ok("POST", "/api/local/pack", {"id": "gx", "to": str(there / "mine.zip")})["file"],
+                         str(there / "mine.zip"))
+        for path, body, status, code in (
+                ("/api/local/pack", {"id": "ghost"}, 404, "not_found"),
+                ("/api/local/pack", {}, 400, "bad_request"),
+                ("/api/local/pack", {"id": "gx", "to": "relative"}, 400, "bad_request"),
+                ("/api/local/pack", {"id": "gx", "to": 7}, 400, "bad_request"),
+                ("/api/local/install", {"id": "ghost"}, 404, "not_found"),
+                ("/api/local/install", {}, 400, "bad_request"),
+                ("/api/local/install", {"id": "fx"}, 400, "no_addons")):
+            self.fails("POST", path, body, status, code)
+        with mock.patch.object(self.svc.local, "addons_dir", return_value=None):
+            self.fails("POST", "/api/local/install", {"id": "gx"}, 503, "no_game_folder")
+            self.assertEqual(self.row("gx")["addons"][0]["state"], "unknown")
+            res = self.ok("POST", "/api/local/load", {"id": "gx"})
+            self.assertEqual((res["addons"][0]["state"], res["restart"], res["check"]["ok"]), ("unknown", False, True))
+            self.assertIn("extension_install gx", res["hint"])
+        res = self.ok("POST", "/api/local/remove", {"id": "gx"})
+        (gone,) = res.pop("addons")
+        self.assertEqual(res, dict(removed=True, id="gx", path=str(folder), kept=None))
+        self.assertEqual((gone.pop("kept") is not None, gone),                 # (kept: where the history has it)
+                         (True, dict(folder="WuxianGx", removed=True, why=None)))
+        self.assertFalse((self.addons / "WuxianGx").exists())
+        self.assertTrue((folder / "main.py").is_file())
+
+    def test_an_addon_that_is_someone_elses(self):
+        theirs = self.addons / "WuxianHx"
+        theirs.mkdir()
+        self.addCleanup(shutil.rmtree, theirs, True)
+        (theirs / "theirs.lua").write_text("-- not ours\n", encoding="utf-8")
+        self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "hx", "hx", "WuxianHx"))})
+        self.assertEqual(self.row("hx")["addons"], [dict(folder="WuxianHx", version="1.2.0", state="foreign")])
+        status, res = self.call("POST", "/api/local/install", {"id": "hx"})
+        self.assertEqual((status, res["error"]["code"]), (409, "addon_exists"), res)
+        self.assertEqual((res["done"], res["error"]["done"]), ([], []))        # what it installed before that
+        res = self.ok("POST", "/api/local/load", {"id": "hx"})                 # it runs all the same, and says so
+        self.assertEqual((res["row"]["state"], res["addons"], res["check"]["ok"]), ("running", [], False))
+        self.assertEqual([p["level"] for p in res["check"]["problems"] if p["where"] == "addons"], ["error"])
+        res = self.ok("POST", "/api/local/remove", {"id": "hx"})
+        self.assertEqual(res["addons"], [dict(folder="WuxianHx", removed=False, kept=None, why="foreign")])
+        self.assertNotIn("hint", res)
+        self.assertEqual(os.listdir(theirs), ["theirs.lua"])
+
+    def test_a_package_from_the_folder_to_another_computer(self):
+        folder = with_game(self.root / "ext" / "px", "px", "WuxianPx")
+        home, sent = self.root / "home" / "extensions", self.root / "sent"
+        self.ok("POST", "/api/local/add", {"path": str(folder)})
+        packed = self.ok("POST", "/api/local/pack", {"id": "px", "to": str(sent)})
+        status, res = self.call("POST", "/api/local/add", {"path": packed["file"]})    # never over a linked one
+        self.assertEqual((status, res["error"]["code"], res["path"]), (409, "extension_exists", str(folder)), res)
+        self.assertIn("extension_remove px", res["error"]["message"])
+        self.assertEqual(self.ok("POST", "/api/local/remove", {"id": "px"})["addons"], [])
+        row = self.ok("POST", "/api/local/add", {"path": packed["file"]})      # as another computer gets it
+        self.assertEqual((row["id"], row["origin"], row["path"], row["approval"], row["allowed"], row["package"]),
+                         ("px", "home", str(home / "px"), "needed", False, dict(file=packed["file"], replaced=None)))
+        self.assertEqual(row["addons"], [dict(folder="WuxianPx", version="1.2.0", state="missing")])
+        self.assertEqual(row["capabilities"], [])                              # nothing of it ran (auto or not)
+        for path, body in (("/api/local/install", {"id": "px"}), ("/api/local/load", {"id": "px"}),
+                           ("/api/local/call", {"cap": "px.echo", "args": {"text": "a"}})):
+            self.fails("POST", path, body, 403, "needs_approval")
+        self.assertFalse((self.addons / "WuxianPx").exists())
+        row = self.ok("POST", "/api/local/approve", {"id": "px"})              # the player allows it: its game half too
+        self.assertEqual((row["approval"], row["addons"]),
+                         ("ok", [dict(folder="WuxianPx", version="1.2.0", state="current")]))
+        self.assertTrue((self.addons / "WuxianPx" / "core.lua").is_file())
+        res = self.ok("POST", "/api/local/install", {"id": "px"})
+        self.assertEqual((res["addons"][0]["state"], res["restart"], res["hint"]), ("current", False, None))
+        res = self.ok("POST", "/api/local/call", {"cap": "px.echo", "args": {"text": "到了"}})
+        self.assertEqual(res["result"]["text"], "到了")
+        self.ok("POST", "/api/local/set", {"id": "px", "options": {"volume": 70}})
+        newer = K.pack(with_game(folder, "px", "WuxianPx", addon_version="1.3.0", version="0.2.0"), sent)["file"]
+        row = self.ok("POST", "/api/local/add", {"path": newer})               # an update: the player is asked again
+        kept = Path(row["package"]["replaced"])
+        self.assertEqual((row["version"], row["path"], row["approval"], row["enabled"], kept.parent),
+                         ("0.2.0", str(home / "px"), "needed", True, home / ".removed"))
+        self.assertEqual(row["addons"], [dict(folder="WuxianPx", version="1.3.0", state="differs")])
+        self.assertEqual(self.svc.local.reg.entry("px")["options"], {"volume": 70})
+        self.fails("POST", "/api/local/call", {"cap": "px.echo", "args": {"text": "a"}}, 403, "needs_approval")
+        row = self.ok("POST", "/api/local/approve", {"id": "px"})
+        self.assertEqual(row["addons"], [dict(folder="WuxianPx", version="1.3.0", state="current")])
+        self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "px.opts"})["result"], {"volume": 70})
+        res = self.ok("POST", "/api/local/remove", {"id": "px"})
+        self.assertEqual((Path(res["kept"]).parent, [(a["folder"], a["removed"]) for a in res["addons"]]),
+                         (home / ".removed", [("WuxianPx", True)]))
+        self.assertFalse((self.addons / "WuxianPx").exists())
+        self.assertFalse((home / "px").exists())
+        self.assertEqual(self.ok("GET", "/api/local")["extensions"], [])
+
+    def test_a_package_that_is_refused(self):
+        home, out = self.root / "home" / "extensions", self.root / "refused"
+        out.mkdir()
+        (out / "junk.zip").write_bytes(b"no zip at all")
+        self.fails("POST", "/api/local/add", {"path": str(out / "junk.zip")}, 400, "bad_package")
+        self.fails("POST", "/api/local/add", {"path": str(out / "none.zip")}, 400, "bad_package")
+        taken = K.pack(make_extension(self.root / "ext" / "zed2", "zed"), out)["file"]
+        with mock.patch.object(self.svc, "kit_manifest_known", return_value=ZED_MANIFEST):   # an id WuxianKit has
+            status, res = self.call("POST", "/api/local/add", {"path": taken})
+        self.assertEqual((status, res["error"]["code"]), (400, "bad_package"), res)
+        self.assertTrue(res["problems"])
+        self.assertEqual(res["problems"], res["error"]["problems"])
+        good = K.pack(make_extension(self.root / "ext" / "big", "big"), out)["file"]
+        with mock.patch.object(K, "MAX_ZIP", 64):
+            self.fails("POST", "/api/local/add", {"path": good}, 413, "package_too_big")
+        self.assertEqual(self.ok("GET", "/api/local")["extensions"], [])
+        self.assertFalse((home / ".incoming").exists())
+        self.assertFalse((home / "zed").exists() or (home / "big").exists())
 
     def test_a_slow_start_is_not_the_calls_time(self):
         """the first call waits for the start (initialize) on top of the call's time: the capability's own timeout, or
@@ -340,18 +506,45 @@ class LocalApi(LocalDaemon, unittest.TestCase):
     # --- new_extension
 
     def test_new_extension(self):
-        def files(folder, eid, title):
+        def files(folder, eid, title, addon=None, taken=()):
             make_extension(folder, eid, title=title or eid)
             return [str(Path(folder) / "wuxian-extension.json"), str(Path(folder) / "main.py")]
         with mock.patch.object(scaffold, "new_extension_files", side_effect=files, create=True) as made:
             res = self.ok("POST", "/api/local/new", {"id": "fresh", "title": "新的"})
         folder = self.root / "home" / "extensions" / "fresh"
-        made.assert_called_once_with(str(folder), "fresh", "新的")
+        made.assert_called_once_with(str(folder), "fresh", "新的", addon=None, taken=("sense", "tune", "guide"))
         self.assertEqual((res["row"]["id"], res["row"]["title"], res["row"]["path"]), ("fresh", "新的", str(folder)))
         self.assertEqual(len(res["files"]), 2)
         self.assertIn("extension_load", res["guide"])
         with mock.patch.object(scaffold, "new_extension_files", None, create=True):
             self.fails("POST", "/api/local/new", {"id": "other"}, 501, "not_available")
+
+    def test_new_extension_with_a_game_half(self):
+        home = self.root / "home" / "extensions"
+        res = self.ok("POST", "/api/local/new", {"id": "pair", "title": "一对", "addon": " WuxianPair "})
+        folder = home / "pair"
+        self.assertEqual((res["row"]["id"], res["row"]["path"]), ("pair", str(folder)))
+        self.assertEqual([(a["folder"], a["state"]) for a in res["row"]["addons"]], [("WuxianPair", "missing")])
+        self.assertTrue((folder / "addons" / "WuxianPair" / "WuxianPair.toc").is_file())
+        self.assertIn("addons/WuxianPair/WuxianPair.toc", [f.replace("\\", "/") for f in res["files"]])
+        self.assertIn("addons\\WuxianPair", res["guide"])
+        manifest = json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["addons"], ["WuxianPair"])
+        res = self.ok("POST", "/api/local/load", {"id": "pair"})               # as made it passes, and its game half
+        self.assertEqual(res["check"]["ok"], True, res["check"])               # goes into the game's AddOns
+        self.assertEqual(([(a["folder"], a["state"], a["was"]) for a in res["addons"]], res["restart"]),
+                         ([("WuxianPair", "installed", "missing")], True))
+        self.assertIn("restart the game", res["hint"])
+        self.assertTrue((self.addons / "WuxianPair" / "WuxianPair.toc").is_file())
+        for body in ({"id": "odd", "addon": 7}, {"id": "odd", "addon": " "}, {"id": "odd", "addon": "no good"}):
+            self.fails("POST", "/api/local/new", body, 400, "bad_request")
+        with mock.patch.object(self.svc.local, "taken", return_value=["odd_game"]):    # its game half's id is taken
+            self.fails("POST", "/api/local/new", {"id": "odd", "addon": "WuxianOdd"}, 400, "bad_request")
+        self.assertFalse((home / "odd").exists())
+        self.assertEqual([r["id"] for r in self.ok("GET", "/api/local")["extensions"]], ["pair"])
+        res = self.ok("POST", "/api/local/remove", {"id": "pair"})
+        self.assertEqual([(a["folder"], a["removed"]) for a in res["addons"]], [("WuxianPair", True)])
+        self.assertFalse((self.addons / "WuxianPair").exists())
 
     # --- MCP
 
@@ -371,6 +564,8 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                            "set": await c.call_tool("reaction_set", {"spec": {"hear": "fx:said", "call": "fx.echo"}}),
                            "reactions": await c.call_tool("reactions", {}),
                            "clear": await c.call_tool("reaction_clear", {}),
+                           "pack": await c.call_tool("extension_pack", {"id": "fx", "to": str(self.root / "by-mcp")}),
+                           "install": await c.call_tool("extension_install", {"id": "fx"}),
                            "logs": await c.call_tool("extension_logs", {"id": "ghost"})}
                     return tools, out
 
@@ -378,7 +573,8 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         for name in ("local_extensions", "extension_logs", "extension_guide", "reactions"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         for name in ("new_extension", "extension_add", "extension_remove", "extension_load", "extension_stop",
-                     "extension_set", "extension_check", "reaction_set", "reaction_clear"):   # a check starts a process
+                     "extension_set", "extension_check", "extension_pack", "extension_install", "reaction_set",
+                     "reaction_clear"):                                        # a check starts a process
             self.assertFalse(tools[name].annotations.read_only_hint, name)
         self.assertFalse([n for n in tools if n.startswith("program") or n == "new_program"])
         self.assertEqual(out["list"].structured_content["extensions"][0]["id"], "fx")
@@ -386,6 +582,9 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(out["set"].structured_content["hear"], "fx:said")
         self.assertEqual(len(out["reactions"].structured_content["reactions"]), 1)
         self.assertEqual(out["clear"].structured_content, {"cleared": 1})
+        self.assertEqual(out["pack"].structured_content["file"], str(self.root / "by-mcp" / "fx-0.1.0.zip"))
+        self.assertTrue(out["install"].is_error)
+        self.assertIn("no_addons", out["install"].content[0].text)
         self.assertTrue(out["logs"].is_error)
         self.assertIn("not_found", out["logs"].content[0].text)
 
@@ -419,6 +618,14 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(code, 0, err)
         code, out, err = self.run_cli("ext", "logs", "clix")
         self.assertIn("fixture up", out)
+        code, out, err = self.run_cli("ext", "dir")
+        self.assertEqual((code, out.strip()), (0, str(self.root / "home" / "extensions")), err)
+        code, out, err = self.run_cli("ext", "pack", "clix", "--to", str(self.root / "by-cli"))
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"packed clix 0.1.0: {self.root / 'by-cli' / 'clix-0.1.0.zip'}", out)
+        code, out, err = self.run_cli("ext", "install", "clix")
+        self.assertEqual(code, 1)
+        self.assertIn("no_addons", err)
         code, out, err = self.run_cli("reaction", "set", '{"id": "c", "hear": "clix:said", "call": "clix.echo"}')
         self.assertEqual(code, 0, err)
         code, out, err = self.run_cli("reaction", "list")

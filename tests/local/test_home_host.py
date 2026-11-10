@@ -291,7 +291,7 @@ class Removal(HomeCase):
         pid = self.host.get("fx")["pid"]
         res = self.host.remove("fx")                                             # stopped, moved, forgotten
         kept = res.pop("kept")
-        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder)))
+        self.assertEqual(res, dict(removed=True, id="fx", path=str(folder), addons=[]))
         self.assertTrue(gone(pid))
         self.assertEqual(os.path.dirname(kept), str(self.home / HOME.REMOVED))
         self.assertTrue(re.fullmatch(r"fx-\d{8}-\d{6}", os.path.basename(kept)), kept)
@@ -310,14 +310,15 @@ class Removal(HomeCase):
     def test_a_linked_folder_stays(self):
         _, folder = self.add("lk")
         self.host.call_sync("lk.echo", {"text": "a"})
-        self.assertEqual(self.host.remove("lk"), dict(removed=True, id="lk", path=str(folder), kept=None))
+        self.assertEqual(self.host.remove("lk"), dict(removed=True, id="lk", path=str(folder), kept=None,
+                                                      addons=[]))
         self.assertTrue((folder / "main.py").is_file())
         self.assertFalse((self.home / HOME.REMOVED).exists())
         self.put("went")
         self.assertTrue(self.look())
         shutil.rmtree(self.home / "went")                                        # gone already: nothing to keep
         self.assertEqual(self.host.remove("went"),
-                         dict(removed=True, id="went", path=str(self.home / "went"), kept=None))
+                         dict(removed=True, id="went", path=str(self.home / "went"), kept=None, addons=[]))
         self.assertEqual(self.ids(), [])
 
     def test_only_the_newest_twenty_stay(self):

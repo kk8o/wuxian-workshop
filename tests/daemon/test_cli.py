@@ -424,6 +424,15 @@ class ExtLines(unittest.TestCase):
             "    game addon VoiceGame: deleted from the game's AddOns (kept: `wuxian history VoiceGame` 20261110-120000)",
             "    game addon VoiceOld: deleted from the game's AddOns",
             "    game addon Theirs: left in the game's AddOns (it is not this extension's)"])
+        hint = "Held: still in the game's AddOns, the game holds its files: quit the game, then delete the folder there"
+        answers.append(dict(removed=True, id="voice", path=r"C:\e\voice", kept=None, hint=hint, addons=[
+            dict(folder="Theirs", removed=False, kept=None, why="foreign"),
+            dict(folder="Held", removed=False, kept=None, why="busy")]))                           # the game runs
+        self.assertEqual(self.run_ext(Client(), "remove", "voice")[1], [
+            "voice is no longer registered (C:\\e\\voice; its files stay)",
+            "    game addon Theirs: left in the game's AddOns (it is not this extension's)",
+            "    game addon Held: left in the game's AddOns (the game holds its files)",
+            "    " + hint])
 
     def test_load_and_install_say_the_game_side(self):
         row = self.row("running", pid=7)

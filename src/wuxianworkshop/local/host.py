@@ -4,6 +4,8 @@ is made of is beside it:
 
     registry.py   the registry, <state>\extensions.json: {revision, extensions: [{id, path, enabled, options, described}]}
     home.py       the extensions' home folder, <WUXIAN_HOME>\extensions: the folders the workshop keeps itself
+    pack.py       an extension as one zip, a package: made (pack()), read and unpacked (add() of a .zip)
+    gameside.py   its game half, the addon folders its manifest names: put into the game's AddOns, taken out again
     process.py    one process of an extension (Proc): its environment and command, its threads, the end of its tree
     rpc.py        the protocol on its pipe (JSON-RPC 2.0, UTF-8, one object per line): requests, answers, errors
     logs.py       its output, <state>\extensions\<id>\output.log (stderr, stdout that is no protocol, the host's lines)
@@ -25,6 +27,12 @@ kept by the workshop (the row's origin "home"): it is found there without being 
 listing and before autostart: registered with ask, so the player allows it once in the App), it goes when its folder
 went, and removing it moves the folder to the home's .removed. Any other is registered by its path (origin "linked":
 extension_add, new_extension), and the workshop never touches its folder.
+
+A package (add() of a .zip, pack.py) is unpacked into the home folder as <id>: a new extension there, or another
+version of the one there (the old folder goes to .removed; enabled and options stay). Either way the player allows it
+before anything of it runs. An extension's game addons (the manifest's addons, gameside.py) go into the game's AddOns
+when the player allows it (approve), before it is loaded (load_) and when asked (install), and out of it when the
+extension is removed; a row's addons say where each stands, as looked at no more than ADDONS_KEPT seconds ago.
 
 Where an extension is, is one field, its state (self.runs[id], changed only by to()):
 
@@ -50,20 +58,25 @@ split is still here (the imports below): others import Host and call_error from 
 SHUTDOWN_WAIT and LOG_MAX on it, so the code that reads those three reads this module's (Host below; logs.log_max()).
 Standard library only.
 """
+import json
 import os
-import shutil                 # noqa: F401  (not used here any more; tests reach it as host.shutil)
+import shutil
 import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
 
 from .. import __version__
+from .. import extensions as X
 from ..daemon.api import ApiError
 from ..paths import extensions_home, state_dir
+from ..paths import home as workshop_home
 from . import adds as A
 from . import check as C
+from . import gameside as G
 from . import home as H
 from . import manifest as M
+from . import pack as K
 from . import process as P
 from . import rpc as R
 from .check import TESTS_OUTPUT, TESTS_TIMEOUT                                             # noqa: F401
@@ -96,6 +109,37 @@ def blank_run(state, since):
                 retry_at=0.0)
 
 
+ADDONS_KEPT = 5.0                     # seconds a row's addons (where they stand in the game's AddOns) are kept
+PACKAGES = "packages"                 # <WUXIAN_HOME>\packages: where pack() writes a package it is not told where
+
+
+def api_error(e):
+    """a pack.PackError or a gameside.GameSideError as the API answers it: its status, code and message; a package's
+    problems (when it has some) and the addons installed before the failure (done) go with it"""
+    extra = {}
+    if getattr(e, "problems", None):
+        extra["problems"] = e.problems
+    if isinstance(e, G.GameSideError):
+        extra["done"] = list(e.done)
+    return ApiError(e.status, e.code, str(e), **extra)
+
+
+def game_hint(rows, restart):
+    """what to do after gameside.install, in a sentence (None: nothing): a new addon needs the game restarted, one
+    the game has already takes its changed files with `load <Name>`"""
+    new = [r["folder"] for r in rows if r.get("state") == "installed" and r.get("was") == "missing"]
+    changed = [r["folder"] for r in rows if r.get("state") == "installed" and r.get("was") != "missing"]
+    out = []
+    if new:
+        out.append(f"{', '.join(new)}: new in the game's AddOns, restart the game to load "
+                   f"{'it' if len(new) == 1 else 'them'}")
+    if changed:
+        out.append(f"{', '.join(changed)}: updated, " + ", ".join(f"`load {name}`" for name in changed)
+                   + " reloads it in the running game"
+                   + (" (files added or removed need a restart of the game)" if restart else ""))
+    return "; ".join(out) or None
+
+
 # --- the host --------------------------------------------------------------------------------------------------------
 
 class Host:
@@ -110,7 +154,7 @@ class Host:
     the ids of the extensions the installed WuxianKit lists, which a folder that is not registered yet cannot have
     (default: none); kit_version(): the installed WuxianKit's version or None (a manifest's requires.kit is judged
     by it); addons_dir(): the game's AddOns folder or None while the game folder is not known, and interface(): the
-    client's Interface number or None (both only kept here: installing an extension's game addons reads them)"""
+    client's Interface number or None (what installs an extension's game addons reads both: put_addons)"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
                  python=None, sdk=None, auto=None, home=None, taken=None, kit_version=None, addons_dir=None,
@@ -142,6 +186,8 @@ class Host:
         self.listeners = {}
         self.closing = False
         self.adds_cache = None        # adds.py's own: what it keeps until the registry is saved (saved())
+        self.addon_states = {}        # id -> (when looked, what was looked at, [{folder, version, state}]): addon_rows
+        self.game_lock = threading.Lock()   # one at a time writes into the game's AddOns (never taken under self.lock)
 
     # --- telling of changes
 
@@ -324,11 +370,55 @@ class Host:
         if error is not None:
             raise error
 
-    def addon_rows(self, m):
-        """the game addons of an extension as its row shows them: [{folder, version, state}], in the manifest's order.
-        Here nothing is known of the game's AddOns folder yet: version None, state "unknown" (what reads
-        addons_dir() and interface() says missing / outdated / ok / newer / foreign)"""
-        return [dict(folder=name, version=None, state="unknown") for name in (m or {}).get("addons") or []]
+    def game_addons(self):
+        """the game's AddOns folder (a Path), or None while the game folder is not known (addons_dir(); None too when
+        that cannot be asked now or the folder is not there)"""
+        try:
+            path = self.addons_dir()
+            if not path:
+                return None
+            path = Path(path)
+            return path if path.is_dir() else None
+        except Exception:
+            return None
+
+    def client_interface(self):
+        """the client's Interface number for the .toc files of an addon installed now, or None (interface())"""
+        try:
+            return self.interface() or None
+        except Exception:
+            return None
+
+    def addon_rows(self, e, m):
+        """the game addons of an entry's extension as its row shows them: [{folder, version, state}], in the
+        manifest's order (gameside.states: version is the source's .toc's; state "unknown" while the game folder is
+        not known, else missing / current / differs / foreign, or broken). Looked at no more often than every
+        ADDONS_KEPT seconds (each look reads the addons' files); forget_addons() after anything here changed them"""
+        names = list((m or {}).get("addons") or [])
+        if not names:
+            return []
+        addons = self.game_addons()
+        key = (os.path.normcase(e["path"]), tuple(names), str(addons) if addons is not None else None)
+        now = time.monotonic()
+        with self.lock:
+            kept = self.addon_states.get(e["id"])
+            if kept is not None and kept[1] == key and 0 <= now - kept[0] < ADDONS_KEPT:
+                return [dict(r) for r in kept[2]]
+        try:
+            rows = G.states(e["path"], names, addons, e["id"])
+        except Exception:                              # (a file that went while it was read: said at the next look)
+            return [dict(folder=name, version=None, state="unknown") for name in names]
+        with self.lock:
+            self.addon_states[e["id"]] = (now, key, rows)
+        return [dict(r) for r in rows]
+
+    def forget_addons(self, eid=None):
+        """what addon_rows() keeps of an extension (None: of all) is looked at again for its next row"""
+        with self.lock:
+            if eid is None:
+                self.addon_states.clear()
+            else:
+                self.addon_states.pop(eid, None)
 
     def row(self, e):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
@@ -337,8 +427,8 @@ class Host:
         workshop allows commands by itself). origin: "home" (its folder is in the extensions' home folder) or
         "linked"; author, homepage, requires {workshop?, kit?}: the manifest's; unmet: [{what, needs, has}] of
         requires that this computer does not meet (a workshop that is too old is also the row's error: it does not
-        start); addons: [{folder, version, state}], its game addons. A manifest that cannot be read: None, None, {},
-        [], []"""
+        start); addons: [{folder, version, state}], its game addons and where each stands in the game's AddOns
+        (addon_rows). A manifest that cannot be read: None, None, {}, [], []"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -362,7 +452,7 @@ class Host:
                     adds=A.row(m), approval=self.reg.approval(e), allowed=A.allowed(self, e),
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
-                    addons=self.addon_rows(m))
+                    addons=self.addon_rows(e, m))
 
     def rows(self):
         with self.lock:
@@ -428,20 +518,25 @@ class Host:
     def approve(self, eid, by="player"):
         """the player (by "developer": the workshop by itself) allows this extension's command to run
         (registry.approve); its row. Its
-        failed starts are forgotten. The player's approval also starts it: for good when its manifest says start
-        "workshop", else, when it never described itself, for as long as it takes to learn what it can do (describe)"""
+        failed starts are forgotten. The player's approval also puts its game addons into the game's AddOns (the
+        manifest's addons, while the game folder is known; what goes wrong there is noted and never fails the
+        approval: the row's addons say where they stand, and extension_install tries again) and starts it: for good
+        when its manifest says start "workshop", else, when it never described itself, for as long as it takes to
+        learn what it can do (describe)"""
         with self.lock:
             e = self.entry(eid)
             eid = e["id"]
             self.reg.approve(eid, by)
             self.forgive(e)
+        self.forget_addons(eid)
         self.changed()
-        if by == "player" and e["enabled"]:
+        if by == "player":
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] == eid:
-                if m["start"] == "workshop":
+                self.approved_addons(e, m)
+                if e["enabled"] and m["start"] == "workshop":
                     self.ensure(eid, "approved")
-                elif e.get("described") is None:
+                elif e["enabled"] and e.get("described") is None:
                     self.describe(eid)
         return self.get(eid)
 
@@ -496,12 +591,16 @@ class Host:
         """registers an extension by its folder or its manifest (an absolute path): its row (the one there when the
         folder is registered already, whatever its manifest says now). ApiError bad_manifest (with problems: an id
         one of WuxianKit's extensions has is one, taken_ids), extension_exists (another folder has its id). Started
-        at once when its manifest says start "workshop" """
+        at once when its manifest says start "workshop". A package (a .zip that is no folder) is installed instead
+        (add_package): its row with package {file, replaced}"""
         if not isinstance(path, str) or not path.strip():
-            raise ApiError(400, "bad_request", "path: the full path of an extension's folder (or its wuxian-extension.json)")
+            raise ApiError(400, "bad_request", "path: the full path of an extension's folder (or its "
+                                               "wuxian-extension.json), or of a package (.zip)")
         p = Path(path.strip())
         if not p.is_absolute():
             raise ApiError(400, "bad_request", f"path: a full path ({path} is not)")
+        if p.suffix.lower() == ".zip" and not p.is_dir():
+            return self.add_package(p)
         check_folder(p)
         folder, _ = M.locate(p.resolve())
         key = os.path.normcase(str(folder))
@@ -516,6 +615,108 @@ class Host:
         if m["start"] == "workshop" and e["id"] == m["id"]:
             self.ensure(m["id"], "start workshop")
         return self.get(e["id"])
+
+    def add_package(self, zip_path):
+        """installs a package (pack.py) into the extensions' home folder: read, unpacked beside its place
+        (home.incoming) and its manifest checked there, then moved to <home>/<id>. Its row, with package {file: the
+        zip, replaced: where the folder it replaced is kept now (.removed), or None}.
+
+        No extension of its id yet: a new entry. One of its id in the home folder: that one is stopped, its folder
+        moved to .removed and the new one takes its place; enabled and options stay. Both are new to the player
+        (ask, not approved, not described): nothing of it runs before the player allows it, whatever the setting.
+        ApiError bad_package (400: no package, or its manifest does not pass, with problems), package_too_big (413),
+        extension_exists (409: its id is registered by a folder elsewhere, a linked one, which a package never
+        replaces), folder_not_empty (409: <home>/<id> is there and is something else), folder_busy (409: the old
+        folder cannot be moved away now; it is still registered, and stopped). Whatever fails, nothing is left in
+        .incoming"""
+        zip_path = Path(zip_path)
+        try:
+            info = K.read(zip_path)
+        except K.PackError as ex:
+            raise api_error(ex) from None
+        eid = info["id"]
+        self.discover(force=True)                      # (a folder put there a moment ago is an extension first)
+        with self.lock:
+            old = next((e for e in self.load()["extensions"] if e["id"] == eid), None)
+        if old is not None and self.origin(old) != "home":
+            raise ApiError(409, "extension_exists",
+                           f"{eid} is registered by its folder {old['path']}, which the workshop does not keep: a "
+                           f"package does not replace it. extension_remove {eid} first (that folder and its files "
+                           f"stay), then add the package again", path=old["path"])
+        try:
+            tmp = H.incoming(self.home, eid)
+        except OSError as ex:
+            raise ApiError(500, "internal", f"the extensions folder {self.home} cannot be written: {ex}") from None
+        try:
+            try:
+                K.unpack(zip_path, tmp)
+            except K.PackError as ex:
+                raise api_error(ex) from None
+            m, problems = M.check_manifest(tmp, taken=() if old is not None else self.taken_ids())
+            if m is not None and m["id"] != eid:       # (read() took the id from the same file)
+                problems = [M.problem("error", f"{M.MANIFEST}: id", f"the id reads as {eid} and as {m['id']}", "")]
+                m = None
+            if m is None:
+                raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
+            kept = self.place(eid, tmp, m, new=old is None)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)     # (moved to its place: not there any more)
+            try:
+                os.rmdir(tmp.parent)                   # .incoming, when nothing else is being unpacked
+            except OSError:
+                pass
+        self.forget_addons(eid)
+        return dict(self.get(eid), package=dict(file=str(zip_path), replaced=kept))
+
+    def place(self, eid, tmp, m, new):
+        """(add_package) the unpacked folder tmp takes its place in the home folder and the registry; where the
+        folder it replaced is kept, or None. The lock is held from before a folder moves until the registry says
+        what is there (discover() waits for it: it sees the old one, or the new one registered)"""
+        target = self.home / eid
+        if not new:
+            self.stop(eid, quiet=True)                 # (ApiError not_found: removed meanwhile)
+        with self.lock:
+            old = None if new else self.entry(eid)
+            taken = os.path.lexists(target)
+            if old is not None and taken and H.real(target) != H.real(old["path"]):
+                target = Path(old["path"])             # <home>/<id> is something else: the new one goes where it was
+            elif old is None and taken:
+                raise ApiError(409, "folder_not_empty",
+                               f"{target} is there already and is not the extension {eid} (no manifest that passes, "
+                               f"or another id): move it away or delete it, then add the package again",
+                               path=str(target))
+            kept = None
+            if old is not None and os.path.lexists(old["path"]):
+                try:
+                    kept = str(H.trash(old["path"], self.home, eid))
+                except FileNotFoundError:              # it went meanwhile: nothing to keep
+                    kept = None
+                except OSError as ex:
+                    raise ApiError(409, "folder_busy",
+                                   f"{eid} is stopped, but its folder cannot be moved away now ({type(ex).__name__}: "
+                                   f"{ex}): a program has it or one of its files open (an editor, a terminal in that "
+                                   f"folder, a process of it that has not ended). Close that and add the package "
+                                   f"again; the version there is still registered", path=old["path"]) from None
+            try:
+                os.rename(tmp, target)
+            except OSError as ex:
+                if kept is not None:                   # the old one back where it was
+                    try:
+                        os.rename(kept, old["path"])
+                    except OSError:
+                        pass
+                raise ApiError(409, "folder_busy", f"the package could not be moved to {target} ({type(ex).__name__}"
+                                                   f": {ex}): add it again", path=str(target)) from None
+            folder = os.path.realpath(target)
+            if old is None:
+                try:
+                    self.register(folder, m, ask=True, how="installed from a package")
+                except ApiError:                       # extension_exists: its id was registered meanwhile
+                    shutil.rmtree(target, ignore_errors=True)
+                    raise
+            else:
+                self.reset(eid, folder)
+        return kept
 
     def register(self, folder, m, ask=False, how="registered"):
         """a new entry for the extension in `folder`: {id, path, enabled true, options {}, described None}, with
@@ -591,6 +792,7 @@ class Host:
         data["extensions"] = [x for x in data["extensions"] if x is not there]
         self.save(data)
         self.runs.pop(e["id"], None)
+        self.addon_states.pop(e["id"], None)
         left = self.procs.pop(e["id"], None)           # one that would not end: nothing of it stays here
         return left, self.outputs.pop(e["id"], None)
 
@@ -605,12 +807,17 @@ class Host:
         self.changed()
 
     def remove(self, eid):
-        """takes an extension off the registry (stopped first): {removed: True, id, path, kept}. A linked one's
-        folder stays where it is (kept None). One in the extensions' home folder has its folder moved to the home's
-        .removed (home.trash; kept: where it is now, the newest home.KEPT stay there); ApiError folder_busy (409)
-        when it cannot be moved now: then it is still registered, and stopped"""
+        """takes an extension off the registry (stopped first): {removed: True, id, path, kept, addons}. A linked
+        one's folder stays where it is (kept None). One in the extensions' home folder has its folder moved to the
+        home's .removed (home.trash; kept: where it is now, the newest home.KEPT stay there); ApiError folder_busy
+        (409) when it cannot be moved now: then it is still registered, and stopped. Its game addons go out of the
+        game's AddOns then (take_addons: only folders with its mark, a version of each kept in the history): addons
+        [{folder, removed, kept, why}] of those found there ([] when it has none, none is there or the game folder
+        is not known; why "foreign": not this extension's, left; "busy": the game holds it, left, and the answer's
+        hint says what to do). What it kept in its data folder stays (the folder is not touched here)"""
         e = self.entry(eid)
         home = self.origin(e) == "home"
+        names = self.addon_names(e["path"])            # (read while the folder is there)
         self.stop(e["id"], quiet=True)
         kept = None
         with self.lock:                                # (held over the move: discover() sees both or neither)
@@ -628,7 +835,144 @@ class Host:
             held = self.drop(e)
         if held is not None:
             self.forgotten(e, held, "" if kept is None else f"; its folder is kept as {kept}")
-        return dict(removed=True, id=e["id"], path=e["path"], kept=kept)
+        out = dict(removed=True, id=e["id"], path=e["path"], kept=kept, addons=self.take_addons(e["id"], names))
+        busy = [g["folder"] for g in out["addons"] if g["why"] == "busy"]
+        if busy:
+            out["hint"] = (f"{', '.join(busy)}: still in the game's AddOns, the game holds its files: quit the game, "
+                           f"then delete the folder{'s' if len(busy) > 1 else ''} there")
+        return out
+
+    # --- the game half (gameside.py)
+
+    @staticmethod
+    def addon_names(folder):
+        """the addon folders an extension's manifest names, also when the manifest does not pass its check now (then
+        the names as written, those that can be a folder's name): for taking them out of the game"""
+        m, _ = M.check_manifest(folder)
+        if m is not None:
+            return list(m["addons"])
+        try:
+            names = json.loads(M.locate(Path(folder))[1].read_text(encoding="utf-8-sig")).get("addons")
+        except (OSError, ValueError, AttributeError):
+            return []
+        return [a for a in names if isinstance(a, str) and M.ADDON_FOLDER.match(a)] if isinstance(names, list) else []
+
+    def put_addons(self, e, m):
+        """the game addons of a manifest put into the game's AddOns (gameside.install: one that is current stays):
+        {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}. GameSideError as
+        gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not under the lock"""
+        try:
+            listed = X.listed_folders()
+        except Exception:
+            listed = None
+        with self.game_lock:
+            try:
+                res = G.install(e["path"], m["addons"], self.game_addons(), e["id"],
+                                interface=self.client_interface(), listed=listed)
+            finally:
+                self.forget_addons(e["id"])
+        new = [f"{r['folder']} {r['version'] or ''}".strip() for r in res["addons"] if r["state"] == "installed"]
+        if new:
+            self.note(f"local extension {e['id']}: game addon{'s' if len(new) > 1 else ''} installed: {', '.join(new)}"
+                      + (" (the game finds them when it starts again)" if res["restart"] else ""))
+            self.changed()
+        return dict(addons=res["addons"], restart=bool(res["restart"]), hint=game_hint(res["addons"], res["restart"]))
+
+    def approved_addons(self, e, m):
+        """(approve) the game addons of an extension the player just allowed are installed, when it has some, this
+        workshop is not too old for it and the game folder is known. Nothing here fails: what went wrong is noted"""
+        try:
+            if not m["addons"] or self.unmet_error(m) is not None or self.game_addons() is None:
+                return
+            self.put_addons(e, m)
+        except G.GameSideError as ex:
+            self.note(f"local extension {e['id']}: its game addons are not installed: {first_line(ex, 300)} "
+                      f"(extension_install {e['id']} tries again)")
+        except Exception as ex:
+            self.note(f"local extension {e['id']}: its game addons are not installed: {ex!r}")
+
+    def loaded_addons(self, e, m, problems):
+        """(load_) the game addons of an extension that is about to start, installed where the game has none or
+        another version: {addons, restart, hint} for the answer. An addon that cannot be installed is an error in
+        problems (the extension starts all the same)"""
+        if not m["addons"]:
+            return dict(addons=[], restart=False, hint=None)
+        if self.game_addons() is None:
+            return dict(addons=self.addon_rows(e, m), restart=False,
+                        hint=f"the game's AddOns folder is not known, so its game addons are not installed: start the "
+                             f"game once, then extension_install {e['id']}")
+        try:
+            return self.put_addons(e, m)
+        except G.GameSideError as ex:
+            problems.append(M.problem("error", "addons", f"its game addons are not installed: {ex}",
+                                      f"extension_install {e['id']} tries again"))
+            done = list(ex.done)
+            restart = any(r.get("was") == "missing" for r in done)
+            return dict(addons=done, restart=restart, hint=game_hint(done, restart))
+
+    def take_addons(self, eid, names):
+        """(remove) the extension's addon folders taken out of the game's AddOns (gameside.remove): the rows of those
+        that were there, [{folder, removed, kept, why}]; [] while the game folder is not known. Not under the lock"""
+        self.forget_addons(eid)
+        addons = self.game_addons()
+        if not names or addons is None:
+            return []
+        try:
+            with self.game_lock:
+                rows = G.remove(names, addons, eid)
+        except Exception as ex:
+            self.note(f"local extension {eid}: its game addons could not be taken out of AddOns: {ex!r}")
+            return []
+        gone = [g["folder"] for g in rows if g["removed"]]
+        if gone:
+            self.note(f"local extension {eid}: game addon{'s' if len(gone) > 1 else ''} deleted from AddOns: "
+                      f"{', '.join(gone)}")
+        return [g for g in rows if g["why"] in (None, "foreign", "busy")]
+
+    def install(self, eid):
+        """extension_install: the extension's game addons put into the game's AddOns now: {id, addons: [{folder,
+        state: installed | current, was, version, kept}], restart, hint}. ApiError bad_manifest (409), requires_unmet
+        (409), needs_approval (403: the player has not allowed it as it is now; allow()), no_addons (400: its
+        manifest names none), no_game_folder (503), and gameside's bad_addon (400), addon_exists (409), addon_busy
+        (409), addon_failed (500), each with done: the addons installed before it failed"""
+        e = self.entry(eid)
+        eid = e["id"]
+        m, problems = M.check_manifest(e["path"])
+        if m is None:
+            raise ApiError(409, "bad_manifest", f"{eid}: {M.ManifestError(problems)}", problems=problems)
+        if m["id"] != eid:
+            raise ApiError(409, "bad_manifest", f"{eid}: its manifest's id is {m['id']} now: extension_remove {eid}, "
+                                                f"then extension_add the folder again")
+        self.require(m)
+        self.allow(e)
+        if not m["addons"]:
+            raise ApiError(400, "no_addons", f"{eid} has no game addons: its manifest names none (addons)")
+        if self.game_addons() is None:
+            raise ApiError(503, "no_game_folder", "the game's AddOns folder is not known: start the game once, or say "
+                                                  "where it is in the WuxianWorkshop App")
+        try:
+            return dict(id=eid, **self.put_addons(e, m))
+        except G.GameSideError as ex:
+            raise api_error(ex) from None
+
+    def pack(self, eid, to=None):
+        """extension_pack: the extension's folder as a package (pack.pack): {id, version, file, size, files,
+        unpacked, sha256, skipped}. to: a folder (the file is <id>-<version>.zip there) or the .zip's own path, a
+        full path; not given: <WUXIAN_HOME>\\packages, made when needed. ApiError bad_request, and pack's
+        bad_manifest (400, with problems), bad_package (400), package_too_big (413)"""
+        e = self.entry(eid)
+        if to is None:
+            dest = workshop_home() / PACKAGES
+        elif not isinstance(to, str) or not to.strip() or not Path(to.strip()).is_absolute():
+            raise ApiError(400, "bad_request", f"to: the full path of a folder or of the .zip ({to!r} is not)")
+        else:
+            dest = Path(to.strip())
+        try:
+            res = K.pack(e["path"], dest)
+        except K.PackError as ex:
+            raise api_error(ex) from None
+        self.note(f"local extension {e['id']}: packed as {res['file']}")
+        return res
 
     # --- the extensions' home folder (home.py)
 
@@ -1226,15 +1570,18 @@ class Host:
         return C.run_tests(self, m)
 
     def load_(self, eid):
-        """extension_load: checked, then (re)started: {row, check}. A manifest that cannot be used leaves a running
-        one as it is. An explicit start: its failed starts are forgotten. ApiError needs_approval before the player
-        allowed its command, requires_unmet when it needs a newer workshop than this one"""
+        """extension_load: checked, then (re)started: {row, check, addons, restart, hint}. A manifest that cannot be
+        used leaves a running one as it is. An explicit start: its failed starts are forgotten. Its game addons are
+        installed first where the game has none or another version (loaded_addons): addons [{folder, state:
+        installed | current, was, version, kept}] ([]: it has none), restart (the game has to start again to see
+        them) and hint (what to do, or None). ApiError needs_approval before the player allowed its command,
+        requires_unmet when it needs a newer workshop than this one"""
         e = self.entry(eid)
         eid = e["id"]
         if not e["enabled"]:
             raise ApiError(409, "off", f"{eid} is off: extension_set {{\"id\": \"{eid}\", \"enabled\": true}} first")
         m, problems = M.check_manifest(e["path"])
-        caps = []
+        caps, game = [], dict(addons=[], restart=False, hint=None)
         if m is not None and m["id"] != eid:
             problems.append(M.problem("error", f"{M.MANIFEST}: id", f"the id is {m['id']} now, registered as {eid}",
                                       f"extension_remove {eid}, then extension_add the folder again"))
@@ -1242,6 +1589,7 @@ class Host:
         if m is not None:
             self.require(m)                            # requires_unmet: it cannot run here
             self.allow(e)                              # needs_approval before anything of it runs
+            game = self.loaded_addons(e, m, problems)
             self.stop(eid, quiet=True)
             try:
                 proc = self.ensure(eid, "extension_load", fresh=True).result(INIT_TIMEOUT + 10)
@@ -1269,7 +1617,7 @@ class Host:
                                               if tests["ran"] else "the tests did not run",
                                               "tests.output says which and why"))
         check["ok"] = not M.errors_in(problems)
-        return dict(row=self.get(eid), check=check)
+        return dict(row=self.get(eid), check=check, **game)
 
     # --- output
 

@@ -183,7 +183,10 @@ class Service:
         self.history_big = set()             # addons too big to keep: said once
         self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), auto=lambda: self.extension_approval == "auto",
                                on_event=self.local_event,
-                               on_call=self.extension_calls, on_change=self.local_changed)   # local/host.py
+                               on_call=self.extension_calls, on_change=self.local_changed,
+                               taken=self.kit_extension_ids, kit_version=self.kit_version_known,
+                               addons_dir=self.game_addons_known,
+                               interface=self.client_interface_known)   # local/host.py
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
                                    note=lambda text: self.journal.add("INFO", text),
                                    local_sources=lambda: set(self.local.ids()))
@@ -1684,6 +1687,34 @@ class Service:
             raise ApiError(503, "stopping", "the daemon is shutting down")
         return fut
 
+    def kit_extension_ids(self):
+        """(the local host's taken) the ids of the extensions WuxianKit lists in the manifest known now: a local
+        extension that is not registered yet cannot have one of them; [] when no manifest is known"""
+        manifest = self.kit_manifest_known() or {}
+        return [x["id"] for x in manifest.get("extensions") or [] if isinstance(x, dict) and isinstance(x.get("id"), str)]
+
+    def kit_version_known(self):
+        """(the local host's kit_version) the version of WuxianKit in the manifest known now (its kit), or None"""
+        version = (self.kit_manifest_known() or {}).get("kit")
+        return version if isinstance(version, str) and version else None
+
+    def game_addons_known(self):
+        """(the local host's addons_dir) the game's AddOns folder, or None while the game folder is not known. Never
+        an error, unlike addons_dir()"""
+        return getattr(self.worker, "addons", None) or None
+
+    def client_interface_known(self):
+        """(the local host's interface) the client's Interface number for the .toc files of an extension's game
+        addons, as extension_install gives the catalog's; None when it cannot be read"""
+        addons = self.game_addons_known()
+        if addons is None:
+            return None
+        from ..installer.addons import client_interface
+        try:
+            return client_interface(Path(addons).parent.parent)[1]
+        except Exception:
+            return None
+
     def kit_manifest_known(self):
         """the WuxianKit manifest known now without asking the game: a view's, the kit cache's newest, the one kept on
         disk; None"""
@@ -1844,23 +1875,29 @@ class Service:
         WuxianKit now while the game is online (reconcile_local_apps). Where the setting asks nobody
         (extension_approval "auto"), one that starts on use is started here once, only to learn what it can do
         (Host.describe): its tools and options are there before its first call. Else that is done when the player
-        allows its command (extension_approve)"""
+        allows its command (extension_approve). path may be a package (.zip) instead: it is installed into the
+        extensions folder, or over the version there (Host.add_package): its row with package {file, replaced};
+        that one always waits for the player"""
         row = await asyncio.to_thread(self.local.add, path)
-        if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" and not row.get("error"):
+        self.notes.forgive(row["id"])                      # (a package over the version there: its notes are tried anew)
+        if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" \
+                and row.get("allowed") and not row.get("error"):
             self.local.describe(row["id"]).add_done_callback(_seen)   # in the background: its row says how it went
         await self.reconcile_local_apps()
         return row
 
     async def extension_remove(self, id):
-        """stops a local extension and takes it off the registry (its folder stays); WuxianKit forgets its apps, now
-        while the game is online, else at its next kit.ready"""
+        """stops a local extension and takes it off the registry: {removed, id, path, kept, addons}. A linked one's
+        folder stays, one in the extensions folder goes to its .removed (kept), its game addons go out of the game's
+        AddOns (addons); WuxianKit forgets its apps, now while the game is online, else at its next kit.ready"""
         res = await asyncio.to_thread(self.local.remove, id)
         self.notes.forgive(id)
         await self.reconcile_local_apps()
         return res
 
     async def extension_load(self, id):
-        """checks a local extension and (re)starts it: {row, check}; its apps are made what its manifest says now"""
+        """checks a local extension and (re)starts it: {row, check, addons, restart, hint} (its game addons are
+        installed first where the game has none or another version); its apps are made what its manifest says now"""
         res = await asyncio.to_thread(self.local.load_, id)
         self.notes.forgive(res["row"]["id"])  # loaded again: its notes are tried at once
         await self.reconcile_local_apps()
@@ -1898,14 +1935,30 @@ class Service:
         """a local extension's output by line: {lines: [{n, text}], next, total, reset, cut, row}"""
         return await asyncio.to_thread(self.local.logs, id, since, limit)
 
-    async def new_extension(self, id, title=None, folder=None):
+    async def extension_pack(self, id, to=None):
+        """a local extension's folder as a package, one .zip another computer's extension_add takes (Host.pack):
+        {id, version, file, size, files, unpacked, sha256, skipped}. to: a folder or the .zip's path (a full path);
+        not given: %WUXIAN_HOME%\\packages"""
+        return await asyncio.to_thread(self.local.pack, id, to)
+
+    async def extension_install(self, id):
+        """a local extension's game addons put into the game's AddOns now (Host.install): {id, addons, restart,
+        hint}"""
+        return await asyncio.to_thread(self.local.install, id)
+
+    async def new_extension(self, id, title=None, folder=None, addon=None):
         """a new local extension from the template (scaffold.new_extension_files) in folder (default
-        %WUXIAN_HOME%\\extensions\\<id>; new or empty), registered: {row, files, guide}"""
-        bad = local_manifest.id_problem(id)
+        %WUXIAN_HOME%\\extensions\\<id>; new or empty), registered: {row, files, guide}. addon (a folder name): it
+        brings a game half too, addons/<addon> (a WuxianKit extension <id>_game), which extension_load installs"""
+        taken = self.local.taken_ids()
+        bad = local_manifest.id_problem(id, taken=taken)
         if bad:
             raise ApiError(400, "bad_request", f"id: {bad['message']}: {bad['hint']}")
         if title is not None and not isinstance(title, str):
             raise ApiError(400, "bad_request", "title: text")
+        if addon is not None and (not isinstance(addon, str) or not addon.strip()):
+            raise ApiError(400, "bad_request", "addon: the folder name of the extension's game addon (WuxianVoice)")
+        addon = addon.strip() if addon else None
         if folder is None or (isinstance(folder, str) and not folder.strip()):
             from ..paths import home
             path = home() / "extensions" / id
@@ -1921,7 +1974,7 @@ class Service:
             raise ApiError(501, "not_available", "this build of 无限工坊 has no extension template "
                                                  "(scaffold.new_extension_files)")
         try:
-            files = await asyncio.to_thread(make, str(path), id, title)
+            files = await asyncio.to_thread(make, str(path), id, title, addon=addon, taken=taken)
         except scaffold.ScaffoldError as e:
             raise ApiError(400, getattr(e, "code", "bad_request"), str(e)) from None
         self.journal.add("INFO", f"new local extension {id} in {path}")
@@ -1929,7 +1982,9 @@ class Service:
         return dict(row=row, files=[str(f) for f in files or []],
                     guide=f"Read {path}\\AGENT.md and extension_guide (the whole guide). Edit main.py, then "
                           f"extension_load {{\"id\": \"{id}\"}} (it checks, restarts and runs its tests), call its "
-                          f"wk_{id}_ tools, read extension_logs when something fails")
+                          f"wk_{id}_ tools, read extension_logs when something fails"
+                          + (f". Its game half is addons\\{addon}: extension_load installs it into the game's AddOns "
+                             f"(the game finds a new addon when it starts)" if addon else ""))
 
     async def reaction_call(self, cap, args, caller):
         """(the reactions) a capability called for a reaction: its result"""

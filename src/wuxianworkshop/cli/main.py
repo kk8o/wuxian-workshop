@@ -1150,7 +1150,10 @@ def cmd_ext(client, args):
                 history = f" (kept: `wuxian history {g.get('folder')}` {g['kept']})" if g.get("kept") else ""
                 print(f"    game addon {g.get('folder')}: deleted from the game's AddOns{history}")
             elif isinstance(g, dict):
-                print(f"    game addon {g.get('folder')}: left in the game's AddOns (it is not this extension's)")
+                why = "the game holds its files" if g.get("why") == "busy" else "it is not this extension's"
+                print(f"    game addon {g.get('folder')}: left in the game's AddOns ({why})")
+        if res.get("hint") and isinstance(res["hint"], str):
+            print(f"    {res['hint']}")
         return 0
     if a == "load":
         res = client.extension_load(args.id)

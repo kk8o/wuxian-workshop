@@ -15,7 +15,7 @@ import urllib.parse
 from concurrent.futures import Future
 from unittest import mock
 
-from tests.daemon.test_local_api import LocalDaemon
+from tests.daemon.test_local_api import LocalDaemon, with_game
 from tests.local.util import until
 from wuxianworkshop.daemon.api import ApiError
 from wuxianworkshop.local.rpc import RpcError
@@ -66,6 +66,15 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         self.assertEqual(list(self.kit.apps), ["theirs"])
         self.assertTrue(until(lambda: self.reaction("o") is None))             # its reactions go with it
         self.assertEqual(self.kit.asked("kit.app.declare"), [])
+
+    def test_one_that_needs_a_newer_workshop_declares_nothing(self):
+        self.add(apps=[REACTING], requires={"workshop": "99.0.0"})
+        self.assertIn("99.0.0", self.fails("POST", "/api/local/load", {"id": "fx"}, 409, "requires_unmet"))
+        self.fails("POST", "/api/local/install", {"id": "fx"}, 409, "requires_unmet")
+        self.kit.emit("kit.ready", {})
+        time.sleep(0.3)
+        self.assertEqual((self.kit.asked("kit.app.declare"), self.kit.apps), ([], {}))    # nothing of it is there
+        self.assertEqual(self.ok("GET", "/api/reactions")["reactions"], [])
 
     def test_turned_off_while_the_game_is_away(self):
         self.add(apps=[APP])
@@ -305,6 +314,24 @@ class Asking(LocalDaemon, unittest.TestCase):
         self.assertEqual(self.svc.local.reg.entry("fx")["approved"]["by"], "player")
         self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
         self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}})["result"]["text"], "a")
+
+    def test_the_game_half_waits_for_the_player(self):
+        row = self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "ax", "ax", "WuxianAx"))})
+        self.assertEqual((row["approval"], row["addons"][0]["state"]), ("needed", "missing"))
+        self.fails("POST", "/api/local/install", {"id": "ax"}, 403, "needs_approval")
+        self.assertFalse((self.addons / "WuxianAx").exists())
+        row = self.ok("POST", "/api/local/approve", {"id": "ax"})              # allowed: its game addon goes in
+        self.assertEqual((row["approval"], row["addons"][0]["state"]), ("ok", "current"))
+        self.assertTrue((self.addons / "WuxianAx" / "core.lua").is_file())
+        self.assertEqual(self.ok("POST", "/api/local/install", {"id": "ax"})["restart"], False)
+        # auto: the workshop allows one by itself when it first runs; its game addon goes in when it is loaded
+        self.ok("POST", "/api/settings", {"extension_approval": "auto"})
+        self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "ay", "ay", "WuxianAy"))})
+        self.assertTrue(until(lambda: self.row("ay")["capabilities"] and self.row("ay")["state"] == "stopped"))
+        self.assertEqual((self.row("ay")["approval"], self.row("ay")["addons"][0]["state"]), ("ok", "missing"))
+        res = self.ok("POST", "/api/local/load", {"id": "ay"})
+        self.assertEqual((res["addons"][0]["state"], res["restart"]), ("installed", True))
+        self.assertTrue((self.addons / "WuxianAy" / "core.lua").is_file())
 
     def test_auto(self):
         self.add(apps=[APP])
