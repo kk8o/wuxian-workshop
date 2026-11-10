@@ -127,6 +127,7 @@ class CompanionLoop:
         self.before_load = None                     # the daemon's hook for its Companion (see AgentCommands)
         self.on_session = None                       # the daemon's: (session, its newest job) for a new session's HELLO
         self.on_pour = None                          # the daemon's: (session, key, i, m, bytes) for a segment of a pour
+        self.on_up = None                            # the daemon's: (session) once it can be told things (again)
         self.comp = None
         if addons is not None:
             self._make_companion(Path(addons))
@@ -169,6 +170,11 @@ class CompanionLoop:
         self.comp.on_client = self._on_client
         self.comp.on_session = self._on_session
         self.comp.on_pour = self._on_pour
+        self.comp.on_up = self._on_up
+
+    def _on_up(self, sid):
+        if self.on_up is not None:
+            self.on_up(sid)
 
     def _on_session(self, sid, last_job):
         if self.on_session is not None:

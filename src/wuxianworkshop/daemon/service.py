@@ -186,6 +186,7 @@ class Service:
                            note=lambda text: self.journal.add("INFO", text))   # the notes on the apps' wakes
         self.reaction_hears = []             # the game sources the reactions hear (their temporary app's hear)
         self.reactions_open = False          # that app was opened in this UI session
+        self.reactions_owed = False          # what they hear changed while the game could not be told
         self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
         self.declaring = None                # an asyncio.Lock: one round of reconciling the local apps at a time
         self.app_memory = {}                 # app -> (our declaration, WuxianKit's of it) as JSON when they last agreed
@@ -193,6 +194,7 @@ class Service:
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
             self.worker.on_session = self.session_started
+            self.worker.on_up = self.link_came_up
             self.worker.on_pour = self.on_pour      # the segments of a pour (worker thread)
 
     # --- the worker thread -----------------------------------------------------------------------------------------
@@ -1496,6 +1498,14 @@ class Service:
             coro.close()
             return None
 
+    def link_came_up(self, sid):
+        """(worker thread) the game can be told things again and no kit.ready says so: this program started while
+        the game ran on, or the game was covered, minimized or behind a loading screen. The local extensions' apps
+        are reconciled (what was added, removed or turned off meanwhile), and the reactions' temporary app made
+        what was asked of it meanwhile. After a login or a reload this comes first and kit.ready does it again"""
+        self.soon(self.reconcile_local_apps())
+        self.soon(self.reactions_hear_again(owed=True))
+
     def kit_event(self, topic, data):
         """(any thread) WuxianKit's events for the local side: kit.ready (a login or a reload: the extensions' apps
         are reconciled, the reactions' temporary app opened again), app.reactions (what that app heard: each item to
@@ -1548,8 +1558,8 @@ class Service:
 
     async def reconcile_local_apps(self, ready=False):
         """WuxianKit's apps of the local extensions made what the enabled extensions' manifests say, while the game is
-        online (after every kit.ready, and when an extension was added, removed, turned on or off, loaded or
-        approved; the game away: at its next kit.ready). An app WuxianKit has as a local one (kit.apps: its row's
+        online (after every kit.ready, each time the link comes up, and when an extension was added, removed, turned
+        on or off, loaded or approved; the game away: when it is back). An app WuxianKit has as a local one (kit.apps: its row's
         local) that no enabled extension declares any more is forgotten (kit.app.forget: it stops, its declaration
         goes, the player's options of it stay). The others are declared (kit.app.declare) when they are new or not
         what WuxianKit has (kit.app.describe, against what it answered when it last took ours). The reactions of
@@ -1919,18 +1929,21 @@ class Service:
 
     async def reactions_hear(self, entries):
         """(the reactions) the game sources they hear changed: the temporary app "reactions" opened with them as its
-        hear (kit.app.open; again at each kit.ready), stopped when there are none. The game away: at its kit.ready.
-        WuxianKit's refusal is an ApiError not_heard with its words"""
+        hear (kit.app.open; again at each kit.ready), stopped when there are none. The game away: owed, and done
+        when the link is back (link_came_up) or at its kit.ready. WuxianKit's refusal is an ApiError not_heard with
+        its words"""
         self.reaction_hears = [e for e in entries or [] if isinstance(e, str)]
+        if not self.link_is_up():
+            self.reactions_owed = True
+            return
+        self.reactions_owed = False
         if not self.reaction_hears:
-            if self.reactions_open and self.link_is_up():
+            if self.reactions_open:
                 try:
                     await self.call_exposed(KIT, "kit.app.stop", {"app": REACTIONS_APP}, 5000)
                 except ApiError:
                     pass
             self.reactions_open = False
-            return
-        if not self.link_is_up():
             return
         decl = dict(app=REACTIONS_APP, lease=0, minutes=REACTIONS_MINUTES,     # plumbing: a temporary app, not shown
                     temp=dict(title="反射", hear=list(self.reaction_hears), hidden=True, digest=False))
@@ -1942,9 +1955,10 @@ class Service:
             return
         self.reactions_open = True
 
-    async def reactions_hear_again(self):
-        """kit.ready: the reactions' app opened again in the new UI session"""
-        if not self.reaction_hears:
+    async def reactions_hear_again(self, owed=False):
+        """kit.ready: the reactions' app opened again in the new UI session. owed (the link is back): only when
+        what they hear changed while the game could not be told"""
+        if not (self.reactions_owed if owed else self.reaction_hears):
             return
         try:
             await self.reactions_hear(list(self.reaction_hears))

@@ -83,6 +83,37 @@ class Companion(unittest.TestCase):
         self.assertFalse(self.c.link_up)
         self.assertIn("link down", self.log[-1] if "link down" in self.log[-1] else " ".join(self.log))
 
+    def test_up_is_told_once_a_session_can_be_told_things(self):
+        """on_up: after the WELCOME is on its way, once per session, and again after the link was down"""
+        got = []
+        self.c.on_up = got.append
+        self.c.tick()
+        self.assertEqual(got, [])                                        # no frame yet
+        self.frame(F.TYPE_CONTROL, 9, b"HB;n=40;k=57;m=300;a=299;q=0")   # this companion started while the game ran
+        self.assertEqual(got, [])                                        # told from tick: what it queues goes out
+        self.c.tick()
+        self.t += 1
+        self.frame(F.TYPE_CONTROL, 9, b"HB;n=41;k=58;m=300;a=299;q=0")
+        self.c.tick()
+        self.assertEqual(got, [5])                                       # once
+        self.t += 30
+        self.c.tick()                                                    # no frame for long: down
+        self.assertFalse(self.c.link_up)
+        self.c.tick()
+        self.assertEqual(got, [5])
+        self.frame(F.TYPE_CONTROL, 9, b"HB;n=42;k=58;m=300;a=299;q=0")   # back
+        self.c.tick()
+        self.assertEqual(got, [5, 5])
+        self.frame(F.TYPE_CONTROL, 1, b"HELLO;v=0.9.3;s=6;k=1;m=1", sid=6)   # a reload: the new session
+        self.c.tick()
+        self.assertEqual(got, [5, 5, 6])
+        self.c.on_up = lambda sid: 1 / 0                                 # a hook that fails is said, the link goes on
+        self.t += 30
+        self.c.tick()
+        self.frame(F.TYPE_CONTROL, 2, b"HB;n=1;k=2;m=1;a=0;q=0", sid=6)
+        self.c.tick()
+        self.assertIn("link up, session 6: ZeroDivisionError", " ".join(self.log))
+
     def test_restart_learns_the_slot_from_a_heartbeat(self):
         """a new companion in the same game process: no HELLO comes, the heartbeat says where the addon reads"""
         self.frame(F.TYPE_CONTROL, 9, b"HB;n=40;k=57;m=300;a=299;q=0")

@@ -78,6 +78,26 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         self.assertEqual(self.kit.asked("kit.app.forget"), [{"app": "companion"}])
         self.assertEqual(self.kit.apps, {})
 
+    def test_turned_off_while_the_game_was_covered(self):
+        """the link back up (no kit.ready: the same UI session): what changed meanwhile is told then"""
+        self.add(apps=[APP])
+        self.kit.calls.clear()
+        with mock.patch.object(self.svc, "link_is_up", return_value=False):
+            self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
+            self.ok("POST", "/api/reactions/set", {"id": "g", "hear": "game:quest", "call": "sense.bags"})
+        self.assertEqual(self.kit.calls, [])
+        self.assertTrue(self.svc.reactions_owed)
+        self.svc.link_came_up(5)
+        self.assertTrue(until(lambda: self.kit.asked("kit.app.forget") and self.kit.asked("kit.app.open")), self.kit.calls)
+        self.assertEqual(self.kit.asked("kit.app.forget"), [{"app": "companion"}])
+        self.assertEqual(self.kit.asked("kit.app.open")[-1]["temp"]["hear"], ["game:quest"])
+        self.assertFalse(self.svc.reactions_owed)
+        self.kit.calls.clear()
+        self.svc.link_came_up(5)                                               # nothing owed: nothing opened again
+        self.assertTrue(until(lambda: self.kit.asked("kit.apps")))
+        time.sleep(0.2)
+        self.assertEqual(self.kit.asked("kit.app.open"), [])
+
     def test_a_changed_manifest_is_declared_when_it_is_loaded(self):
         _, folder = self.add(apps=[APP])
         file = folder / "wuxian-extension.json"

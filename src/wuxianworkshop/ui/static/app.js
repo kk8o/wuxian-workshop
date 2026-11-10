@@ -279,7 +279,7 @@ function appState() {
     agents: { list: null, program: null, manual: {}, busy: '', note: {} },
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
-    lx: { list: null, revision: null, caps: null, error: '', loading: false, again: false, busy: '', note: null,
+    lx: { list: null, revision: null, caps: null, error: '', problem: '', loading: false, again: false, busy: '', note: null,
           check: null, ask: '' },              // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
                                                // the id whose start was refused until its command is allowed
     lout: { id: null, run: null, next: 0, top: 0, total: 0, gen: 0, text: '', count: 0, busy: false, again: false,
@@ -1289,6 +1289,7 @@ function appState() {
     lxApply(d) {                               // a new list: the capabilities read again when the revision changed
       const old = this.lx.list || [];
       this.lx.list = lxRows(d);
+      this.lx.problem = d && typeof d.problem === 'string' ? d.problem : '';   // extensions.json: why it cannot be used
       const rev = d && d.revision != null ? d.revision : null;
       if (rev !== this.lx.revision || this.lx.caps === null) {
         this.lx.revision = rev;

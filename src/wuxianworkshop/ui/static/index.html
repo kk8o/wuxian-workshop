@@ -749,6 +749,7 @@
             </ul>
             <div class="loader" role="status" x-show="lx.list === null && !lx.error"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取本机扩展…</div>
             <p class="small bad-text pad" x-show="lx.error" x-text="lx.error"></p>
+            <p class="small bad-text pad selectable" x-show="lx.problem" x-text="t('登记表异常：') + lx.problem"></p>
             <p class="small muted pad" x-show="lx.list && !lx.list.length && !lx.error">暂无本机扩展。可让 Agent 用 new_extension 新建。</p>
           </div>
           <div class="master-foot">

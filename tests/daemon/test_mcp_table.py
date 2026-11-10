@@ -658,7 +658,9 @@ class OverHttp(unittest.TestCase):
         svc = self.handle.service
         theirs = make_extension(self.root / "ext" / "theirs", "theirs")
         mine = make_extension(self.root / "ext" / "mine", "mine")
-        asyncio.run(svc.extension_add(str(theirs)))                                # the player's, from the App
+        # the player's, from the App: on the daemon's own loop, as the App's request is (another loop waiting for
+        # the lock of a reconcile that runs there, the one of the link coming up, would never be woken)
+        asyncio.run_coroutine_threadsafe(svc.extension_add(str(theirs)), svc.loop).result(30)
 
         async def go():
             async with create_mcp_http_client(headers={"Authorization": f"Bearer {self.handle.token}"}) as http:

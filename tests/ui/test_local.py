@@ -134,6 +134,10 @@ const posts = () => calls.filter((c) => c[1]).map((c) => [c[0], c[1]]);
   out.load = { calls: calls.map((c) => c[0]).filter((p) => p.startsWith('/api/local')), ids: st.lx.list.map((r) => r.id),
                summary: st.lxSummary, bar: st.extSummary, nav: PAGES.map((p) => p.id) };
   out.states = st.lx.list.map((r) => [r.id, st.lxState(r).text, st.lxPill(r)]);
+  st.lxApply({ revision, extensions: rows.map(copyOf), problem: 'extensions.json cannot be read' });
+  const problem = st.lx.problem;
+  st.lxApply({ revision, extensions: rows.map(copyOf), problem: null });
+  out.problem = [problem, st.lx.problem];
 
   // one selected: its facts, its capabilities, its tabs
   st.xpSelect('l:voice');
@@ -285,6 +289,7 @@ class LocalPart(unittest.TestCase):
         self.assertEqual(o["summary"], "7 个本机扩展 · 1 个运行中")
         self.assertTrue(o["bar"].endswith(" · 7 个本机扩展 · 1 个运行中"))
         self.assertNotIn("programs", o["nav"])
+        self.assertEqual(self.out["problem"], ["extensions.json cannot be read", ""])
 
     def test_states(self):
         self.assertEqual(self.out["states"], [

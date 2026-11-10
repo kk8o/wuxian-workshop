@@ -817,6 +817,7 @@ const EN = {
   '读取日志失败：': 'Reading the log failed: ',
   '读取本机扩展…': 'Reading the local extensions…',
   '读取本机扩展失败：': 'Reading the local extensions failed: ',
+  '登记表异常：': 'The registry has a problem: ',
   '载入': 'Load',
   '载入中…': 'Loading…',
   '载入失败：': 'Load failed: ',

@@ -325,6 +325,8 @@ class Companion(AgentCommands):
         self.before_load = None       # (addon, path) -> None, before a watched file that was saved is loaded again
         self.on_client = None         # (client version, Interface) -> None, from a HELLO that says them
         self.on_session = None        # (session, the newest job it ran or None) -> None, for a new session's HELLO
+        self.on_up = None             # (session) -> None: frames are visible and the session is welcomed, so it can
+        self.up_told = None           # be told things (again); up_told: the session on_up was last called for
         self.on_pour = None           # (session, key, segment, segments, its bytes) -> None, for a segment of a pour
         self.client = None            # (client version, Interface) as the last HELLO said them
         self.dispatching = None       # (session, message id) while a message is handed on
@@ -835,7 +837,7 @@ class Companion(AgentCommands):
                 self._reload_note(f"no reload {self.reload_wait:.0f} s after the command (the button was not clicked)")
             self.reload_sent, self.reload_later = None, False
         if self.link_up and now - self.last_frame > self.down_after:
-            self.link_up = False
+            self.link_up, self.up_told = False, None
             self.note(f"link down: no frame for {self.down_after:.0f} s (covered, minimized, a loading screen, or the addon is off)")
         self._check_watch(now)
         s = self.sessions.get(self.current)
@@ -844,6 +846,13 @@ class Companion(AgentCommands):
         if not self.link_up:        # no frames: the addon is not reading now (the character screen, minimized, a long
             return                  # loading screen); packets written meanwhile would only use slots up and leave it a
                                     # backlog to read through when it is back. What waits goes out once frames come
+        if self.up_told != self.current:
+            self.up_told = self.current
+            if self.on_up is not None:
+                try:
+                    self.on_up(self.current)
+                except Exception as e:
+                    self.note(f"link up, session {self.current}: {e!r}")
         self._rewind(now)
         self._drop_oversized()
         since = None if self.last_packet is None else now - self.last_packet

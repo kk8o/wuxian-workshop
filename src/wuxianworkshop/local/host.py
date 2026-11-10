@@ -105,7 +105,8 @@ class Host:
         self.mode = mode or (lambda: "developer")   # mode(): the daemon's mode now, "player" or "developer"
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
         self.lock = threading.RLock()
-        self.reg = Registry(self.root, self.lock, on_save=self.saved)   # extensions.json (registry.py), under self.lock
+        self.reg = Registry(self.root, self.lock, on_save=self.saved,   # extensions.json (registry.py), under self.lock
+                            note=lambda text: self.note(text))         # (self.note may be replaced: asked each time)
         self.born = time.time()
         self.procs = {}               # id -> its Proc (starting, running or being stopped)
         self.starting = {}            # id -> the Future of its start in progress (stopped: stop() came meanwhile;
@@ -286,10 +287,12 @@ class Host:
             return self.row(self.entry(eid))
 
     def listing(self):
-        """{revision, extensions: [row]}"""
+        """{revision, extensions: [row], problem: why extensions.json cannot be read or written now (the registry's
+        words; None: it can)}"""
         with self.lock:
             data = self.load()
-            return dict(revision=int(data.get("revision") or 0), extensions=[self.row(e) for e in data["extensions"]])
+            return dict(revision=int(data.get("revision") or 0), extensions=[self.row(e) for e in data["extensions"]],
+                        problem=self.reg.problem)
 
     def manifest_entries(self):
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
