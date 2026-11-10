@@ -1,15 +1,36 @@
 # Writing a local extension
 
-A local extension is a program on the player's computer that gives 无限工坊 (Wuxian Workshop) new capabilities: the
-agent calls them as `wk_<extension>_<name>` tools, reactions hear its sources, other extensions call it, and it can
-bring apps of its own and add to the apps of others.
+An extension is a prototype: it lets an agent quickly make something that runs, to find out whether an idea works.
+It rides on what 无限工坊 (Wuxian Workshop) already provides: the game's interfaces through WuxianKit; a process on
+this computer that the workshop runs, has the player approve and logs; capabilities that become the agent's
+`wk_<extension>_<name>` tools; checks, tests, packing, and installing the game half. The author writes only the idea
+itself, and usually the author is the agent.
+
+A local extension is one that runs on the player's computer, outside the game. Besides its tools, reactions hear its
+sources, other extensions call it, and it can bring apps of its own and add to the apps of others.
+
+An addon is a folder in the game's AddOns, the finished thing players install. An extension is a capability given to
+the agent; its game half, if it has one, lives inside an addon.
 
 ## When to write one
 
-When something is missing outside the game: a voice, a local model, files, a web service, the clipboard, a timer that
-runs while no conversation does. What the game itself offers comes from WuxianKit extensions inside the game (Lua);
-to change the game, use those, never a local extension. One that needs both brings its game half with it, an addon
-the workshop installs (see The game half).
+When an idea needs something the game and these tools cannot do yet:
+
+| Scenario | Example | Where it runs |
+|---|---|---|
+| What the game cannot do | a voice, a local model, reading files, looking things up on the web | this computer |
+| Adding to an existing app | 图鉴速查 adds wake notes to 公会聊天 | this computer |
+| Shown in the game, worked out on the computer | a hint in the game; recognition or statistics on the computer | both (see The game half) |
+| Only the game | reading another addon's settings, giving it a switch | the game: a WuxianKit extension in an addon (see `wk_docs`), not a local extension |
+
+To change the game, use WuxianKit extensions in the game (Lua), never a local extension.
+
+Once the idea is tried, three ways on:
+
+- Keep it and use it, as 语音搭子 and 图鉴速查 are.
+- Pack it and give it to others to try (see Packages).
+- Make it a real product: turn the game half into a proper addon and the local half into a program of its own. That
+  step is outside what extensions are for.
 
 ## One model, two runtimes
 
@@ -107,21 +128,21 @@ workshop waits 1, 5, 30, then 120 seconds between tries); when the workshop exit
 ### Who lets it run
 
 An extension is a command on the player's computer, so the player decides whether it runs. The first time an
-extension would run, its calls answer `needs_approval` until the player clicks 允许运行 (Allow) on its card in the
+extension would run, its calls answer `needs_approval` until the player clicks 批准运行 (Approve) on its card in the
 workshop App (Extensions page), which shows the command. Tell the player, then go on. When the command changes (the
 folder, or the manifest's `run`, `python`, `env`, `pass` or the names in `addons`), the player is asked again;
 changes to the code alone do not ask.
 
 This is the player's setting 本机扩展批准 (Local extension approval) on the Settings (设置) page of the 无限工坊 App:
-首次运行前询问 (ask, the default) or 自动允许 (allow automatically). With the second nothing is asked: the workshop
-allows the command when it starts. The setting is the player's: no tool changes it or approves a command, and do not
+首次运行前询问 (ask, the default) or 自动批准 (approve automatically). With the second nothing is asked: the
+workshop approves the command when it starts. The setting is the player's: no tool changes it or approves a command, and do not
 work around it.
 
-Whatever the setting, the player is asked once about an extension that was not written here: one installed from a
-package (at every install and every update), and one whose folder turned up in the extensions folder by itself. One
+Whatever the setting, the player is asked once about an extension that was not written here: one imported from a
+package (at every import and every update), and one whose folder turned up in the extensions folder by itself. One
 you made (`new_extension`) or registered by its path (`extension_add` with a folder) follows the setting.
 
-Until it is allowed, nothing of the extension is there: no tools, no apps, nothing added to other apps, and its game
+Until it is approved, nothing of the extension is there: no tools, no apps, nothing added to other apps, and its game
 half is not installed. Folders on a network drive or a `\\server` path cannot be registered at all.
 
 ## Capabilities
@@ -163,7 +184,7 @@ Settings the player changes on the extension's row in the workshop App: `boolean
 again, all of them, whenever one changes.
 
 Options are the player's. The agent sets them (`extension_set`) only for an extension it registered itself in this
-session (`new_extension`, `extension_add`), or where the player's setting allows extensions automatically; for any
+session (`new_extension`, `extension_add`), or where the player's setting approves extensions automatically; for any
 other the answer is `not_allowed`: ask the player to change it in the App. Turning an extension on or off is not limited this way.
 
 ## Apps and skills
@@ -293,13 +314,13 @@ A package is an extension's folder as one `.zip`: how it gets to another player 
   (`models/*`, `*.wav`: a pattern with `/` is matched against the path relative to the folder, one without against
   every name on the way). `skipped` lists what stayed out: read it. A package is at most 64 MB, and 256 MB in 8,000
   files unpacked.
-- Install one: `extension_add {"path": "<the .zip>"}` (`wuxian ext add`; the player: 添加, then 安装扩展包, on the
+- Import one: `extension_add {"path": "<the .zip>"}` (`wuxian ext add`; the player: 添加, then 导入扩展包, on the
   Extensions page). It is checked before anything is unpacked, then becomes `<id>` in the extensions folder; the
   answer is its row with `package: {file, replaced}`. `bad_package` says what is wrong with it; `package_too_big`.
-- Update one: install a package of the same id. The old folder moves to the recycle area (`package.replaced`; see
+- Update one: import a package of the same id. The old folder moves to the recycle area (`package.replaced`; see
   Removing); whether it is on, and its options, stay. `extension_exists`: that id is a linked folder here: remove
   the link first.
-- Every package asks the player, at every install and update (see Who lets it run): tell them, then go on.
+- Every package asks the player, at every import and update (see Who lets it run): tell them, then go on.
 - Nothing is installed with a package: no `pip`, and no virtual environment comes along. It runs with the workshop's
   interpreter and the standard library, or brings what it needs in its folder; what the player has to set up
   besides, `AGENT.md` says.
@@ -331,7 +352,7 @@ with a Read capability and an event, and a `main.py` that uses both.
   `ext.call("<id>_game.<name>")` (`no_capability`: the addon is not loaded in the game; `down`: the game is not
   running). It hears the game half's events through a reaction (`"hear": "bus:<id>_game.<topic>"`) that calls one of
   its own capabilities with the item. The agent has the game half's tools as well: `wk_<id>_game_<name>`.
-- When the workshop installs it into the game's AddOns: when the player allows the extension; at `extension_load`,
+- When the workshop installs it into the game's AddOns: when the player approves the extension; at `extension_load`,
   when the game has none or other files (the answer then has `addons`, `restart` and `hint`); and with
   `extension_install {"id": "<id>"}` (`wuxian ext install <id>`) at any time (`needs_approval`, `no_addons`,
   `no_game_folder`). The `.toc`'s `## Interface` is set to the client's number on the way.
@@ -521,11 +542,11 @@ A minimal exchange:
 
 1. `new_extension {"id": "<id>", "title": "..."}`: makes the folder (`%WUXIAN_HOME%\extensions\<id>` unless you give
    `folder`) and registers it; with `"addon": "<Name>"` it writes the game half too. `extension_add {"path": ...}`
-   registers a folder that exists, or installs a package. Plan the capabilities, sources and options with the
+   registers a folder that exists, or imports a package. Plan the capabilities, sources and options with the
    player first.
 2. Edit `main.py`, `AGENT.md` and the tests; with a game half, `addons/<Name>/` too.
 3. `extension_load {"id": "<id>"}`: checks, then starts it again with the new code. Fix every error in its `check`.
-   `needs_approval`: the player allows it in the App first (see Who lets it run), then load again. A game half
+   `needs_approval`: the player approves it in the App first (see Who lets it run), then load again. A game half
    whose files changed is installed first: `restart: true` in the answer means the player restarts the game,
    otherwise `load {"target": "<Name>"}` takes the change (see The game half).
 4. Call its tools directly: `wk_<id>_<name>`. Check each answer, and the refusals for bad arguments.

@@ -67,7 +67,7 @@ class Guide(unittest.TestCase):
         self.assertEqual(m["adds"], {"guild": {"wake": {"call": "facts.lookup", "timeout": 3.0}, "skill": str(skill)}})
 
     def test_what_it_explains(self):
-        for word in ("needs_approval", "not_allowed", "允许运行", "`pass`", "`adds`", "`reactions`", "reaction_set",
+        for word in ("needs_approval", "not_allowed", "批准运行", "`pass`", "`adds`", "`reactions`", "reaction_set",
                      "wk_kit_app_open", "wuxian listen", "deadline_ms", "`cancel", "`ping", "`loop`", '"player"',
                      '"workshop"', "extension_set", "forgotten"):
             self.assertIn(word, self.text)
@@ -85,7 +85,7 @@ class Guide(unittest.TestCase):
                      "requires_unmet", "`addons`", "addons/<Name>/", "<id>_game", "bus:<id>_game.", "addon_exists",
                      "needs_approval", "no_addons", "no_game_folder", "`foreign`", "`restart`", '`load {"target":',
                      "folder_busy", ".removed", "WUXIAN_EXTENSION_DATA", "`ext.data`", "## X-WuxianKit-Extension",
-                     "kit-extension", "at every install and every update"):
+                     "kit-extension", "at every import and every update"):
             self.assertIn(word, self.text)
         kinds = re.search(r"an addon's kinds of file only: `([^`]+)`", self.text).group(1).split()
         self.assertEqual(sorted(kinds), sorted(X.KINDS))
