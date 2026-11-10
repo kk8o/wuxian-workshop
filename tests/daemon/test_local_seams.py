@@ -2,8 +2,9 @@
 WuxianKit's local apps reconciled (forgotten when no enabled extension declares them, at once or at the next kit.ready),
 the reactions an app's manifest declares set while it runs, /api/local/approve, a call's deadline and its cancelling
 (the time over, the caller gone, the client hung up), the caller chain and its loop, and the protocol's reasons as the
-error codes. What the other packages still stub (Host.app_reactions, Host.approve, Host.call's deadline_ms,
-Host.cancel_call, Host.ensure's needs_approval) is patched or watched here."""
+error codes. The host is the real one (an app's reactions come from its manifest); Host.call, Host.cancel_call and
+Host.approve are watched, and patched only for the answers a fixture cannot give (busy, cancelled, a reaction that
+names no capability, an extension that cannot run)."""
 import asyncio
 import contextlib
 import http.client
@@ -20,8 +21,8 @@ from wuxianworkshop.daemon.api import ApiError
 from wuxianworkshop.local.rpc import RpcError
 
 APP = {"app": "companion", "title": "语音搭子", "prompt": "companion"}
-SPECS = [{"ext": "fx", "hear": "fx:said", "call": "fx.echo", "args": {"text": "听到"}, "cooldown": 0},
-         {"ext": "fx", "hear": "game:combat", "call": "fx.echo", "note": "a pull"}]
+REACTING = dict(APP, reactions=[{"hear": "fx:said", "call": "fx.echo", "args": {"text": "听到"}, "cooldown": 0},
+                                {"hear": "game:combat", "call": "fx.echo", "note": "a pull"}])
 
 
 def failed(error):
@@ -114,43 +115,37 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
 
     # --- the reactions an app declares
 
-    def declared(self):
-        return mock.patch.object(self.svc.local, "app_reactions",
-                                 side_effect=lambda app: [dict(s) for s in SPECS] if app == "companion" else [])
-
     def test_an_apps_reactions_are_there_while_it_runs(self):
-        self.add(apps=[APP])
-        with self.declared():
-            self.kit.emit("kit.app", {"app": "companion", "on": True})
-            self.assertTrue(until(lambda: self.reaction("companion.2")), self.ok("GET", "/api/reactions"))
-            first, second = self.reaction("companion.1"), self.reaction("companion.2")
-            self.assertEqual((first["owner"], first["hear"], first["call"], first["args"]),
-                             ("companion", "fx:said", "fx.echo", {"text": "听到"}))
-            self.assertEqual((second["owner"], second["hear"], second["note"]), ("companion", "game:combat", "a pull"))
-            self.assertEqual(self.ok("GET", "/api/local")["extensions"][0]["state"], "running")   # started to describe
-            self.assertTrue(until(lambda: self.kit.asked("kit.app.open")))     # the game source: the temporary app
-            self.assertEqual(self.kit.asked("kit.app.open")[-1]["temp"]["hear"], ["game:combat"])
-            with self.watched() as (calls, _):
-                self.ok("POST", "/api/local/call", {"cap": "fx.emit", "args": {"text": "x"}})
-                self.assertTrue(until(lambda: self.reaction("companion.1")["fired"] == 1))
-                self.assertTrue(until(lambda: len(calls) == 2))
-            self.assertEqual(calls[1]["caller"], {"by": "workshop", "chain": ["reaction:companion.1"]})
-            self.kit.emit("kit.app", {"app": "companion", "on": False})
-            self.assertTrue(until(lambda: not self.ok("GET", "/api/reactions")["reactions"]))
+        self.add(apps=[REACTING])
+        self.kit.emit("kit.app", {"app": "companion", "on": True})
+        self.assertTrue(until(lambda: self.reaction("companion.2")), self.ok("GET", "/api/reactions"))
+        first, second = self.reaction("companion.1"), self.reaction("companion.2")
+        self.assertEqual((first["owner"], first["hear"], first["call"], first["args"]),
+                         ("companion", "fx:said", "fx.echo", {"text": "听到"}))
+        self.assertEqual((second["owner"], second["hear"], second["note"]), ("companion", "game:combat", "a pull"))
+        self.assertEqual(self.ok("GET", "/api/local")["extensions"][0]["state"], "running")   # started to describe
+        self.assertTrue(until(lambda: self.kit.asked("kit.app.open")))     # the game source: the temporary app
+        self.assertEqual(self.kit.asked("kit.app.open")[-1]["temp"]["hear"], ["game:combat"])
+        with self.watched() as (calls, _):
+            self.ok("POST", "/api/local/call", {"cap": "fx.emit", "args": {"text": "x"}})
+            self.assertTrue(until(lambda: self.reaction("companion.1")["fired"] == 1))
+            self.assertTrue(until(lambda: len(calls) == 2))
+        self.assertEqual(calls[1]["caller"], {"by": "workshop", "chain": ["reaction:companion.1"]})
+        self.kit.emit("kit.app", {"app": "companion", "on": False})
+        self.assertTrue(until(lambda: not self.ok("GET", "/api/reactions")["reactions"]))
 
     def test_an_apps_reactions_follow_kit_ready(self):
-        self.add(apps=[APP])
+        self.add(apps=[REACTING])
         self.ok("POST", "/api/local/call", {"cap": "fx.echo"})
-        with self.declared():
-            self.kit.on.add("companion")
-            self.kit.emit("kit.ready", {})                                     # it runs in the new session
-            self.assertTrue(until(lambda: self.reaction("companion.1")))
-            self.ok("POST", "/api/local/set", {"id": "fx", "options": {"volume": 60}})
-            self.kit.on.clear()
-            self.ok("POST", "/api/local/load", {"id": "fx"})                   # not a new session: nothing is taken
-            self.assertIsNotNone(self.reaction("companion.1"))
-            self.kit.emit("kit.ready", {})                                     # it stopped while nobody heard
-            self.assertTrue(until(lambda: self.reaction("companion.1") is None))
+        self.kit.on.add("companion")
+        self.kit.emit("kit.ready", {})                                     # it runs in the new session
+        self.assertTrue(until(lambda: self.reaction("companion.1")))
+        self.ok("POST", "/api/local/set", {"id": "fx", "options": {"volume": 60}})
+        self.kit.on.clear()
+        self.ok("POST", "/api/local/load", {"id": "fx"})                   # not a new session: nothing is taken
+        self.assertIsNotNone(self.reaction("companion.1"))
+        self.kit.emit("kit.ready", {})                                     # it stopped while nobody heard
+        self.assertTrue(until(lambda: self.reaction("companion.1") is None))
 
     def test_an_apps_bad_reactions_are_said(self):
         self.add(apps=[APP])

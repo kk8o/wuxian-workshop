@@ -538,6 +538,27 @@ class NotesDaemon(unittest.TestCase):
         (asked,) = call.call_args_list
         self.assertEqual(asked.args[1:], ("echo", {}, {"by": "player", "app": "music"}))
 
+    def test_what_a_manifest_adds(self):
+        """the seam whole, nothing patched: a manifest's adds (the wake of another's app) and its own app's bound
+        control reach the lanes through the real host (local/adds.py)"""
+        app = {"app": "tunes", "title": "点歌", "controls": ["stop", {"cmd": "skip", "label": "下一首", "call": "echo"}]}
+        folder = make_extension(self.root / "ext" / "fm", "fm", adds={"hall": {"wake": {"call": "echo", "timeout": 10}}},
+                                apps=[app])
+        self.ok("POST", "/api/local/add", {"path": str(folder)})
+        with mock.patch.object(self.svc.local, "call", wraps=self.svc.local.call) as call:
+            self.emit("hall", 1)
+            self.assertTrue(until(lambda: self.wakes("hall"), 20))
+            self.emit("tunes", 2, items=pressed("skip", 2))
+            self.assertTrue(until(lambda: self.wakes("tunes"), 20))
+            self.assertTrue(until(lambda: len(call.call_args_list) == 2, 20))
+        (wake,) = self.wakes("hall")
+        self.assertEqual(wake["notes"]["fm"]["caller"], {"by": "workshop", "app": "hall", "chain": ["wake:hall"]})
+        self.assertNotIn("notes", self.wakes("tunes")[0])
+        noted, bound = call.call_args_list
+        self.assertEqual((noted.args[1], noted.args[3], noted.kwargs),
+                         ("echo", {"by": "workshop", "app": "hall", "chain": ["wake:hall"]}, {"deadline_ms": 10000}))
+        self.assertEqual(bound.args[1:], ("echo", {}, {"by": "player", "app": "tunes"}))
+
 
 if __name__ == "__main__":
     unittest.main()
