@@ -39,14 +39,18 @@
                                           checks what it needs
      GET  /api/local                   -> {revision, extensions:[row]}: the local extensions this workshop runs on this
                                           computer (local/), row {id, title, version, path, enabled, start: use | workshop,
-                                          state: off | stopped | starting | running | exited | failed, pid, started,
-                                          exit_code, error, capabilities:[id], sources:[name], options:[{name, kind, title,
-                                          default, hint, choices, min, max, step, unit, value}], apps, skills}; GET
-                                          /api/local/manifest -> {revision, extensions:[{id, capabilities:[{id, kind, title,
-                                          doc, args}] ...}]} (the agents' tools); POST /api/local/set {id, enabled?,
-                                          options?}, /load {id} -> {row, check}, /stop {id}, /check {id} -> {ok,
-                                          problems:[{level, where, message, hint}], capabilities, tests?}; GET
-                                          /api/local/logs?id=&since=&limit= -> {lines:[{n, text}], next, cut}
+                                          state: off | stopped | starting | running | hung | stopping | exited | backoff,
+                                          since, why, pid, started, exit_code, error (a manifest that cannot be read:
+                                          state stopped), command:[argv] | null, approval: ok | needed | changed,
+                                          capabilities:[id], sources:[name], options:[{name, kind, title, default, hint,
+                                          choices, min, max, step, unit, value}], apps, skills, adds:{app:{wake:{call,
+                                          timeout} | null, skill: path | null}}}; GET /api/local/manifest -> {revision,
+                                          extensions:[{id, capabilities:[{id, kind, title, doc, args}] ...}]} (the agents'
+                                          tools); POST /api/local/set {id, enabled?, options?}, /approve {id} (the player
+                                          allows its command) -> the row, /load {id} -> {row, check}, /stop {id}, /check
+                                          {id} -> {ok, problems:[{level, where, message, hint}], capabilities, tests?}
+                                          (/load and /check: 403 needs_approval until its command is allowed); GET
+                                          /api/local/logs?id=&since=&limit= -> {lines:[{n, text}], next, total, reset, cut}
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -163,9 +167,11 @@ const RECONNECT_MS = 2000;
 const LX_LIMIT = 200;                          // 本机扩展's log: the lines asked for at a time
 const LX_KEEP = 500;                           // … and kept, the newest
 const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
+const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extension's states with a process
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
 const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
-                              apps: [], skills: [], annotate: [], extends: [], error: null });
+                              apps: [], skills: [], adds: {}, approval: 'ok', command: null, since: null, why: null,
+                              error: null });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -274,9 +280,11 @@ function appState() {
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
     lx: { list: null, revision: null, caps: null, error: '', loading: false, again: false, busy: '', note: null,
-          check: null },                       // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data}
-    lout: { id: null, run: null, next: 0, gen: 0, text: '', count: 0, busy: false, again: false, loaded: false, error: '',
-            follow: true, after: 0 },          // 扩展 · 本机: the log of the one shown (its lines are lxLines)
+          check: null, ask: '' },              // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
+                                               // the id whose start was refused until its command is allowed
+    lout: { id: null, run: null, next: 0, top: 0, total: 0, gen: 0, text: '', count: 0, busy: false, again: false,
+            loaded: false, error: '', follow: true, after: 0 },   // 扩展 · 本机: the log of the one shown (its lines are
+                                               // lxLines); top: the newest line number had of the file as it is now
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
              first: { name: 'MyFirstAddon', title: '我的第一个插件', busy: false, error: '', result: null, loaded: false, fromId: 0 } },
     canPick: false,
@@ -1320,31 +1328,62 @@ function appState() {
     get lxCur() { return this.selLx || NO_LX; },   // the detail's extension: never null (the detail stays in the page)
     lxShow(id) {                               // selected in the list
       this.lx.note = null;
+      this.lx.ask = '';
       this.lxOutReset(this.selLx || { id });
-      const r = this.selLx;                    // the apps it annotates are named by their titles: read them once
-      if (r && (r.annotate || []).length && !this.apps.data) this.loadApps();
+      const r = this.selLx;                    // the apps it adds to are named by their titles: read them once
+      if (r && Object.keys(r.adds || {}).length && !this.apps.data) this.loadApps();
     },
-    lxAdds(r) {                                // 补充: the apps it annotates, the skills it supplements; '' without them
-      if (!r) return '';
+    lxAdds(r) {                                // 补充: what it adds to other apps' wakes and skills, by app:
+      const adds = (r && r.adds) || {};        // [{app, title, wake (the capability it answers with), skill (the file)}]
       const apps = (this.apps.data && this.apps.data.apps) || [];
       const title = (id) => { const a = apps.find((x) => x && x.id === id); return a ? this.appTitle(a) : id; };
-      return (r.annotate || []).map((a) => t('{app}（附注）', { app: title(a.app) }))
-        .concat((r.extends || []).map((s) => t('{skill}（技能）', { skill: s }))).join(t('、'));
+      return Object.keys(adds).sort().map((app) => {
+        const a = adds[app] || {}, w = a.wake && a.wake.call ? a.wake : null;
+        return { app, title: title(app),
+                 wake: w ? w.call + (w.timeout ? ' · ' + t('{s} 秒', { s: w.timeout }) : '') : '',
+                 skill: a.skill ? lxInside(r.path, String(a.skill)) : '' };
+      }).filter((x) => x.wake || x.skill);
     },
     lxTitle(r) { return r ? this.loc(r.title) || r.id : ''; },
     lxLine(r) { return r.id + (r.version ? ' · ' + r.version : ''); },
-    lxRunning(r) { return !!r && (r.state === 'running' || r.state === 'starting'); },
+    lxRunning(r) { return !!r && LX_LIVE.includes(r.state); },   // it has a process
+    lxStoppable(r) { return this.lxRunning(r) || (!!r && r.state === 'backoff'); },   // … or the workshop will start one
     lxState(r) {                               // {key, cls (ok / warn / bad / ''), text}
       if (!r || !r.state) return { key: '', cls: '', text: '' };
       if (r.state === 'off' || r.enabled === false) return { key: 'off', cls: '', text: t('已停用') };
       if (r.state === 'running') return { key: 'running', cls: 'ok', text: t('运行中') };
       if (r.state === 'starting') return { key: 'starting', cls: 'warn', text: t('启动中') };
-      if (r.state === 'failed') return { key: 'failed', cls: 'bad', text: t('启动失败') };
+      if (r.state === 'hung') return { key: 'hung', cls: 'bad', text: t('无响应') };
+      if (r.state === 'stopping') return { key: 'stopping', cls: 'warn', text: t('停止中') };
+      if (r.state === 'backoff') return { key: 'backoff', cls: 'warn', text: t('等待重试') };
       if (r.state === 'exited') return r.exit_code ? { key: 'crashed', cls: 'bad', text: t('异常退出') }
         : { key: 'exited', cls: '', text: t('已退出') };
+      if (r.error) return { key: 'invalid', cls: 'bad', text: t('清单有误') };
+      if (this.lxUnapproved(r)) return { key: 'approval', cls: 'warn', text: t('待批准') };
       return { key: 'stopped', cls: '', text: t('未运行') };
     },
     lxPill(r) { return this.lxState(r).cls || 'off'; },
+    lxSince(r) {                               // next to the state: since when ('' while it runs: 开始于 says that)
+      const s = secsOf(r && r.since);
+      if (!s || !r.state || r.state === 'running') return '';
+      const at = new Date(s * 1000).toDateString() === new Date(this.now).toDateString() ? this.fmtTime(s) : this.fmtStamp(s);
+      return t('{at} 起', { at });
+    },
+    // 批准: the workshop runs an extension's command only once the player has allowed it (and again after the command
+    // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask)
+    lxUnapproved(r) { return !!r && (r.approval === 'needed' || r.approval === 'changed'); },
+    lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
+    lxApprovalTitle(r) { return r && r.approval === 'changed' ? t('运行命令已变更') : t('需要批准'); },
+    lxCommand(r) {                             // the command as one line: an argument with a blank or a quote in quotes
+      const c = r && r.command;
+      if (!Array.isArray(c) || !c.length) return '—';
+      return c.map((a) => (/[\s"]/.test(String(a)) || a === '' ? '"' + String(a).replace(/"/g, '\\"') + '"' : String(a))).join(' ');
+    },
+    lxCanApprove(r) { return !!r && !(r.error && !Array.isArray(r.command)); },   // not a manifest without a command
+    async lxApprove(r) {                       // 允许运行: POST /api/local/approve, the row it answers taken in
+      if (!(await this.lxPost(r, 'approve', null, t('批准失败：')))) return;
+      this.say(t('已允许 {name} 运行', { name: this.lxTitle(r) }));
+    },
     lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
     lxCode(c) { return exitCode(c); },
     lxStarted(r) {                             // 开始于: when, and while it runs for how long
@@ -1377,8 +1416,15 @@ function appState() {
         const row = lxRowOf(d);
         if (row) this.lxRow(row);
         else await this.loadLocal(true);
+        if (this.lx.ask === r.id && action !== 'set' && action !== 'stop') this.lx.ask = '';   // allowed, here or elsewhere
         return d || {};
       } catch (e) {
+        if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
+          this.lx.ask = r.id;                  // not an error: the same 允许运行 as a row that says it (which is read again)
+          this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
+          await this.loadLocal(true);
+          return null;
+        }
         this.lx.note = { bad: true, text: failed + errText(e) };
         if (action === 'set') await this.loadLocal(true);      // the form shows the values in force again
         return null;
@@ -1452,12 +1498,15 @@ function appState() {
     },
 
     // ---- 本机 · 日志: /api/local/logs from the cursor next on (whatever the daemon hands back as next); a line at or below
-    //      the newest one had is not added again; a new run (row.started changed) starts afresh from 0. gen tells an
-    //      answer for a log since reset
+    //      the newest one had (lout.top) is not added again; a new run (row.started changed) starts afresh from 0. gen
+    //      tells an answer for a log since reset. A full output.log becomes output.1.log and the new file's lines count
+    //      from 1 again: the daemon says so when the cursor is past the new file's end (reset: its lines from the
+    //      first), and a file with fewer lines than it had (total) is a new one too, read from its first line; either
+    //      way the lines had stay and top starts again, or every line of the new file would count as had
     lxOutReset(row) {
       lxLines = [];
-      Object.assign(this.lout, { id: row ? row.id : null, run: (row && row.started) || null, next: 0, gen: this.lout.gen + 1,
-                                 text: '', count: 0, loaded: false, error: '', follow: true, after: 0 });
+      Object.assign(this.lout, { id: row ? row.id : null, run: (row && row.started) || null, next: 0, top: 0, total: 0,
+                                 gen: this.lout.gen + 1, text: '', count: 0, loaded: false, error: '', follow: true, after: 0 });
     },
     async loadLxOut() {
       const id = this.lout.id;
@@ -1472,7 +1521,14 @@ function appState() {
           if (this.lout.id !== id) return;
           if (this.lout.gen !== gen) { changed = true; continue; }
           const lines = Array.isArray(d && d.lines) ? d.lines : [];
-          let top = lxLines.length ? lxLines[lxLines.length - 1].n : -Infinity;
+          const total = d && typeof d.total === 'number' ? d.total : null;
+          if (since > 0 && total !== null && total < this.lout.total && !(d && d.reset)) {
+            Object.assign(this.lout, { top: 0, total, next: 1 });      // a new file, answered from its middle
+            continue;
+          }
+          if (d && d.reset) this.lout.top = 0;
+          if (total !== null) this.lout.total = total;
+          let top = this.lout.top;
           for (const l of lines) {
             const n = l && typeof l.n === 'number' ? l.n : null;
             if (n !== null && n <= top) continue;
@@ -1480,7 +1536,8 @@ function appState() {
             if (n !== null) top = n;
             changed = true;
           }
-          this.lout.next = d && d.next != null ? d.next : (Number.isFinite(top) ? top : since);
+          this.lout.top = top;
+          this.lout.next = d && d.next != null ? d.next : (top || since);
           this.lout.loaded = true;
           this.lout.error = '';
           if (lines.length < LX_LIMIT || this.lout.next === since) break;
@@ -1510,11 +1567,12 @@ function appState() {
       if (atBottom && !this.lout.follow) this.lout.follow = true;
       else if (!atBottom && this.lout.follow && b.scrollHeight > b.clientHeight) this.lout.follow = false;
     },
-    lxTick() {                                 // every second: the shown extension's log while it runs, and a last read
+    lxTick() {                                 // every second: the shown extension's log while it runs (or is about
+                                               // to be started again), and a last read
       if (this.page !== 'extensions' || this.xpTab !== 'logs' || document.hidden || !this.token) return;
       const r = this.selLx;
       if (!r || r.id !== this.lout.id || this.lout.busy) return;
-      if (this.lxRunning(r)) this.loadLxOut();
+      if (this.lxStoppable(r)) this.loadLxOut();
       else if (this.lout.after > 0) { this.lout.after--; this.loadLxOut(); }
     },
     get lxOutLine() {                          // over the log: how many lines
@@ -2423,6 +2481,11 @@ function apiMessage(data, r) {
    status such as 0xC0000005); a log line's text without a terminal's escapes */
 function lxRows(d) {
   return Array.isArray(d) ? d : d && Array.isArray(d.extensions) ? d.extensions : [];
+}
+function lxInside(folder, file) {                // a file of the extension by its path in the folder; any other in full
+  const base = String(folder || '').replace(/[\\/]+$/, '');
+  const rest = base && file.toLowerCase().startsWith(base.toLowerCase()) ? file.slice(base.length) : '';
+  return /^[\\/]/.test(rest) ? rest.replace(/^[\\/]+/, '') : file;
 }
 function lxRowOf(d) {
   if (d && typeof d.id === 'string') return d;

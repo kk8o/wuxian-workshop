@@ -1,10 +1,11 @@
 """The 本机 part of the 扩展 page and what took the 程序 page's place: app.js run under Node (skipped without it) against a
 stand-in for /api/local* (the shapes of the layers contract, third part, section 3): the page reads the rows and the
-manifest's capabilities; a row's state reads 运行中 / 启动中 / 启动失败 / 异常退出 / 已退出 / 未运行 / 已停用; the one
-selected shows its facts, its options as a form (a change posts that option alone, typed as its kind), its capabilities,
+manifest's capabilities; a row's state reads 运行中 / 启动中 / 清单有误 / 异常退出 / 已退出 / 未运行 / 已停用 (the rest of
+the eight states and 批准: tests/ui/test_local_approval.py); the one selected shows its facts, what it adds to other apps
+(补充: the row's adds, by app), its options as a form (a change posts that option alone, typed as its kind), its capabilities,
 its log (read from the cursor on, paged, a terminal's escapes taken out, every second while it runs and the tab shows,
 twice more after it stopped); 启用, 载入, 停止 and 检查 post what the contract says and show the check's problems; the
-stream's `local` event carries the rows. Nothing of the 程序 page is left in the page's files."""
+stream's `local` event carries the rows (the log across a moved output.log: tests/ui/test_local_rotation.py). Nothing of the 程序 page is left in the page's files."""
 import json
 import re
 import shutil
@@ -50,8 +51,8 @@ function reset() {
                 { name: 'name', kind: 'text', title: '称呼', default: '', hint: '怎么称呼玩家' }] },
     { id: 'warm', title: '预热', path: 'C:\\ext\\warm', enabled: true, start: 'workshop', state: 'starting', pid: 5, started: T0,
       capabilities: [], options: [] },
-    { id: 'broke', title: '', path: 'C:\\ext\\broke', enabled: true, start: 'use', state: 'failed', pid: null, started: null,
-      exit_code: null, error: 'initialize: no answer in 180 s', capabilities: [], options: [] },
+    { id: 'broke', title: '', path: 'C:\\ext\\broke', enabled: true, start: 'use', state: 'stopped', pid: null, started: null,
+      exit_code: null, error: 'run: a list of strings', command: null, capabilities: [], options: [] },
     { id: 'crash', title: '崩溃', path: 'C:\\ext\\crash', enabled: true, start: 'use', state: 'exited', exit_code: 3221225477,
       started: T0 - 60, capabilities: ['crash.x'], options: [] },
     { id: 'done', title: '退出', path: 'C:\\ext\\done', enabled: true, start: 'use', state: 'exited', exit_code: 0,
@@ -235,10 +236,13 @@ const posts = () => calls.filter((c) => c[1]).map((c) => [c[0], c[1]]);
   await settle();
   out.sse.bare = calls.map((c) => c[0]);
 
-  // 补充: the apps it annotates (their titles once /api/kit/apps answered, else their ids), the skills it supplements;
-  // selecting one that annotates reads the apps when they are not known yet
-  const fx = { id: 'facts', title: '图鉴速查', state: 'stopped', enabled: true, capabilities: [], options: [],
-               annotate: [{ app: 'guild', call: 'facts.lookup' }, { app: 'raid', call: 'facts.lookup' }], extends: ['guild-chat'] };
+  // 补充: what it adds by app (the apps' titles once /api/kit/apps answered, else their ids): the capability that
+  // answers a wake, the skill file by its path in the folder; selecting one that adds reads the apps when they are not
+  // known yet
+  const fx = { id: 'facts', title: '图鉴速查', path: 'C:\\ext\\facts', state: 'stopped', enabled: true, capabilities: [], options: [],
+               adds: { raid: { wake: { call: 'facts.lookup', timeout: 2.5 }, skill: null },
+                       guild: { wake: { call: 'facts.lookup', timeout: 3 }, skill: 'C:\\ext\\facts\\skills\\guild-chat.md' },
+                       trade: { wake: null, skill: 'D:\\shared\\trade.md' }, none: { wake: null, skill: null } } };
   st.apps.data = null;
   out.adds = { bare: st.lxAdds(fx), none: st.lxAdds(st.lx.list[0]), empty: st.lxAdds(st.lxCur.id ? null : st.lxCur) };
   st.lx.list.push(fx);
@@ -255,7 +259,7 @@ const posts = () => calls.filter((c) => c[1]).map((c) => [c[0], c[1]]);
   // in English
   globalThis.Alpine = { store: () => ({ v: 'en' }) };
   st.lang = 'en';
-  out.english = ['running', 'starting', 'failed', 'off', 'stopped'].map((s) => st.lxState({ state: s, enabled: s !== 'off' }).text)
+  out.english = ['running', 'starting', 'off', 'stopped'].map((s) => st.lxState({ state: s, enabled: s !== 'off' }).text)
     .concat([st.lxState({ state: 'exited', exit_code: 2 }).text, st.lxStart({ start: 'workshop' }), st.lxKind('keep'),
              st.lxAdds(fx)]);
   process.stdout.write(JSON.stringify(out));
@@ -284,7 +288,7 @@ class LocalPart(unittest.TestCase):
 
     def test_states(self):
         self.assertEqual(self.out["states"], [
-            ["voice", "运行中", "ok"], ["warm", "启动中", "warn"], ["broke", "启动失败", "bad"], ["crash", "异常退出", "bad"],
+            ["voice", "运行中", "ok"], ["warm", "启动中", "warn"], ["broke", "清单有误", "bad"], ["crash", "异常退出", "bad"],
             ["done", "已退出", "off"], ["idle", "未运行", "off"], ["off", "已停用", "off"]])
 
     def test_the_one_selected(self):
@@ -344,9 +348,12 @@ class LocalPart(unittest.TestCase):
 
     def test_supplements(self):
         a = self.out["adds"]
-        self.assertEqual((a["bare"], a["none"], a["empty"]), ("guild（附注）、raid（附注）、guild-chat（技能）", "", ""))
+        guild = {"app": "guild", "title": "guild", "wake": "facts.lookup · 3 秒", "skill": "skills\\guild-chat.md"}
+        raid = {"app": "raid", "title": "raid", "wake": "facts.lookup · 2.5 秒", "skill": ""}
+        trade = {"app": "trade", "title": "trade", "wake": "", "skill": "D:\\shared\\trade.md"}   # not in its folder: in full
+        self.assertEqual((a["bare"], a["none"], a["empty"]), ([guild, raid, trade], [], []))    # by app; one that adds nothing: left out
         self.assertEqual(a["read"], ["/api/kit/apps"])                   # the apps' titles: read once
-        self.assertEqual(a["titled"], "公会聊天（附注）、raid（附注）、guild-chat（技能）")
+        self.assertEqual(a["titled"], [dict(guild, title="公会聊天"), raid, trade])
         self.assertEqual(a["again"], [])
 
     def test_stream_event(self):
@@ -356,9 +363,9 @@ class LocalPart(unittest.TestCase):
         self.assertEqual(s["bare"], ["/api/local"])                      # no rows: read again (the same revision)
 
     def test_english(self):
-        self.assertEqual(self.out["english"], ["Running", "Starting", "Failed to start", "Off", "Not running", "Crashed",
-                                               "With Wuxian Workshop", "Store",
-                                               "公会聊天 (annotations), raid (annotations), guild-chat (skill)"])
+        self.assertEqual(self.out["english"][:7], ["Running", "Starting", "Off", "Not running", "Crashed",
+                                                   "With Wuxian Workshop", "Store"])
+        self.assertEqual([a["wake"] for a in self.out["english"][7]], ["facts.lookup · 3 s", "facts.lookup · 2.5 s", ""])
 
 
 class Template(unittest.TestCase):
