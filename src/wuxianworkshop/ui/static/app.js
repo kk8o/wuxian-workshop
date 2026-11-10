@@ -5,9 +5,12 @@
      GET  /api/session                 -> {token, port, url, mcp_url, version}: taken once at load, then every request
                                           carries Authorization: Bearer <token>
      GET  /api/status                  -> daemon / game / link / watch / reload_pending / mcp_url (status and connect pages)
-     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language, font_scale}; the app is the
-                                          development environment only: a "player" mode left in old settings is switched
-                                          back to "developer" once (migrateMode)
+     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language, font_scale,
+                                          extension_approval}; the app is the development environment only: a "player"
+                                          mode left in old settings is switched back to "developer" once (migrateMode).
+                                          extension_approval: "ask" (the default: a local extension's command waits for
+                                          the player's 允许运行 before its first run) or "auto" (the workshop allows it by
+                                          itself); the mode has no part in it
      GET  /api/logs?tail=1&limit=      -> {entries, next, truncated}: the newest of the backlog at load; then
      GET  /api/events?token=&since=    -> SSE "log" / "status" events, and "local" ({revision, extensions}: the local
                                           extensions' rows, whenever they change); reconnects itself with since=<last id>
@@ -42,6 +45,7 @@
                                           state: off | stopped | starting | running | hung | stopping | exited | backoff,
                                           since, why, pid, started, exit_code, error (a manifest that cannot be read:
                                           state stopped), command:[argv] | null, approval: ok | needed | changed,
+                                          allowed (true: its command may run as it is, approved or the setting is "auto"),
                                           capabilities:[id], sources:[name], options:[{name, kind, title, default, hint,
                                           choices, min, max, step, unit, value}], apps, skills, adds:{app:{wake:{call,
                                           timeout} | null, skill: path | null}}}; GET /api/local/manifest -> {revision,
@@ -248,8 +252,9 @@ function appState() {
     token: null,
     status: null, statusAt: 0, daemonStarted: null,
     session_: null,
-    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto', font_scale: 100 },
-    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto', font_scale: '100' },
+    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto', font_scale: 100,
+                extension_approval: 'ask' },
+    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto', font_scale: '100', extension_approval: 'ask' },
     settingsNote: '', settingsLoaded: false,
     logRev: 0, logTotal: 0, errCount: 0, lastId: 0,   // the kept entries are in `book`: these change once per batch
     kinds: Object.fromEntries(KINDS.map(k => [k, true])),
@@ -1371,8 +1376,9 @@ function appState() {
       return t('{at} 起', { at });
     },
     // 批准: the workshop runs an extension's command only once the player has allowed it (and again after the command
-    // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask)
-    lxUnapproved(r) { return !!r && (r.approval === 'needed' || r.approval === 'changed'); },
+    // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask).
+    // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动允许)
+    lxUnapproved(r) { return !!r && r.allowed !== true && (r.approval === 'needed' || r.approval === 'changed'); },
     lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
     lxApprovalTitle(r) { return r && r.approval === 'changed' ? t('运行命令已变更') : t('需要批准'); },
     lxCommand(r) {                             // the command as one line: an argument with a blank or a quote in quotes
@@ -2275,10 +2281,14 @@ function appState() {
     // ---- settings
     applySettings(s) {
       if (!s) return;
+      const asked = this.settings.extension_approval;
       this.settings = Object.assign({}, this.settings, s, { game_dir: s.game_dir || '' });
+      this.settings.extension_approval = this.settings.extension_approval === 'auto' ? 'auto' : 'ask';   // unknown: ask
       this.form = { capture: this.settings.capture, game_dir: this.settings.game_dir,
                     autostart: !!this.settings.autostart, language: this.settings.language || 'auto',
-                    font_scale: String(this.settings.font_scale || 100) };
+                    font_scale: String(this.settings.font_scale || 100),
+                    extension_approval: this.settings.extension_approval };
+      if (this.settings.extension_approval !== asked && this.lx.list !== null) this.loadLocal(true);   // the rows' 批准 follows
       this.applyLang(this.settings.language);
       this.applyScale(this.settings.font_scale);
     },

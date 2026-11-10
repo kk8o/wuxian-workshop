@@ -519,7 +519,7 @@ EXT_FILES = ("wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py
 EXT_MAIN = '''"""{{title}} ({{id}}): a local extension of 无限工坊 (Wuxian Workshop). The workshop starts it (wuxian-extension.json:
 run) and calls its capabilities; the agent sees each one as the tool wk_{{id}}_<name>. How to write one: the workshop's
 extension_guide. After a change: extension_load {"id": "{{id}}"}, call its tools, read extension_logs {"id": "{{id}}"}.
-In player mode the player allows its command once in the workshop's App (Extensions page) before it runs."""
+The player allows its command once in the workshop's App (Extensions page) before it runs."""
 from wuxiankit import Extension, ExtensionError
 
 ext = Extension()

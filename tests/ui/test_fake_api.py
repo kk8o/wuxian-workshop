@@ -57,7 +57,8 @@ class Endpoints(unittest.TestCase):
     def test_status_shape(self):
         s = self.client.get("/api/status", headers=AUTH).json()
         self.assertTrue({"daemon", "game", "link", "watch", "reload_pending", "mcp_url"} <= set(s))
-        self.assertTrue({"version", "pid", "uptime", "mode", "started", "url", "fake"} <= set(s["daemon"]))
+        self.assertTrue({"version", "pid", "uptime", "mode", "extension_approval", "started", "url", "fake"} <= set(s["daemon"]))
+        self.assertEqual(s["daemon"]["extension_approval"], "ask")
         self.assertTrue({"found", "pid", "build", "version", "client", "start"} <= set(s["game"]))
         self.assertTrue({"state", "session", "slot_next", "slots_left", "hb", "capture", "ping_p50", "last_frame"} <= set(s["link"]))
 
@@ -125,7 +126,8 @@ class Endpoints(unittest.TestCase):
     def test_settings(self):
         s = self.client.get("/api/settings", headers=AUTH).json()
         self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "autostart", "language", "font_scale",
-                                  "onboarded"})
+                                  "onboarded", "extension_approval"})
+        self.assertEqual(s["extension_approval"], "ask")         # a local extension's command waits for the player
         self.assertIs(s["onboarded"], False)                     # the 开始 page opens first
         self.assertIs(self.client.post("/api/settings", json={"onboarded": True}, headers=AUTH).json()["onboarded"], True)
         r = self.client.post("/api/settings", json={"mode": "player", "capture": "gdi"}, headers=AUTH).json()
@@ -136,6 +138,12 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(self.client.post("/api/settings", json={"mode": "x"}, headers=AUTH).status_code, 400)
         self.assertEqual(self.client.post("/api/settings", json={"font_scale": "110"}, headers=AUTH).json()["font_scale"], 110)
         self.assertEqual(self.client.post("/api/settings", json={"font_scale": 120}, headers=AUTH).status_code, 400)
+        r = self.client.post("/api/settings", json={"extension_approval": "auto"}, headers=AUTH).json()
+        self.assertEqual((r["extension_approval"], r["mode"]), ("auto", "developer"))            # the mode stays as it was
+        self.assertEqual(self.client.get("/api/status", headers=AUTH).json()["daemon"]["extension_approval"], "auto")
+        r = self.client.post("/api/settings", json={"extension_approval": "always"}, headers=AUTH)
+        self.assertEqual((r.status_code, r.json()["error"]["code"]), (400, "bad_request"))
+        self.assertEqual(self.client.get("/api/settings", headers=AUTH).json()["extension_approval"], "auto")
 
     def test_agents(self):
         """agents.py's shapes, which the 开始 and 接入 Agent pages read"""

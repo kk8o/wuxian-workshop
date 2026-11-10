@@ -12,9 +12,10 @@ host.adds_cache until the registry or an enabled extension's manifest changes (t
 while nothing did; the host sets the cache None whenever the registry is saved, which is also when an extension
 described itself anew). Every answer is a copy.
 
-An extension whose command the player has not allowed (registry.approval is not "ok", in player mode: developer mode
-allows it by itself at its first start) adds nothing: no declaration, no wake, no skill supplement, no reaction, no
-bound control. All of it comes when the player allows it (the registry is saved then, so the table is built anew).
+An extension whose command the player has not allowed (registry.approval is not "ok"; where the setting lets the
+workshop allow commands by itself, host.auto(), it does so at the first start) adds nothing: no declaration, no wake,
+no skill supplement, no reaction, no bound control. All of it comes when the player allows it (the registry is saved
+then, so the table is built anew).
 
 Standard library only.
 """
@@ -89,9 +90,9 @@ def enabled_manifests(host):
 
 
 def allowed(host, entry):
-    """whether the extension's command may run as it is now: the registry says the player allowed it, or the daemon is
-    in developer mode (which allows it by itself when it starts)"""
-    return host.reg.approval(entry) == "ok" or host.mode() == "developer"
+    """whether the extension's command may run as it is now: the registry says the player allowed it, or the workshop
+    allows commands by itself (host.auto(): it does so when the extension starts)"""
+    return host.reg.approval(entry) == "ok" or bool(host.auto())
 
 
 def stamp(path):
@@ -115,11 +116,11 @@ def wake_ok(wake, eid, described):
 
 def table(host):
     """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "controls": {(app, cmd):
-    {ext, call}}} of the enabled extensions, kept while the mode and the stamps of the registry and of the enabled
+    {ext, call}}} of the enabled extensions, kept while auto() and the stamps of the registry and of the enabled
     extensions' manifests stay (save() drops it at once). Not to be changed: the callers copy what they give out"""
     with host.lock:
-        cache, mode = host.adds_cache, host.mode()
-        if cache is not None and cache[2] == mode and all(stamp(path) == was for path, was in cache[0]):
+        cache, auto = host.adds_cache, bool(host.auto())
+        if cache is not None and cache[2] == auto and all(stamp(path) == was for path, was in cache[0]):
             return cache[1]
         stamps = [(host.registry, stamp(host.registry))]
         stamps += [(path, stamp(path)) for path in (M.locate(e["path"])[1] for e in host.load()["extensions"]
@@ -139,7 +140,7 @@ def table(host):
                         built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}"))
         for items in built["adds"].values():
             items.sort(key=lambda a: a["ext"])
-        host.adds_cache = (stamps, built, mode)
+        host.adds_cache = (stamps, built, auto)
         return built
 
 

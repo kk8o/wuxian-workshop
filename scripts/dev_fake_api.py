@@ -3,7 +3,7 @@ data that moves (log lines every second, a link that drops and comes back, pings
 from src/wuxianworkshop/ui/static.
 
     .venv\Scripts\python.exe scripts\dev_fake_api.py [--port 8765] [--token TEXT] [--tick 1.0] [--quiet]
-                                                     [--mode developer|player] [--rotate 400]
+                                                     [--mode developer|player] [--approval ask|auto] [--rotate 400]
         prints the address and the token; open the address in a browser, or open the window on it:
     .venv\Scripts\python.exe -c "from wuxianworkshop.ui.shell import run_app; run_app(['--fake'])"
         (starts this in-process on a free port; or run_app(['--fake', 'http://127.0.0.1:8765/']) for one that is running)
@@ -14,8 +14,9 @@ snaps are drawn with Pillow into a temporary folder, "run" answers canned values
 green. tests/ui/test_fake_api.py drives create_app() with Starlette's TestClient; the shell calls start_in_thread().
 
 The local extensions (the 扩展 page) come in every state: running, stopped, exited, off, not responding, waiting for its
-next try, a manifest that cannot be read. --mode player (or developer mode switched off on the page) also shows the ones
-whose command waits for the player (awaiting approval, command changed): developer mode allows every command by itself.
+next try, a manifest that cannot be read, and the ones whose command waits for the player (awaiting approval, command
+changed). --approval auto (or 本机扩展批准 set to 自动允许 on the page's 设置) allows every command by itself: the setting
+extension_approval, "ask" unless said. The mode (--mode) has no part in it.
 --rotate N starts voice's output again at line 1 after N lines, as the real output.log does at 2 MB.
 """
 import argparse
@@ -89,10 +90,11 @@ def api_version():
 class Fake:
     """the pretend daemon's state: logs (a ring of 5,000), subscribers, settings, the link that comes and goes"""
 
-    def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400):
+    def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400, extension_approval="ask"):
         self.token = token or secrets.token_urlsafe(32)
         self.port = None
         self.mode = mode
+        self.extension_approval = "auto" if extension_approval == "auto" else "ask"   # anything else is "ask"
         self.tick = tick
         self.rotate = rotate                     # a local extension's output starts again at line 1 after this many
         self.started = time.time()
@@ -102,7 +104,8 @@ class Fake:
         self.last_job = 1700000
         self.subscribers = set()
         self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR, "autostart": False,
-                         "language": "auto", "font_scale": 100, "onboarded": False}   # the daemon's shape (daemon/service.py settings())
+                         "language": "auto", "font_scale": 100, "onboarded": False,
+                         "extension_approval": self.extension_approval}   # the daemon's shape (daemon/service.py settings())
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
         # connected, no Cursor and no international Trae
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
@@ -173,6 +176,7 @@ class Fake:
         url = f"http://127.0.0.1:{self.port}/" if self.port else None
         return {
             "daemon": {"version": __version__, "pid": os.getpid(), "uptime": round(now - self.started, 1), "mode": self.mode,
+                       "extension_approval": self.extension_approval,
                        "started": round(self.started, 3), "url": url, "port": self.port,
                        "exe": str(ROOT / ".venv" / "Scripts" / "wuxian.exe"), "fake": True},
             "game": {"found": found, "pid": 24816 if found else None, "build": "70235" if found else None,
@@ -533,8 +537,8 @@ class Fake:
     # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call and
     #      adds to the guild app, translate crashed, lab is off and has never described itself; facts waits for the
     #      player's 允许运行, stats was allowed with another command, ocr no longer answers, sync failed to start and
-    #      waits for its next try, draft has a manifest that cannot be read. In developer mode every row's approval is
-    #      "ok" (a start allows it, by "developer"): --mode player, or 开发者模式 off in the page, shows the rest
+    #      waits for its next try, draft has a manifest that cannot be read. While the setting extension_approval is
+    #      "auto" every row's approval is "ok" (a start allows it, by "developer"): "ask", the default, shows the rest
     def local_seed(self):
         now = self.started
 
@@ -626,8 +630,8 @@ class Fake:
         return " ".join(f'"{c}"' if " " in c else c for c in e["command"] or LOCAL_COMMAND)
 
     def local_approval(self, e):
-        """ok, needed or changed as registry.approval answers; every one is ok in developer mode"""
-        return "ok" if self.mode == "developer" else e["approval"]
+        """ok, needed or changed as registry.approval answers; with extension_approval "auto" every one is ok"""
+        return "ok" if self.extension_approval == "auto" else e["approval"]
 
     def local_row(self, e):
         return dict(id=e["id"], title=e["title"] or e["id"], version=e["version"], path=e["path"], enabled=e["enabled"],
@@ -635,7 +639,8 @@ class Fake:
                     error=e["error"], capabilities=[f"{e['id']}.{c['name']}" for c in e["caps"]],
                     sources=[s["name"] for s in e["sources"]], options=[dict(o) for o in e["options"]],
                     apps=list(e["apps"]), skills=list(e["skills"]), adds={app: dict(a) for app, a in e["adds"].items()},
-                    approval=self.local_approval(e), since=e["since"], why=e["why"],
+                    approval=self.local_approval(e), allowed=self.local_approval(e) == "ok", since=e["since"],
+                    why=e["why"],
                     command=None if e["command"] is None else list(e["command"]))
 
     def local_listing(self):
@@ -703,13 +708,13 @@ class Fake:
         e.update(state=state, since=time.time(), why=why, **more)
 
     def local_allowed(self, e):
-        """before anything that starts its process (load, check): a manifest that cannot be read is a 400; developer
-        mode allows its command by itself; the player's mode answers 403 needs_approval until 允许运行"""
+        """before anything that starts its process (load, check): a manifest that cannot be read is a 400; with
+        extension_approval "auto" its command is allowed here; with "ask" the answer is 403 needs_approval until 允许运行"""
         if e["command"] is None:
             raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
         if e["approval"] == "ok":
             return
-        if self.mode != "developer":
+        if self.extension_approval != "auto":
             what = "its command changed since the player allowed it" if e["approval"] == "changed" else \
                 "the player has not allowed its command yet"
             raise Refused(403, "needs_approval", f"{e['id']}: {what}: confirm it on the Extensions (扩展) page of the "
@@ -934,9 +939,12 @@ class Fake:
                 "addons_dir": GAME_DIR + r"\Interface\AddOns", "available": True}
 
     def update_settings(self, changes):
-        """POST /api/settings as the daemon takes it: mode, capture, game_dir, autostart, language, font_scale (unknown keys ignored)"""
+        """POST /api/settings as the daemon takes it: mode, capture, game_dir, autostart, language, font_scale,
+        extension_approval (unknown keys ignored)"""
         if "capture" in changes and changes["capture"] not in ("gdi", "wgc"):
             raise ValueError('capture: "gdi" or "wgc"')
+        if "extension_approval" in changes and changes["extension_approval"] not in ("ask", "auto"):
+            raise ValueError('extension_approval: "ask" or "auto"')
         if "mode" in changes and changes["mode"] not in ("player", "developer"):
             raise ValueError('mode: "player" or "developer"')
         if "developer" in changes and "mode" not in changes:               # the page's boolean, for convenience
@@ -957,10 +965,13 @@ class Fake:
             self.settings["autostart"] = bool(changes["autostart"])
         if "onboarded" in changes:
             self.settings["onboarded"] = bool(changes["onboarded"])
-        was, self.mode = self.mode, self.settings["mode"]
+        if "extension_approval" in changes:
+            self.settings["extension_approval"] = changes["extension_approval"]
+        self.mode = self.settings["mode"]
+        was, self.extension_approval = self.extension_approval, self.settings["extension_approval"]
         self.entry("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in changes.items()))
         self.broadcast("status", self.status())
-        if self.mode != was:                            # the rows' approval follows the mode
+        if self.extension_approval != was:              # the rows' approval follows the setting
             self.local_changed()
         return dict(self.settings)
 
@@ -1508,14 +1519,18 @@ def main(argv=None):
     ap.add_argument("--tick", type=float, default=1.0, help="seconds between pretend log lines")
     ap.add_argument("--quiet", action="store_true", help="no access log")
     ap.add_argument("--mode", choices=("developer", "player"), default="developer",
-                    help="player: the local extensions' commands wait for 允许运行 (developer mode allows them by itself)")
+                    help="the mode the settings and the status say (the page switches player back to developer)")
+    ap.add_argument("--approval", choices=("ask", "auto"), default="ask",
+                    help="the setting extension_approval. ask: the local extensions' commands wait for 允许运行; "
+                         "auto: every command is allowed by itself")
     ap.add_argument("--rotate", type=int, default=400,
                     help="a local extension's output starts again at line 1 after this many lines")
     args = ap.parse_args(argv)
     import uvicorn
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    fake = Fake(token=args.token, mode=args.mode, tick=args.tick, rotate=max(2, args.rotate))
+    fake = Fake(token=args.token, mode=args.mode, tick=args.tick, rotate=max(2, args.rotate),
+                extension_approval=args.approval)
     fake.port = args.port
     print(f"fake daemon: http://127.0.0.1:{args.port}/   token: {fake.token}", flush=True)
     print("open that in a browser, or the window on it:\n"

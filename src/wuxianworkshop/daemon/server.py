@@ -896,10 +896,12 @@ def saved_settings():
 
 
 def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0, wait_restart=True,
-          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0, window=False, lock=None):
+          worker_factory=None, mutex_name=None, host="127.0.0.1", port=0, window=False, lock=None,
+          extension_approval=None):
     """the daemon in this process: the HTTP server on its thread, the companion on another; returns a DaemonHandle
     (port, token, url, mcp_url; stop(), wait()). AlreadyRunning when another instance holds the mutex.
-    mode / capture / game_dir: None takes what the 设置 page saved (state/settings.json), else developer / wgc.
+    mode / capture / game_dir / extension_approval: None takes what the 设置 page saved (state/settings.json), else
+    developer / wgc / ask (who approves a local extension's command: "ask" the player, "auto" the workshop).
     worker_factory(on_debug=, log=) replaces the CompanionLoop (tests: a loop without a screen).
     window: the program opens a window on the daemon's page once it listens (the shell): POST /api/show before that
     window has set on_show is kept for it (DaemonHandle.show). lock: the single-instance mutex, already taken (the shell
@@ -907,6 +909,7 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
     saved = saved_settings()
     mode = mode or (saved.get("mode") if saved.get("mode") in ("developer", "player") else "developer")
     capture = capture or (saved.get("capture") if saved.get("capture") in ("gdi", "wgc") else "wgc")
+    extension_approval = extension_approval or saved.get("extension_approval")    # not "auto": the Service asks
     saved_dir, gone = saved.get("game_dir") or None, None
     if saved_dir and not game_dir and not is_client(saved_dir):
         gone, saved_dir = saved_dir, None                  # moved, removed or left empty (a finished beta): the running game's
@@ -932,7 +935,8 @@ def start(mode=None, capture=None, game_dir=None, *, rate=0.05, ping_every=10.0,
                 return CompanionLoop(addons, capture=capture, rate=rate, ping_every=ping_every, wait_restart=wait_restart,
                                      installed=installed, log=log, on_debug=on_debug, link=(mode == "developer"),
                                      echo_debug=False)      # the journal gets each debug message once, with its kind
-        service = Service(worker_factory, journal=journal, mode=mode, game_dir=game_dir, sync_addons=real)
+        service = Service(worker_factory, journal=journal, mode=mode, game_dir=game_dir, sync_addons=real,
+                          extension_approval=extension_approval)
         handle = DaemonHandle(service, lock, secrets.token_urlsafe(32), mode, host=host, port=port, window=window)
         handle._start()
     except BaseException:

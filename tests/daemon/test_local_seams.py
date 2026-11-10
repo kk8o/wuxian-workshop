@@ -274,3 +274,67 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
                 msg = self.fails("POST", "/api/local/call", {"cap": "fx.echo"}, status, code)
                 self.assertEqual(msg, error.message)
         self.ok("POST", "/api/local/call", {"cap": "fx.echo"})                 # it was the start, not the extension
+
+
+class Asking(LocalDaemon, unittest.TestCase):
+    """the setting extension_approval over a daemon in developer mode (a daemon's default): "ask" (nothing saved) asks
+    the player once for each command whatever the mode is; "auto" lets the workshop approve by itself"""
+    LETTER = "Y"
+    APPROVAL = None
+
+    def tearDown(self):
+        self.ok("POST", "/api/settings", {"extension_approval": "ask"})
+        super().tearDown()
+
+    def row(self, eid="fx"):
+        return next(r for r in self.ok("GET", "/api/local")["extensions"] if r["id"] == eid)
+
+    def test_ask_is_the_default_whatever_the_mode(self):
+        status = self.ok("GET", "/api/status")["daemon"]
+        self.assertEqual((status["mode"], status["extension_approval"]), ("developer", "ask"))
+        self.assertEqual(self.ok("GET", "/api/settings")["extension_approval"], "ask")
+        row, folder = self.add(apps=[APP])
+        self.assertEqual((row["approval"], row["allowed"], row["capabilities"]), ("needed", False, []))
+        self.assertEqual(self.kit.asked("kit.app.declare"), [])                # nothing of it is there
+        for path, body in (("/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}}),
+                           ("/api/local/load", {"id": "fx"}), ("/api/local/check", {"id": "fx"}),
+                           ("/api/local/check", {"path": str(folder)})):
+            self.assertIn("the player has not confirmed", self.fails("POST", path, body, 403, "needs_approval"))
+        self.assertEqual((self.row()["state"], self.row()["pid"]), ("stopped", None))
+        self.assertEqual(self.ok("POST", "/api/local/approve", {"id": "fx"})["approval"], "ok")
+        self.assertEqual(self.svc.local.reg.entry("fx")["approved"]["by"], "player")
+        self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
+        self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}})["result"]["text"], "a")
+
+    def test_auto(self):
+        self.add(apps=[APP])
+        self.assertEqual(self.kit.asked("kit.app.declare"), [])
+        revision = self.ok("GET", "/api/local")["revision"]
+        res = self.ok("POST", "/api/settings", {"extension_approval": "auto"})
+        self.assertEqual((res["extension_approval"], res["mode"]), ("auto", "developer"))
+        self.assertNotIn("install", res)
+        self.assertEqual(self.ok("GET", "/api/status")["daemon"]["extension_approval"], "auto")
+        self.assertEqual(json.loads((self.root / "home" / "state" / "settings.json").read_text(encoding="utf-8"))
+                         ["extension_approval"], "auto")
+        # what it adds is there at once (its apps are declared, the rows are read again); its command is approved
+        # when it first runs
+        self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
+        self.assertGreater(self.ok("GET", "/api/local")["revision"], revision)
+        self.assertEqual((self.row()["approval"], self.row()["allowed"]), ("needed", True))
+        self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}})["result"]["text"], "a")
+        self.assertEqual((self.row()["approval"], self.svc.local.reg.entry("fx")["approved"]["by"]), ("ok", "developer"))
+        self.add("fy")                                     # a new one says what it can do at once: nobody is asked
+        self.assertTrue(until(lambda: self.row("fy")["capabilities"] and self.row("fy")["state"] == "stopped"))
+        self.assertEqual(self.row("fy")["approval"], "ok")
+        # asking again: what was approved stays approved, a new one waits for the player
+        self.assertEqual(self.ok("POST", "/api/settings", {"extension_approval": "ask"})["extension_approval"], "ask")
+        self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fy.echo", "args": {"text": "b"}})["result"]["text"], "b")
+        row, _ = self.add("fz")
+        self.assertEqual((row["approval"], row["allowed"]), ("needed", False))
+        self.fails("POST", "/api/local/call", {"cap": "fz.echo", "args": {"text": "c"}}, 403, "needs_approval")
+
+    def test_a_value_it_does_not_know(self):
+        for value in ("always", "developer", True, None, ""):
+            self.assertIn('"ask" or "auto"',
+                          self.fails("POST", "/api/settings", {"extension_approval": value}, 400, "bad_request"))
+        self.assertEqual(self.ok("GET", "/api/settings")["extension_approval"], "ask")

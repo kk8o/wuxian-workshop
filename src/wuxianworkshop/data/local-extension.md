@@ -89,13 +89,16 @@ workshop waits 1, 5, 30, then 120 seconds between tries); when the workshop exit
 
 ### Who lets it run
 
-An extension is a command on the player's computer, so the player decides whether it runs:
+An extension is a command on the player's computer, so the player decides whether it runs. The first time an
+extension would run, its calls answer `needs_approval` until the player clicks 允许运行 (Allow) on its card in the
+workshop App (Extensions page), which shows the command. Tell the player, then go on. When the command changes (the
+folder, or the manifest's `run`, `python`, `env` or `pass`), the player is asked again; changes to the code alone do
+not ask.
 
-- Player mode (the default): the first time an extension would run, its calls answer `needs_approval` until the
-  player clicks 允许运行 (Allow) on its card in the workshop App (Extensions page), which shows the command. Tell the
-  player, then go on. When the command changes (the folder, or the manifest's `run`, `python`, `env` or `pass`), the
-  player is asked again; changes to the code alone do not ask.
-- Developer mode: nothing is asked; the workshop allows the command when it starts.
+This is the player's setting 本机扩展批准 (Local extension approval) on the Settings (设置) page of the 无限工坊 App:
+首次运行前询问 (ask, the default) or 自动允许 (allow automatically). With the second nothing is asked: the workshop
+allows the command when it starts. The setting is the player's: no tool changes it or approves a command, and do not
+work around it.
 
 Until it is allowed, nothing of the extension is there: no tools, no apps, nothing added to other apps. Folders on a
 network drive or a `\\server` path cannot be registered at all.
@@ -139,8 +142,8 @@ Settings the player changes on the extension's row in the workshop App: `boolean
 again, all of them, whenever one changes.
 
 Options are the player's. The agent sets them (`extension_set`) only for an extension it registered itself in this
-session (`new_extension`, `extension_add`), or in developer mode; for any other the answer is `not_allowed`: ask the
-player to change it in the App. Turning an extension on or off is not limited this way.
+session (`new_extension`, `extension_add`), or where the player's setting allows extensions automatically; for any
+other the answer is `not_allowed`: ask the player to change it in the App. Turning an extension on or off is not limited this way.
 
 ## Apps and skills
 

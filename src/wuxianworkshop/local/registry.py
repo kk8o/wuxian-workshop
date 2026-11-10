@@ -579,7 +579,8 @@ class Registry:
         return "ok" if now == approved["fingerprint"] else "changed"
 
     def approve(self, eid, by):
-        """the entry's command as it is now is allowed: approved {fingerprint, at, by} ("player" or "developer");
+        """the entry's command as it is now is allowed: approved {fingerprint, at, by} ("player": in the App;
+        "developer": the workshop by itself, where the setting says so, the name is kept for what is stored);
         saves, and gives the entry. One that is allowed as it is stays as it was. ApiError bad_manifest when its
         manifest cannot be read (there is no command to allow)"""
         if by not in APPROVERS:

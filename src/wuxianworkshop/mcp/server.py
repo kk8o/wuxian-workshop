@@ -293,14 +293,14 @@ def build_server(backend, name="wuxian"):
 
     async def noted(answer):
         """a local extension's row, {row, ...} or {extensions: [row]} as the agent gets it: where the player has to
-        allow an extension before it runs (approval needed / changed; never in developer mode, which allows them as
-        they start), `approval_note` says so and how"""
+        allow an extension before it runs (approval needed / changed; never while the player's setting is "auto":
+        无限工坊 then allows them as they start), `approval_note` says so and how"""
         if not isinstance(answer, dict):
             return answer
         rows = answer.get("extensions") if isinstance(answer.get("extensions"), list) else None
         row = answer.get("row") if isinstance(answer.get("row"), dict) else None
         waiting = [r for r in (rows if rows is not None else [row or answer]) if kit_tools.approval_of(r)]
-        if not waiting or await kit_tools.mode_of(backend) == "developer":
+        if not waiting or await kit_tools.auto_of(backend) is True:
             return answer
         if rows is not None:
             names = ", ".join(f"{r.get('id')} ({kit_tools.APPROVALS[r['approval']]})" for r in waiting)
@@ -667,9 +667,10 @@ def build_server(backend, name="wuxian"):
         """Turn a local extension on or off (off: it stops and its tools go), or set some of its options by name
         (checked against what it declared; a running one is told at once). Example: {"id": "voice", "options":
         {"volume": 80}}. Options: only of an extension you registered in this session (new_extension, extension_add),
-        or in developer mode; any other answers not_allowed, the player sets those in the 无限工坊 App."""
+        or while the player's setting 本机扩展批准 (Local extension approval) is 自动允许 (allow automatically); any
+        other answers not_allowed, the player sets those in the 无限工坊 App."""
         if (options is not None and not presence.registers(id)
-                and await kit_tools.mode_of(backend) != "developer"):
+                and await kit_tools.auto_of(backend) is not True):
             raise ToolError(f"not_allowed: the options of {id} are the player's to set, on the Extensions (扩展) page of "
                             "the 无限工坊 App: tell the player which option and which value. You set the options only "
                             "of an extension you registered in this session (new_extension, extension_add). Turning "
@@ -681,8 +682,9 @@ def build_server(backend, name="wuxian"):
         """Check a local extension without touching the running one: an id, or the full path of a folder that is not
         registered yet. Its manifest, a start of its own (it runs the extension's command; initialize: the
         capabilities, sources and options it declares), its tests (they run). Answers {ok, problems, capabilities,
-        tests?}. One the player has not allowed to run, and outside developer mode a folder that is not registered,
-        fails with needs_approval."""
+        tests?}. One the player has not allowed to run fails with needs_approval; so does a folder that is not
+        registered, unless the player's setting 本机扩展批准 (Local extension approval) is 自动允许 (allow
+        automatically; the default is 首次运行前询问, ask before the first run)."""
         return await call(backend.extension_check(id))
 
     @mcp.tool(annotations=READ_ONLY)

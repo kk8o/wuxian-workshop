@@ -30,7 +30,7 @@ class AddsTests(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(self.root / "home")})
         self.env.start()
         self.host = H.Host(self.root / "state", version="9.9.9", on_call=self.on_call, python=sys.executable,
-                           sdk=self.root / "sdk")
+                           sdk=self.root / "sdk", auto=lambda: True)      # nobody is asked (test_not_approved asks)
 
     def tearDown(self):
         self.host.close()
@@ -155,13 +155,13 @@ class AddsTests(unittest.TestCase):
             self.assertEqual(len(self.host.adds("raid")), 1)
 
     def test_not_approved(self):
-        """player mode: an extension whose command the player has not allowed (or that changed since) adds nothing,
-        its apps are not declared; allowed, all of it is there. Developer mode does not ask"""
+        """an extension whose command the player has not allowed (or that changed since) adds nothing, its apps are
+        not declared; allowed, all of it is there. Where the workshop allows commands by itself nobody is asked"""
         self.add("fx", apps=[APP], adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})
         self.add("fa", apps=[{"app": "fa_one"}])
         said = {"fx": "needed", "fa": "ok"}
-        mode = ["player"]
-        self.host.mode = lambda: mode[0]
+        auto = [False]
+        self.host.auto = lambda: auto[0]
         with mock.patch.object(self.host.reg, "approval", side_effect=lambda e: said[e["id"]]):
             for word in ("needed", "changed"):
                 said["fx"] = word
@@ -170,10 +170,10 @@ class AddsTests(unittest.TestCase):
                 self.assertEqual((self.host.adds("guild"), self.host.app_reactions("companion"),
                                   self.host.control_call("companion", "mute")), ([], [], None))
                 self.assertEqual([e["id"] for e, _ in self.host.enabled_manifests()], ["fa"])
-            mode[0] = "developer"                              # the mode alone changes the table
+            auto[0] = True                                     # the setting alone changes the table
             self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
             self.assertEqual(len(self.host.adds("guild")), 1)
-            mode[0] = "player"
+            auto[0] = False
             self.assertEqual([eid for eid, _ in self.host.declarations()], ["fa"])
             said["fx"] = "ok"
             self.host.adds_cache = None

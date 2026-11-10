@@ -53,8 +53,8 @@ class GateCase(HostCase):
 
 
 class Approval(GateCase):
-    def test_player_mode_runs_nothing_that_is_not_approved(self):
-        self.mode_now = "player"
+    def test_nothing_runs_that_is_not_approved(self):
+        self.auto_now = False
         row, folder = self.add(tests={"test_ok.py": A_TEST})
         self.assertEqual((row["state"], row["approval"], row["pid"]), ("stopped", "needed", None))
         fut = self.host.ensure("fx")
@@ -81,7 +81,7 @@ class Approval(GateCase):
         self.assertEqual((self.pids(), self.check_pids(), self.host.procs, self.host.starting), ([], [], {}, {}))
 
     def test_one_that_starts_with_the_workshop(self):
-        self.mode_now = "player"
+        self.auto_now = False
         row, _ = self.add(start="workshop")                            # registered, not started
         self.assertEqual((row["state"], row["approval"]), ("stopped", "needed"))
         self.host.autostart()
@@ -94,7 +94,7 @@ class Approval(GateCase):
         self.assertEqual(len(self.pids()), 1)
 
     def test_the_player_approves(self):
-        self.mode_now = "player"
+        self.auto_now = False
         self.add()
         self.refused(self.host.call_sync, "fx.echo", {"text": "a"})
         row = self.host.approve("fx")
@@ -120,12 +120,12 @@ class Approval(GateCase):
             self.host.approve("nope")
         self.assertEqual(cm.exception.code, "not_found")
 
-    def test_developer_mode_approves_as_it_goes(self):
+    def test_the_workshop_approves_as_it_goes(self):
         self.add()
         self.assertEqual(self.host.get("fx")["approval"], "needed")
         self.assertEqual(self.host.call_sync("fx.echo", {"text": "a"})["text"], "a")
         self.assertEqual(self.approved, [("fx", "developer")])
-        self.assertTrue(any("local extension fx: its command is approved (developer mode)" in n for n in self.notes))
+        self.assertTrue(any("local extension fx: its command is approved (the setting allows it by itself)" in n for n in self.notes))
         self.assertEqual(self.host.get("fx")["approval"], "ok")
         self.host.stop("fx")
         self.change()                                                  # its check and its reload too
@@ -139,7 +139,7 @@ class Approval(GateCase):
         folder = make_extension(self.root / "ext" / "loose", "loose", tests={"test_ok.py": A_TEST})
         broken = make_extension(self.root / "ext" / "broken", "broken")
         (broken / "wuxian-extension.json").write_text("{", encoding="utf-8")
-        self.mode_now = "player"
+        self.auto_now = False
         with self.assertRaises(ApiError) as cm:
             self.host.check(str(folder))
         err = cm.exception
@@ -151,7 +151,7 @@ class Approval(GateCase):
         self.assertFalse(res["ok"])
         self.assertTrue(res["problems"])
         self.assertEqual(self.spawn.call_count, 0)
-        self.mode_now = "developer"                                    # the developer's own computer: checked
+        self.auto_now = True                                           # the workshop approves by itself: checked
         res = self.host.check(str(folder))
         self.assertTrue(res["ok"], res["problems"])
         self.assertIn("loose.echo", res["capabilities"])

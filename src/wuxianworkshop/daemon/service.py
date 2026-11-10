@@ -57,6 +57,9 @@ OWN_READS = ("kit.revision", "kit.manifest", "kit.capabilities", "kit.apps")   #
 WORKER_TIMEOUT = 30.0        # seconds a request may wait for the worker thread (a WGC snapshot may hold it for one)
 MAX_TIMEOUT_MS = 600_000
 FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's size in per cent (app.js applyScale)
+# the settings' extension_approval, who approves a local extension's command before its first run: "ask" the player
+# (once for each command, in the App), "auto" the workshop by itself (for developing extensions)
+EXTENSION_APPROVALS = ("ask", "auto")
 MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
@@ -151,8 +154,11 @@ def _seen(fut):
 
 class Service:
     def __init__(self, worker_factory, *, journal, mode="developer", game_dir=None, version=__version__, updater=None,
-                 sync_addons=False):
+                 sync_addons=False, extension_approval="ask"):
         self.journal, self.mode, self.game_dir, self.version = journal, mode, game_dir, version
+        # who approves a local extension's command (EXTENSION_APPROVALS): "ask" the player, once for each command, or
+        # "auto", the workshop by itself (for developing extensions). The mode has no say in it
+        self.extension_approval = extension_approval if extension_approval in EXTENSION_APPROVALS else "ask"
         self.sync_addons_on = sync_addons     # the real daemon: the game folder's addons follow the program (sync_addons)
         self.addon_sync, self.addons_pending = None, None
         self.updater, self.update_checks = updater, None      # updater.Updater; made in start() unless given
@@ -175,7 +181,7 @@ class Service:
         self.tracing = asyncio.Lock()         # one trace at a time: they share the game-side frame
         self.history_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wuxian-history")
         self.history_big = set()             # addons too big to keep: said once
-        self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), mode=lambda: self.mode,
+        self.local = LocalHost(note=lambda text: self.journal.add("INFO", text), auto=lambda: self.extension_approval == "auto",
                                on_event=self.local_event,
                                on_call=self.extension_calls, on_change=self.local_changed)   # local/host.py
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
@@ -488,7 +494,8 @@ class Service:
             reload_pending = comp.reload_pending()
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
-                                mode=self.mode, started=round(self.started, 3), url=self.url,
+                                mode=self.mode, extension_approval=self.extension_approval,
+                                started=round(self.started, 3), url=self.url,
                                 command=[exe, *args[:-1]], isolated=isolated()),
                     game=w.game_status(), link=link, watch=watch, reload_pending=reload_pending, mcp_url=self.mcp_url,
                     addons_dir=str(w.addons) if w.addons else None,
@@ -1834,11 +1841,12 @@ class Service:
 
     async def extension_add(self, path):
         """registers a local extension by its folder (or its wuxian-extension.json): its row; its apps are told to
-        WuxianKit now while the game is online (reconcile_local_apps). Developer mode asks nobody, so one that
-        starts on use is started here once, only to learn what it can do (Host.describe): its tools and options are
-        there before its first call. Player mode does that when the player allows its command (extension_approve)"""
+        WuxianKit now while the game is online (reconcile_local_apps). Where the setting asks nobody
+        (extension_approval "auto"), one that starts on use is started here once, only to learn what it can do
+        (Host.describe): its tools and options are there before its first call. Else that is done when the player
+        allows its command (extension_approve)"""
         row = await asyncio.to_thread(self.local.add, path)
-        if self.mode == "developer" and row.get("enabled") and row.get("start") == "use" and not row.get("error"):
+        if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" and not row.get("error"):
             self.local.describe(row["id"]).add_done_callback(_seen)   # in the background: its row says how it went
         await self.reconcile_local_apps()
         return row
@@ -2525,11 +2533,12 @@ class Service:
 
     async def settings(self, update=None):
         """GET: the settings; POST: change some (mode, capture, game_dir, autostart, language, font_scale: the page's size
-        in per cent, onboarded: the 开始 page's steps were done or put off) and keep them. A change of
+        in per cent, onboarded: the 开始 page's steps were done or put off, extension_approval: "ask" or "auto", who
+        approves a local extension's command) and keep them. A change of
         mode also installs what that mode needs (developer: WoWBridge and its mailbox; player: removes them); the
         answer then carries that install's result as `install`"""
         stored = self.stored_settings()
-        mode_before = self.mode
+        mode_before, approval_before = self.mode, self.extension_approval
         if update:
             if not isinstance(update, dict):
                 raise ApiError(400, "bad_request", "a JSON object of settings")
@@ -2537,6 +2546,8 @@ class Service:
                 raise ApiError(400, "bad_request", 'capture: "gdi" or "wgc"')
             if "mode" in update and update["mode"] not in ("player", "developer"):
                 raise ApiError(400, "bad_request", 'mode: "player" or "developer"')
+            if "extension_approval" in update and update["extension_approval"] not in EXTENSION_APPROVALS:
+                raise ApiError(400, "bad_request", 'extension_approval: "ask" or "auto"')
             if "language" in update and update["language"] not in ("auto", "zh-CN", "en"):
                 raise ApiError(400, "bad_request", 'language: "auto", "zh-CN" or "en"')
             if "font_scale" in update:                   # the page sends a select's value: "125" or 125
@@ -2555,19 +2566,26 @@ class Service:
                 self.worker.link = update["mode"] == "developer"
             if "game_dir" in update:
                 self.game_dir = update["game_dir"] or None
+            if "extension_approval" in update:
+                self.extension_approval = update["extension_approval"]
             for key in ("autostart", "language", "font_scale", "onboarded"):
                 if key in update:
                     stored[key] = update[key]
             if "language" in update:                     # what the program says from now on (i18n.py)
                 i18n.set_language(update["language"])
-            stored.update(mode=self.mode, capture=self.worker.capture_wanted, game_dir=self.game_dir)
+            stored.update(mode=self.mode, capture=self.worker.capture_wanted, game_dir=self.game_dir,
+                          extension_approval=self.extension_approval)
             path = settings_file()
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, path)
             self.journal.add("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in update.items()))
+            if self.extension_approval != approval_before:   # what is allowed changed: the rows (the page reads them
+                await asyncio.to_thread(self.local.changed)  # again) and the apps the extensions declare
+                await self.reconcile_local_apps()
         answer = dict(mode=self.mode, capture=self.worker.capture_wanted, capture_in_use=self.worker.capture,
-                      game_dir=self.game_dir, autostart=bool(stored.get("autostart", False)),
+                      game_dir=self.game_dir, extension_approval=self.extension_approval,
+                      autostart=bool(stored.get("autostart", False)),
                       language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)),
                       font_scale=stored["font_scale"] if stored.get("font_scale") in FONT_SCALES else 100)
         if update and self.mode != mode_before:

@@ -3,8 +3,11 @@ stand-in for /api/local* in the shapes of contract5 (sections 7, 8, 11). A row's
 运行中 / 无响应 / 停止中 / 已退出 or 异常退出 / 等待重试 (清单有误 with its error, 待批准 while it waits for the player), with
 since when and why; a row whose approval is needed or changed shows its command and folder with 允许运行 (POST
 /api/local/approve, the row it answers taken in); a start or a check the daemon refuses with 403 needs_approval shows
-the same, not an error; with approval ok (always, in developer mode) nothing of it shows."""
+the same, not an error; with approval ok nothing of it shows, nor for a row that says allowed (the setting
+extension_approval is "auto"). The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动允许): the form carries
+it, "ask" unless the daemon says "auto", and the rows are read again when it changes."""
 import json
+import re
 import subprocess
 import unittest
 
@@ -186,6 +189,35 @@ const paths = () => calls.map((c) => c[0]);
                   waits: st.lxState({ state: 'stopped', approval: 'needed' }).text,
                   titles: [st.lxApprovalTitle({ approval: 'needed' }), st.lxApprovalTitle({ approval: 'changed' })],
                   since: st.lxSince(of('ocr')) };
+
+  // a row the daemon allows by itself (the setting is "auto") asks nothing; allowed false or missing changes nothing
+  st.lang = 'zh-CN';
+  globalThis.Alpine = { store: () => ({ v: 'zh-CN' }) };
+  const waits = (more) => Object.assign({ id: 'w', state: 'stopped', approval: 'needed' }, more);
+  out.allowed = { auto: [st.lxUnapproved(waits({ allowed: true })), st.lxNeeds(waits({ allowed: true })),
+                         st.lxState(waits({ allowed: true })).text],
+                  changed: st.lxUnapproved(waits({ approval: 'changed', allowed: true })),
+                  ask: [st.lxUnapproved(waits({ allowed: false })), st.lxState(waits({ allowed: false })).text],
+                  old: st.lxUnapproved(waits()) };
+
+  // 设置 · 本机扩展批准: "ask" until the daemon says "auto"; the form follows, and the rows are read again on a change
+  document.documentElement = { style: { setProperty() {} } };
+  const reread = () => paths().filter((p) => p === '/api/local').length;
+  const now = () => [st.settings.extension_approval, st.form.extension_approval];
+  out.setting = { first: now() };
+  calls.length = 0;
+  st.applySettings({ language: 'zh-CN', mode: 'developer', capture: 'gdi' });          // an older daemon: no such key
+  await settle();
+  out.setting.without = [now(), reread()];
+  st.applySettings({ language: 'zh-CN', extension_approval: 'auto' });
+  await settle();
+  out.setting.auto = [now(), reread()];
+  st.applySettings({ language: 'zh-CN', capture: 'wgc' });                             // the key left out: as it was
+  await settle();
+  out.setting.kept = [now(), reread()];
+  st.applySettings({ language: 'zh-CN', extension_approval: 'nonsense' });
+  await settle();
+  out.setting.unknown = [now(), reread()];
   process.stdout.write(JSON.stringify(out));
 })().catch((e) => { console.error(e.stack); process.exit(1); });
 """
@@ -275,6 +307,55 @@ class Approval(unittest.TestCase):
         self.assertEqual(e["states"], ["Not responding", "Stopping", "Waiting to retry", "Manifest error", "Off", "Crashed"])
         self.assertEqual((e["waits"], e["titles"]), ("Awaiting approval", ["Approval needed", "Run command changed"]))
         self.assertRegex(e["since"], r"^since \S")
+
+    def test_a_row_allowed_anyway_asks_nothing(self):
+        a = self.out["allowed"]
+        self.assertEqual(a["auto"], [False, False, "未运行"])                             # the setting is "auto"
+        self.assertFalse(a["changed"])
+        self.assertEqual(a["ask"], [True, "待批准"])
+        self.assertTrue(a["old"])                                                        # a row without the field
+
+    def test_the_setting_in_the_form(self):
+        s = self.out["setting"]
+        self.assertEqual(s["first"], ["ask", "ask"])                                     # before the daemon answered
+        self.assertEqual(s["without"], [["ask", "ask"], 0])
+        self.assertEqual(s["auto"], [["auto", "auto"], 1])                               # changed: the rows read again
+        self.assertEqual(s["kept"], [["auto", "auto"], 1])
+        self.assertEqual(s["unknown"], [["ask", "ask"], 2])                              # what is not known is "ask"
+
+
+class Setting(unittest.TestCase):
+    """本机扩展批准 in index.html: a select of the 常规 form on the 设置 page, posted with it as extension_approval; the
+    line under it shows with 自动允许 only; the words have their English"""
+
+    def setUp(self):
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        start = html.index("<!-- 设置 -->")
+        form = html[html.index('<form class="panel" hx-post="/api/settings"', start):]
+        self.form = form[:form.index("</form>")]
+        self.js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.i18n = (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")
+
+    def test_the_select(self):
+        self.assertIn("<span>本机扩展批准</span>", self.form)
+        start = self.form.index('<select class="input" name="extension_approval" x-model="form.extension_approval">')
+        select = self.form[start:self.form.index("</select>", start)]
+        self.assertEqual(re.findall(r'<option value="(\w+)">([^<]+)</option>', select),
+                         [("ask", "首次运行前询问"), ("auto", "自动允许")])
+        self.assertIn('<p class="muted small" x-show="form.extension_approval === \'auto\'">'
+                      "供开发扩展时使用：新扩展不经确认即可运行命令。</p>", self.form)
+        self.assertLess(start, self.form.index('type="submit"'))
+
+    def test_ask_is_the_default(self):
+        self.assertEqual(len(re.findall(r"extension_approval: 'ask'", self.js)), 2)      # settings and form, before any answer
+        self.assertNotIn("extension_approval: 'auto'", self.js)
+
+    def test_the_english(self):
+        for zh, en in (("本机扩展批准", "Local extension approval"), ("首次运行前询问", "Ask before the first run"),
+                       ("自动允许", "Allow automatically"),
+                       ("供开发扩展时使用：新扩展不经确认即可运行命令。",
+                        "For developing extensions: a new extension runs its command without confirmation.")):
+            self.assertIn(f"'{zh}': '{en}',", self.i18n)
 
 
 class Template(unittest.TestCase):

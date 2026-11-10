@@ -14,8 +14,8 @@ told to on_change(revision) and the subscribers (subscribe).
 An extension starts on the first call of one of its capabilities (start "use"), or with the daemon (start "workshop",
 autostart()); it runs until it is stopped, set off, removed or the daemon ends (close(): shutdown to each, its process
 tree ended after SHUTDOWN_WAIT seconds). One that crashed starts again at its next call. Nothing of it runs before its
-command is approved (allow(): the registry says whether; developer mode approves by itself, player mode refuses with
-needs_approval until the player confirms it in the App).
+command is approved (allow(): the registry says whether; else it is refused with needs_approval until the player
+confirms it in the App, or, where the player's setting says so (auto()), the workshop approves it by itself).
 
 Where an extension is, is one field, its state (self.runs[id], changed only by to()):
 
@@ -93,16 +93,18 @@ class Host:
     args, chain): an extension's call of a capability (chain: the caller chain of the call it is serving, a list
     of strings), a Future of its result (ApiError for a refusal); on_change(revision):
     the extensions changed. python: the interpreter for run ["python", ...] without the manifest's own (default:
-    default_python()); sdk: the folder put first on PYTHONPATH (default: sdk_dir())"""
+    default_python()); sdk: the folder put first on PYTHONPATH (default: sdk_dir()); auto(): whether the workshop
+    approves an extension's command by itself now (the daemon's setting extension_approval is "auto"; default: it
+    does not, the player is asked)"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
-                 python=None, sdk=None, mode=None):
+                 python=None, sdk=None, auto=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
         self.on_event, self.on_call, self.on_change = on_event, on_call, on_change
         self.python = python
-        self.mode = mode or (lambda: "developer")   # mode(): the daemon's mode now, "player" or "developer"
+        self.auto = auto or (lambda: False)         # auto(): the workshop approves a command by itself now
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
         self.lock = threading.RLock()
         self.reg = Registry(self.root, self.lock, on_save=self.saved,   # extensions.json (registry.py), under self.lock
@@ -255,8 +257,8 @@ class Host:
     def row(self, e):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
         command: what the workshop runs for it, None while its manifest cannot be used; adds: what its manifest adds to
-        apps, and allowed: whether any of it is added now (adds.allowed: the player allowed its command, or the daemon
-        is in developer mode)"""
+        apps, and allowed: whether any of it is added now (adds.allowed: the player allowed its command, or the
+        workshop allows commands by itself)"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -338,7 +340,8 @@ class Host:
         return A.control_call(self, app, cmd)
 
     def approve(self, eid, by="player"):
-        """the player (or developer mode) allows this extension's command to run (registry.approve); its row. Its
+        """the player (by "developer": the workshop by itself) allows this extension's command to run
+        (registry.approve); its row. Its
         failed starts are forgotten. The player's approval also starts it: for good when its manifest says start
         "workshop", else, when it never described itself, for as long as it takes to learn what it can do (describe)"""
         with self.lock:
@@ -358,14 +361,14 @@ class Host:
 
     def allow(self, e):
         """the gate before anything of a registered extension runs (a start, a check's process, its tests): nothing
-        when the registry says its command is approved as it is now. Else developer mode approves it here; player mode
-        raises ApiError needs_approval (403)"""
+        when the registry says its command is approved as it is now. Else, where the setting says so (auto()), the
+        workshop approves it here; otherwise ApiError needs_approval (403)"""
         approval = self.reg.approval(e)
         if approval == "ok":
             return
-        if self.mode() == "developer":
+        if self.auto():
             self.reg.approve(e["id"], "developer")
-            self.note(f"local extension {e['id']}: its command is approved (developer mode)")
+            self.note(f"local extension {e['id']}: its command is approved (the setting allows it by itself)")
             return
         raise ApiError(403, "needs_approval",
                        f"{e['id']} " + ("changed the command it starts with since the player confirmed it"
@@ -961,7 +964,8 @@ class Host:
 
     def load_(self, eid):
         """extension_load: checked, then (re)started: {row, check}. A manifest that cannot be used leaves a running
-        one as it is. An explicit start: its failed starts are forgotten. ApiError needs_approval in player mode"""
+        one as it is. An explicit start: its failed starts are forgotten. ApiError needs_approval before the player
+        allowed its command"""
         e = self.entry(eid)
         eid = e["id"]
         if not e["enabled"]:
@@ -973,7 +977,7 @@ class Host:
                                       f"extension_remove {eid}, then extension_add the folder again"))
             m = None
         if m is not None:
-            self.allow(e)                              # player mode: needs_approval before anything of it runs
+            self.allow(e)                              # needs_approval before anything of it runs
             self.stop(eid, quiet=True)
             try:
                 proc = self.ensure(eid, "extension_load", fresh=True).result(INIT_TIMEOUT + 10)

@@ -421,7 +421,7 @@ class NotesDaemon(unittest.TestCase):
         (addons / "WoWBridge").mkdir(parents=True)
         MB.install(addons, pool=16)
         cls.handle = daemon.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
-                                  mutex_name=MUTEX + "N")
+                                  mutex_name=MUTEX + "N", extension_approval="auto")
         cls.svc = cls.handle.service
 
     @classmethod

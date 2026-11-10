@@ -1471,6 +1471,14 @@
                 <span>游戏目录</span>
                 <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _forever_">
               </label>
+              <label class="field">
+                <span>本机扩展批准</span>
+                <select class="input" name="extension_approval" x-model="form.extension_approval">
+                  <option value="ask">首次运行前询问</option>
+                  <option value="auto">自动允许</option>
+                </select>
+              </label>
+              <p class="muted small" x-show="form.extension_approval === 'auto'">供开发扩展时使用：新扩展不经确认即可运行命令。</p>
               <label class="switch">
                 <input type="checkbox" name="autostart" x-model="form.autostart">
                 <span><b>开机自启</b><small>只写当前用户的 Run 键，不需要管理员</small></span>

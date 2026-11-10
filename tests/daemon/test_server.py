@@ -121,6 +121,52 @@ class ModeSwitch(unittest.TestCase):
                 handle.stop()
 
 
+class ExtensionApproval(unittest.TestCase):
+    """the setting extension_approval (who approves a local extension's command): "ask" when nothing is saved, the
+    saved one at the next start, what start() is told before both; the mode has no say in it"""
+
+    def test_saved_and_told(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"WUXIAN_HOME": str(Path(tmp) / "home")}):
+            def factory(on_debug, log):
+                return CompanionLoop(None, find_window=lambda: None, files=False, on_debug=on_debug, log=log)
+
+            def start(**more):
+                return server.start(game_dir=str(Path(tmp) / "client"), worker_factory=factory, mutex_name=MUTEX + "E",
+                                    **more)
+            for mode in ("developer", "player"):
+                handle = start(mode=mode)
+                try:
+                    self.assertEqual((handle.service.extension_approval, handle.service.local.auto()), ("ask", False))
+                    self.assertEqual(request(handle, "GET", "/api/settings")["extension_approval"], "ask")
+                    self.assertEqual(request(handle, "GET", "/api/status")["daemon"]["extension_approval"], "ask")
+                finally:
+                    handle.stop()
+            handle = start()
+            try:
+                res = request(handle, "POST", "/api/settings", {"extension_approval": "auto"})
+                self.assertEqual(res["extension_approval"], "auto")
+                self.assertTrue(handle.service.local.auto())
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    request(handle, "POST", "/api/settings", {"extension_approval": "developer"})
+                with cm.exception as e:
+                    self.assertEqual((e.code, json.loads(e.read())["error"]["code"]), (400, "bad_request"))
+            finally:
+                handle.stop()
+            handle = start()                                         # the saved one
+            try:
+                self.assertEqual(handle.service.extension_approval, "auto")
+                self.assertEqual(request(handle, "GET", "/api/settings")["extension_approval"], "auto")
+            finally:
+                handle.stop()
+            handle = start(extension_approval="ask")                 # told: before the saved one, which stays
+            try:
+                self.assertEqual(handle.service.extension_approval, "ask")
+            finally:
+                handle.stop()
+            saved = json.loads((Path(tmp) / "home" / "state" / "settings.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["extension_approval"], "auto")
+
+
 class IsolatedInstance(unittest.TestCase):
     """10-12: a test instance beside the program in use, started in player mode, was switched to developer mode by its
     page (migrateMode) and installed into the running game, then read its screen and wrote its mailbox. With

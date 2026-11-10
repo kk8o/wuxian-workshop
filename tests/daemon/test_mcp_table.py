@@ -7,8 +7,9 @@
 - a tool's annotations come from its row's kind (kit.app.open and its kin are keep: not read-only);
 - wk_docs {"skill": X} ends with a section per local extension that adds one to the skill of an app whose prompt is X
   (the registry rows' adds[app].skill): one note first, by extension id, 8,000 characters at most, headings taken down;
-- extension_set sets options only of what this MCP session registered itself, or in developer mode; extension_check is
-  not read-only; what the player has to allow first says so and how, and no tool allows it.
+- extension_set sets options only of what this MCP session registered itself, or while the player's setting
+  extension_approval is "auto"; extension_check is not read-only; what the player has to allow first says so and how,
+  and no tool allows it.
 
 The registry's rows (adds, approval, state, since, why, command) are stand-ins here: local/host.py's and local/adds.py's
 halves are other packages'."""
@@ -54,14 +55,16 @@ def entry(eid, caps=(), **more):
 
 
 class Rows(Backend):
-    """tests/addon/test_kit_local's daemon with the registry's rows (local_extensions) and the daemon's mode"""
+    """tests/addon/test_kit_local's daemon with the registry's rows (local_extensions) and the player's setting
+    extension_approval as the daemon's status has it"""
 
-    def __init__(self, manifest=None, local=None, addons=None, rows=(), mode="player"):
+    def __init__(self, manifest=None, local=None, addons=None, rows=(), extension_approval="ask"):
         super().__init__(manifest, local, addons)
-        self.rows, self.mode, self.refuse = list(rows), mode, None
+        self.rows, self.extension_approval, self.refuse = list(rows), extension_approval, None
 
     async def status(self):
-        return {"addons_dir": str(self.addons) if self.addons else None, "daemon": {"mode": self.mode}}
+        return {"addons_dir": str(self.addons) if self.addons else None,
+                "daemon": {"extension_approval": self.extension_approval}}
 
     async def local_extensions(self):
         return {"revision": 1, "extensions": self.rows}
@@ -348,7 +351,8 @@ class Table(unittest.TestCase):
 
     def test_what_the_player_has_to_allow(self):
         """approval needed / changed: the overview and the extension's docs say that only the player allows it, in the
-        App, and a call that answers needs_approval says so too; in developer mode (a start allows it) nothing of it"""
+        App, and a call that answers needs_approval says so too; while the setting is "auto" (a start allows it)
+        nothing of it; a setting that cannot be read or is not known counts as "ask": the notes stay"""
         entries = local(entry("voice", [("say", "point")]), entry("facts", [("lookup", "see")]),
                         entry("fine", [("x", "see")]))
         rows = [row("voice", approval="needed"), row("facts", approval="changed", state="running"), row("fine")]
@@ -369,7 +373,12 @@ class Table(unittest.TestCase):
         self.assertEqual(str(refused.exception), "needs_approval: voice may not run before the player allows it "
                          + kit.APPROVE)
         self.assertIn("wk_voice_say", listed(tools))                               # still a tool: it works once allowed
-        backend.mode, backend.refuse = "developer", None
+        backend.refuse = None
+        for unknown in (None, "developer", True):                                  # not read, not known: as "ask"
+            backend.extension_approval = unknown
+            self.assertIn("Not allowed to run yet", asyncio.run(tools.overview()), unknown)
+            self.assertIn("It may not run yet", asyncio.run(tools.extension_doc("voice")), unknown)
+        backend.extension_approval = "auto"
         self.assertNotIn("Not allowed to run yet", asyncio.run(tools.overview()))
         self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc("voice")))
         self.assertFalse([n for n in listed(tools) if "approv" in n or "allow" in n])
@@ -416,8 +425,10 @@ class Table(unittest.TestCase):
                       '(wk_kit_app_open {"app": "peek"}), then wait with `wuxian listen peek --once`', overview)
         self.assertIn("- `talk` (Talk): open it (wk_kit_app_open), then wait with `wuxian listen talk --once`", doc)
         self.assertIn('extension_set {"id": "voice", "options": {...}} sets them only for an extension you registered in '
-                      "this session (new_extension, extension_add), or in developer mode; else it answers not_allowed.",
-                      doc)
+                      "this session (new_extension, extension_add), or while the player's setting 本机扩展批准 (Local "
+                      "extension approval) is 自动允许 (allow automatically); else it answers not_allowed.", doc)
+        self.assertNotIn("developer mode", everything)
+        self.assertNotIn("player mode", everything)
         self.assertLessEqual(len(server.INSTRUCTIONS), 2048)
         for old in ("annotate", "extends", "listen"):
             self.assertNotIn(old, server.INSTRUCTIONS)
@@ -427,10 +438,12 @@ class Table(unittest.TestCase):
 
 
 class Service:
-    """the daemon's Service as the MCP server's tools call it: the registry (rows), its mode, what was set"""
+    """the daemon's Service as the MCP server's tools call it: the registry (rows), the player's setting
+    extension_approval as its status has it, what was set"""
 
-    def __init__(self, mode="player", rows=()):
-        self.mode, self.rows, self.sets, self.refuse = mode, {r["id"]: r for r in rows}, [], None
+    def __init__(self, extension_approval="ask", rows=()):
+        self.extension_approval, self.rows = extension_approval, {r["id"]: r for r in rows}
+        self.sets, self.refuse = [], None
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -441,7 +454,7 @@ class Service:
         return method
 
     async def status(self):
-        return {"daemon": {"mode": self.mode}}
+        return {"daemon": {"extension_approval": self.extension_approval}}
 
     async def local_extensions(self):
         return {"revision": len(self.rows), "extensions": list(self.rows.values())}
@@ -475,8 +488,8 @@ class Service:
 class Daemon:
     """cli.client's DaemonClient as server.HttpBackend calls it (plain methods): the same registry"""
 
-    def __init__(self, mode="player", rows=()):
-        self.service = Service(mode, rows)
+    def __init__(self, extension_approval="ask", rows=()):
+        self.service = Service(extension_approval, rows)
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -490,8 +503,8 @@ def text_of(result):
 
 
 class Options(unittest.TestCase):
-    """extension_set {options}: only of what this MCP session registered itself (new_extension, extension_add), or in
-    developer mode; enabled is not limited"""
+    """extension_set {options}: only of what this MCP session registered itself (new_extension, extension_add), or
+    while the player's setting extension_approval is "auto"; enabled is not limited"""
 
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
@@ -548,7 +561,8 @@ class Options(unittest.TestCase):
         self.check(*self.sessions("legacy", "2026-07-28", a=("same", "1"), b=("same", "1")))
 
     def test_what_a_session_gets_back(self):
-        """a row the player has to allow first says so (approval_note), also in the list; never in developer mode"""
+        """a row the player has to allow first says so (approval_note), also in the list (test_the_setting_is_auto:
+        never while the setting is that)"""
         service, out = self.sessions("legacy", "legacy")
         note = out["new"].structured_content["row"]["approval_note"]
         self.assertEqual(note, "It may not run yet: the player has not allowed it to run yet, so its calls answer "
@@ -557,8 +571,8 @@ class Options(unittest.TestCase):
         self.assertEqual(out["add"].structured_content["approval"], "needed")
         self.assertNotIn("approval_note", service.rows["theirs"])                  # the daemon's own row is not written
 
-    def test_developer_mode(self):
-        service = Service("developer", rows=[row("players", approval="changed")])
+    def test_the_setting_is_auto(self):
+        service = Service("auto", rows=[row("players", approval="changed")])
         mcp = server.build_server(service)
         got = asyncio.run(mcp.call_tool("extension_set", {"id": "players", "options": {"volume": 3}})).structured_content
         self.assertEqual(service.sets, [("players", None, {"volume": 3})])
@@ -602,6 +616,11 @@ class Options(unittest.TestCase):
         self.assertNotIn("failed:", about)
         self.assertIn("not_allowed", tools["extension_set"].description)
         self.assertIn("needs_approval", tools["extension_check"].description)
+        for name in ("extension_set", "extension_check"):                          # the exception: the player's setting
+            self.assertIn("本机扩展批准 (Local extension approval) is 自动允许 (allow", tools[name].description)
+        for tool in tools.values():                                                # the daemon's mode has no say in it
+            self.assertNotIn("developer mode", tool.description or "", tool.name)
+            self.assertNotIn("player mode", tool.description or "", tool.name)
 
     def test_presence(self):
         """the sets are no part of what the 扩展 page reads, and a client that is no longer listed has none"""
@@ -631,7 +650,8 @@ class Options(unittest.TestCase):
 
 
 class OverHttp(unittest.TestCase):
-    """a real daemon in player mode, a real client on its /mcp: the session's set reaches the tool"""
+    """a real daemon whose setting extension_approval is "ask" (nothing stored: the default), a real client on its
+    /mcp: the session's set reaches the tool"""
 
     @classmethod
     def setUpClass(cls):
@@ -656,6 +676,7 @@ class OverHttp(unittest.TestCase):
         from mcp.client.streamable_http import streamable_http_client
         from mcp.shared._httpx_utils import create_mcp_http_client
         svc = self.handle.service
+        self.assertEqual(svc.extension_approval, "ask")                            # the setting, whatever the mode
         theirs = make_extension(self.root / "ext" / "theirs", "theirs")
         mine = make_extension(self.root / "ext" / "mine", "mine")
         # the player's, from the App: on the daemon's own loop, as the App's request is (another loop waiting for

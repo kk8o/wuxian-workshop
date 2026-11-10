@@ -74,8 +74,10 @@ class Kit:
 
 class LocalDaemon:
     """a daemon of its own for a TestCase class (LETTER: its mutex), WuxianKit's calls answered by a Kit, and the
-    helpers; each test leaves no extension and no reaction behind"""
+    helpers; each test leaves no extension and no reaction behind. APPROVAL: its extension_approval ("auto": nobody
+    is asked before an extension runs, as most tests want; None: as a daemon is started, which asks)"""
     LETTER = "L"
+    APPROVAL = "auto"
 
     @classmethod
     def setUpClass(cls):
@@ -90,7 +92,7 @@ class LocalDaemon:
         (addons / "WoWBridge").mkdir(parents=True)
         MB.install(addons, pool=16)
         cls.handle = daemon.start(worker_factory=lambda on_debug, log: FakeGame(addons, on_debug=on_debug, log=log),
-                                  mutex_name=MUTEX + cls.LETTER)
+                                  mutex_name=MUTEX + cls.LETTER, extension_approval=cls.APPROVAL)
         cls.svc = cls.handle.service
         cls.kit = Kit(cls.svc)
         cls.svc.call_exposed = cls.kit.call_exposed

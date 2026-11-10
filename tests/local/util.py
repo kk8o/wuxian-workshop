@@ -56,7 +56,7 @@ def gone(pid, seconds=10.0):
 
 class HostCase(unittest.TestCase):
     """a Host on a state folder of its own (WUXIAN_HOME too), with real processes of the fixture. What the host tells
-    is kept: events [(id, item)], revisions, notes; mode_now is the daemon's mode it is told ("developer", "player")"""
+    is kept: events [(id, item)], revisions, notes; auto_now is what its auto() answers (True: the workshop approves a command by itself; False: the player is asked)"""
 
     def setUp(self):
         from wuxianworkshop.local import host as H
@@ -65,11 +65,11 @@ class HostCase(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(self.root / "home")})
         self.env.start()
         self.events, self.revisions, self.notes = [], [], []
-        self.mode_now = "developer"
+        self.auto_now = True
         self.host = H.Host(self.root / "state", version="9.9.9", note=self.notes.append,
                            on_event=lambda eid, item: self.events.append((eid, item)),
                            on_change=self.revisions.append, python=sys.executable, sdk=self.root / "sdk",
-                           mode=lambda: self.mode_now)
+                           auto=lambda: self.auto_now)
 
     def tearDown(self):
         self.host.close()

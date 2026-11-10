@@ -27,7 +27,8 @@ class HostTests(unittest.TestCase):
         self.sdk = self.root / "sdk"
         self.host = H.Host(self.root / "state", version="9.9.9", note=self.notes.append,
                            on_event=lambda eid, item: self.events.append((eid, item)), on_call=self.on_call,
-                           on_change=self.revisions.append, python=sys.executable, sdk=self.sdk)
+                           on_change=self.revisions.append, python=sys.executable, sdk=self.sdk,
+                           auto=lambda: True)                     # nobody is asked (test_check.py asks)
 
     def tearDown(self):
         self.host.close()

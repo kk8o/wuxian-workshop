@@ -6,8 +6,9 @@ capabilities, running?, tests?}, each problem as manifest.problem gives it. The 
 
 No second process of an extension that runs: while the registered one runs (or is being started) the check starts
 none, takes the description it gave at its start and says so (running: its pid, and a warning; extension_load checks
-it as its files are now). And nothing of an extension runs before its command is approved (Host.allow): in player
-mode a registered one that is not approved, and any folder that is not registered, is refused with needs_approval.
+it as its files are now). And nothing of an extension runs before its command is approved (Host.allow): a registered
+one that is not approved, and any folder that is not registered, is refused with needs_approval, unless the setting
+lets the workshop approve commands by itself (host.auto()).
 
 The functions take the host (host.py Host) for what is the host's: the registry, how a process is started (spawn,
 environment, interpreter) and initialize. extension_load (Host.load_) is the same checks around a restart of the
@@ -60,11 +61,12 @@ def resolve(host, ident):
 
 
 def gate(host, e, folder):
-    """nothing of an extension runs before its command is approved: a registered one as Host.allow says (developer
-    mode approves it there); a folder that is not registered only in developer mode. ApiError needs_approval"""
+    """nothing of an extension runs before its command is approved: a registered one as Host.allow says (which
+    approves it there where the setting says so); a folder that is not registered only where the workshop approves
+    commands by itself (host.auto()). ApiError needs_approval"""
     if e is not None:
         return host.allow(e)
-    if host.mode() != "developer":
+    if not host.auto():
         raise ApiError(403, "needs_approval",
                        f"{folder} is not a registered extension: nothing of it runs before the player has confirmed "
                        f"the command it starts with. extension_add registers it; the player confirms it on the "
