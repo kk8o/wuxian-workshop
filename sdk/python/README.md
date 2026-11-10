@@ -119,7 +119,7 @@ kit.open("guild")                                      # 应用由 WuxianKit 自
 app = kit.app("guild")
 
 for wake in app:                                       # 一直等到下一个唤醒；应用停了循环就结束
-    facts = (wake.get("notes") or {}).get("codex")     # 本机扩展给这次唤醒加的附注（没有就是 None）
+    facts = (wake.get("notes") or {}).get("facts")     # 本机扩展 facts 给这次唤醒加的附注（没有就是 None）
     for item in wake["items"]:
         if item["source"] == "player":                 # 玩家 /wk guild <一句话>
             note(item["text"])
