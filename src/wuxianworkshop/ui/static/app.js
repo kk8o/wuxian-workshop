@@ -2700,6 +2700,9 @@ function lxWhy(e) {
   switch (err.code) {
     case 'extension_exists': return t('标识已被占用，请先移除同名扩展');
     case 'folder_busy': return t('文件夹被占用，请关闭占用它的程序后重试');
+    case 'folder_not_empty': return t('目标文件夹已有其他内容');
+    case 'addon_busy': return t('游戏插件被占用，请退出游戏后重试');
+    case 'addon_failed': return t('游戏插件写入失败') + t('：') + (err.message || '');
     case 'requires_unmet': return t('版本不足');
     case 'no_game_folder': return t('未找到游戏目录');
     case 'addon_exists': return t('游戏里已有同名插件，未覆盖');
