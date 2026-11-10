@@ -12,6 +12,10 @@ host.adds_cache until the registry or an enabled extension's manifest changes (t
 while nothing did; the host sets the cache None whenever the registry is saved, which is also when an extension
 described itself anew). Every answer is a copy.
 
+An extension whose command the player has not allowed (registry.approval is not "ok", in player mode: developer mode
+allows it by itself at its first start) adds nothing: no declaration, no wake, no skill supplement, no reaction, no
+bound control. All of it comes when the player allows it (the registry is saved then, so the table is built anew).
+
 annotations() and extensions_of() answer nothing: the fourth batch's names (the manifest's annotate and extends, which
 are gone), kept only while host.py still forwards to them.
 Standard library only.
@@ -58,7 +62,7 @@ def row(manifest):
 
 def declarations(host):
     """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
-    with (local {id, title}: its card in the game has no remove button). Without what is the workshop's alone: the
+    with (local {id, title}: its card in the game names the extension). Without what is the workshop's alone: the
     reactions, and the call of a control"""
     return copy.deepcopy(table(host)["declarations"])
 
@@ -75,14 +79,21 @@ def declaration(app, eid, title):
 
 
 def enabled_manifests(host):
-    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id)"""
+    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id) and
+    whose command may run (allowed())"""
     out = []
     for e in host.load()["extensions"]:
         if e["enabled"]:
             m, _ = M.check_manifest(e["path"])
-            if m is not None and m["id"] == e["id"]:
+            if m is not None and m["id"] == e["id"] and allowed(host, e):
                 out.append((e, m))
     return out
+
+
+def allowed(host, entry):
+    """whether the extension's command may run as it is now: the registry says the player allowed it, or the daemon is
+    in developer mode (which allows it by itself when it starts)"""
+    return host.reg.approval(entry) == "ok" or host.mode() == "developer"
 
 
 def stamp(path):
@@ -106,11 +117,11 @@ def wake_ok(wake, eid, described):
 
 def table(host):
     """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "controls": {(app, cmd):
-    {ext, call}}} of the enabled extensions, kept while the stamps of the registry and of the enabled extensions'
-    manifests stay (save() drops it at once). Not to be changed: the callers copy what they give out"""
+    {ext, call}}} of the enabled extensions, kept while the mode and the stamps of the registry and of the enabled
+    extensions' manifests stay (save() drops it at once). Not to be changed: the callers copy what they give out"""
     with host.lock:
-        cache = host.adds_cache
-        if cache is not None and all(stamp(path) == was for path, was in cache[0]):
+        cache, mode = host.adds_cache, host.mode()
+        if cache is not None and cache[2] == mode and all(stamp(path) == was for path, was in cache[0]):
             return cache[1]
         stamps = [(host.registry, stamp(host.registry))]
         stamps += [(path, stamp(path)) for path in (M.locate(e["path"])[1] for e in host.load()["extensions"]
@@ -130,7 +141,7 @@ def table(host):
                         built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}"))
         for items in built["adds"].values():
             items.sort(key=lambda a: a["ext"])
-        host.adds_cache = (stamps, built)
+        host.adds_cache = (stamps, built, mode)
         return built
 
 

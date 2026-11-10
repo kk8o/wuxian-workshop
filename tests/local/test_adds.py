@@ -154,6 +154,33 @@ class AddsTests(unittest.TestCase):
             self.host.set("fx", enabled=True)
             self.assertEqual(len(self.host.adds("raid")), 1)
 
+    def test_not_approved(self):
+        """player mode: an extension whose command the player has not allowed (or that changed since) adds nothing,
+        its apps are not declared; allowed, all of it is there. Developer mode does not ask"""
+        self.add("fx", apps=[APP], adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})
+        self.add("fa", apps=[{"app": "fa_one"}])
+        said = {"fx": "needed", "fa": "ok"}
+        mode = ["player"]
+        self.host.mode = lambda: mode[0]
+        with mock.patch.object(self.host.reg, "approval", side_effect=lambda e: said[e["id"]]):
+            for word in ("needed", "changed"):
+                said["fx"] = word
+                self.host.adds_cache = None                    # (the registry is saved when an approval changes)
+                self.assertEqual([eid for eid, _ in self.host.declarations()], ["fa"])
+                self.assertEqual((self.host.adds("guild"), self.host.app_reactions("companion"),
+                                  self.host.control_call("companion", "mute")), ([], [], None))
+                self.assertEqual([e["id"] for e, _ in self.host.enabled_manifests()], ["fa"])
+            mode[0] = "developer"                              # the mode alone changes the table
+            self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
+            self.assertEqual(len(self.host.adds("guild")), 1)
+            mode[0] = "player"
+            self.assertEqual([eid for eid, _ in self.host.declarations()], ["fa"])
+            said["fx"] = "ok"
+            self.host.adds_cache = None
+            self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
+            self.assertEqual((len(self.host.adds("guild")), len(self.host.app_reactions("companion")),
+                              self.host.control_call("companion", "mute")), (1, 2, {"ext": "fx", "call": "fx.emit"}))
+
     def test_the_fourth_batchs_names(self):
         """annotations() and extensions_of() answer nothing now (host.py still forwards to them)"""
         self.add("fx", adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})

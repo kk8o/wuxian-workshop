@@ -131,6 +131,16 @@ class Extensions(unittest.TestCase):
         self.assertIn("`greeter:greeted`", agent)
         self.assertNotIn("{{", main + agent)
 
+    def test_the_workshop_takes_its_manifest(self):
+        """what new_extension makes passes the manifest's check as it is, for the scaffold's ids and the manifest's"""
+        from wuxianworkshop.local import manifest
+        folder = self.root / "greeter"
+        scaffold.new_extension_files(folder, "greeter", "问候")
+        m, problems = manifest.check_manifest(folder)
+        self.assertEqual(problems, [])
+        self.assertEqual((m["id"], m["start"], m["apps"], m["adds"]), ("greeter", "use", [], {}))
+        self.assertEqual(set(scaffold.EXT_RESERVED), set(manifest.RESERVED))
+
     def test_its_tests_pass(self):
         folder = self.root / "hello_ext"
         scaffold.new_extension_files(folder, "hello_ext", "你好")
@@ -146,16 +156,17 @@ class Extensions(unittest.TestCase):
         scaffold.new_extension_files(folder, "runner", "Runner")
         env = dict(os.environ, PYTHONPATH=str(scaffold.sdk_file().parent), WUXIAN_EXTENSION="runner",
                    PYTHONIOENCODING="utf-8")
-        lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocol": 1, "workshop": "test",
-                                                                                "id": "runner", "options": {}}},
-                 {"jsonrpc": "2.0", "id": 2, "method": "call", "params": {"name": "hello", "args": {"name": "Jaina"},
-                                                                          "caller": {"by": "agent"}}},
+        lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                     "protocol": {"min": 1, "max": 1}, "workshop": "test", "id": "runner", "options": {}}},
+                 {"jsonrpc": "2.0", "id": 2, "method": "call", "params": {
+                     "name": "hello", "args": {"name": "Jaina"}, "caller": {"by": "agent"}, "deadline_ms": 30000}},
                  {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}}]
         run = subprocess.run([sys.executable, "main.py"], cwd=folder, env=env, timeout=60, capture_output=True,
                              input="".join(json.dumps(m) + "\n" for m in lines).encode("utf-8"))
         self.assertEqual(run.returncode, 0, run.stderr)
         out = [json.loads(line) for line in run.stdout.decode("utf-8").splitlines()]
         answers = {m["id"]: m for m in out if "id" in m}
+        self.assertEqual(answers[1]["result"]["protocol"], 1)
         self.assertEqual([c["name"] for c in answers[1]["result"]["capabilities"]], ["hello"])
         self.assertEqual(answers[2]["result"], {"text": "Hello, Jaina!"})
         self.assertEqual(answers[3]["result"], {})
@@ -177,6 +188,7 @@ class Extensions(unittest.TestCase):
         for args, code in (((Path("relative"), "ok"), "bad_request"), ((self.root / "a", "Bad"), "bad_request"),
                            ((self.root / "a", "1abc"), "bad_request"), ((self.root / "a", "a" * 25), "bad_request"),
                            ((self.root / "a", "sense"), "bad_request"), ((self.root / "a", "wk"), "bad_request"),
+                           ((self.root / "a", "kit"), "bad_request"),
                            ((self.root / "a", "local"), "bad_request"), ((self.root / "a", "ok", "长" * 17), "bad_request"),
                            ((self.root / "a", "ok", "  "), "bad_request"), ((self.root / "full", "ok"), "folder_not_empty")):
             with self.assertRaises(scaffold.ScaffoldError) as cm:
