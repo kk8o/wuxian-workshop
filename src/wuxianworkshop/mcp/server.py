@@ -52,7 +52,7 @@ Rules:
 
 Addon work: edit the files, `load` (it checks first: fix every error in its `check`), then `try` and read ok, errors, prints and blocked. `snap` shows the screen. Look APIs up in `api_search`. New files and .toc changes need a game restart; `load` works meanwhile.
 
-For voice, files, network or models, write a local extension: `extension_guide`.
+Prototype an idea needing voice, files, network or models: read `extension_guide`.
 
 WuxianKit (wk_* tools; none listed = not installed: the user adds it on the App's Extensions (扩展) page): call `wk_docs` first. Send and Change tools return a proposal: tell the player, then call `wk_wait` with its id. It runs when the player clicks 执行 (Run), or at once if they pre-approved its category: propose only what the player asked for. Change the player's settings, keys, macros or addons only with wk_ tools, never with `run`."""
 
@@ -614,10 +614,11 @@ def build_server(backend, name="wuxian"):
 
     @mcp.tool(annotations=READ_ONLY)
     async def extension_guide() -> str:
-        """How to write a local extension (本机扩展): what the game cannot do (voice, files, the network, models, long
-        work) as a process on this computer whose capabilities become wk_<extension>_<name> tools, like WuxianKit's in
-        the game. Read it in full before new_extension or before you change an extension: the manifest, the protocol,
-        the Python library, a complete example, the development loop and the rules."""
+        """How to try an idea as a local extension (本机扩展), a prototype: what the game and these tools cannot do yet
+        (voice, files, the network, models, long work) runs as a process on this computer whose capabilities become
+        wk_<extension>_<name> tools; the workshop runs, approves, logs, checks and packs it. Read it in full before
+        new_extension or before you change an extension: when to write one and where it goes after, the manifest, the
+        protocol, the Python library, a complete example, the development loop and the rules."""
         return await asyncio.to_thread(extension_guide_text)
 
     @mcp.tool(annotations=READ_ONLY)

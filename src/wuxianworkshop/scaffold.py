@@ -671,6 +671,8 @@ class GameHalf(unittest.TestCase):
 
 EXT_AGENT = """# {{title}} ({{id}})
 
+What this extension tries out: (fill in: the idea, and how to tell whether it works)
+
 <!-- For agents that use this extension: wk_docs {"extension": "{{id}}"} shows this file. Keep it true when the
 extension changes. How to write and debug a local extension: the workshop's tool extension_guide. -->
 
@@ -698,7 +700,7 @@ EXT_AGENT_GAME = """
 ## The game half
 
 `addons/{{addon}}` is this extension's addon in the game: the WuxianKit extension `{{gid}}` (WuxianKit {{kit}} or newer).
-无限工坊 installs it into the game's AddOns once the player has allowed the extension, and again when its files
+无限工坊 installs it into the game's AddOns once the player has approved the extension, and again when its files
 changed (`extension_load {"id": "{{id}}"}`, or `extension_install {"id": "{{id}}"}` at any time). The game finds a new
 addon only when it starts: the first time, the player restarts the game. Later changes to its Lua: `extension_load`,
 then `load {"target": "{{addon}}"}` (the workshop's hot load) or a UI reload.
