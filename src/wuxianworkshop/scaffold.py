@@ -520,6 +520,7 @@ EXT_TITLE_MAX = M.TITLE_MAX                       # bytes
 EXT_FILES = ("wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py")
 EXT_KIT = "0.6.0"                                 # the WuxianKit the game half is written for (Kit:Requires)
 EXT_GAME = "_game"                                # the game half's extension id: <id>_game
+EXT_WHERE = ("game", "local", "both")             # where a new extension is (local/manifest.py where_of)
 
 EXT_MAIN = '''"""{{title}} ({{id}}): a local extension of 无限工坊 (Wuxian Workshop). The workshop starts it (wuxian-extension.json:
 run) and calls its capabilities; the agent sees each one as the tool wk_{{id}}_<name>. How to write one: the workshop's
@@ -734,11 +735,18 @@ EXT_TOC = """## Interface: {{interface}}
 {{addon}}.lua
 """
 
-EXT_LUA = """-- {{title}}: the game half of the local extension {{id}} (无限工坊), a WuxianKit extension ({{gid}}). The agent sees
+EXT_LUA_HEAD = """-- {{title}}: the game half of the local extension {{id}} (无限工坊), a WuxianKit extension ({{gid}}). The agent sees
 -- each capability as the tool wk_{{gid}}_<name>; the local half (main.py) calls them with ext.call("{{gid}}.<name>") and
 -- hears the events through a reaction (bus:{{gid}}.<topic>). 无限工坊 installs this folder into the game's AddOns
 -- (extension_load, extension_install); WuxianKit loads it at login (## LoadOnDemand, ## X-WuxianKit-Extension). How to
--- write one: WuxianKit's skill kit-extension and its ARCHITECTURE.md.
+-- write one: WuxianKit's skill kit-extension and its ARCHITECTURE.md."""
+
+EXT_LUA_HEAD_GAME = """-- {{title}}: an extension in the game only (无限工坊), the WuxianKit extension {{gid}}. The agent sees each capability as
+-- the tool wk_{{gid}}_<name> and its events with `events`. 无限工坊 keeps this folder with the extension, installs it into
+-- the game's AddOns and runs it in the running game (extension_load {"id": "{{id}}"}); WuxianKit loads it at login
+-- (## LoadOnDemand, ## X-WuxianKit-Extension). How to write one: the workshop's guide {"topic": "game-extension"}."""
+
+EXT_LUA = """{{lua_head}}
 local addonName, ns = ...
 WoWBridgeNS = WoWBridgeNS or {}                     -- the workshop's hot load (load {{addon}}) hands this file the same ns
 WoWBridgeNS[addonName] = ns
@@ -753,14 +761,14 @@ local L = Kit:Words {                               -- the player's words; L"KEY
 local version = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(addonName, "Version") or nil
 
 local ext = Kit:Extension("{{gid}}", { title = L"TITLE", version = version, addon = addonName,
-\tnotes = "The game half of the local extension {{id}}" })
+\tnotes = "{{lua_notes}}" })
 
 -- Kit:Clean: a text of the game as one plain line; nil for none (and for a secret value)
 local function Where()
 \treturn { zone = Kit:Clean(GetZoneText()) or "", subzone = Kit:Clean(GetSubZoneText()) or "" }
 end
 
--- a Read capability: the tool wk_{{gid}}_where, ext.call("{{gid}}.where") in main.py
+-- a Read capability: the tool wk_{{gid}}_where{{lua_see}}
 ext:See("where", { title = L"WHERE", doc = "Returns where the player is: {zone, subzone}",
 \trun = function() return Where() end })
 
@@ -779,6 +787,35 @@ if not ns.hooked then
 \t\text:On(event, function(self) ns.Moved(self) end)
 \tend
 end
+"""
+
+
+EXT_GAME_AGENT = """# {{title}} ({{id}})
+
+What this extension tries out: (fill in: the idea, and how to tell whether it works)
+
+<!-- For agents that use this extension: wk_docs {"extension": "{{id}}"} shows this file. Keep it true when the
+extension changes. How to write and debug one: the workshop's tool guide {"topic": "game-extension"}. -->
+
+{{title}} runs in the game: an extension of WuxianKit ({{kit}} or newer). 无限工坊 keeps it in `addons/{{addon}}` of the
+extension's folder and installs it into the game's AddOns; it has no process on this computer. Its tools need the game.
+
+## Tools
+
+- `wk_{{id}}_where`: returns `{zone, subzone}`, where the player is (a Read capability).
+
+## Events
+
+- `{{id}}.moved` `{zone, subzone}`: the player entered another zone or subzone. The tool `events` shows it
+  (`{"topic": "{{id}}.*"}`); an app hears it as `bus:{{id}}.moved`.
+
+## Working on it
+
+Edit `{{addon}}.lua`, then `extension_load {"id": "{{id}}"}`: it checks the files, installs them into the game's AddOns
+and runs them in the running game (`loaded` says how that went). The game lists a new addon, and reads a changed .toc,
+only when it starts: until the player has restarted it once, the extension is there only while the hot load lasts (a
+UI reload drops it). `extension_wait {"id": "{{id}}"}` waits for what the player has to do. What fails: `errors`,
+`logs` (kinds OUT, ERR), `snap`.
 """
 
 
@@ -811,23 +848,56 @@ def workshop_version():
     return m.group(0) if m and M.version_tuple(m.group(0)) else None
 
 
-def new_extension_files(folder, eid, title=None, addon=None, taken=()):
+def addon_name_of(eid):
+    """the folder name a new extension's game addon gets when none is given: the id in camel case (loot_peek ->
+    LootPeek)"""
+    return "".join(part[:1].upper() + part[1:] for part in eid.split("_") if part)
+
+
+def extension_where(eid, addon=None, where=None):
+    """(where, addon) of a new extension as new_extension_files makes it. where: game (in the game only: a WuxianKit
+    extension in addons/<addon>, no process), local (a process on this computer) or both; None: both with an addon,
+    else local. game and both without an addon: addon_name_of(eid). ScaffoldError bad_request for another where, and
+    for local with an addon"""
+    if where is None:
+        where = "both" if addon else "local"
+    if where not in EXT_WHERE:
+        raise ScaffoldError(tr(f"where 只能是 game（游戏内）、local（本机）或 both（两边）；{where!r} 不是",
+                               f"where: game (in the game only), local (on this computer) or both; {where!r} is not"),
+                            "bad_request")
+    if where == "local" and addon:
+        raise ScaffoldError(tr("where 为 local 的扩展没有游戏插件：去掉 addon，或把 where 写成 both",
+                               "where local has no game addon: leave addon out, or say where both"), "bad_request")
+    if where != "local" and not addon and isinstance(eid, str) and M.ID.match(eid):
+        addon = addon_name_of(eid)
+    return where, addon
+
+
+def new_extension_files(folder, eid, title=None, addon=None, taken=(), where=None):
     """makes a local extension's folder (new, or empty): wuxian-extension.json, main.py (a Read capability hello, an
     option, a source), AGENT.md and tests/test_main.py, whose tests pass as made. The manifest requires this workshop's
-    version. taken: the ids of the extensions the installed WuxianKit lists, which the id cannot be.
+    version. taken: the ids of the extensions the installed WuxianKit lists (a list, or id -> the addon that brings
+    it), which the id cannot be.
 
     addon (a folder name, such as WuxianVoice): the extension brings a game half too, addons/<addon>/<addon>.toc and
     <addon>.lua, a WuxianKit extension <id>_game (game_extension_id) with a Read capability (where) and an event
     (moved); the manifest names it in addons and requires WuxianKit, main.py calls the capability and takes the event
     from a reaction, AGENT.md says how the two halves work together.
 
+    where (extension_where): local, both (as with addon; without one the addon is the id in camel case) or game: an
+    extension in the game only. That one has no process: wuxian-extension.json (addons and no run), addons/<addon>/
+    <addon>.toc, <addon>.lua (the WuxianKit extension <id> itself: the id here and in the game are one) and AGENT.md
+    there, which the game's side shows.
+
     The paths made, relative to the folder ("tests/test_main.py"). ScaffoldError code bad_request (a relative folder, a
-    bad id, title or addon name) or folder_not_empty; nothing is left of a folder that was refused"""
+    bad id, title, addon name or where) or folder_not_empty; nothing is left of a folder that was refused"""
     folder = Path(folder)
     if not folder.is_absolute():
         raise ScaffoldError(tr(f"文件夹要写完整路径（{folder} 不是）", f"folder: a full path ({folder} is not)"),
                             "bad_request")
-    why = check_extension_id(eid, taken)
+    where, addon = extension_where(eid, addon, where)
+    in_game = where == "game"
+    why = check_extension_id(eid, M.not_own(taken, [addon]) if in_game else taken)
     if why:
         raise ScaffoldError(why, "bad_request")
     title = " ".join((eid if title is None else str(title)).split())
@@ -840,8 +910,8 @@ def new_extension_files(folder, eid, title=None, addon=None, taken=()):
             raise ScaffoldError(tr(f"addon：游戏插件的文件夹名（字母、数字、_ . ! -，最多 64 个字符；{addon!r} 不是）",
                                    f"addon: the game addon's folder name (letters, digits, _ . ! and -, at most 64 "
                                    f"characters; {addon!r} is not)"), "bad_request")
-        gid = game_extension_id(eid)
-        if gid in set(taken or ()):
+        gid = eid if in_game else game_extension_id(eid)
+        if not in_game and gid in set(taken or ()):
             raise ScaffoldError(tr(f"游戏那一半的扩展 id {gid} 已经有了（wk_kit_extensions 列着）：换一个 id",
                                    f"the game half's extension id {gid} is taken (wk_kit_extensions lists it): choose "
                                    f"another id"), "bad_request")
@@ -852,6 +922,8 @@ def new_extension_files(folder, eid, title=None, addon=None, taken=()):
     requires = {"workshop": workshop_version(), "kit": EXT_KIT if addon else None}
     manifest = {"id": eid, "title": title, "version": "0.1.0",
                 "requires": {k: v for k, v in requires.items() if v}, "run": ["python", "main.py"], "start": "use"}
+    if in_game:
+        del manifest["run"], manifest["start"]
     if not manifest["requires"]:
         del manifest["requires"]
     if addon:
@@ -869,9 +941,15 @@ def new_extension_files(folder, eid, title=None, addon=None, taken=()):
                       "{{lua_title}}": title.replace("\\", "\\\\").replace('"', '\\"'),
                       "{{notes}}": f"The game half of the local extension {eid} (the WuxianKit extension {gid})" if en
                                    else f"本机扩展 {eid} 在游戏里的那一半（WuxianKit 扩展 {gid}）",
-                      "{{made_with}}": "Wuxian Workshop" if en else "无限工坊"})
+                      "{{made_with}}": "Wuxian Workshop" if en else "无限工坊",
+                      "{{lua_notes}}": f"The game half of the local extension {eid}",
+                      "{{lua_see}}": f', ext.call("{gid}.where") in main.py'})
+    if in_game:
+        words.update({"{{notes}}": f"An extension in the game only (the WuxianKit extension {eid})" if en
+                                   else f"游戏内扩展 {eid}（WuxianKit 扩展）",
+                      "{{lua_notes}}": f"The extension {eid}, in the game only", "{{lua_see}}": ""})
     parts = {"{{game_half}}": EXT_MAIN_GAME, "{{game_tests}}": EXT_TEST_GAME, "{{game_tools}}": EXT_AGENT_TOOLS,
-             "{{game_section}}": EXT_AGENT_GAME}
+             "{{game_section}}": EXT_AGENT_GAME, "{{lua_head}}": EXT_LUA_HEAD_GAME if in_game else EXT_LUA_HEAD}
 
     def fill(text, in_code=True):
         for k, part in parts.items():             # the game half's parts first: they hold words too
@@ -886,6 +964,9 @@ def new_extension_files(folder, eid, title=None, addon=None, taken=()):
         "AGENT.md": fill(EXT_AGENT, in_code=False),
         "tests/test_main.py": fill(EXT_TEST),
     }
+    if in_game:
+        texts = {"wuxian-extension.json": texts["wuxian-extension.json"],
+                 f"{M.ADDONS_DIR}/{addon}/AGENT.md": fill(EXT_GAME_AGENT, in_code=False)}
     if addon:
         texts[f"{M.ADDONS_DIR}/{addon}/{addon}.toc"] = fill(EXT_TOC, in_code=False)
         texts[f"{M.ADDONS_DIR}/{addon}/{addon}.lua"] = fill(EXT_LUA, in_code=False)

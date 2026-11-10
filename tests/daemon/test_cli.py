@@ -153,7 +153,15 @@ class Parser(unittest.TestCase):
         self.assertEqual((ns.id, ns.title, ns.folder), ("voice", "声音", r"C:\e\v"))
         self.assertIsNone(ns.addon)
         ns, _ = self.parse("ext", "new", "voice", "--addon", "VoiceGame")
-        self.assertEqual((ns.id, ns.title, ns.folder, ns.addon), ("voice", None, None, "VoiceGame"))
+        self.assertEqual((ns.id, ns.title, ns.folder, ns.addon, ns.where), ("voice", None, None, "VoiceGame", None))
+        ns, _ = self.parse("ext", "new", "loot", "--where", "game")
+        self.assertEqual((ns.id, ns.addon, ns.where), ("loot", None, "game"))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.parse("ext", "new", "loot", "--where", "nowhere")
+        ns, _ = self.parse("ext", "wait", "loot")
+        self.assertEqual((ns.action, ns.id, ns.seconds), ("wait", "loot", 120))
+        ns, _ = self.parse("ext", "wait", "loot", "--seconds", "2.5")
+        self.assertEqual(ns.seconds, 2.5)
         ns, _ = self.parse("ext", "logs", "voice", "-f", "--since", "5", "--limit", "50")
         self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "voice", True, 5, 50))
         ns, _ = self.parse("ext", "add", r"C:\down\voice-1.2.0.zip")                # a package is a path like any
@@ -365,6 +373,61 @@ class ExtLines(unittest.TestCase):
             dict(what="kit", needs="0.7", has="0.6")], addons=[dict(folder="G", version=None, state="unknown")])[1:]
         self.assertEqual([line.split()[0] for line in order], ["not", "needs", "it", "game"])
 
+    def test_one_in_the_game_only(self):
+        """where game: its state is game; what the game lists of its WuxianKit extensions, and what only the player
+        can do now, in the player's words"""
+        game = dict(extensions=["loot_peek"], state="restart")
+        player = dict(action="restart_game", text="请重启游戏：新装的插件「LootPeek」重启后才会载入")
+        lines = self.lines("game", id="loot_peek", where="game", game=game, player=player, command=None,
+                           addons=[dict(folder="LootPeek", version="0.1.0", state="current")])
+        self.assertTrue(lines[0].startswith(f"{'loot_peek':<16} game"), lines[0])
+        self.assertEqual(lines[1:], ["    game addon LootPeek 0.1.0: installed", "    in the game: loot_peek restart",
+                                     "    the player: 请重启游戏：新装的插件「LootPeek」重启后才会载入"])
+        self.assertEqual(len(self.lines("game", where="game", game=dict(extensions=[], state="installed"), player=None)),
+                         1)                                          # nothing to say: one line
+        self.assertEqual(self.lines("stopped", game=None, player=None), self.lines("stopped"))
+
+    def test_wait_stop_check_and_load_of_one_in_the_game(self):
+        player = dict(action="restart_game", text="请重启游戏")
+        row = self.row("game", id="loot_peek", where="game", player=player)
+        asked = []
+
+        class Client:
+            def extension_wait(self, eid, seconds):
+                asked.append((eid, seconds))
+                return dict(self.answer)
+
+            def extension_stop(self, eid):
+                return dict(row, stopped=False, note="nothing runs on this computer")
+
+            def extension_check(self, eid):
+                return dict(ok=False, problems=[], capabilities=[], addons=[
+                    dict(folder="LootPeek", path=r"C:\e\loot\addons\LootPeek", ok=False, warnings=[], errors=[
+                        dict(file="LootPeek.lua", line=3, message="unexpected symbol", hint=None)]), "?"])
+
+            def extension_load(self, eid):
+                return dict(check=dict(ok=True, capabilities=[]), row=row, addons=[], restart=False, hint=None,
+                            loaded=[dict(folder="LootPeek", ok=True, error=None, check={}),
+                                    dict(folder="LootMore", ok=False, error="LootMore.lua: boom", check=None), "?"])
+
+        client = Client()
+        client.answer = dict(row=row, was=player, timeout=True)
+        code, lines, _ = self.run_ext(client, "wait", "loot_peek", "--seconds", "3")
+        self.assertEqual((code, lines[-1], asked), (1, "still waiting: 请重启游戏", [("loot_peek", 3.0)]))
+        self.assertTrue(lines[0].startswith("loot_peek "), lines)
+        client.answer = dict(row=dict(row, player=None), was=player, timeout=False)
+        self.assertEqual(self.run_ext(client, "wait", "loot_peek")[::2], (0, ""))
+        self.assertEqual(self.run_ext(client, "wait", "loot_peek")[1][-1], "done: 请重启游戏")
+        client.answer = dict(row=dict(row, player=None), was=None, timeout=False)
+        self.assertEqual(self.run_ext(client, "wait", "loot_peek")[:2][1][-1], "nothing to wait for")
+        self.assertEqual(self.run_ext(client, "stop", "loot_peek")[1][-1], "    nothing runs on this computer")
+        code, lines, _ = self.run_ext(client, "check", "loot_peek")
+        self.assertEqual((code, lines), (1, ["error   LootPeek/LootPeek.lua:3: unexpected symbol",
+                                             "not ok: 0 capabilities"]))
+        code, lines, _ = self.run_ext(client, "load", "loot_peek")
+        self.assertEqual((code, lines[1:3]), (0, ["game addon LootPeek: ran in the game",
+                                                  "game addon LootMore: failed in the game: LootMore.lua: boom"]))
+
     def test_one_the_workshop_allows_by_itself(self):
         """the setting "auto": the row says allowed, and nothing waits for the player; one from a package (allowed
         false) waits whatever the setting"""
@@ -511,6 +574,9 @@ class ExtLines(unittest.TestCase):
         self.run_ext(client, "new", "voice", "--title", "声音", "--addon", "VoiceGame")
         code, lines, _ = self.run_ext(client, "new", "voice")
         self.assertEqual(made, [("voice", "声音", None, "VoiceGame"), ("voice", None, None, None)])
+        client.new_extension = lambda *args: made.append(args) or dict(row=dict(path="p"), files=[], guide="")
+        self.run_ext(client, "new", "loot", "--where", "game")       # where: a fifth argument, only when given
+        self.assertEqual(made[-1], ("loot", None, None, None, "game"))
         self.assertEqual(lines, [r"made C:\w\extensions\voice: main.py", "extension_load it"])
 
 
@@ -542,6 +608,17 @@ class ExtRoutes(unittest.TestCase):
         self.assertEqual(self.asked(lambda c: c.new_extension("voice", None, None, "VoiceGame")),
                          ("POST", "/api/local/new", {"id": "voice", "title": None, "folder": None,
                                                      "addon": "VoiceGame"}, 60))
+        self.assertEqual(self.asked(lambda c: c.new_extension("loot", None, None, None, "game")),
+                         ("POST", "/api/local/new", {"id": "loot", "title": None, "folder": None, "where": "game"}, 60))
+
+    def test_wait(self):
+        """extension_wait: the daemon has as long as it was asked to wait (600 s at most) and a minute more"""
+        self.assertEqual(self.asked(lambda c: c.extension_wait("loot")),
+                         ("POST", "/api/local/wait", {"id": "loot", "seconds": 120}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_wait("loot", 5000)),
+                         ("POST", "/api/local/wait", {"id": "loot", "seconds": 5000}, 660))
+        self.assertEqual(self.asked(lambda c: c.extension_wait("loot", "long")),      # the daemon refuses it
+                         ("POST", "/api/local/wait", {"id": "loot", "seconds": "long"}, 60))
 
 
 class BackgroundStart(unittest.TestCase):

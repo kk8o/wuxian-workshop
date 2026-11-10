@@ -404,8 +404,9 @@ class GameHalf(Case):
         _, folder = self.linked("g", addons=("WuxianG",))        # a manifest that does not pass any more
         self.host.install("g")
         manifest = json.loads((folder / M.MANIFEST).read_text(encoding="utf-8"))
-        del manifest["run"]
+        manifest["run"] = "main.py"
         (folder / M.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertIsNone(M.check_manifest(folder)[0])
         self.assertEqual([(a["folder"], a["removed"]) for a in self.host.remove("g")["addons"]], [("WuxianG", True)])
         self.assertFalse((self.addons / "WuxianG").exists())
         self.linked("d", addons=("WuxianD", "WuxianE"))          # the game holds one

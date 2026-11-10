@@ -18,8 +18,8 @@ from tests.ui.test_fake_api import AUTH, F
 
 ROW = {"id", "title", "version", "path", "enabled", "start", "state", "pid", "started", "exit_code", "error", "capabilities",
        "sources", "options", "apps", "skills", "adds", "approval", "allowed", "since", "why", "command",
-       "origin", "author", "homepage", "requires", "unmet", "addons"}
-STATES = {"off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff"}
+       "origin", "author", "homepage", "requires", "unmet", "addons", "where", "game", "player"}
+STATES = {"off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff", "game"}
 
 
 class Local(unittest.TestCase):
@@ -187,7 +187,8 @@ class Auto(Local):
         self.assertEqual({row["id"]: row["approval"] for row in rows.values() if row["approval"] != "ok"},
                          {"greeter": "needed"})                          # from a package: the player allows it once
         self.assertEqual(self.post("load", id="greeter").status_code, 403)
-        self.assertEqual({row["state"] for row in rows.values()}, {"running", "stopped", "exited", "off", "hung", "backoff"})
+        self.assertEqual({row["state"] for row in rows.values()},
+                         {"running", "stopped", "exited", "off", "hung", "backoff", "game"})
         r = self.post("load", id="facts")                                # a start allows it by itself
         self.assertEqual((r.status_code, r.json()["row"]["state"]), (200, "running"))
         r = self.post("check", id="stats")

@@ -88,7 +88,10 @@ class Discovery(HomeCase):
         # the setting lets the workshop approve commands by itself, but not this one's: it was not written here
         self.assertTrue(self.host.auto())
         error = self.refused()
-        self.assertEqual((error.status, error.code, error.extra), (403, "needs_approval", dict(approval="needed")))
+        self.assertEqual((error.status, error.code, error.extra), (403, "needs_approval", dict(
+            approval="needed", player=dict(action="approve", text="请在无限工坊 App 的「扩展」页批准「测试 fx」"))))
+        self.assertEqual(row["player"], error.extra["player"])
+        self.assertIn("extension_wait waits for them", error.message)
         self.assertIn("the player has not confirmed the command it starts with", error.message)
         self.assertIn("it came in a package or was found in the extensions folder", error.message)
         for run in (lambda: self.host.call_sync("fx.echo", {"text": "a"}), lambda: self.host.check("fx"),
@@ -107,7 +110,9 @@ class Discovery(HomeCase):
         make_extension(folder, "fx", mode="another")                             # what it runs changed
         self.assertEqual(self.host.get("fx")["approval"], "changed")
         error = self.refused()
-        self.assertEqual((error.code, error.extra), ("needs_approval", dict(approval="changed")))
+        self.assertEqual((error.code, error.extra), ("needs_approval", dict(approval="changed", player=dict(
+            action="approve", text="「测试 fx」要运行的内容变了，请在无限工坊 App 的「扩展」页重新批准"))))
+        self.assertIn("extension_wait", error.message)
         self.assertIn("changed the command it starts with since the player confirmed it", error.message)
         self.assertFalse(self.host.get("fx")["allowed"])
 

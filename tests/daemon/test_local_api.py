@@ -217,13 +217,14 @@ class LocalApi(LocalDaemon, unittest.TestCase):
 
     def test_what_the_host_knows_of_the_game(self):
         host = self.svc.local
-        self.assertEqual(host.taken_ids(), ("sense", "tune", "guide"))         # WuxianKit's own extensions
+        self.assertEqual(host.taken_ids(), {"sense": None, "tune": None, "guide": None})   # WuxianKit's own, and
+                                                                               # the addon each is of (not said here)
         self.assertEqual(Path(host.game_addons()), self.addons)
         self.assertIsNone(host.kit())                                          # (this manifest does not say)
         host.client_interface()                                                # never an error
         folder = make_extension(self.root / "ext" / "zed", "zed")
         with mock.patch.object(self.svc, "kit_manifest_known", return_value=dict(ZED_MANIFEST, kit="0.7.1")):
-            self.assertEqual((host.taken_ids(), host.kit()), (("zed",), "0.7.1"))
+            self.assertEqual((host.taken_ids(), host.kit()), ({"zed": None}, "0.7.1"))
             self.assertIn("zed", self.fails("POST", "/api/local/add", {"path": str(folder)}, 400, "bad_manifest"))
         self.ok("POST", "/api/local/add", {"path": str(folder)})               # free again: it is added
 
@@ -506,13 +507,14 @@ class LocalApi(LocalDaemon, unittest.TestCase):
     # --- new_extension
 
     def test_new_extension(self):
-        def files(folder, eid, title, addon=None, taken=()):
+        def files(folder, eid, title, addon=None, taken=(), where=None):
             make_extension(folder, eid, title=title or eid)
             return [str(Path(folder) / "wuxian-extension.json"), str(Path(folder) / "main.py")]
         with mock.patch.object(scaffold, "new_extension_files", side_effect=files, create=True) as made:
             res = self.ok("POST", "/api/local/new", {"id": "fresh", "title": "新的"})
         folder = self.root / "home" / "extensions" / "fresh"
-        made.assert_called_once_with(str(folder), "fresh", "新的", addon=None, taken=("sense", "tune", "guide"))
+        made.assert_called_once_with(str(folder), "fresh", "新的", addon=None, where="local",
+                                     taken={"sense": None, "tune": None, "guide": None})
         self.assertEqual((res["row"]["id"], res["row"]["title"], res["row"]["path"]), ("fresh", "新的", str(folder)))
         self.assertEqual(len(res["files"]), 2)
         self.assertIn("extension_load", res["guide"])

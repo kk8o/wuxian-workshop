@@ -890,20 +890,22 @@
               <div class="lx-approve-head">
                 <div class="grow">
                   <b x-text="lxApprovalTitle(lxCur)"></b>
-                  <span class="muted">确认后，无限工坊将在本机运行此命令。</span>
+                  <span class="muted" x-text="lxApproveHint(lxCur)"></span>
                 </div>
                 <button class="btn primary" :disabled="lx.busy !== '' || !lxCanApprove(lxCur)" @click="lxApprove(lxCur)"
-                        x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : t('批准运行')"></button>
+                        x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')"></button>
               </div>
               <dl class="kv">
-                <dt>命令</dt><dd><code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>
+                <dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)"><code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>
+                <dt x-show="lxGameOnly(lxCur)">游戏插件</dt><dd x-show="lxGameOnly(lxCur)" class="mono selectable" x-text="(lxCur.addons || []).map((a) => a.folder).join('  ')"></dd>
                 <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
               </dl>
-              <div class="muted" x-show="lxWillInstall(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
+              <div class="muted" x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
             </div>
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>
             <div class="xp-note bad" x-show="lxCur.error && !lxBlocked(lxCur)" x-text="lxCur.error"></div>
             <div class="xp-note" :class="{ bad: lx.note && lx.note.bad }" x-show="lx.note" x-text="lx.note && lx.note.text"></div>
+            <div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)" x-text="lxPlayer(lxCur)"></div>
             <div class="xp-note" x-show="lx.packed && lx.packed.id === lxCur.id">
               <span>已打包</span>
               <span class="mono selectable grow" x-text="lx.packed ? lx.packed.file : ''"></span>
@@ -915,7 +917,7 @@
               <button class="tab" :class="{ on: xpTab === 'info' }" @click="lxTab('info')">概况</button>
               <button class="tab" x-show="(lxCur.options || []).length" :class="{ on: xpTab === 'opts' }" @click="lxTab('opts')">设置</button>
               <button class="tab" :class="{ on: xpTab === 'caps' }" @click="lxTab('caps')">能力<span class="tab-count" x-text="((lxCur.capabilities || []).length + (xpSel.mod ? xpSel.mod.count : 0)) || ''"></span></button>
-              <button class="tab" :class="{ on: xpTab === 'logs' }" @click="lxTab('logs')">日志</button>
+              <button class="tab" x-show="!lxGameOnly(lxCur)" :class="{ on: xpTab === 'logs' }" @click="lxTab('logs')">日志</button>
             </div>
             <div class="detail-scroll" x-show="xpTab !== 'logs'">
               <div x-show="xpTab === 'info'">
@@ -924,7 +926,7 @@
                   <dd><span class="xp-state" :class="lxState(lxCur).cls"><span class="xp-dot"></span><span x-text="lxState(lxCur).text"></span></span>
                     <span class="muted" x-show="lxRunning(lxCur) && lxCur.pid" x-text="t('进程 {pid}', { pid: lxCur.pid })"></span>
                     <span class="muted" x-show="lxSince(lxCur)" x-text="lxSince(lxCur)"></span></dd>
-                  <dt x-show="lxCur.why">原因</dt><dd x-show="lxCur.why" class="lx-why selectable" x-text="lxCur.why"></dd>
+                  <dt x-show="lxReason(lxCur)">原因</dt><dd x-show="lxReason(lxCur)" class="lx-why selectable" x-text="lxReason(lxCur)"></dd>
                   <dt>版本</dt><dd class="mono" x-text="lxCur.version || '—'"></dd>
                   <dt>来源</dt><dd :title="lxOriginTip(lxCur)" x-text="lxOrigin(lxCur) || '—'"></dd>
                   <dt x-show="lxCur.author">作者</dt><dd x-show="lxCur.author" class="selectable" x-text="lxCur.author"></dd>
@@ -938,11 +940,11 @@
                             x-text="lxBusy(lxCur, 'install') ? t('进行中…') : lxGameAct(lxCur) === 'update' ? t('更新') : t('安装')"></button>
                     <span class="pill tiny warn" x-show="lxRestart(lxCur)" x-text="t('重启游戏后生效')"></span>
                   </dd>
-                  <dt>启动方式</dt><dd x-text="lxStart(lxCur)"></dd>
+                  <dt x-show="!lxGameOnly(lxCur)">启动方式</dt><dd x-show="!lxGameOnly(lxCur)" x-text="lxStart(lxCur)"></dd>
                   <dt x-show="lxCur.started">开始于</dt><dd x-show="lxCur.started" x-text="lxStarted(lxCur)"></dd>
                   <dt x-show="lxCur.exit_code != null && !lxRunning(lxCur)">退出码</dt>
                   <dd x-show="lxCur.exit_code != null && !lxRunning(lxCur)"><span class="pill" :class="lxCur.exit_code === 0 ? 'ok' : 'bad'" x-text="lxCode(lxCur.exit_code)"></span></dd>
-                  <dt>能力</dt><dd x-text="(lxCur.capabilities || []).length ? t('{n} 个', { n: lxCur.capabilities.length }) : t('运行后可查看')"></dd>
+                  <dt>能力</dt><dd x-text="lxCapsLine(lxCur, xpSel.mod)"></dd>
                   <dt x-show="(lxCur.sources || []).length">事件来源</dt><dd x-show="(lxCur.sources || []).length" class="mono" x-text="(lxCur.sources || []).map((n) => lxCur.id + ':' + n).join('  ')"></dd>
                   <dt x-show="(lxCur.apps || []).length">应用</dt><dd x-show="(lxCur.apps || []).length" class="mono" x-text="(lxCur.apps || []).join('  ')"></dd>
                   <dt x-show="(lxCur.skills || []).length">Agent 技能</dt><dd x-show="(lxCur.skills || []).length" class="mono" x-text="(lxCur.skills || []).join('  ')"></dd>
@@ -1008,8 +1010,8 @@
                 <p class="small muted xp-small">改动即时保存；扩展运行中会立刻收到新设置。</p>
               </div>
               <div x-show="xpTab === 'caps'">
-                <h3 class="xp-h" x-show="xpSel.mod">本机<span class="muted">在这台电脑上运行，不需要游戏</span></h3>
-                <p class="xp-toolhint" x-show="!xpSel.mod || !(lxCur.capabilities || []).length" x-text="(lxCur.capabilities || []).length ? t('每个能力是一个 Agent 工具，在这台电脑上运行，不需要游戏') : t('运行后可查看')"></p>
+                <h3 class="xp-h" x-show="xpSel.mod && !lxGameOnly(lxCur)">本机<span class="muted">在这台电脑上运行，不需要游戏</span></h3>
+                <p class="xp-toolhint" x-show="lxCapsHint(lxCur, xpSel.mod)" x-text="lxCapsHint(lxCur, xpSel.mod)"></p>
                 <table class="table xp-tools" x-show="(lxCur.capabilities || []).length">
                   <tr><th>名称</th><th>类型</th><th>Agent 工具</th></tr>
                   <template x-for="c in lxCaps(lxCur)" :key="c.id">
@@ -1096,7 +1098,15 @@
               <p class="small muted lx-idea">把想法交给 Agent，由它新建并调试：<button class="btn tiny" type="button" @click="lxCopyIdea()">复制给 Agent 的第一句话</button>；也可以在下方填写标识后自己创建。</p>
               <label class="field"><span>标识</span><input x-t class="input mono" x-model="lxn.id" placeholder="小写字母开头，可含数字与下划线"></label>
               <label class="field"><span>名称</span><input x-t class="input" x-model="lxn.title" placeholder="可以不填"></label>
-              <label class="field"><span>游戏插件</span><input x-t class="input mono" x-model="lxn.addon" placeholder="插件文件夹名，可以不填"></label>
+              <div class="field"><span>运行位置</span>
+                <div class="row tight">
+                  <label class="check-inline"><input type="radio" value="game" x-model="lxn.where"> 游戏</label>
+                  <label class="check-inline"><input type="radio" value="local" x-model="lxn.where"> 本机</label>
+                  <label class="check-inline"><input type="radio" value="both" x-model="lxn.where"> 游戏 · 本机</label>
+                </div>
+              </div>
+              <p class="small muted lx-where-hint" x-text="lxWhereHint(lxn.where)"></p>
+              <label class="field" x-show="lxn.where !== 'local'"><span>游戏插件</span><input x-t class="input mono" x-model="lxn.addon" placeholder="插件文件夹名，留空则按标识生成"></label>
               <p class="small bad-text selectable lx-why" x-show="lxn.error" x-text="lxn.error"></p>
               <div class="row end">
                 <div class="spacer"></div>
@@ -1111,6 +1121,7 @@
                   <li>交给 Agent：<button class="btn tiny" @click="copy(lxPrompt(lxn.result), t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
                   <li>用编辑器打开它：<button class="btn tiny" @click="lxOpen(lxn.result.path)">打开文件夹</button></li>
                   <li x-show="lxn.result.needs">首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。</li>
+                  <li x-show="lxn.result.where === 'game'">载入时安装到游戏；新插件在游戏重启后由游戏载入。</li>
                 </ol>
                 <div class="row end">
                   <div class="spacer"></div>

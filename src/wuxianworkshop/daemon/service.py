@@ -78,6 +78,8 @@ REACTIONS_MINUTES = 720
 ALLOWED_KINDS = ("see", "keep", "point")   # what local_call calls (say and do are proposals: a later step)
 MAX_CHAIN = 4                # hops of a call's caller.chain: one more is a loop (capabilities calling each other)
 CALL_TIMEOUT = 30.0          # seconds a capability has that declares no timeout (and a call of the game's)
+WAIT_MAX = 600.0             # seconds extension_wait waits at most
+WAIT_STEP = 2.0              # seconds between its looks at the extension's row
 
 
 def short_list(numbers, most=12):
@@ -186,7 +188,8 @@ class Service:
                                on_call=self.extension_calls, on_change=self.local_changed,
                                taken=self.kit_extension_ids, kit_version=self.kit_version_known,
                                addons_dir=self.game_addons_known,
-                               interface=self.client_interface_known)   # local/host.py
+                               interface=self.client_interface_known,
+                               game_side=self.game_side_known)   # local/host.py
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
                                    note=lambda text: self.journal.add("INFO", text),
                                    local_sources=lambda: set(self.local.ids()))
@@ -1688,10 +1691,21 @@ class Service:
         return fut
 
     def kit_extension_ids(self):
-        """(the local host's taken) the ids of the extensions WuxianKit lists in the manifest known now: a local
-        extension that is not registered yet cannot have one of them; [] when no manifest is known"""
+        """(the local host's taken) the ids of the extensions WuxianKit lists in the manifest known now, each with
+        the addon that brings it ({id: addon}): a local extension that is not registered yet cannot have one of them,
+        but for one in the game only whose own addon it is; {} when no manifest is known"""
         manifest = self.kit_manifest_known() or {}
-        return [x["id"] for x in manifest.get("extensions") or [] if isinstance(x, dict) and isinstance(x.get("id"), str)]
+        return {x["id"]: x.get("addon") for x in manifest.get("extensions") or []
+                if isinstance(x, dict) and isinstance(x.get("id"), str)}
+
+    def game_side_known(self):
+        """(the local host's game_side) what the game says of the extensions' game halves now: {online: the link is
+        up, extensions: {id: {addon, state, version}} as the WuxianKit manifest known now lists them}"""
+        manifest = self.kit_manifest_known() or {}
+        return dict(online=bool(self.link_is_up()),
+                    extensions={x["id"]: dict(addon=x.get("addon"), state=x.get("state"), version=x.get("version"))
+                                for x in manifest.get("extensions") or []
+                                if isinstance(x, dict) and isinstance(x.get("id"), str)})
 
     def kit_version_known(self):
         """(the local host's kit_version) the version of WuxianKit in the manifest known now (its kit), or None"""
@@ -1881,7 +1895,7 @@ class Service:
         row = await asyncio.to_thread(self.local.add, path)
         self.notes.forgive(row["id"])                      # (a package over the version there: its notes are tried anew)
         if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" \
-                and row.get("allowed") and not row.get("error"):
+                and row.get("allowed") and not row.get("error") and row.get("where") != "game":
             self.local.describe(row["id"]).add_done_callback(_seen)   # in the background: its row says how it went
         await self.reconcile_local_apps()
         return row
@@ -1897,11 +1911,91 @@ class Service:
 
     async def extension_load(self, id):
         """checks a local extension and (re)starts it: {row, check, addons, restart, hint} (its game addons are
-        installed first where the game has none or another version); its apps are made what its manifest says now"""
+        installed first where the game has none or another version); its apps are made what its manifest says now.
+        One in the game only has no process: its addons are installed and, while the game is online, run there now
+        (loaded: [{folder, ok, error, check}], as `load` does it), and its row says how the game lists it then. Its
+        Lua is checked before anything is installed: a syntax error leaves the game's AddOns as it was (422
+        check_failed, as `load` answers it; the findings in the error's `addons`)"""
+        before = await asyncio.to_thread(self.local.get, id)
+        if before.get("where") == "game" and before.get("enabled"):
+            found = (await self.extension_check(before["id"])).get("addons") or []
+            first = next(((a, f) for a in found for f in a["errors"] if f.get("code") in ("syntax", "unreadable")), None)
+            if first:
+                a, f = first
+                at = f"{a['folder']}/{f['file']}:{f['line']}: " if f.get("file") else f"{a['folder']}: "
+                raise ApiError(422, "check_failed", f"extension_load {before['id']}: nothing installed, {at}{f['message']}"
+                                                    + (f" ({f['hint']})" if f.get("hint") else ""), addons=found)
         res = await asyncio.to_thread(self.local.load_, id)
-        self.notes.forgive(res["row"]["id"])  # loaded again: its notes are tried at once
+        row = res["row"]
+        self.notes.forgive(row["id"])         # loaded again: its notes are tried at once
         await self.reconcile_local_apps()
+        if row.get("where") == "game":
+            res["loaded"] = await self.game_loaded(res.get("addons") or [])
+            res["row"] = await self.extension_waiting(row["id"], fresh=bool(res["loaded"]))
+            if res.get("restart") and res["loaded"] and all(x["ok"] for x in res["loaded"]):
+                res["hint"] = "; ".join(x for x in (res.get("hint"), "its files ran in the running game just now "
+                                                    "(loaded): list the tools again, its wk_ tools may be there; the "
+                                                    "game itself takes a new addon or new files only when it starts")
+                                        if x)
         return res
+
+    async def game_loaded(self, addons):
+        """(extension_load) the addons of an extension in the game only run in the running game now, each as `load
+        <folder>` does it: [{folder, ok, error: the first one, or None, check: the findings of its check}]; [] while
+        the game is not online. Only those that are in AddOns as the extension has them"""
+        if not self.link_is_up():
+            return []
+        out = []
+        for a in addons:
+            if a.get("state") not in ("installed", "current"):
+                continue
+            try:
+                done = await self.load(a["folder"], mode="addon")
+            except ApiError as e:
+                out.append(dict(folder=a["folder"], ok=False, error=e.message, check=e.extra.get("check")))
+                continue
+            bad = next((f for f in done["files"] if not f["ok"]), None)
+            out.append(dict(folder=a["folder"], ok=bool(done["ok"]),
+                            error=f"{bad['file']}: {bad['error']}" if bad else None, check=done.get("check")))
+        return out
+
+    async def extension_waiting(self, id, fresh=False):
+        """(extension_wait, extension_load) a local extension's row with its game half as the game lists it now: when
+        it has one and the link is up, the view of WuxianKit is brought up to date first (what kit.changed told it
+        is read; fresh: the game is asked whatever was heard)"""
+        row = await asyncio.to_thread(self.local.get, id)
+        if row.get("game") is None or not self.link_is_up():
+            return row
+        try:
+            view = await self.page_kit()
+            if fresh:
+                view.stale = True
+            await asyncio.wait_for(view.current(wait=True), 15)
+        except Exception:                     # the game went away meanwhile: the row says what is known
+            pass
+        return await asyncio.to_thread(self.local.get, id)
+
+    async def extension_wait(self, id, seconds=120):
+        """waits for what only the player can do before a local extension works (its row's player): {row, was,
+        timeout}. was: the row's player when the wait began (None: nothing to wait for, answered at once); it ends
+        when that is done (the row's player is then the next thing, or None), or after seconds (WAIT_MAX at most):
+        timeout true. A game that is restarted goes away first: after restart_game, start_game is the same wait"""
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds != seconds or seconds < 0:
+            raise ApiError(400, "bad_request", f"seconds: how long to wait, 0 to {WAIT_MAX:g}")
+        end = time.monotonic() + min(float(seconds), WAIT_MAX)
+        row = await self.extension_waiting(id)
+        was = row.get("player")
+        if was is None:
+            return dict(row=row, was=None, timeout=False)
+        same = {was["action"]} | ({"start_game"} if was["action"] == "restart_game" else set())
+        while True:
+            left = end - time.monotonic()
+            if left <= 0:
+                return dict(row=row, was=was, timeout=True)
+            await asyncio.sleep(min(WAIT_STEP, left))
+            row = await self.extension_waiting(id)
+            if (row.get("player") or {}).get("action") not in same:
+                return dict(row=row, was=was, timeout=False)
 
     async def extension_approve(self, id):
         """the player allows a local extension's command to run (Host.approve; as it is now: a changed command asks
@@ -1914,8 +2008,14 @@ class Service:
         return await asyncio.to_thread(self.local.get, eid)
 
     async def extension_stop(self, id):
-        """stops a local extension (shutdown, then its process tree): its row"""
-        return await asyncio.to_thread(self.local.stop, id)
+        """stops a local extension (shutdown, then its process tree): its row. One in the game only has no process:
+        its row with stopped false and a note"""
+        row = await asyncio.to_thread(self.local.stop, id)
+        if row.get("where") == "game":
+            row = dict(row, stopped=False, note="it is in the game only and has no process to stop: the player turns "
+                                                "it off in the game (/wk), extension_set {\"enabled\": false} makes "
+                                                "the workshop leave it alone, extension_remove takes its addons out")
+        return row
 
     async def extension_set(self, id, enabled=None, options=None):
         """turns a local extension on or off, and sets some of its options: its row. On: its apps are declared; off:
@@ -1928,8 +2028,20 @@ class Service:
 
     async def extension_check(self, id):
         """a local extension (an id, or the full path of a folder) checked without touching its running process:
-        {ok, problems, capabilities, tests?}"""
-        return await asyncio.to_thread(self.local.check, id)
+        {ok, problems, capabilities, tests?}. One in the game only: its manifest and each of its addons' sources
+        checked as `check` checks an addon (agent/lint.py; nothing is asked of the game): addons [{folder, path,
+        ok, errors, warnings}], ok false when one has errors"""
+        res = await asyncio.to_thread(self.local.check, id)
+        if res.get("where") == "game":
+            for a in res.get("addons") or []:
+                try:
+                    report = await asyncio.to_thread(lint.check, a["path"], self.game_addons_known())
+                    a.update(ok=not report["errors"], errors=report["errors"], warnings=report["warnings"])
+                except (lint.LintError, OSError) as e:
+                    a.update(ok=False, errors=[dict(file="", line=0, code="unreadable", message=str(e), hint="")],
+                             warnings=[])
+            res["ok"] = bool(res["ok"]) and all(a["ok"] for a in res.get("addons") or [])
+        return res
 
     async def extension_logs(self, id, since=0, limit=200):
         """a local extension's output by line: {lines: [{n, text}], next, total, reset, cut, row}"""
@@ -1946,19 +2058,28 @@ class Service:
         hint}"""
         return await asyncio.to_thread(self.local.install, id)
 
-    async def new_extension(self, id, title=None, folder=None, addon=None):
+    async def new_extension(self, id, title=None, folder=None, addon=None, where=None):
         """a new local extension from the template (scaffold.new_extension_files) in folder (default
         %WUXIAN_HOME%\\extensions\\<id>; new or empty), registered: {row, files, guide}. addon (a folder name): it
-        brings a game half too, addons/<addon> (a WuxianKit extension <id>_game), which extension_load installs"""
+        brings a game half too, addons/<addon> (a WuxianKit extension <id>_game), which extension_load installs.
+        where (scaffold.extension_where): game (in the game only: the WuxianKit extension <id> in addons/<addon>, no
+        process; it is used at once, as an addon new_addon makes), local or both; None: both with an addon, else
+        local"""
+        if addon is not None and (not isinstance(addon, str) or not addon.strip()):
+            raise ApiError(400, "bad_request", "addon: the folder name of the extension's game addon (WuxianVoice)")
+        addon = addon.strip() if addon else None
+        if where is not None and not isinstance(where, str):
+            raise ApiError(400, "bad_request", "where: game, local or both")
+        try:
+            where, addon = scaffold.extension_where(id, addon, where)
+        except scaffold.ScaffoldError as e:
+            raise ApiError(400, getattr(e, "code", "bad_request"), str(e)) from None
         taken = self.local.taken_ids()
-        bad = local_manifest.id_problem(id, taken=taken)
+        bad = local_manifest.id_problem(id, taken=local_manifest.not_own(taken, [addon]) if where == "game" else taken)
         if bad:
             raise ApiError(400, "bad_request", f"id: {bad['message']}: {bad['hint']}")
         if title is not None and not isinstance(title, str):
             raise ApiError(400, "bad_request", "title: text")
-        if addon is not None and (not isinstance(addon, str) or not addon.strip()):
-            raise ApiError(400, "bad_request", "addon: the folder name of the extension's game addon (WuxianVoice)")
-        addon = addon.strip() if addon else None
         if folder is None or (isinstance(folder, str) and not folder.strip()):
             from ..paths import home
             path = home() / "extensions" / id
@@ -1974,13 +2095,23 @@ class Service:
             raise ApiError(501, "not_available", "this build of 无限工坊 has no extension template "
                                                  "(scaffold.new_extension_files)")
         try:
-            files = await asyncio.to_thread(make, str(path), id, title, addon=addon, taken=taken)
+            files = await asyncio.to_thread(make, str(path), id, title, addon=addon, taken=taken, where=where)
         except scaffold.ScaffoldError as e:
             raise ApiError(400, getattr(e, "code", "bad_request"), str(e)) from None
-        self.journal.add("INFO", f"new local extension {id} in {path}")
+        self.journal.add("INFO", f"new local extension {id} in {path}" + (" (in the game only)" if where == "game"
+                                                                          else ""))
         row = await self.extension_add(str(path))
+        if where == "game":
+            return dict(row=row, files=[str(f) for f in files or []],
+                        guide=f"Read {path}\\addons\\{addon}\\AGENT.md and guide {{\"topic\": \"game-extension\"}}. "
+                              f"Edit addons\\{addon}\\{addon}.lua, then extension_load {{\"id\": \"{id}\"}} (it checks "
+                              f"the files, installs the addon into the game's AddOns and runs it in the running game), "
+                              f"call its wk_{id}_ tools (list the tools again), read errors and logs when something "
+                              f"fails. The game lists a new addon when it starts: extension_wait {{\"id\": \"{id}\"}} "
+                              f"waits for what the player has to do (the row's player)")
         return dict(row=row, files=[str(f) for f in files or []],
-                    guide=f"Read {path}\\AGENT.md and extension_guide (the whole guide). Edit main.py, then "
+                    guide=f"Read {path}\\AGENT.md and guide {{\"topic\": \"local-extension\"}} (the whole "
+                          f"chapter). Edit main.py, then "
                           f"extension_load {{\"id\": \"{id}\"}} (it checks, restarts and runs its tests), call its "
                           f"wk_{id}_ tools, read extension_logs when something fails"
                           + (f". Its game half is addons\\{addon}: extension_load installs it into the game's AddOns "

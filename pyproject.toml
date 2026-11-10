@@ -36,4 +36,4 @@ include = ["wuxianworkshop*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-wuxianworkshop = ["ui/static/*", "ui/static/**/*", "data/*.json.gz", "data/*.md"]
+wuxianworkshop = ["ui/static/*", "ui/static/**/*", "data/*.json.gz", "data/*.md", "data/guide/*.md"]

@@ -43,7 +43,8 @@
      GET  /api/local                   -> {revision, extensions:[row], problem, home (the extensions' folder)}: the local
                                           extensions this workshop runs on this
                                           computer (local/), row {id, title, version, path, enabled, start: use | workshop,
-                                          state: off | stopped | starting | running | hung | stopping | exited | backoff,
+                                          state: off | stopped | starting | running | hung | stopping | exited | backoff |
+                                          game (in the game only: no process, its game addons are all of it),
                                           since, why, pid, started, exit_code, error (a manifest that cannot be read:
                                           state stopped), command:[argv] | null, approval: ok | needed | changed,
                                           allowed (true: its command may run as it is, approved or the setting is "auto"),
@@ -59,9 +60,12 @@
                                           A row also says origin: home (in the extensions' folder) | linked, author,
                                           homepage, requires {workshop?, kit?}, unmet:[{what: workshop | kit, needs, has}]
                                           (workshop unmet: it cannot run here), addons:[{folder, version, state: unknown |
-                                          broken | missing | current | differs | foreign}] (what it brings for the game).
+                                          broken | missing | current | differs | foreign}] (what it brings for the game),
+                                          where: game | local | both, game: {extensions:[id], state: unknown | absent |
+                                          offline | restart | missing | disabled | off | installed | on} | null, player:
+                                          {action, text} | null (what is left for the player to do).
                                           POST /api/local/add {path: a folder or a .zip} -> the row (a package's with
-                                          package {file, replaced}), /new {id, title?, addon?} -> the row or {row, files,
+                                          package {file, replaced}), /new {id, title?, where?, addon?} -> the row or {row, files,
                                           guide}, /remove {id} -> {removed, id, path, kept, addons:[{folder, removed,
                                           kept}]}, /pack {id} -> {id, version, file, size, files, sha256, skipped},
                                           /install {id} -> {id, addons:[{folder, state: current | installed, was, version,
@@ -187,7 +191,8 @@ const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extens
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
 const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
                               apps: [], skills: [], adds: {}, approval: 'ok', command: null, since: null, why: null,
-                              error: null, origin: '', author: null, homepage: null, requires: {}, unmet: [], addons: [] });
+                              error: null, origin: '', author: null, homepage: null, requires: {}, unmet: [], addons: [],
+                              where: null, game: null, player: null });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -305,7 +310,7 @@ function appState() {
                                                // game: by id, true once game addons went in that need the game restarted
     lxa: { open: false, kind: 'folder', path: '', busy: false, error: '' },   // 扩展 · 本机 · 添加: the path typed (no shell
                                                // to pick with), or the one that was refused (kind: folder | zip)
-    lxn: { open: false, id: '', title: '', addon: '', busy: false, error: '' },   // 扩展 · 本机 · 新建扩展
+    lxn: { open: false, id: '', title: '', addon: '', where: 'local', busy: false, error: '' },   // 扩展 · 新建扩展
     lxp: { open: false, path: '' },            // 扩展 · 本机: a folder's path shown (no shell to open it with)
     lout: { id: null, run: null, next: 0, top: 0, total: 0, gen: 0, text: '', count: 0, busy: false, again: false,
             loaded: false, error: '', follow: true, after: 0 },   // 扩展 · 本机: the log of the one shown (its lines are
@@ -800,12 +805,18 @@ function appState() {
       const folders = ((r && r.addons) || []).map((a) => a.folder);
       return folders.length ? this.xpMods.filter((m) => !m.builtin && folders.includes(m.addon)) : [];
     },
-    lxWhere(r) {                               // where it runs: 本机, or 游戏 · 本机 when it brings game addons
-      return r && (r.addons || []).length ? t('游戏') + ' · ' + t('本机') : t('本机');
+    lxGameOnly(r) { return !!r && r.where === 'game'; },   // in the game only: no process, its game addons are all of it
+    lxWhereOf(r) {                             // game | local | both (a row that does not say: by what it brings)
+      const w = r && r.where;
+      return w === 'game' || w === 'local' || w === 'both' ? w : r && (r.addons || []).length ? 'both' : 'local';
     },
-    lxWhereTip(r) {                            // the tooltip of lxWhere
-      return r && (r.addons || []).length ? t('包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行') : t('在这台电脑上运行，不需要游戏');
+    lxWhereName(w) { return w === 'game' ? t('游戏') : w === 'both' ? t('游戏') + ' · ' + t('本机') : t('本机'); },
+    lxWhereHint(w) {                           // one line on a 运行位置 (the tag's tooltip, the hint of 新建扩展)
+      return w === 'game' ? t('只含游戏插件，在游戏中运行，没有本机程序')
+        : w === 'both' ? t('包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行') : t('在这台电脑上运行，不需要游戏');
     },
+    lxWhere(r) { return this.lxWhereName(this.lxWhereOf(r)); },   // where it runs: 游戏, 本机, or 游戏 · 本机
+    lxWhereTip(r) { return this.lxWhereHint(this.lxWhereOf(r)); },   // the tooltip of lxWhere
     xpJoin(mods) {                             // the extensions of one addon as one: their tools together, on while one is
       if (mods.length === 1) return mods[0];
       const tools = mods.flatMap((m) => m.tools || []);
@@ -887,6 +898,7 @@ function appState() {
       const tab = this.xp.tab, sel = this.xpSel;
       if (sel.kind === 'local') {
         if (tab === 'opts' && !(this.lxCur.options || []).length) return 'info';
+        if (tab === 'logs' && this.lxGameOnly(this.lxCur)) return 'info';      // no process, no log
         return ['info', 'opts', 'caps', 'logs'].includes(tab) ? tab : 'info';
       }
       if (['opts', 'caps', 'logs'].includes(tab)) return 'info';
@@ -1431,7 +1443,44 @@ function appState() {
       if (this.lxBlocked(r)) return { key: 'unmet', cls: 'bad', text: t('版本不足') };
       if (r.error) return { key: 'invalid', cls: 'bad', text: t('清单有误') };
       if (this.lxUnapproved(r)) return { key: 'approval', cls: 'warn', text: t('待批准') };
+      if (r.state === 'game') return this.lxGameState(r);
       return { key: 'stopped', cls: '', text: t('未运行') };
+    },
+    lxGameState(r) {                           // a row in the game only (state game): how the game has it (game.state)
+      const s = (r.game && r.game.state) || 'unknown';
+      if (s === 'absent') {                    // its addons are not all in the game as they are here: the first that is not
+        const a = (r.addons || []).find((x) => x && x.state !== 'current');
+        const pill = a ? this.lxAddonPill(a) : 'warn';
+        return { key: 'game-absent', cls: pill === 'off' ? '' : pill, text: a ? this.lxAddonState(a) : t('未安装') };
+      }
+      const cls = { unknown: 'warn', restart: 'warn', missing: 'warn', disabled: 'warn', installed: 'ok', on: 'ok' }[s] || '';
+      return { key: 'game-' + s, cls,
+               text: t({ unknown: '游戏目录未知', offline: '游戏未连接', restart: '待重启游戏', missing: '游戏中未加载',
+                         disabled: '插件未启用', off: '未启用', installed: '已安装', on: '运行中' }[s] || '—') };
+    },
+    lxReason(r) {                              // the 原因 line: why it is not running ('' for a row in the game only at
+      return r && r.why && r.state !== 'game' ? r.why : '';   // rest: its why only says where it runs, the tag does)
+    },
+    lxPlayer(r) {                              // what is left for the player in the game, as a line ('' when nothing is,
+      const p = r && r.player;                 // the 批准 card says it, or a program's game half only waits for the game)
+      if (!p || p.action === 'approve' || (p.action === 'start_game' && !this.lxGameOnly(r))) return '';
+      const addon = (((r.addons || [])[0] || {}).folder) || '';
+      switch (p.action) {
+        case 'start_game': return t('请启动游戏并进入世界');
+        case 'restart_game': return t('请重启游戏：新插件 {addon} 重启后才会载入', { addon });
+        case 'enable_addon': return t('请在游戏的插件列表中启用 {addon}，然后重载界面', { addon });
+        case 'turn_on': return t('请在游戏中输入 /wk，开启此扩展');
+        default: return p.text || '';
+      }
+    },
+    lxCapsLine(r, mod) {                       // 概况 · 能力: how many (a row in the game only: its extension's in the game)
+      if (this.lxGameOnly(r)) return mod && mod.count ? t('{n} 个', { n: mod.count }) : t('游戏中载入后可查看');
+      return (r.capabilities || []).length ? t('{n} 个', { n: r.capabilities.length }) : t('运行后可查看');
+    },
+    lxCapsHint(r, mod) {                       // 能力: the line over this computer's tools ('' when there is nothing to say)
+      if (this.lxGameOnly(r)) return mod ? '' : t('游戏中载入后可查看');
+      if ((r.capabilities || []).length) return mod ? '' : t('每个能力是一个 Agent 工具，在这台电脑上运行，不需要游戏');
+      return t('运行后可查看');
     },
     lxPill(r) { return this.lxState(r).cls || 'off'; },
     lxSince(r) {                               // next to the state: since when ('' while it runs: 开始于 says that)
@@ -1445,7 +1494,12 @@ function appState() {
     // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动批准)
     lxUnapproved(r) { return !!r && r.allowed !== true && (r.approval === 'needed' || r.approval === 'changed'); },
     lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
-    lxApprovalTitle(r) { return r && r.approval === 'changed' ? t('运行命令已变更') : t('需要批准'); },
+    lxApprovalTitle(r) {
+      return r && r.approval === 'changed' ? (this.lxGameOnly(r) ? t('扩展内容已变更') : t('运行命令已变更')) : t('需要批准');
+    },
+    lxApproveHint(r) {                         // what the yes allows: a command here, or (in the game only) its addons there
+      return this.lxGameOnly(r) ? t('确认后，无限工坊将把此扩展的游戏插件安装到游戏。') : t('确认后，无限工坊将在本机运行此命令。');
+    },
     lxCommand(r) {                             // the command as one line: an argument with a blank or a quote in quotes
       const c = r && r.command;
       if (!Array.isArray(c) || !c.length) return '—';
@@ -1515,9 +1569,15 @@ function appState() {
         if (!d) return;
         if (d.check) this.lx.check = { id: r.id, data: d.check };
         this.lxGameDone(r, d);                 // the game addons it installed on the way
+        const failed = (d.loaded || []).filter((x) => x && x.ok === false);   // in the game only: run in the game at once
+        if (failed.length) {
+          this.lx.note = { bad: true, text: t('游戏中加载失败') + t('：')
+            + failed.map((x) => x.folder + (x.error ? ' ' + x.error : '')).join(t('；')) };
+        }
         const bad = d.check && d.check.ok === false;
-        if (bad) this.xp.tab = 'info';
-        this.say(bad ? t('{name} 检查未通过', { name }) : t('已载入 {name}', { name }));
+        if (bad || failed.length) this.xp.tab = 'info';
+        this.say(bad ? t('{name} 检查未通过', { name }) : failed.length ? t('{name} 在游戏中加载失败', { name })
+          : t('已载入 {name}', { name }));
         if (this.lout.id === r.id) this.lout.after = 2;
       } else if (action === 'stop') {
         if (await this.lxPost(r, 'stop', null, t('停止失败：'))) {
@@ -1555,11 +1615,11 @@ function appState() {
     get lxCheck() {                            // the last check of the one shown: {ok, problems, summary, tests} | null
       const c = this.lx.check;
       if (!c || c.id !== this.lxCur.id || !c.data) return null;
-      const d = c.data, problems = Array.isArray(d.problems) ? d.problems : [];
+      const d = c.data, problems = (Array.isArray(d.problems) ? d.problems : []).concat(lxLint(d.addons));
       const errors = problems.filter((p) => p && p.level === 'error').length, warnings = problems.length - errors;
       const parts = [d.ok ? t('检查通过') : errors ? t('{n} 个错误', { n: errors }) : t('检查未通过')];
       if (warnings) parts.push(t('{n} 个警告', { n: warnings }));
-      if (Array.isArray(d.capabilities)) parts.push(t('{n} 个能力', { n: d.capabilities.length }));
+      if (Array.isArray(d.capabilities) && !this.lxGameOnly(this.lxCur)) parts.push(t('{n} 个能力', { n: d.capabilities.length }));
       const tests = d.tests && typeof d.tests === 'object'
         ? (d.tests.failed ? t('测试 {n} 个，{f} 个失败', { n: d.tests.ran || 0, f: d.tests.failed }) : t('测试 {n} 个，全部通过', { n: d.tests.ran || 0 }))
         : '';
@@ -1584,11 +1644,14 @@ function appState() {
     lxPrompt(r) {                              // the first thing to tell the agent about a local extension (as promptFor of an addon)
       if (!r || !r.id) return '';
       const addon = r.addon || (((r.addons || [])[0] || {}).folder) || '';
-      return t('请先读 {path}\\AGENT.md 和 extension_guide。然后在本机扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id })
+      if (r.where === 'game') {                // in the game only: its AGENT.md is the addon's, the game's tools read it
+        return t('请先读 {path}\\addons\\{addon}\\AGENT.md 和 guide {"topic": "game-extension"}。然后在扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查、安装到游戏并在运行中的游戏里加载），用 wk_{id}_ 开头的工具试用，出错时看 errors 和 logs。需要我操作时告诉我，再用 extension_wait 等我完成。', { path: r.path, addon, id: r.id });
+      }
+      return t('请先读 {path}\\AGENT.md 和 guide {"topic": "local-extension"}。然后在本机扩展 {id} 里实现：（在这里写你想要的功能）。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id })
         + (addon ? t('游戏插件在 addons\\{addon}：extension_load 会把它装进游戏，新插件完整重启游戏后才会出现，在那之前可以用 load 热加载。', { addon }) : '');
     },
     lxIdeaPrompt() {                          // the first thing to tell the agent about an idea, before there is an extension
-      return t('用无限工坊做一个扩展，验证这个想法：（在这里写你的想法）。先读 extension_guide，判断放在游戏里、本机还是两边，再按指南新建。改完用 extension_load 载入，用它的 wk_ 工具试，出错时看 extension_logs。');
+      return t('用无限工坊验证一个想法：（在这里写你的想法）。先调用 wuxian 的 guide，按它判断从哪一档做起，从最省事的一档开始；需要我操作时告诉我。最后给我结论（能做 / 有条件能做 / 不能做）和依据。');
     },
     lxCopyIdea() {
       this.lx.menu = '';
@@ -1749,22 +1812,26 @@ function appState() {
     lxAddSubmit() { return this.lxAdd(this.lxa.path, this.lxa.kind); },
     lxNewOpen() {
       this.lx.menu = '';
-      this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '', result: null };
+      this.lxn = { open: true, id: '', title: '', addon: '', where: 'local', busy: false, error: '', result: null };
     },
-    async lxNew() {                            // POST /api/local/new {id, title?, addon?} -> {row, files, guide}, selected; the
-      const id = this.lxn.id.trim(), title = this.lxn.title.trim(), addon = this.lxn.addon.trim();   // dialog then shows
-      if (!id || this.lxn.busy) return;        //   what comes next (lxn.result), as 新建插件 does
+    async lxNew() {                            // POST /api/local/new {id, title?, where?, addon?} -> {row, files, guide},
+      const id = this.lxn.id.trim(), title = this.lxn.title.trim();   // selected; the dialog then shows what comes next
+      const where = ['game', 'both'].includes(this.lxn.where) ? this.lxn.where : 'local';   // (lxn.result), as 新建插件 does
+      const addon = where === 'local' ? '' : this.lxn.addon.trim();   // 本机: no game addon, whatever was typed before
+      if (!id || this.lxn.busy) return;
       this.lxn.busy = true;
       this.lxn.error = '';
       try {
         const body = { id };
         if (title) body.title = title;
+        if (where !== 'local') body.where = where;
         if (addon) body.addon = addon;
         const d = await this.api('/api/local/new', { body }), row = lxRowOf(d);
         const path = (row && row.path) || '';
         const files = ((d && d.files) || []).map((f) => (path && f.startsWith(path) ? f.slice(path.length + 1) : f));
-        this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '',
-          result: { id, path, files, addon, needs: !!row && row.approval === 'needed' } };
+        const made = ((((row && row.addons) || [])[0] || {}).folder) || addon;   // the addon's name, made from the id if not typed
+        this.lxn = { open: true, id: '', title: '', addon: '', where: 'local', busy: false, error: '',
+          result: { id, path, files, addon: made, where: (row && row.where) || where, needs: this.lxUnapproved(row) } };
         if (row) { this.lxRow(row); this.xpSelect('l:' + row.id); } else await this.loadLocal(true);
         this.say(t('已创建 {name}', { name: row ? this.lxTitle(row) : id }));
       } catch (e) {
@@ -2767,8 +2834,29 @@ function lxWhy(e) {
     case 'bad_manifest': return t('清单有误') + t('：') + (err.message || '');
     case 'bad_package': return t('扩展包无效') + t('：') + (err.message || '');
     case 'bad_addon': return t('游戏插件无效') + t('：') + (err.message || '');
+    case 'check_failed': return t('Lua 有语法错误，未安装到游戏') + lxSyntax(err.addons);
     default: return errText(e);
   }
+}
+function lxLint(addons) {                        // what a check found in the Lua of an extension's game addons (in the game
+  const out = [];                                //   only: addons [{folder, errors, warnings}]), as its problems are
+  for (const a of Array.isArray(addons) ? addons : []) {
+    for (const [level, list] of [['error', a && a.errors], ['warning', a && a.warnings]]) {
+      for (const f of Array.isArray(list) ? list : []) {
+        if (!f) continue;
+        out.push({ level, where: a.folder + (f.file ? '/' + f.file + (f.line ? ':' + f.line : '') : ''),
+                   message: f.message || f.code || '', hint: f.hint || '' });
+      }
+    }
+  }
+  return out;
+}
+function lxSyntax(addons) {                      // the finding that kept an extension out of the game: "：folder/file:line message"
+  for (const a of addons || []) {
+    const f = ((a && a.errors) || []).find((x) => x && (x.code === 'syntax' || x.code === 'unreadable'));
+    if (f) return t('：') + a.folder + (f.file ? '/' + f.file + (f.line ? ':' + f.line : '') : '') + ' ' + (f.message || '');
+  }
+  return '';
 }
 
 function apiMessage(data, r) {

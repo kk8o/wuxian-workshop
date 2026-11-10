@@ -124,6 +124,7 @@ a.sb-item:hover { background: var(--panel2); color: var(--fg); text-decoration: 
 .pg-help:hover, .pg-help:focus { color: var(--muted); outline: none; }
 .pg-help svg.ico { width: 15px; height: 15px; }
 .lx-idea { margin: 0 0 4px; line-height: 1.9; }
+.lx-where-hint { margin: -6px 0 0 106px; }   /* under the 运行位置 choices: the field's label column and gap */
 .row.wrap { flex-wrap: wrap; }
 .pagebar h1 { font-size: 15px; font-weight: 600; margin: 0; color: var(--fg); letter-spacing: .02em; white-space: nowrap; }
 .pagebar > .muted { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

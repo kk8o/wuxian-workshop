@@ -92,13 +92,19 @@ def running_one(host, e):
 
 
 def check(host, ident):
-    """an extension checked without touching its running process: {ok, problems, capabilities, running?, tests?}. The
+    """an extension checked without touching its running process: {ok, problems, capabilities, running?, tests?}.
+    One in the game only: its manifest, and {where: "game", addons: [{folder, path}]}, its addons' sources for the
+    caller to check as addons (nothing of it runs here). Else the
     manifest; a process of its own started, initialized (its description checked) and shut down (not while the
     registered one runs: then its description is the one that one gave, and running is its pid); its tests (a tests
     folder) run with its Python. ApiError needs_approval before anything of it runs that the player has not allowed"""
     e, folder = host.resolve(ident)
     m, problems = M.check_manifest(folder, taken=() if e is not None else host.taken_ids())   # (registered: its id is its)
     caps, described, runs = [], None, None
+    if m is not None and not m["run"]:                     # in the game only: no process, no tests of a process
+        taken_by_another(host, m, folder, problems)
+        return dict(ok=not M.errors_in(problems), problems=problems, capabilities=[], where="game",
+                    addons=[dict(folder=name, path=str(Path(m["folder"]) / M.ADDONS_DIR / name)) for name in m["addons"]])
     if m is not None:
         gate(host, e, folder)
         runs = running_one(host, e)
@@ -114,11 +120,7 @@ def check(host, ident):
             if desc is not None:
                 caps, described = [c["id"] for c in desc["capabilities"]], desc
     elif m is not None:
-        other = next((x for x in host.load()["extensions"] if x["id"] == m["id"]
-                      and os.path.normcase(x["path"]) != os.path.normcase(str(folder))), None)
-        if other is not None:
-            problems.append(M.problem("error", f"{M.MANIFEST}: id", f"the id {m['id']} is taken by {other['path']}",
-                                      "give this one another id"))
+        taken_by_another(host, m, folder, problems)
         out = Output(host.root / "extensions" / m["id"] / "check.log")
         out.write(f"-- {clock()} check")
         proc = None
@@ -161,6 +163,15 @@ def check(host, ident):
     return result
 
 
+def taken_by_another(host, m, folder, problems):
+    """(check) the error of a manifest whose id another registered folder has"""
+    other = next((x for x in host.load()["extensions"] if x["id"] == m["id"]
+                  and os.path.normcase(x["path"]) != os.path.normcase(str(folder))), None)
+    if other is not None:
+        problems.append(M.problem("error", f"{M.MANIFEST}: id", f"the id {m['id']} is taken by {other['path']}",
+                                  "give this one another id"))
+
+
 def check_message(proc, msg):
     """what an extension asks or tells during a check: its events are dropped, its calls refused"""
     if "id" in msg:
@@ -172,7 +183,7 @@ def run_tests(host, m):
     None when it has no tests folder or is no Python extension. The tests get a data folder of their own
     (WUXIAN_EXTENSION_DATA: an empty temporary one, gone afterwards), never the one the extension keeps things in"""
     folder = Path(m["folder"])
-    if not (folder / "tests").is_dir():
+    if not m["run"] or not (folder / "tests").is_dir():
         return None
     python = m["python"] if m["python"] else (host.interpreter(m) if m["run"][0].strip().lower() == "python" else None)
     if not python:

@@ -89,7 +89,14 @@ from .registry import (REPLACE_WAITS, Registry, check_folder, check_options, opt
 from .rpc import (BAD_ARGS, BUSY, CANCELLED, FAILED, INIT_TIMEOUT, NO_METHOD, PING_TIMEOUT, REASONS, Down,  # noqa: F401
                   RpcError, call_error)
 
-STATES = ("off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff")
+STATES = ("off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff", "game")
+# game: an extension in the game only (addons and no run): it has no process, WuxianKit runs it in the game
+GAME_STATES = ("unknown", "absent", "offline", "restart", "missing", "disabled", "off", "installed", "on")
+# (a row's game.state, the worst first) unknown: the game folder is not known; absent: an addon of it is not in the
+# game's AddOns as it is here; offline: the game is not linked; restart: the game has not seen its addon yet; missing,
+# disabled, off, on: as WuxianKit lists its extension; installed: in AddOns, and none of its addons declares a
+# WuxianKit extension, so the game says no more
+PLAYER_ACTIONS = ("approve", "start_game", "restart_game", "enable_addon", "turn_on")   # a row's player.action
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
 QUIET_CODES = ("stopping", "stopped", "needs_approval", "not_found", "off")   # a start that ended so did not fail
@@ -154,11 +161,13 @@ class Host:
     the ids of the extensions the installed WuxianKit lists, which a folder that is not registered yet cannot have
     (default: none); kit_version(): the installed WuxianKit's version or None (a manifest's requires.kit is judged
     by it); addons_dir(): the game's AddOns folder or None while the game folder is not known, and interface(): the
-    client's Interface number or None (what installs an extension's game addons reads both: put_addons)"""
+    client's Interface number or None (what installs an extension's game addons reads both: put_addons);
+    game_side(): what the game says of its side now, {online: the link is up, extensions: {id: {addon, state,
+    version}} as the WuxianKit manifest known now lists them}, or None (a row's game and player are made of it)"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
                  python=None, sdk=None, auto=None, home=None, taken=None, kit_version=None, addons_dir=None,
-                 interface=None):
+                 interface=None, game_side=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
@@ -170,6 +179,7 @@ class Host:
         self.kit_version = kit_version or (lambda: None)
         self.addons_dir = addons_dir or (lambda: None)
         self.interface = interface or (lambda: None)
+        self.game_side = game_side or (lambda: None)
         self.looked = None            # when discover() last looked at the home folder (time.monotonic())
         self.passed = {}              # a folder there that was not registered (its path, case folded) -> why, as noted
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
@@ -303,7 +313,7 @@ class Host:
     def command_of(self, m):
         """the command the workshop runs for a manifest (argv, its first item a full path), or None when it has none
         that can be run"""
-        if m is None:
+        if m is None or not m.get("run"):               # (in the game only: it has no process)
             return None
         try:
             return self.command(m, self.environment(m))
@@ -328,12 +338,85 @@ class Host:
 
     def taken_ids(self):
         """the ids a folder that is not registered yet cannot have: those of the installed WuxianKit's extensions
-        (taken(); none when that cannot be asked now). Only add, check and discover use it: a registered extension
-        keeps its id whatever WuxianKit lists later"""
+        (taken(); none when that cannot be asked now): a tuple of ids, or {id: the addon that brings it} when taken()
+        says so (an extension in the game only has the id its own addon gives WuxianKit: manifest.check_manifest).
+        Only add, check and discover use it: a registered extension keeps its id whatever WuxianKit lists later"""
         try:
-            return tuple(x for x in (self.taken() or ()) if isinstance(x, str))
+            taken = self.taken() or ()
+            if isinstance(taken, dict):
+                return {i: a for i, a in taken.items() if isinstance(i, str)}
+            return tuple(x for x in taken if isinstance(x, str))
         except Exception:
             return ()
+
+    def side(self):
+        """what the game says of its side now (game_side()): {online, extensions: {id: {addon, state, version}}};
+        offline and none when that cannot be asked"""
+        try:
+            side = self.game_side()
+        except Exception:
+            side = None
+        if not isinstance(side, dict):
+            return dict(online=False, extensions={})
+        known = side.get("extensions")
+        return dict(online=bool(side.get("online")), extensions=known if isinstance(known, dict) else {})
+
+    def by_itself(self, e):
+        """whether the workshop allows an entry's extension without the player: never one that has ask (it came in a
+        package or was found in the extensions' home folder); else where the setting says so (auto()), and one in
+        the game only (manifest.raw_where: no process runs on this computer, its addons go into the game as an addon
+        the agent writes there does)"""
+        if e.get("ask"):
+            return False
+        return bool(self.auto()) or M.raw_where(e.get("path")) == "game"
+
+    @staticmethod
+    def game_of(m, addons, side):
+        """a row's game: None without game addons, else {extensions: the ids its addons give WuxianKit, state: one
+        of GAME_STATES}. addons: its addon_rows; side: side()"""
+        if m is None or not m.get("addons"):
+            return None
+        ids = list(m.get("game") or [])
+        where = [a["state"] for a in addons]
+        if "unknown" in where:
+            state = "unknown"
+        elif any(s != "current" for s in where):
+            state = "absent"
+        elif not side.get("online"):
+            state = "offline"
+        elif not ids:
+            state = "installed"
+        else:
+            said = [(side["extensions"].get(i) or {}).get("state") for i in ids]
+            state = min((s if s in ("missing", "disabled", "off", "on") else "restart" for s in said),
+                        key=GAME_STATES.index)
+        return dict(extensions=ids, state=state)
+
+    @staticmethod
+    def player_says(action, title, addon=None, changed=False):
+        """{action, text}: one thing only the player can do now, and the sentence to tell them"""
+        text = {
+            "approve": (f"「{title}」要运行的内容变了，请在无限工坊 App 的「扩展」页重新批准" if changed else
+                        f"请在无限工坊 App 的「扩展」页批准「{title}」"),
+            "start_game": "请启动游戏并进入世界，窗口不要最小化",
+            "restart_game": f"请重启游戏：新装的插件「{addon}」重启后才会载入",
+            "enable_addon": f"请在游戏的插件列表里启用「{addon}」，然后重载界面",
+            "turn_on": f"请在游戏里输入 /wk，打开扩展「{title}」",
+        }[action]
+        return dict(action=action, text=text)
+
+    def player_of(self, e, m, allowed, approval, game):
+        """a row's player: what the player has to do before the extension works, {action: one of PLAYER_ACTIONS,
+        text: the sentence for them}, or None (nothing: what is left is the agent's, or it works). First the
+        approval, then its game half"""
+        if m is None or not e["enabled"] or self.unmet_error(m) is not None:
+            return None
+        title = m.get("title") or e["id"]
+        if not allowed:
+            return self.player_says("approve", title, changed=approval == "changed")
+        action = {"offline": "start_game", "restart": "restart_game", "disabled": "enable_addon",
+                  "off": "turn_on"}.get((game or {}).get("state"))
+        return self.player_says(action, title, addon=m["addons"][0]) if action else None
 
     def kit(self):
         """the installed WuxianKit's version, or None when it is not known now"""
@@ -420,7 +503,7 @@ class Host:
             else:
                 self.addon_states.pop(eid, None)
 
-    def row(self, e):
+    def row(self, e, side=None):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
         command: what the workshop runs for it, None while its manifest cannot be used; adds: what its manifest adds to
         apps, and allowed: whether any of it is added now (adds.allowed: the player allowed its command, or the
@@ -428,7 +511,11 @@ class Host:
         "linked"; author, homepage, requires {workshop?, kit?}: the manifest's; unmet: [{what, needs, has}] of
         requires that this computer does not meet (a workshop that is too old is also the row's error: it does not
         start); addons: [{folder, version, state}], its game addons and where each stands in the game's AddOns
-        (addon_rows). A manifest that cannot be read: None, None, {}, [], []"""
+        (addon_rows). A manifest that cannot be read: None, None, {}, [], []. where: "game", "local" or "both"
+        (manifest.where_of; None: neither can be read); one in the game only has state "game" (no process: off when
+        it is set off, stopped with the error when it cannot be used) and command None. game: its game half
+        (game_of), None without addons; player: what only the player can do now (player_of), or None. side: side(),
+        when the caller asked it already"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -440,7 +527,12 @@ class Host:
             m = None
         short = self.unmet_error(m) if m is not None else None
         state, since, why, pid, started, exit_code, err = self.state_of(e, error or (short and short.message))
+        where = M.where_of(m) if m is not None else M.raw_where(e["path"])
+        if m is not None and where == "game" and state == "stopped" and err is None:
+            state, why = "game", "it is in the game only: WuxianKit runs it there, the workshop starts no process"
         desc = e.get("described") or {}
+        addons, approval, allowed = self.addon_rows(e, m), self.reg.approval(e), A.allowed(self, e)
+        game = self.game_of(m, addons, side if side is not None else self.side())
         return dict(id=e["id"], title=(m or {}).get("title") or e["id"], version=(m or {}).get("version"),
                     path=e["path"], enabled=e["enabled"], start=(m or {}).get("start") or "use", state=state,
                     since=since, why=why, pid=pid, started=started, exit_code=exit_code, error=err,
@@ -449,14 +541,15 @@ class Host:
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
-                    adds=A.row(m), approval=self.reg.approval(e), allowed=A.allowed(self, e),
+                    adds=A.row(m), approval=approval, allowed=allowed,
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
-                    addons=self.addon_rows(e, m))
+                    addons=addons, where=where, game=game, player=self.player_of(e, m, allowed, approval, game))
 
     def rows(self):
+        side = self.side()
         with self.lock:
-            return [self.row(e) for e in self.load()["extensions"]]
+            return [self.row(e, side) for e in self.load()["extensions"]]
 
     def get(self, eid):
         with self.lock:
@@ -467,16 +560,18 @@ class Host:
         words; None: it can), home: the extensions' home folder}. What is in the home folder now is looked at first
         (discover)"""
         self.discover()
+        side = self.side()
         with self.lock:
             data = self.load()
-            return dict(revision=int(data.get("revision") or 0), extensions=[self.row(e) for e in data["extensions"]],
+            return dict(revision=int(data.get("revision") or 0), extensions=[self.row(e, side) for e in data["extensions"]],
                         problem=self.reg.problem, home=str(self.home))
 
     def manifest_entries(self):
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
         notes, state "on", runtime "local", path, docs, skills, capabilities: [{id, kind, title, doc, args, timeout}],
         sources: [{name, title, doc}], options: [opt + value], apps: [declaration], adds: {app: {wake, skill}},
-        allowed}. One whose manifest cannot be read now keeps what it described"""
+        allowed}. One whose manifest cannot be read now keeps what it described. One in the game only is not among
+        them: what it has, its tools and its docs, the game's WuxianKit lists itself"""
         out = []
         with self.lock:
             data = self.load()
@@ -486,6 +581,8 @@ class Host:
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] != e["id"]:
                 m = None
+            if m is not None and not m["run"]:
+                continue
             desc = e.get("described") or {}
             out.append(dict(id=e["id"], title=(m or {}).get("title") or e["id"], version=(m or {}).get("version"),
                             notes=(m or {}).get("notes"), state="on", runtime="local", path=e["path"],
@@ -534,7 +631,9 @@ class Host:
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] == eid:
                 self.approved_addons(e, m)
-                if e["enabled"] and m["start"] == "workshop":
+                if not m["run"]:                       # in the game only: nothing starts here
+                    pass
+                elif e["enabled"] and m["start"] == "workshop":
                     self.ensure(eid, "approved")
                 elif e["enabled"] and e.get("described") is None:
                     self.describe(eid)
@@ -545,15 +644,22 @@ class Host:
         when the registry says its command is approved as it is now. Else, where the setting says so (auto()), the
         workshop approves it here, unless the entry has ask (it came in a package or was found in the extensions'
         home folder: somebody else may have written it, so only the player allows it, whatever the setting; and
-        again whenever what it runs changed); otherwise ApiError needs_approval (403)"""
+        again whenever what it runs changed); otherwise ApiError needs_approval (403, with player: what to tell
+        them, player_says). An extension in the game only that has no ask is approved here whatever the setting
+        (by_itself): it starts no process, and its addons go into the game as an addon the agent writes there"""
         approval = self.reg.approval(e)
         if approval == "ok":
             return
         ask = bool(e.get("ask"))
-        if self.auto() and not ask:
+        if self.by_itself(e):
             self.reg.approve(e["id"], "developer")
-            self.note(f"local extension {e['id']}: its command is approved (the setting allows it by itself)")
+            self.note(f"local extension {e['id']}: its command is approved (the setting allows it by itself)"
+                      if self.auto() else
+                      f"local extension {e['id']}: it is in the game only (no process on this computer), so it is "
+                      f"used without asking the player")
             return
+        m, _ = M.check_manifest(e["path"])
+        title = (m or {}).get("title") or e["id"]
         raise ApiError(403, "needs_approval",
                        f"{e['id']} " + ("changed the command it starts with since the player confirmed it"
                                         if approval == "changed" else "is new: the player has not confirmed the "
@@ -561,7 +667,8 @@ class Host:
                        + (" (it came in a package or was found in the extensions folder, so the workshop does not "
                           "approve it by itself)" if ask and self.auto() else "")
                        + ". The player confirms it on the Extensions page of the WuxianWorkshop App; nothing of it "
-                         "runs before that", approval=approval)
+                         "runs before that (extension_wait waits for them)", approval=approval,
+                       player=self.player_says("approve", title, changed=approval == "changed"))
 
     def forgive(self, e):
         """(under the lock) its failed starts are forgotten: an explicit start does not wait"""
@@ -1170,6 +1277,9 @@ class Host:
             try:
                 m, _ = M.check_manifest(e["path"])
                 if m is not None and m["id"] == e["id"]:
+                    if not m["run"]:
+                        raise ApiError(409, "no_process", f"{eid} is in the game only: it has no process to start. "
+                                                          f"extension_load puts its addons into the game")
                     self.require(m)                    # (a manifest that cannot be used: its start says so)
                 self.allow(e)
             except ApiError as refused:
@@ -1570,7 +1680,9 @@ class Host:
         return C.run_tests(self, m)
 
     def load_(self, eid):
-        """extension_load: checked, then (re)started: {row, check, addons, restart, hint}. A manifest that cannot be
+        """extension_load: checked, then (re)started: {row, check, addons, restart, hint}. One in the game only has
+        no process: its manifest is checked and its addons installed (the daemon then loads them into the running
+        game). A manifest that cannot be
         used leaves a running one as it is. An explicit start: its failed starts are forgotten. Its game addons are
         installed first where the game has none or another version (loaded_addons): addons [{folder, state:
         installed | current, was, version, kept}] ([]: it has none), restart (the game has to start again to see
@@ -1586,6 +1698,13 @@ class Host:
             problems.append(M.problem("error", f"{M.MANIFEST}: id", f"the id is {m['id']} now, registered as {eid}",
                                       f"extension_remove {eid}, then extension_add the folder again"))
             m = None
+        if m is not None and not m["run"]:             # in the game only: its addons go into the game, no process
+            self.require(m)
+            self.allow(e)
+            game = self.loaded_addons(e, m, problems)
+            self.stop(eid, quiet=True)                 # (a process it had while its manifest still said run)
+            check = dict(ok=not M.errors_in(problems), problems=problems, capabilities=[])
+            return dict(row=self.get(eid), check=check, **game)
         if m is not None:
             self.require(m)                            # requires_unmet: it cannot run here
             self.allow(e)                              # needs_approval before anything of it runs
@@ -1625,7 +1744,8 @@ class Host:
         """the extension's output by line: {lines: [{n, text}], next, total, reset, cut, row}, as program logs were.
         since 0: from its first line, or its last `limit` lines when it has more (cut true); since n: from line n on;
         next: the since of the next read. A since past the end: the file was moved to output.1.log, its lines from the
-        first (reset true)"""
+        first (reset true). One in the game only has no process and so no output: hint says where what it prints
+        in the game is read"""
         check_window(since, limit)
         with self.lock:
             e = self.entry(eid)
@@ -1635,5 +1755,9 @@ class Host:
                 lines = self.lines[str(path)] = Lines(path)
             first, texts, total, reset = window(lines, since, limit)
             row = self.row(e)
-        return dict(lines=[dict(n=first + i, text=t) for i, t in enumerate(texts)], next=first + len(texts), total=total,
-                    reset=reset, cut=since == 0 and first > 1, row=row)
+        out = dict(lines=[dict(n=first + i, text=t) for i, t in enumerate(texts)], next=first + len(texts), total=total,
+                   reset=reset, cut=since == 0 and first > 1, row=row)
+        if row["where"] == "game":
+            out["hint"] = ("it is in the game only and has no process: what its addon prints and its Lua errors are "
+                           "in the game's logs (logs with kinds OUT and ERR, errors)")
+        return out

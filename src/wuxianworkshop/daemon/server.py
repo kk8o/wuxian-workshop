@@ -583,6 +583,12 @@ def make_app(service, access, handle, mcp=None):
         return await service.extension_stop((await body_of(request)).get("id"))
 
     @api
+    async def local_wait(request):
+        b = await body_of(request)
+        # a caller that goes (the connection closed) ends the wait
+        return await until_gone(request, service.extension_wait(b.get("id"), b.get("seconds", 120)))
+
+    @api
     async def local_set(request):
         b = await body_of(request)
         return await service.extension_set(b.get("id"), b.get("enabled"), b.get("options"))
@@ -608,7 +614,8 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def local_new(request):
         b = await body_of(request)
-        return await service.new_extension(b.get("id"), b.get("title"), b.get("folder"), b.get("addon"))
+        return await service.new_extension(b.get("id"), b.get("title"), b.get("folder"), b.get("addon"),
+                                           b.get("where"))
 
     @api
     async def local_logs(request):
@@ -698,6 +705,7 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/local/remove", local_remove, methods=["POST"]),
         Route("/api/local/load", local_load, methods=["POST"]),
         Route("/api/local/stop", local_stop, methods=["POST"]),
+        Route("/api/local/wait", local_wait, methods=["POST"]),
         Route("/api/local/set", local_set, methods=["POST"]),
         Route("/api/local/approve", local_approve, methods=["POST"]),
         Route("/api/local/check", local_check, methods=["POST"]),

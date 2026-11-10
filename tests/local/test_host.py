@@ -60,7 +60,8 @@ class HostTests(unittest.TestCase):
         self.assertEqual(set(row), {"id", "title", "version", "path", "enabled", "start", "state", "since", "why",
                                     "pid", "started", "exit_code", "error", "command", "capabilities", "sources",
                                     "options", "apps", "skills", "adds", "approval", "allowed", "origin", "author",
-                                    "homepage", "requires", "unmet", "addons"})
+                                    "homepage", "requires", "unmet", "addons", "where", "game", "player"})
+        self.assertEqual((row["where"], row["game"], row["player"]), ("local", None, None))
         self.assertEqual((row["origin"], row["author"], row["homepage"], row["requires"], row["unmet"], row["addons"]),
                          ("linked", None, None, {}, [], []))
         self.assertEqual(row["command"], [os.path.abspath(sys.executable), "main.py"])    # what the workshop runs

@@ -178,7 +178,8 @@ class StartAndStop(HostCase):
         seen.append(row["since"])
         self.assertEqual(seen, sorted(seen))
         self.assertEqual(len(self.pids()), 3)
-        self.assertEqual(H.STATES, ("off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff"))
+        self.assertEqual(H.STATES, ("off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff",
+                                    "game"))
 
 
 class Calls(HostCase):

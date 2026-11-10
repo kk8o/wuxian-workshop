@@ -388,7 +388,7 @@ class Template(unittest.TestCase):
 
     def test_state_and_supplements(self):
         self.assertIn('x-text="lxSince(lxCur)"', self.part)
-        self.assertIn('<dd x-show="lxCur.why" class="lx-why selectable" x-text="lxCur.why"></dd>', self.part)
+        self.assertIn('<dd x-show="lxReason(lxCur)" class="lx-why selectable" x-text="lxReason(lxCur)"></dd>', self.part)
         self.assertIn('x-for="a in lxAdds(lxCur)"', self.part)
         for word in ("唤醒附注", "技能补充"):
             self.assertIn(word, self.part)

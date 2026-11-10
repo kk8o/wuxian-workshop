@@ -533,9 +533,13 @@ def additions(ext):
 def approval_of(row, auto=None):
     """a local extension's row: "needed" or "changed" when the player has to allow it before it runs, else None. auto:
     auto_of's answer. While it is True 无限工坊 allows extensions by itself as they start, but not one that came from
-    a package or was found in the extensions folder: only a row the daemon does not allow (allowed false) waits then"""
+    a package or was found in the extensions folder: only a row the daemon does not allow (allowed false) waits then.
+    One in the game only that the daemon allows (where game, allowed true: the agent made or added it, no process
+    runs here) waits for nobody under either setting"""
     approval = row.get("approval") if isinstance(row, dict) else None
     if approval not in APPROVALS or (auto is True and row.get("allowed") is not False):
+        return None
+    if row.get("where") == "game" and row.get("allowed") is True:
         return None
     return approval
 
@@ -1314,8 +1318,8 @@ class KitTools:
         if waiting:
             lines += ["", "Not approved yet: " + "; ".join(f"`{eid}` ({APPROVALS[a]})" for eid, a in waiting)
                       + (f". {ASKED} {APPROVE}" if auto is True else f". {APPROVE}")]
-        lines += ["", "A capability neither the game nor these have: write a local extension (the extension_guide tool "
-                      "says how)."]
+        lines += ["", "A capability neither the game nor these have: an extension adds it, in the game or on this "
+                      "computer (the `guide` tool says which and how)."]
         return lines
 
     def unlisted_part(self):

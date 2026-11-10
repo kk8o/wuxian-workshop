@@ -24,6 +24,12 @@ system's, not with the whole environment). start: use (the default: started by t
 capabilities) or workshop (started with the daemon: a model to warm up). docs: default AGENT.md when there is one;
 skills: default skills/ when there is one.
 
+An extension is in the game, on this computer, or both (where_of): game (addons and no run: WuxianKit runs it in the
+game, the workshop starts no process; its id is the one its addon's .toc says in ## X-WuxianKit-Extension, so the id
+the game lists is its own and not taken; python, env, pass, start, apps and adds mean nothing to it; docs: default
+addons/<its first addon>/AGENT.md, which the game's side shows), local (run and no addons) or both (run and addons: the
+game half is another extension of WuxianKit's, <id>_game as new_extension writes it). run or addons: one of them it has.
+
 adds: what it adds to apps, its own or others', by app id (at most ADDS_MOST): wake, a see capability of its own that
 reads every wake of that app before the agent gets it and answers the facts to note on it (the capability's name without
 the extension's id, or {call: name, timeout: seconds, default 3 and at most 10}); skill, a Markdown file in the
@@ -113,7 +119,8 @@ def locate(path):
 
 def id_problem(value, where="id", taken=()):
     """the problem with an extension's id, or None. taken: the ids of the extensions the installed WuxianKit lists (the
-    game's own and other addons'), which a local extension cannot have either"""
+    game's own and other addons'; a list, or id -> the addon that brings it), which a local extension cannot have
+    either"""
     if not isinstance(value, str) or not ID.match(value):
         return problem("error", where, f"{value!r} is not an extension id",
                        "lowercase letters, digits and _, a letter first, at most 24 characters (voice, my_tool)")
@@ -151,9 +158,11 @@ def unmet(requires, workshop=None, kit=None):
 
 
 def check_manifest(path, taken=()):
-    """(manifest or None, problems) of an extension's folder (or its manifest file); taken: id_problem's. The manifest
+    """(manifest or None, problems) of an extension's folder (or its manifest file); taken: id_problem's (an id the
+    game lists from one of a game-only extension's own addons is that extension's, not taken). The manifest
     as the host uses it: {id, title, version, notes, author, homepage, requires, addons, pack, run, python, env, pass,
-    start, docs, skills, apps, adds, folder, file}; author and homepage a text or None, requires {workshop?, kit?},
+    start, docs, skills, apps, adds, folder, file, where, game}; where game | local | both (where_of), run [] and game
+    [the ids its addons' .toc files give WuxianKit] for one in the game; author and homepage a text or None, requires {workshop?, kit?},
     addons [names] (maybe none), pack {exclude: [patterns]}; docs and skills absolute paths or None, python an absolute path or None, pass [names], adds {app: {wake: {call: "<id>.<name>",
     timeout} | None, skill: absolute path | None}}, every app with reactions [{hear, when, call, args, item, cooldown,
     note}] (maybe none) and its controls as written (strings, or {cmd, label?, call?} with call a capability's name
@@ -186,6 +195,9 @@ def check_manifest(path, taken=()):
             out.append(problem("warning", field(name), "this field means nothing to 无限工坊",
                                "the fields: " + ", ".join(sorted(FIELDS))))
     eid = d.get("id")
+    in_game = d.get("run") is None and isinstance(d.get("addons"), list) and bool(d.get("addons"))
+    if in_game:                                            # the id the game lists from its own addon is its own
+        taken = not_own(taken, d["addons"])
     bad = id_problem(eid, field("id"), taken)
     if bad:
         out.append(bad)
@@ -214,7 +226,16 @@ def check_manifest(path, taken=()):
     addons = check_addons(d.get("addons"), folder, field("addons"), out)
     pack = check_pack(d.get("pack"), field("pack"), out)
     run = d.get("run")
-    if not isinstance(run, list) or not run or not all(isinstance(a, str) for a in run) or not run[0].strip():
+    in_game = run is None and bool(addons)                 # in the game only: no process
+    if in_game:
+        return game_manifest(d, folder, file, eid, title, version, notes, author, homepage, requires, addons, pack, out)
+    if run is None and d.get("addons"):
+        pass                                               # in the game only, and its addons are wrong (said above)
+    elif run is None:
+        out.append(problem("error", field("run"), "it has neither run nor addons",
+                           'run: the command of its process, ["python", "main.py"]; addons: the game addons it brings, '
+                           '["MyAddon"] (in addons/MyAddon/); an extension has one of them, or both'))
+    elif not isinstance(run, list) or not run or not all(isinstance(a, str) for a in run) or not run[0].strip():
         out.append(problem("error", field("run"), "run is the command that starts it, a list of arguments",
                            '["python", "main.py"] or ["python", "-m", "voice"]; relative to the extension folder; '
                            '"python" is the manifest\'s python, else 无限工坊\'s own'))
@@ -258,8 +279,94 @@ def check_manifest(path, taken=()):
                     requires=requires, addons=addons, pack=pack, run=list(run or []),
                     python=str(python_path) if python_path is not None else None, env=dict(env), start=start,
                     docs=str(docs) if docs else None, skills=str(skills) if skills else None, apps=apps, adds=adds,
-                    folder=str(folder), file=str(file))
+                    folder=str(folder), file=str(file), where="both" if addons else "local", game=[])
     manifest["pass"] = passed
+    if addons:
+        manifest["game"] = [g for _, g in game_ids(folder, addons)]
+    return (None if errors_in(out) else manifest), out
+
+
+NOT_IN_GAME = ("python", "env", "pass", "start", "apps", "adds")   # what only an extension with a process has
+
+
+def not_own(taken, addons):
+    """taken (id_problem's) for an extension in the game only that brings addons: without the ids the game lists from
+    those addons, which are its own. Only a mapping id -> addon says whose an id is; a list stays as it is"""
+    if not isinstance(taken, dict):
+        return taken
+    own = {a.lower() for a in addons or () if isinstance(a, str)}
+    return [i for i, addon in taken.items() if not (isinstance(addon, str) and addon.lower() in own)]
+
+
+def where_of(manifest):
+    """where a manifest's extension is: "game" (addons and no run: WuxianKit runs it, no process here), "local" (run
+    and no addons) or "both" (run and addons)"""
+    if not manifest.get("run"):
+        return "game"
+    return "both" if manifest.get("addons") else "local"
+
+
+def raw_where(folder):
+    """where an extension is by its manifest file as it is written, whatever its check says of it: "game" (a list of
+    addons that is not empty, and no run), "local", "both"; None when the file cannot be read or has neither. What is
+    asked before anything of it runs (Host.allow): one in the game only starts no process on this computer"""
+    try:
+        raw = json.loads(locate(Path(folder))[1].read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    addons = isinstance(raw.get("addons"), list) and bool(raw["addons"])
+    if raw.get("run") is None:
+        return "game" if addons else None
+    return "both" if addons else "local"
+
+
+def game_ids(folder, addons):
+    """[(addon, id)] of the extensions the addons an extension brings give WuxianKit: each .toc's
+    ## X-WuxianKit-Extension"""
+    from ..installer.addons import read_toc
+    out = []
+    for name in addons or ():
+        toc = addon_toc(Path(folder) / ADDONS_DIR / name)
+        try:
+            gid = (read_toc(toc) or {}).get("X-WuxianKit-Extension") if toc else None
+        except OSError:
+            gid = None
+        if isinstance(gid, str) and ID.match(gid.strip()):
+            out.append((name, gid.strip()))
+    return out
+
+
+def game_manifest(d, folder, file, eid, title, version, notes, author, homepage, requires, addons, pack, out):
+    """(check_manifest) the rest of a manifest with addons and no run: an extension in the game only"""
+
+    def field(name):
+        return f"{MANIFEST}: {name}"
+
+    for name in NOT_IN_GAME:
+        if d.get(name) is not None:
+            out.append(problem("warning", field(name), f"{name} means nothing without run",
+                               "an extension in the game only has no process on this computer: its addon declares "
+                               "what it has (WuxianKit:Extension, Kit:App); leave the field out, or add run"))
+    ids = game_ids(folder, addons)
+    if isinstance(eid, str) and eid not in [g for _, g in ids]:
+        out.append(problem("warning", field("id"), f"none of its addons is the WuxianKit extension {eid}",
+                           f"the .toc of {ADDONS_DIR}/{addons[0]} says ## X-WuxianKit-Extension: {eid}, and its Lua "
+                           f"WuxianKit:Extension(\"{eid}\", ...): the id here and the id in the game are one"))
+    given = d.get("docs")
+    docs = locate_file(folder, given, f"{ADDONS_DIR}/{addons[0]}/AGENT.md", False, field("docs"), out)
+    if docs is None and given is None:
+        out.append(problem("warning", field("docs"), f"there is no {ADDONS_DIR}/{addons[0]}/AGENT.md",
+                           "write one: wk_docs {\"extension\": id} shows it to the agent before it uses the tools"))
+    skills = locate_file(folder, d.get("skills"), f"{ADDONS_DIR}/{addons[0]}/skills", True, field("skills"), out)
+    manifest = dict(id=eid, title=title, version=text_of(version, 32) if version is not None else None,
+                    notes=text_of(notes, NOTES_MAX) if notes is not None else None,
+                    author=text_of(author, AUTHOR_MAX) if author is not None else None, homepage=homepage,
+                    requires=requires, addons=addons, pack=pack, run=[], python=None, env={}, start="use",
+                    docs=str(docs) if docs else None, skills=str(skills) if skills else None, apps=[], adds={},
+                    folder=str(folder), file=str(file), where="game", game=[g for _, g in ids])
+    manifest["pass"] = []
     return (None if errors_in(out) else manifest), out
 
 

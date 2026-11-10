@@ -419,6 +419,10 @@ class Table(unittest.TestCase):
         self.assertEqual([kit.approval_of(changed, auto) for auto in (None, False, True)], ["changed"] * 3)
         self.assertIsNone(kit.approval_of(row("v", approval="needed", allowed=True), True))
         self.assertEqual(kit.approval_of(row("v", approval="needed", allowed=True), False), "needed")
+        game = row("v", approval="needed", allowed=True, where="game")           # in the game only, the agent's own:
+        self.assertEqual([kit.approval_of(game, auto) for auto in (None, False, True)], [None] * 3)    # nobody is asked
+        self.assertEqual(kit.approval_of(dict(game, allowed=False), False), "needed")                  # a package's is
+        self.assertEqual(kit.approval_of(dict(game, where="both"), False), "needed")
         self.assertEqual([kit.approval_of(r, True) for r in (row("v"), row("v", approval="later", allowed=False), None)],
                          [None, None, None])
         self.assertIn("本机扩展批准 (Local extension approval) is 自动批准 (approve automatically)", kit.ASKED)
@@ -730,6 +734,10 @@ class HomeService(Service):
     async def extension_load(self, id):
         return dict(await super().extension_load(id), **GAME_SIDE)
 
+    async def extension_wait(self, *args):
+        self.asked.append(("wait", *args))
+        return {"row": self.rows[args[0]], "was": self.rows[args[0]].get("player"), "timeout": True}
+
     async def extension_pack(self, *args):
         self.asked.append(("pack", *args))
         if self.refuse:
@@ -776,16 +784,30 @@ class Home(unittest.TestCase):
         self.assertEqual(sorted(tools["extension_pack"].input_schema["properties"]), ["id", "to"])
         self.assertEqual(tools["extension_pack"].input_schema["required"], ["id"])
         self.assertEqual(sorted(tools["extension_install"].input_schema["properties"]), ["id"])
-        self.assertEqual(sorted(tools["new_extension"].input_schema["properties"]), ["addon", "folder", "id", "title"])
+        self.assertEqual(sorted(tools["new_extension"].input_schema["properties"]),
+                         ["addon", "folder", "id", "title", "where"])
         self.assertEqual(tools["new_extension"].input_schema["required"], ["id"])
+        self.assertEqual((sorted(tools["extension_wait"].input_schema["properties"]),
+                          tools["extension_wait"].input_schema["required"],
+                          tools["extension_wait"].annotations.read_only_hint), (["id", "seconds"], ["id"], True))
         words = {"local_extensions": ("home", "origin", "linked", "requires", "unmet", "addons", "author", "homepage",
-                                      "current", "missing", "differs", "foreign", "broken", "unknown"),
-                 "new_extension": ("addon", "addons/<addon>/", "extension_load installs"),
+                                      "current", "missing", "differs", "foreign", "broken", "unknown",
+                                      "where (local", "game: no process", "game ({extensions, state}",
+                                      "player ({action, text}", "extension_wait"),
+                 "new_extension": ("addon", "addons/<addon>/", "extension_load installs", '"where": "game"',
+                                   "local (default", "both", "needs no approval"),
+                 "extension_wait": ("{row, was, timeout}", "Tell the player the text first", "never do it for them",
+                                    "approve", "start_game", "restart_game", "enable_addon", "turn_on", "600",
+                                    "on, off, disabled, missing", "restart, offline, absent", "installed", "unknown"),
+                 "extension_stop": ("stopped false", "note"),
+                 "extension_check": ("addons: [{folder, path, ok, errors,", "`check`"),
+                 "extension_logs": ("hint", "`logs` and `errors`"),
                  "extension_add": (".zip", "linked", "extension_pack", "package {file, replaced}", ".removed",
                                    "extension_exists", "bad_package", "whatever", "the player's setting", "approval_note"),
                  "extension_remove": ("linked", ".removed", "folder_busy", "kept", "{folder, removed, kept}", "history"),
                  "extension_load": ("installed | current", "restart", "hint", "needs_approval", "requires_unmet",
-                                    '`load` {"target": "<folder>"}'),
+                                    '`load` {"target": "<folder>"}', "where game", "no process",
+                                    "loaded: [{folder, ok, error, check}]", "row.player"),
                  "extension_pack": (".zip", "extension_add", "<id>-<version>.zip", "bad_manifest", "pack.exclude",
                                     ".env", "sha256", "skipped", "64 MB"),
                  "extension_install": ("AddOns", "extension_load", "restart", "needs_approval", "no_addons",
@@ -795,7 +817,7 @@ class Home(unittest.TestCase):
                 self.assertIn(word, tools[name].description, name)
         for name in words:                                           # no promise of what the daemon does not do
             self.assertNotIn("its files stay.", tools[name].description, name)
-            self.assertLess(len(tools[name].description), 1300, name)
+            self.assertLess(len(tools[name].description), 1600, name)
 
     def test_a_package_waits_whatever_the_setting(self):
         """extension_add of a package: its row has approval_note also while the setting is "auto" (with the reason), a
@@ -837,6 +859,35 @@ class Home(unittest.TestCase):
         self.call(stdio, "new_extension", id="voice", folder="C:/e/v", addon="VoiceGame")
         self.assertEqual(over.asked, [("new", "mine", None, None, None), ("new", "voice", None, "C:/e/v", "VoiceGame")])
         self.assertTrue(stdio.presence.registers("voice"))
+
+    def test_new_extension_where(self):
+        """where reaches the daemon as a fifth argument, and only when it is given"""
+        (direct, mcp), (over, stdio) = self.both()
+        made = self.call(mcp, "new_extension", id="loot", where="game")
+        self.call(mcp, "new_extension", id="pair", addon="PairUp", where="both")
+        self.assertEqual(direct.asked, [("new", "loot", None, None, None, "game"),
+                                        ("new", "pair", None, None, "PairUp", "both")])
+        self.assertEqual(made["row"]["id"], "loot")
+        self.call(stdio, "new_extension", id="loot", title="掉落", where="game")
+        self.call(stdio, "new_extension", id="here", where="")                       # no word: as none
+        self.assertEqual(over.asked, [("new", "loot", "掉落", None, None, "game"), ("new", "here", None, None, None)])
+        self.assertTrue(stdio.presence.registers("loot"))
+
+    def test_extension_wait(self):
+        """the daemon's answer as it is ({row, was, timeout}), seconds 120 unless given; a row the player has to
+        approve says how (approval_note), one in the game only that is the agent's own does not"""
+        player = {"action": "restart_game", "text": "请重启游戏：新装的插件「LootPeek」重启后才会载入"}
+        rows = [row("loot", where="game", state="game", approval="needed", allowed=True, player=player),
+                row("voice", approval="needed", allowed=False, player={"action": "approve", "text": "请批准"})]
+        for service, mcp in self.both(rows=rows):
+            res = self.call(mcp, "extension_wait", id="loot")
+            self.assertEqual((res["was"], res["timeout"], res["row"]["player"]), (player, True, player))
+            self.assertNotIn("approval_note", res["row"])
+            res = self.call(mcp, "extension_wait", id="voice", seconds=5)
+            self.assertEqual((res["was"]["action"], res["row"]["id"]), ("approve", "voice"))
+            self.assertIn("needs_approval", res["row"]["approval_note"])
+            self.assertEqual(service.asked, [("wait", "loot", 120), ("wait", "voice", 5)])
+            self.assertNotIn("approval_note", service.rows["voice"])
 
     def test_pack_and_install(self):
         for service, mcp in self.both(rows=[row("voice")]):

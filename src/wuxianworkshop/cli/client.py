@@ -195,14 +195,20 @@ class DaemonClient:
     def extension_stop(self, id):
         return self.post("/api/local/stop", id=id, timeout=60)
 
+    def extension_wait(self, id, seconds=120):
+        wait = seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else 0
+        return self.post("/api/local/wait", id=id, seconds=seconds, timeout=max(0, min(wait, 600)) + 60)
+
     def extension_set(self, id, enabled=None, options=None):
         return self.post("/api/local/set", id=id, enabled=enabled, options=options, timeout=60)
 
     def extension_check(self, id):
         return self.post("/api/local/check", id=id, timeout=LOAD_WAIT)
 
-    def new_extension(self, id, title=None, folder=None, addon=None):
+    def new_extension(self, id, title=None, folder=None, addon=None, where=None):
         more = {"addon": addon} if addon else {}       # said only when given (a daemon before it reads no such field)
+        if where:
+            more["where"] = where
         return self.post("/api/local/new", id=id, title=title, folder=folder, timeout=60, **more)
 
     def extension_pack(self, id, to=None):

@@ -116,9 +116,11 @@ class Groups(unittest.TestCase):
 
     def test_the_idea_and_the_origins(self):
         idea = self.out["idea"]
-        self.assertTrue(idea.startswith("用无限工坊做一个扩展，验证这个想法：（在这里写你的想法）。先读 extension_guide"), idea)
-        for word in ("extension_load", "wk_", "extension_logs"):
+        self.assertTrue(idea.startswith("用无限工坊验证一个想法：（在这里写你的想法）。先调用 wuxian 的 guide，"), idea)
+        for word in ("从最省事的一档开始", "需要我操作时告诉我", "结论（能做 / 有条件能做 / 不能做）和依据"):
             self.assertIn(word, idea)
+        for word in ("extension_guide", "extension_load", "做一个扩展"):       # the route says what to make, if anything
+            self.assertNotIn(word, idea)
         self.assertEqual(self.out["originTips"], ["文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发", "由扩展包导入或放进扩展文件夹；移除时移入回收区", ""])
         self.assertEqual(self.out["linkedTips"], ["文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发"])
 
@@ -163,7 +165,8 @@ class Template(unittest.TestCase):
 
     def test_the_caps_tab_lists_the_game_half(self):
         caps = self.page[self.page.index("<div x-show=\"xpTab === 'caps'\">"):self.page.index('<div class="toolbar lx-out-bar"')]
-        self.assertIn('<h3 class="xp-h" x-show="xpSel.mod">本机', caps)
+        self.assertIn('<h3 class="xp-h" x-show="xpSel.mod && !lxGameOnly(lxCur)">本机', caps)
+        self.assertIn('<p class="xp-toolhint" x-show="lxCapsHint(lxCur, xpSel.mod)" x-text="lxCapsHint(lxCur, xpSel.mod)"></p>', caps)
         self.assertIn('<h3 class="xp-h">游戏<span class="muted">由游戏插件经扩展框架提供</span></h3>', caps)
         self.assertIn('x-for="tool in (xpSel.tools || [])"', caps)
 

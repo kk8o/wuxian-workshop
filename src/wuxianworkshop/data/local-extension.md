@@ -21,9 +21,11 @@ When an idea needs something the game and these tools cannot do yet:
 | What the game cannot do | a voice, a local model, reading files, looking things up on the web | this computer |
 | Adding to an existing app | 图鉴速查 adds wake notes to 公会聊天 | this computer |
 | Shown in the game, worked out on the computer | a hint in the game; recognition or statistics on the computer | both (see The game half) |
-| Only the game | reading another addon's settings, giving it a switch | the game: a WuxianKit extension in an addon (see `wk_docs`), not a local extension |
+| Only the game | reading another addon's data, a hint, a switch | the game: an extension with no process (`new_extension` with `"where": "game"`; `guide {"topic": "game-extension"}`) |
 
-To change the game, use WuxianKit extensions in the game (Lua), never a local extension.
+What changes the game is Lua in the game, never the process. An extension whose manifest has `addons` and no
+`run` is in the game only: the workshop checks and installs its addons and starts nothing, and this standard's
+process, protocol and approval do not apply to it. Not sure where an idea goes: `guide` (no topic) is the route.
 
 Once the idea is tried, three ways on:
 
@@ -541,12 +543,14 @@ A minimal exchange:
 ## The development loop
 
 1. `new_extension {"id": "<id>", "title": "..."}`: makes the folder (`%WUXIAN_HOME%\extensions\<id>` unless you give
-   `folder`) and registers it; with `"addon": "<Name>"` it writes the game half too. `extension_add {"path": ...}`
+   `folder`) and registers it; with `"where": "both"` (or `"addon": "<Name>"`) it writes the game half too.
+   `extension_add {"path": ...}`
    registers a folder that exists, or imports a package. Plan the capabilities, sources and options with the
    player first.
 2. Edit `main.py`, `AGENT.md` and the tests; with a game half, `addons/<Name>/` too.
 3. `extension_load {"id": "<id>"}`: checks, then starts it again with the new code. Fix every error in its `check`.
-   `needs_approval`: the player approves it in the App first (see Who lets it run), then load again. A game half
+   `needs_approval`: tell the player the row's `player.text` (they approve it in the App, see Who lets it run),
+   call `extension_wait {"id": "<id>"}`, then load again. A game half
    whose files changed is installed first: `restart: true` in the answer means the player restarts the game,
    otherwise `load {"target": "<Name>"}` takes the change (see The game half).
 4. Call its tools directly: `wk_<id>_<name>`. Check each answer, and the refusals for bad arguments.
@@ -556,7 +560,7 @@ A minimal exchange:
 7. `extension_check {"id": "<id>"}` before you finish: the manifest, a start with `initialize`, the description, what
    the manifest names against it, and `tests/` (`python -m unittest discover -s tests` with its interpreter). Also:
    `local_extensions` lists them all with their state (`off`, `stopped`, `starting`, `running`, `hung`, `stopping`,
-   `exited`, `backoff`), `extension_set` turns one on or off and sets options (see Options), `extension_stop` stops
+   `exited`, `backoff`; `game` for one with no process) and what is left for the player (`player`), `extension_set` turns one on or off and sets options (see Options), `extension_stop` stops
    it, `extension_remove` removes it (see Removing).
 8. To hand it on: set the manifest's `version`, then `extension_pack {"id": "<id>"}` (see Packages).
 

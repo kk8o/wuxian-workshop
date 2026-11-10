@@ -3,7 +3,8 @@ loaded, logged in, the slash command, then a hot reload the way WoWBridge's Agen
 again with the same namespace, OnReload with what OnUnload returned). 新建扩展 (new_extension_files): its files, its
 refusals, and the extension it makes passes its own tests and answers the workshop's protocol; with addon, its game
 half too: the manifest's check and the lint take it, and its Lua runs in the mock client against a stand-in for
-WuxianKit (declared once, heard once after a hot load)."""
+WuxianKit (declared once, heard once after a hot load). where game: an extension in the game only (addons/<Addon>
+alone, the WuxianKit extension <id> itself, no process), the same way."""
 import json
 import os
 import subprocess
@@ -223,6 +224,75 @@ class Extensions(unittest.TestCase):
                       (folder / "addons" / "Long" / "Long.toc").read_text(encoding="utf-8"))
         self.assertEqual(manifest.check_manifest(folder)[1], [])
 
+    def test_where(self):
+        """where an extension is and its addon's folder name: an addon alone means both; game and both without one
+        name it after the id"""
+        for args, out in ((("x",), ("local", None)), (("x", None, "local"), ("local", None)),
+                          (("x", "Y"), ("both", "Y")), (("x", "Y", "both"), ("both", "Y")),
+                          (("x", "Y", "game"), ("game", "Y")), (("loot_peek", None, "game"), ("game", "LootPeek")),
+                          (("a_b9_c", None, "both"), ("both", "AB9C")), (("x", None, "game"), ("game", "X"))):
+            self.assertEqual(scaffold.extension_where(*args), out, args)
+        for args in (("x", "Y", "local"), ("x", None, "nowhere"), ("x", None, "")):
+            with self.assertRaises(scaffold.ScaffoldError) as cm:
+                scaffold.extension_where(*args)
+            self.assertEqual(cm.exception.code, "bad_request", args)
+
+    def test_in_the_game_only(self):
+        """where game: the manifest (no run, no start), addons/<Addon> with its own AGENT.md, and nothing of a process"""
+        folder = self.root / "loot_peek"
+        files = scaffold.new_extension_files(folder, "loot_peek", "掉落一瞥", where="game")
+        self.assertEqual(files, ["wuxian-extension.json", "addons/LootPeek/AGENT.md", "addons/LootPeek/LootPeek.toc",
+                                 "addons/LootPeek/LootPeek.lua"])
+        self.assertEqual(sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()),
+                         sorted(files))
+        self.assertEqual(json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8")),
+                         {"id": "loot_peek", "title": "掉落一瞥", "version": "0.1.0",
+                          "requires": {"workshop": scaffold.workshop_version(), "kit": "0.6.0"}, "addons": ["LootPeek"]})
+        m, problems = manifest.check_manifest(folder, {"loot_peek": "LootPeek", "sense": None})
+        self.assertEqual(problems, [])
+        self.assertEqual((m["where"], m["game"], m["run"], m["start"], m["addons"]),
+                         ("game", ["loot_peek"], [], "use", ["LootPeek"]))
+        self.assertEqual(Path(m["docs"]).as_posix().split("/")[-3:], ["addons", "LootPeek", "AGENT.md"])
+        texts = {f: (folder / f).read_text(encoding="utf-8") for f in files}
+        self.assertNotIn("{{", "".join(texts.values()))
+        self.assertNotIn("main.py", "".join(texts.values()))
+        toc = texts["addons/LootPeek/LootPeek.toc"].splitlines()
+        self.assertEqual(toc, ["## Interface: 16001", "## Title: 掉落一瞥", "## Notes: 游戏内扩展 loot_peek（WuxianKit 扩展）",
+                               "## Version: 0.1.0", "## Dependencies: WuxianKit", "## OptionalDeps: WoWBridge",
+                               "## LoadOnDemand: 1", "## X-WuxianKit-Extension: loot_peek", "## X-Made-With: 无限工坊", "",
+                               "LootPeek.lua"])
+        lua = texts["addons/LootPeek/LootPeek.lua"]
+        for said in ('Kit:Extension("loot_peek"', 'Kit:Requires("0.6.0")', 'ext:See("where"', 'ext:Event("moved"',
+                     "wk_loot_peek_<name>", 'guide {"topic": "game-extension"}'):
+            self.assertIn(said, lua)
+        agent = texts["addons/LootPeek/AGENT.md"]
+        self.assertTrue(agent.startswith("# 掉落一瞥 (loot_peek)"), agent[:40])
+        for said in ("`wk_loot_peek_where`", "`loot_peek.moved`", "`bus:loot_peek.moved`", "no process",
+                     'extension_load {"id": "loot_peek"}', 'guide {"topic": "game-extension"}',
+                     'extension_wait {"id": "loot_peek"}', 'wk_docs {"extension": "loot_peek"}'):
+            self.assertIn(said, agent)
+        found = lint.check(folder / "addons" / "LootPeek")
+        self.assertEqual((found["errors"], found["warnings"], list(found["unresolved"])), ([], [], ["WuxianKit"]))
+
+    def test_in_the_game_only_refused(self):
+        """an id the game has already, unless it is this addon's own; a title in English; nothing left behind"""
+        for kw in (dict(where="game", taken={"loot_peek": "Other"}), dict(where="game", taken=("loot_peek",)),
+                   dict(where="both", taken={"loot_peek_game": "Other"}), dict(where="local", addon="LootPeek"),
+                   dict(where="nowhere"), dict(where="game", addon="WuxianKit")):
+            with self.assertRaises(scaffold.ScaffoldError) as cm:
+                scaffold.new_extension_files(self.root / "t", "loot_peek", **kw)
+            self.assertEqual(cm.exception.code, "bad_request", kw)
+        self.assertFalse((self.root / "t").exists())
+        made = scaffold.new_extension_files(self.root / "t", "loot_peek", where="game", addon="Peek",
+                                            taken={"loot_peek": "Peek", "sense": None})    # the game lists it: its own
+        self.assertEqual(made[1:], ["addons/Peek/AGENT.md", "addons/Peek/Peek.toc", "addons/Peek/Peek.lua"])
+        with mock.patch.object(scaffold, "language", return_value="en"):
+            scaffold.new_extension_files(self.root / "en", "en_ext", where="game")
+        toc = (self.root / "en" / "addons" / "EnExt" / "EnExt.toc").read_text(encoding="utf-8")
+        self.assertIn("## X-WuxianKit-Extension: en_ext", toc.splitlines())
+        self.assertIn("## X-Made-With: Wuxian Workshop", toc)
+        self.assertNotIn("游戏内扩展", toc)
+
     def test_addons_refused(self):
         """an addon name that is no folder name, or the workshop's, WuxianKit's or the game's own: nothing is left"""
         (self.root / "empty").mkdir()
@@ -390,6 +460,59 @@ class GameHalf(unittest.TestCase):
         kit[b"fire"](b"ZONE_CHANGED")
         self.assertEqual(len(kit[b"emitted"]), 2)
         self.assertEqual(list(kit[b"extensions"]), [b"zones_game"])
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class GameOnlyLua(unittest.TestCase):
+    """the Lua of an extension in the game only (new_extension_files where game) in the mock client"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        scaffold.new_extension_files(Path(tmp.name) / "loot_peek", "loot_peek", '掉落 "一瞥"', where="game")
+        self.folder = Path(tmp.name) / "loot_peek" / "addons" / "LootPeek"
+
+    def load(self, s, ns):
+        load = s.lua.globals()[b"__load"]
+        for f in toc_files(self.folder):
+            fn, err = load((self.folder / f).read_bytes(), f"@LootPeek/{f}".encode())
+            self.assertIsNone(err, f)
+            fn(b"LootPeek", ns)
+
+    def test_without_wuxiankit(self):
+        s = Session(self, bridge=False)
+        ns = s.lua.table()
+        self.load(s, ns)
+        self.assertTrue(same(s, s.lua.globals()[b"WoWBridgeNS"][b"LootPeek"], ns))
+        self.assertIsNone(ns[b"Moved"])
+
+    def test_with_wuxiankit(self):
+        """the extension is <id> itself (no _game), declared once, its event <id>.moved; a hot load (extension_load
+        runs the files again with the same namespace) adds no handler"""
+        s = Session(self, bridge=False, locale="zhCN")
+        s.lua.execute(KIT.encode("utf-8"))
+        kit = s.lua.globals()[b"__kit"]
+        ns = s.lua.table()
+        self.load(s, ns)
+        self.assertEqual(list(kit[b"requires"].values()), [b"0.6.0"])
+        self.assertEqual(list(kit[b"extensions"]), [b"loot_peek"])
+        ext = kit[b"extensions"][b"loot_peek"]
+        self.assertEqual((ext[b"def"][b"title"].decode("utf-8"), ext[b"def"][b"addon"]), ('掉落 "一瞥"', b"LootPeek"))
+        self.assertEqual((list(ext[b"sees"]), list(ext[b"events"])), ([b"where"], [b"moved"]))
+        self.assertEqual(ext[b"sees"][b"where"][b"title"].decode("utf-8"), "所在地区")
+        self.assertEqual(dict(ext[b"sees"][b"where"][b"run"]()), {b"zone": b"Elwynn Forest", b"subzone": b"Goldshire"})
+        self.assertEqual(len(kit[b"handlers"]), 3)
+        s.lua.execute(b'__zone, __subzone = "Westfall", ""')
+        kit[b"fire"](b"ZONE_CHANGED_NEW_AREA")
+        self.assertEqual([(e[b"topic"], dict(e[b"data"])) for e in kit[b"emitted"].values()],
+                         [(b"loot_peek.moved", {b"zone": b"Westfall", b"subzone": b""})])
+        moved = ns[b"Moved"]
+        self.load(s, ns)
+        self.assertEqual(len(kit[b"handlers"]), 3)
+        self.assertFalse(same(s, ns[b"Moved"], moved))     # the handlers call what the latest run left
+        kit[b"fire"](b"ZONE_CHANGED")
+        self.assertEqual(len(kit[b"emitted"]), 2)
+        self.assertEqual(list(kit[b"extensions"]), [b"loot_peek"])
 
 
 if __name__ == "__main__":

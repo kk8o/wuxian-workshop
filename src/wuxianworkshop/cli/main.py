@@ -224,7 +224,7 @@ def build_parser():
     p.add_argument("--notes", default="", help="one line about it")
     p.add_argument("--template", choices=("basic", "window"), default="basic")
     p = sub.add_parser("ext", help="local extensions (WuxianKit's extensions on this computer): list, add, remove, load, "
-                                    "stop, set, check, new, pack, install, dir, logs")
+                                    "stop, wait, set, check, new, pack, install, dir, logs")
     act = p.add_subparsers(dest="action", metavar="<action>", required=True)
     q = act.add_parser("list", help="the registered local extensions and their state")
     q.add_argument("--json", action="store_true", help="print JSON")
@@ -241,6 +241,10 @@ def build_parser():
     q.add_argument("id")
     q = act.add_parser("stop", help="stop an extension")
     q.add_argument("id")
+    q = act.add_parser("wait", help="wait for what only the player can do before an extension works (approve it, "
+                                    "start or restart the game, enable its addon, turn it on)")
+    q.add_argument("id")
+    q.add_argument("--seconds", type=float, default=120, help="how long at most (default 120, 600 at most)")
     q = act.add_parser("set", help="turn an extension on or off, set its options")
     q.add_argument("id")
     on = q.add_mutually_exclusive_group()
@@ -258,6 +262,9 @@ def build_parser():
     q.add_argument("--folder", help="the full path of its folder (new or empty)")
     q.add_argument("--addon", metavar="NAME", help="with a game addon of this folder name (addons\\NAME in its folder, "
                                                    "installed into the game with the extension)")
+    q.add_argument("--where", choices=("game", "local", "both"),
+                   help="game: in the game only (a WuxianKit extension, no process); local: a process on this computer; "
+                        "both (default: both with --addon, else local)")
     q = act.add_parser("pack", help="pack an extension's folder into a package (<id>-<version>.zip) for `ext add`")
     q.add_argument("id")
     q.add_argument("--to", metavar="PATH", help="a folder, or the .zip itself (default: %%WUXIAN_HOME%%\\packages)")
@@ -1058,6 +1065,10 @@ def ext_lines(r, now=None):
             name = " ".join(str(x) for x in (g.get("folder"), g.get("version")) if x)
             said = EXT_ADDON.get(g.get("state"), str(g.get("state"))).replace("{id}", str(r["id"]))
             lines.append(f"    game addon {name}: {said}")
+    if isinstance(r.get("game"), dict) and r["game"].get("extensions"):
+        lines.append(f"    in the game: {', '.join(map(str, r['game']['extensions']))} {r['game'].get('state')}")
+    if isinstance(r.get("player"), dict) and r["player"].get("text"):
+        lines.append(f"    the player: {r['player']['text']}")
     return lines
 
 
@@ -1159,6 +1170,10 @@ def cmd_ext(client, args):
         res = client.extension_load(args.id)
         print_check(res["check"])
         print_game_side(res)
+        for g in res.get("loaded") or []:
+            if isinstance(g, dict):
+                print(f"game addon {g.get('folder')}: " + ("ran in the game" if g.get("ok") else
+                                                           f"failed in the game: {g.get('error')}"))
         print_ext(res["row"])
         return 0 if res["check"].get("ok") else 1
     if a == "install":
@@ -1183,8 +1198,18 @@ def cmd_ext(client, args):
             print("    " + ", ".join(f for f in facts if f))
         return 0
     if a == "stop":
-        print_ext(client.extension_stop(args.id))
+        res = client.extension_stop(args.id)
+        print_ext(res)
+        if res.get("note") and isinstance(res["note"], str):
+            print(f"    {res['note']}")
         return 0
+    if a == "wait":
+        res = client.extension_wait(args.id, args.seconds)
+        print_ext(res["row"])
+        was = res.get("was") if isinstance(res.get("was"), dict) else None
+        print("nothing to wait for" if was is None else
+              f"still waiting: {was.get('text')}" if res.get("timeout") else f"done: {was.get('text')}")
+        return 1 if res.get("timeout") else 0
     if a == "set":
         try:
             options = dict(option_value(o) for o in args.option) or None
@@ -1198,10 +1223,16 @@ def cmd_ext(client, args):
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
+            for g in res.get("addons") or []:                    # one in the game only: its addons as `check` reads them
+                if isinstance(g, dict):
+                    print_findings({level: [dict(f, file=f"{g.get('folder')}/{f.get('file') or ''}")
+                                            for f in g.get(level) or [] if isinstance(f, dict)]
+                                    for level in ("errors", "warnings")})
             print_check(res)
         return 0 if res.get("ok") else 1
     if a == "new":
-        res = client.new_extension(args.id, args.title, args.folder, args.addon)
+        res = client.new_extension(args.id, args.title, args.folder, args.addon,
+                                   *((args.where,) if args.where else ()))     # said only when given
         print(f"made {res['row']['path']}: {', '.join(Path(f).name for f in res['files'])}")
         print(res.get("guide", ""))
         return 0

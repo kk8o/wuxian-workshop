@@ -73,9 +73,15 @@ async function api(path, opts) {
   }
   if (action === 'new') {
     if (row(body.id)) throw apiErr(409, 'extension_exists', body.id + ' is registered already');
-    const r = mk(body.id, body.title || '', { approval: 'needed', addons: body.addon ? [game(body.addon, 'missing')] : [] });
+    const where = body.where || (body.addon ? 'both' : 'local');     // as the daemon: the addon's name is the id's when none is given
+    const addon = body.addon || (where === 'local' ? '' : body.id.replace(/(^|_)([a-z0-9])/g, (m, a, c) => c.toUpperCase()));
+    const more = { where, approval: 'needed', addons: addon ? [game(addon, 'missing')] : [] };
+    if (where === 'game') {                    // no process: nothing to approve, the game has not got it yet
+      Object.assign(more, { approval: 'ok', command: null, state: 'game', game: { extensions: [body.id], state: 'absent' }, player: null });
+    }
+    const r = mk(body.id, body.title || '', more);
     rows.push(r);
-    return { row: copyOf(r), files: ['extension.json', 'main.py'], guide: 'read AGENT.md' };
+    return { row: copyOf(r), files: where === 'game' ? ['extension.json', 'addons'] : ['extension.json', 'main.py'], guide: 'read AGENT.md' };
   }
   if (action === 'remove') {
     const r = row(body.id);
@@ -308,22 +314,35 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
                    dialog: st.lxa.open };
   withShell(st, true);
 
-  // 新建扩展: the id, with the title and the game addon when given
+  // 新建扩展: the id, with the title when given; where it runs (本机 unless chosen) and the game addon's name with it
   st.lx.menu = 'add';
   st.lxn.error = 'old';
   st.lxNewOpen();
   out.newOpen = [copyOf(st.lxn), st.lx.menu];
-  Object.assign(st.lxn, { id: ' my_tool ', title: '', addon: ' MyTool ' });
+  Object.assign(st.lxn, { id: ' my_tool ', title: '', where: 'both', addon: ' MyTool ' });
   calls.length = 0;
   await st.lxNew();
   out.created = { posts: posts(), sel: st.xp.sel, said: last(st), dialog: st.lxn.open, result: copyOf(st.lxn.result),
                   prompt: st.lxPrompt(st.lxn.result), detailPrompt: st.lxPrompt(st.lxCur),
                   addons: st.lxCur.addons.map((a) => [a.folder, st.lxAddonState(a)]), will: st.lxWillInstall(st.lxCur) };
   st.lxNewOpen();
-  Object.assign(st.lxn, { id: 'named', title: ' 有名字 ', addon: '' });
+  Object.assign(st.lxn, { id: 'named', title: ' 有名字 ', addon: 'Typed' });   // 本机: the name typed before is not sent
   calls.length = 0;
   await st.lxNew();
-  out.createdNamed = [posts(), st.lxTitle(st.lxCur)];
+  out.createdNamed = [posts(), st.lxTitle(st.lxCur), st.lxn.result.where, st.lxn.result.addon];
+  st.lxNewOpen();
+  Object.assign(st.lxn, { id: 'pure', where: 'game', addon: '' });
+  calls.length = 0;
+  await st.lxNew();
+  out.createdGame = { posts: posts(), result: copyOf(st.lxn.result), prompt: st.lxPrompt(st.lxn.result),
+                      detailPrompt: st.lxPrompt(st.lxCur), where: st.lxWhere(st.lxCur), pill: st.lxState(st.lxCur).text,
+                      after: st.lxn.where };
+  st.lxNewOpen();
+  Object.assign(st.lxn, { id: 'odd', where: 'elsewhere', addon: 'Odd' });      // not a place: 本机
+  calls.length = 0;
+  await st.lxNew();
+  out.createdOdd = posts();
+  out.whereHints = ['game', 'local', 'both'].map((w) => st.lxWhereHint(w));
   st.lxNewOpen();
   st.lxn.id = 'my_tool';
   await st.lxNew();
@@ -487,24 +506,43 @@ class Manage(unittest.TestCase):
 
     def test_new(self):
         o = self.out
-        self.assertEqual(o["newOpen"], [{"open": True, "id": "", "title": "", "addon": "", "busy": False, "error": "",
-                                         "result": None}, ""])
+        self.assertEqual(o["newOpen"], [{"open": True, "id": "", "title": "", "addon": "", "where": "local", "busy": False,
+                                         "error": "", "result": None}, ""])
         c = o["created"]
-        self.assertEqual(c["posts"], [["/api/local/new", {"id": "my_tool", "addon": "MyTool"}]])
+        self.assertEqual(c["posts"], [["/api/local/new", {"id": "my_tool", "where": "both", "addon": "MyTool"}]])
         self.assertEqual((c["sel"], c["said"], c["dialog"]), ("l:my_tool", "已创建 my_tool", True))   # it shows what next
         r = c["result"]
-        self.assertEqual((r["id"], r["addon"]), ("my_tool", "MyTool"))
+        self.assertEqual((r["id"], r["addon"], r["where"], r["needs"]), ("my_tool", "MyTool", "both", True))
         self.assertTrue(r["path"])
-        self.assertTrue(c["prompt"].startswith("请先读 " + r["path"] + "\\AGENT.md 和 extension_guide。"), c["prompt"])
+        self.assertTrue(c["prompt"].startswith("请先读 " + r["path"] + "\\AGENT.md 和 guide {\"topic\": \"local-extension\"}。"),
+                        c["prompt"])
         self.assertIn("在本机扩展 my_tool 里实现：（在这里写你想要的功能）", c["prompt"])
         self.assertIn("wk_my_tool_", c["prompt"])
         self.assertIn("游戏插件在 addons\\MyTool：", c["prompt"])
         self.assertEqual(c["detailPrompt"], c["prompt"])        # 更多 · 复制给 Agent 的第一句话 says the same of its row
         self.assertEqual((c["addons"], c["will"]), ([["MyTool", "未安装"]], "MyTool"))
-        self.assertEqual(o["createdNamed"], [[["/api/local/new", {"id": "named", "title": "有名字"}]], "有名字"])
-        self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "busy": False, "result": None,
-                                             "error": "标识已被占用，请先移除同名扩展"})
+        self.assertEqual(o["createdNamed"], [[["/api/local/new", {"id": "named", "title": "有名字"}]], "有名字", "local", ""])
+        self.assertEqual(o["createdOdd"], [["/api/local/new", {"id": "odd"}]])
+        self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "where": "local",
+                                             "busy": False, "result": None, "error": "标识已被占用，请先移除同名扩展"})
         self.assertEqual(o["createNothing"], 0)
+
+    def test_new_in_the_game_only(self):
+        g = self.out["createdGame"]
+        self.assertEqual(g["posts"], [["/api/local/new", {"id": "pure", "where": "game"}]])      # the name is the daemon's
+        r = g["result"]
+        self.assertEqual((r["id"], r["addon"], r["where"], r["needs"]), ("pure", "Pure", "game", False))
+        self.assertTrue(g["prompt"].startswith("请先读 " + r["path"] + "\\addons\\Pure\\AGENT.md 和 guide "
+                                               "{\"topic\": \"game-extension\"}。然后在扩展 pure 里实现："), g["prompt"])
+        for word in ("extension_load", "wk_pure_", "errors 和 logs", "extension_wait"):
+            self.assertIn(word, g["prompt"])
+        for word in ("main.py", "extension_logs", "本机扩展"):
+            self.assertNotIn(word, g["prompt"])
+        self.assertEqual(g["detailPrompt"], g["prompt"])
+        self.assertEqual((g["where"], g["pill"], g["after"]), ("游戏", "未安装", "local"))
+        self.assertEqual(self.out["whereHints"], ["只含游戏插件，在游戏中运行，没有本机程序",
+                                                  "在这台电脑上运行，不需要游戏",
+                                                  "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行"])
 
     def test_the_menus(self):
         self.assertEqual(self.out["menus"], ["add", "more", "more", ""])
@@ -588,7 +626,8 @@ class Page(unittest.TestCase):
         d = self.detail
         card = d[d.index('<div class="lx-approve"'):]
         card = card[:card.index('<div class="xp-note')]
-        self.assertIn('x-show="lxWillInstall(lxCur)" x-text="t(\'同时安装游戏插件：{names}\', { names: lxWillInstall(lxCur) })"', card)
+        self.assertIn('x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" '
+                      'x-text="t(\'同时安装游戏插件：{names}\', { names: lxWillInstall(lxCur) })"', card)
 
     def test_the_notes(self):
         d = self.detail
@@ -629,8 +668,15 @@ class Page(unittest.TestCase):
         self.assertIn("lxa.kind === 'zip' ? t('导入扩展包') : t('链接文件夹')", d)
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxa.error" x-text="lxa.error"></p>', d)
         self.assertIn('@submit.prevent="lxNew()"', d)
-        fields = re.findall(r'<label class="field"><span>([^<]+)</span><input x-t class="[^"]+" x-model="lxn\.(\w+)"', d)
+        fields = re.findall(r'<label class="field"[^>]*><span>([^<]+)</span><input x-t class="[^"]+" x-model="lxn\.(\w+)"', d)
         self.assertEqual(fields, [("标识", "id"), ("名称", "title"), ("游戏插件", "addon")])
+        self.assertIn('<div class="field"><span>运行位置</span>', d)             # where it runs: one of three, 本机 unless chosen
+        self.assertEqual(re.findall(r'<label class="check-inline"><input type="radio" value="(\w+)" x-model="lxn\.where"> ([^<]+)</label>', d),
+                         [("game", "游戏"), ("local", "本机"), ("both", "游戏 · 本机")])
+        self.assertIn('<p class="small muted lx-where-hint" x-text="lxWhereHint(lxn.where)"></p>', d)
+        self.assertIn('<label class="field" x-show="lxn.where !== \'local\'"><span>游戏插件</span>'
+                      '<input x-t class="input mono" x-model="lxn.addon" placeholder="插件文件夹名，留空则按标识生成"></label>', d)
+        self.assertIn('<li x-show="lxn.result.where === \'game\'">载入时安装到游戏；新插件在游戏重启后由游戏载入。</li>', d)
         self.assertIn(':disabled="lxn.busy || !lxn.id.trim()"', d)
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxn.error" x-text="lxn.error"></p>', d)
         self.assertIn('<p class="mono selectable lx-path" x-text="lxp.path"></p>', d)
@@ -639,7 +685,7 @@ class Page(unittest.TestCase):
     def test_calls_exist(self):
         exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', self.dialogs))
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t"}
-        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen", "lxCopyIdea"})
+        self.assertEqual(names, {"lxAddSubmit", "lxNew", "copy", "lxPrompt", "lxOpen", "lxNewOpen", "lxCopyIdea", "lxWhereHint"})
         for name in names - {"copy"}:
             self.assertRegex(self.js, r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, name)
         for name in names | {"lxMenu", "lxMenuClose", "lxAddFolder", "lxAddPackage", "lxNewOpen", "lxOpenHome", "lxOpen",
@@ -667,7 +713,9 @@ class Page(unittest.TestCase):
                      "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",
                      "标识已被占用，请先移除同名扩展", "文件夹被占用，请关闭占用它的程序后重试", "未找到游戏目录",
                      "游戏里已有同名插件，未覆盖", "没有游戏插件", "扩展包过大", "扩展包无效", "游戏插件无效", "清单有误",
-                     "目标文件夹已有其他内容", "游戏插件被占用，请退出游戏后重试", "游戏插件写入失败"):
+                     "目标文件夹已有其他内容", "游戏插件被占用，请退出游戏后重试", "游戏插件写入失败",
+                     "运行位置", "游戏 · 本机", "只含游戏插件，在游戏中运行，没有本机程序", "插件文件夹名，留空则按标识生成",
+                     "载入时安装到游戏；新插件在游戏重启后由游戏载入。"):
             self.assertIn("\n  '%s': '" % word, self.i18n, word)
         self.assertNotIn("new_extension 新建", self.i18n)
 
