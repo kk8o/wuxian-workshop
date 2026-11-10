@@ -6,9 +6,10 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from wuxianworkshop.cli import main as cli, mcpconfig
+from wuxianworkshop.cli import client as daemon_client, main as cli, mcpconfig
 
 
 class Parser(unittest.TestCase):
@@ -150,9 +151,23 @@ class Parser(unittest.TestCase):
         self.assertIsNone(ns.enabled)
         ns, _ = self.parse("ext", "new", "voice", "--title", "声音", "--folder", r"C:\e\v")
         self.assertEqual((ns.id, ns.title, ns.folder), ("voice", "声音", r"C:\e\v"))
+        self.assertIsNone(ns.addon)
+        ns, _ = self.parse("ext", "new", "voice", "--addon", "VoiceGame")
+        self.assertEqual((ns.id, ns.title, ns.folder, ns.addon), ("voice", None, None, "VoiceGame"))
         ns, _ = self.parse("ext", "logs", "voice", "-f", "--since", "5", "--limit", "50")
         self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "voice", True, 5, 50))
+        ns, _ = self.parse("ext", "add", r"C:\down\voice-1.2.0.zip")                # a package is a path like any
+        self.assertEqual((ns.action, ns.path), ("add", r"C:\down\voice-1.2.0.zip"))
+        ns, _ = self.parse("ext", "pack", "voice")
+        self.assertEqual((ns.action, ns.id, ns.to, ns.json), ("pack", "voice", None, False))
+        ns, _ = self.parse("ext", "pack", "voice", "--to", "out", "--json")
+        self.assertEqual((ns.to, ns.json), ("out", True))
+        ns, _ = self.parse("ext", "install", "voice")
+        self.assertEqual((ns.action, ns.id), ("install", "voice"))
+        ns, _ = self.parse("ext", "dir")
+        self.assertEqual(ns.action, "dir")
         for argv in (("ext",), ("ext", "begin"), ("ext", "load"), ("ext", "set", "v", "--on", "--off"),
+                     ("ext", "pack"), ("ext", "install"), ("ext", "pack", "v", "--to"),
                      ("program", "list")):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.parse(*argv)
@@ -310,6 +325,214 @@ class ExtLines(unittest.TestCase):
         for action in ("approve", "trust", "allow"):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 cli.build_parser().parse_args(["ext", action, "voice"])
+
+    # --- the extensions' home: version and origin, what it requires, its game addons
+
+    def test_version_and_origin(self):
+        self.assertEqual(self.lines("off", version="1.2.0", origin="home"),
+                         [f"{'voice':<16} {'off':<34} 声音 1.2.0  [2 capabilities]  home  C:\\e\\voice"])
+        self.assertTrue(self.lines("off", origin="linked")[0].endswith("  [2 capabilities]  linked  C:\\e\\voice"))
+        self.assertEqual(self.lines("off", version=None, origin=None, author=None, homepage=None, requires={},
+                                    unmet=[], addons=[]), self.lines("off"))        # nothing to say: as an older row
+
+    def test_what_it_requires(self):
+        workshop = dict(what="workshop", needs="0.9.14", has="0.9.13")
+        kit = dict(what="kit", needs="0.7.0", has="0.6.0")
+        self.assertEqual(self.lines("stopped", unmet=[workshop, kit])[1:],
+                         ["    needs 无限工坊 0.9.14 or newer (this is 0.9.13): it does not start before that",
+                          "    needs WuxianKit 0.7.0 or newer (the game has 0.6.0)"])
+        said = self.lines("stopped", unmet=[workshop, kit], error="it requires 无限工坊 0.9.14 (this is 0.9.13)")[1:]
+        self.assertEqual(said, ["    needs WuxianKit 0.7.0 or newer (the game has 0.6.0)",     # the error says the other
+                                "    it requires 无限工坊 0.9.14 (this is 0.9.13)"])
+        self.assertEqual(self.lines("stopped", unmet=[dict(what="lua", needs="5.4", has="5.1"), "?"])[1:],
+                         ["    needs lua 5.4 or newer (there is 5.1)"])
+
+    def test_its_game_addons(self):
+        lines = self.lines("running", pid=1, addons=[dict(folder="VoiceGame", version="1.2.0", state=state) for state in
+                                                     ("current", "missing", "differs", "foreign", "broken", "unknown")]
+                           + [dict(folder="Odd", version=None, state="later"), "?"])
+        self.assertEqual(lines[1:], [
+            "    game addon VoiceGame 1.2.0: installed",
+            "    game addon VoiceGame 1.2.0: not in the game: `wuxian ext install voice` installs it (so does `ext load`)",
+            "    game addon VoiceGame 1.2.0: the game has another version: `wuxian ext install voice` updates it (so does "
+            "`ext load`)",
+            "    game addon VoiceGame 1.2.0: the game has an addon of this name that is not this extension's: it is left "
+            "alone",
+            "    game addon VoiceGame 1.2.0: its folder in the extension is missing or has no .toc",
+            "    game addon VoiceGame 1.2.0: the game's folder is not known",
+            "    game addon Odd: later"])                            # a state this program does not know: as it is
+        order = self.lines("stopped", approval="needed", allowed=False, why="it waits", unmet=[
+            dict(what="kit", needs="0.7", has="0.6")], addons=[dict(folder="G", version=None, state="unknown")])[1:]
+        self.assertEqual([line.split()[0] for line in order], ["not", "needs", "it", "game"])
+
+    def test_one_the_workshop_allows_by_itself(self):
+        """the setting "auto": the row says allowed, and nothing waits for the player; one from a package (allowed
+        false) waits whatever the setting"""
+        self.assertEqual(len(self.lines("stopped", approval="needed", allowed=True)), 1)
+        self.assertIn("not approved yet", self.lines("stopped", approval="needed", allowed=False)[1])
+        self.assertIn("changed since", self.lines("stopped", approval="changed", allowed=False)[1])
+
+    def run_ext(self, client, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.cmd_ext(client, cli.build_parser().parse_args(["ext", *argv]))
+        return code, out.getvalue().splitlines(), err.getvalue()
+
+    def test_add_a_package(self):
+        home = r"C:\w\extensions"
+        row = self.row("stopped", approval="needed", allowed=False, version="1.2.0", origin="home",
+                       path=home + r"\voice")
+        asked = []
+
+        class Client:
+            def extension_add(self, path):
+                asked.append(path)
+                return dict(row, package=dict(file=path, replaced=self.replaced))
+
+        client = Client()
+        client.replaced = None
+        code, lines, _ = self.run_ext(client, "add", "voice-1.2.0.zip")
+        self.assertEqual(asked, [str(Path("voice-1.2.0.zip").resolve())])           # the daemon gets a full path
+        self.assertEqual((code, len(lines)), (0, 2))
+        self.assertTrue(lines[0].startswith("installed: voice "), lines)
+        self.assertIn("  home  " + home + r"\voice", lines[0])
+        self.assertIn("not approved yet: the player approves it in the 无限工坊 App", lines[1])
+        client.replaced = home + r"\.removed\voice-20261110-120000"
+        code, lines, _ = self.run_ext(client, "add", "voice-1.2.0.zip")
+        self.assertEqual(lines[2], "    the folder it replaced is kept: " + client.replaced)
+
+    def test_remove_says_where_it_went(self):
+        answers = []
+
+        class Client:
+            def extension_remove(self, eid):
+                return answers.pop(0)
+
+        answers.append(dict(removed=True, id="voice", path=r"C:\e\voice"))                         # an older daemon
+        self.assertEqual(self.run_ext(Client(), "remove", "voice")[:2],
+                         (0, ["voice is no longer registered (C:\\e\\voice; its files stay)"]))
+        answers.append(dict(removed=True, id="voice", path=r"C:\e\voice", kept=None, addons=[]))    # a linked one
+        self.assertEqual(self.run_ext(Client(), "remove", "voice")[1],
+                         ["voice is no longer registered (C:\\e\\voice; its files stay)"])
+        kept = r"C:\w\extensions\.removed\voice-20261110-120000"
+        answers.append(dict(removed=True, id="voice", path=r"C:\w\extensions\voice", kept=kept, addons=[
+            dict(folder="VoiceGame", removed=True, kept="20261110-120000"),
+            dict(folder="VoiceOld", removed=True, kept=None),
+            dict(folder="Theirs", removed=False, kept=None)]))
+        self.assertEqual(self.run_ext(Client(), "remove", "voice")[1], [
+            "voice is no longer registered (its folder moved to " + kept + ")",
+            "    game addon VoiceGame: deleted from the game's AddOns (kept: `wuxian history VoiceGame` 20261110-120000)",
+            "    game addon VoiceOld: deleted from the game's AddOns",
+            "    game addon Theirs: left in the game's AddOns (it is not this extension's)"])
+
+    def test_load_and_install_say_the_game_side(self):
+        row = self.row("running", pid=7)
+        game = dict(addons=[dict(folder="VoiceGame", state="installed", was="missing", version="1.2.0", kept=None),
+                            dict(folder="VoiceMore", state="current", was="current", version=None, kept=None)],
+                    restart=True, hint="VoiceGame is new: the game lists it after a restart")
+
+        class Client:
+            def extension_load(self, eid):
+                return dict({"check": {"ok": True, "capabilities": ["voice.say"]}, "row": row}, **self.more)
+
+            def extension_install(self, eid):
+                return dict(self.more, id=eid)
+
+        client = Client()
+        client.more = game
+        said = ["game addon VoiceGame 1.2.0: installed (it was missing)", "game addon VoiceMore: current",
+                "restart the game: it finds new addons and new files only when it starts",
+                "VoiceGame is new: the game lists it after a restart"]
+        code, lines, _ = self.run_ext(client, "load", "voice")
+        self.assertEqual((code, lines[0], lines[1:5]), (0, "ok: 1 capabilities (voice.say)", said))
+        self.assertTrue(lines[5].startswith("voice "), lines)
+        self.assertEqual(self.run_ext(client, "install", "voice")[:2], (0, said))
+        client.more = dict(addons=[dict(folder="VoiceGame", state="current", was="current", version="1.2.0")],
+                           restart=False, hint=None)
+        self.assertEqual(self.run_ext(client, "install", "voice")[1], ["game addon VoiceGame 1.2.0: current"])
+        client.more = {}                                             # a daemon that says nothing of the game
+        self.assertEqual(len(self.run_ext(client, "load", "voice")[1]), 2)
+        self.assertEqual(self.run_ext(client, "install", "voice")[1], ["voice: no game addons to install"])
+
+    def test_pack(self):
+        asked = []
+        answer = dict(id="voice", version="1.2.0", file=r"D:\out\voice-1.2.0.zip", size=3 * 1048576 + 104858, files=42,
+                      sha256="ab" * 32, skipped=["logs/a.log", ".env"])
+
+        class Client:
+            def extension_pack(self, eid, to):
+                asked.append((eid, to))
+                return answer
+
+        code, lines, _ = self.run_ext(Client(), "pack", "voice")
+        self.assertEqual((code, asked), (0, [("voice", None)]))      # no --to: the daemon's packages folder
+        self.assertEqual(lines, ["packed voice 1.2.0: D:\\out\\voice-1.2.0.zip",
+                                 "    3.1 MB, 42 files, 2 left out, sha256 " + "ab" * 32])
+        self.run_ext(Client(), "pack", "voice", "--to", "out")
+        self.assertEqual(asked[1], ("voice", str(Path("out").resolve())))           # --to is this shell's: a full path
+        code, lines, _ = self.run_ext(Client(), "pack", "voice", "--json")
+        self.assertEqual(json.loads("\n".join(lines)), answer)
+        answer = dict(id="voice", version=None, file="v.zip", size=900, files=1, sha256=None, skipped=0)
+        self.assertEqual(self.run_ext(Client(), "pack", "voice")[1], ["packed voice: v.zip", "    900 bytes, 1 files"])
+        answer = dict(file="v.zip", size=2048, skipped=3)            # skipped as a number, less said
+        self.assertEqual(self.run_ext(Client(), "pack", "voice")[1], ["packed voice: v.zip", "    2.0 KB, 3 left out"])
+
+    def test_dir_and_new(self):
+        made = []
+
+        class Client:
+            def local_extensions(self):
+                return self.listing
+
+            def new_extension(self, eid, title, folder, addon):
+                made.append((eid, title, folder, addon))
+                return dict(row=dict(path=r"C:\w\extensions\voice"), files=[r"C:\w\extensions\voice\main.py"],
+                            guide="extension_load it")
+
+        client = Client()
+        client.listing = dict(revision=3, extensions=[], problem=None, home=r"C:\w\extensions")
+        self.assertEqual(self.run_ext(client, "dir"), (0, [r"C:\w\extensions"], ""))
+        code, lines, _ = self.run_ext(client, "list")
+        self.assertTrue(lines[0].startswith("no local extensions registered"), lines)
+        self.assertIn(".zip", lines[0])
+        client.listing = dict(revision=3, extensions=[])             # an older daemon: said, no traceback
+        code, lines, err = self.run_ext(client, "dir")
+        self.assertEqual((code, lines), (1, []))
+        self.assertIn("does not say where its extensions folder is", err)
+        self.run_ext(client, "new", "voice", "--title", "声音", "--addon", "VoiceGame")
+        code, lines, _ = self.run_ext(client, "new", "voice")
+        self.assertEqual(made, [("voice", "声音", None, "VoiceGame"), ("voice", None, None, None)])
+        self.assertEqual(lines, [r"made C:\w\extensions\voice: main.py", "extension_load it"])
+
+
+class ExtRoutes(unittest.TestCase):
+    """cli.client's requests for the extensions' home: the routes, their bodies and how long each may take"""
+
+    def asked(self, call):
+        client = daemon_client.DaemonClient({"port": 1, "token": "t"})
+        with mock.patch.object(daemon_client.DaemonClient, "request", return_value={"ok": 1}) as request:
+            self.assertEqual(call(client), {"ok": 1})
+        (method, path), more = request.call_args
+        return method, path, more.get("body"), more.get("timeout")
+
+    def test_pack_and_install(self):
+        self.assertEqual(self.asked(lambda c: c.extension_pack("voice")),
+                         ("POST", "/api/local/pack", {"id": "voice"}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_pack("voice", r"D:\out")),
+                         ("POST", "/api/local/pack", {"id": "voice", "to": r"D:\out"}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_install("voice")),
+                         ("POST", "/api/local/install", {"id": "voice"}, 180))
+
+    def test_add_waits_for_a_package(self):
+        self.assertEqual(self.asked(lambda c: c.extension_add(r"C:\down\voice-1.2.0.zip")),
+                         ("POST", "/api/local/add", {"path": r"C:\down\voice-1.2.0.zip"}, 180))
+
+    def test_new_with_an_addon(self):
+        self.assertEqual(self.asked(lambda c: c.new_extension("voice", "声音")),      # as before: no field it has not
+                         ("POST", "/api/local/new", {"id": "voice", "title": "声音", "folder": None}, 60))
+        self.assertEqual(self.asked(lambda c: c.new_extension("voice", None, None, "VoiceGame")),
+                         ("POST", "/api/local/new", {"id": "voice", "title": None, "folder": None,
+                                                     "addon": "VoiceGame"}, 60))
 
 
 class BackgroundStart(unittest.TestCase):

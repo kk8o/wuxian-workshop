@@ -4,8 +4,9 @@ of the HTTP interface (daemon/server.py), snake_case; the read-only ones carry r
 build_server(backend) makes it over any object with the async methods of daemon.service.Service (status, run, load,
 watch, snap, snap_bytes, trace, inspect, try_, check, history, checkpoint, restore, reload, logs, say, doctor, addons,
 errors, new_addon, install, the local extensions' local_extensions, local_manifest, local_call, extension_add,
-extension_remove, extension_load, extension_stop, extension_set, extension_check, extension_logs, new_extension, and
-reactions, reaction_set, reaction_clear). The daemon mounts it at /mcp (Streamable HTTP) over the
+extension_remove, extension_load, extension_stop, extension_set, extension_check, extension_logs, new_extension,
+extension_pack, extension_install, and reactions, reaction_set, reaction_clear). The daemon mounts it at /mcp
+(Streamable HTTP) over the
 Service itself; `wuxian mcp` (main) serves it on stdio for hosts that start the server themselves, over HttpBackend,
 which calls the running daemon through cli.client (and starts it when it is not running). On stdio, stdout carries the
 protocol: logging goes to stderr and, with WUXIAN_LOG (or --log), to that file.
@@ -190,8 +191,14 @@ class HttpBackend:
     async def extension_check(self, id):
         return await self._call("extension_check", id)
 
-    async def new_extension(self, id, title=None, folder=None):
-        return await self._call("new_extension", id, title, folder)
+    async def new_extension(self, id, title=None, folder=None, addon=None):
+        return await self._call("new_extension", id, title, folder, addon)
+
+    async def extension_pack(self, id, to=None):
+        return await self._call("extension_pack", id, to)
+
+    async def extension_install(self, id):
+        return await self._call("extension_install", id)
 
     async def extension_logs(self, id, since=0, limit=200):
         return await self._call("extension_logs", id, since, limit)
@@ -293,21 +300,25 @@ def build_server(backend, name="wuxian"):
 
     async def noted(answer):
         """a local extension's row, {row, ...} or {extensions: [row]} as the agent gets it: where the player has to
-        allow an extension before it runs (approval needed / changed; never while the player's setting is "auto":
-        无限工坊 then allows them as they start), `approval_note` says so and how"""
+        allow an extension before it runs (approval needed / changed), `approval_note` says so and how. While the
+        player's setting is "auto" 无限工坊 allows them as they start: then only one it does not allow so (it came
+        from a package, or was found in the extensions folder: kit_tools.approval_of) has the note, with that reason"""
         if not isinstance(answer, dict):
             return answer
         rows = answer.get("extensions") if isinstance(answer.get("extensions"), list) else None
         row = answer.get("row") if isinstance(answer.get("row"), dict) else None
         waiting = [r for r in (rows if rows is not None else [row or answer]) if kit_tools.approval_of(r)]
-        if not waiting or await kit_tools.auto_of(backend) is True:
+        auto = await kit_tools.auto_of(backend) if waiting else None
+        waiting = [r for r in waiting if kit_tools.approval_of(r, auto)]
+        if not waiting:
             return answer
+        how = f"{kit_tools.ASKED} {kit_tools.APPROVE}" if auto is True else kit_tools.APPROVE
         if rows is not None:
             names = ", ".join(f"{r.get('id')} ({kit_tools.APPROVALS[r['approval']]})" for r in waiting)
             return dict(answer, approval_note=f"Not allowed to run yet: {names}. Their calls answer needs_approval. "
-                                              f"{kit_tools.APPROVE}")
+                                              f"{how}")
         note = (f"It may not run yet: {kit_tools.APPROVALS[waiting[0]['approval']]}, so its calls answer needs_approval. "
-                f"{kit_tools.APPROVE}")
+                f"{how}")
         return dict(answer, row=dict(row, approval_note=note)) if row is not None else dict(answer, approval_note=note)
 
     @mcp.tool(annotations=READ_ONLY)
@@ -612,38 +623,56 @@ def build_server(backend, name="wuxian"):
     @mcp.tool(annotations=READ_ONLY)
     async def local_extensions() -> dict[str, Any]:
         """The local extensions registered with 无限工坊 (they run on this computer, outside the game), with revision
-        (one more with every change). Each: id, title, version, path, enabled, start (use: it starts at its first call;
-        workshop: with 无限工坊), state (off, stopped, starting, running, hung: it answers nothing, its next call starts
-        it afresh; stopping, exited: it ended by itself; backoff: it failed to start, 无限工坊 tries again later) with
-        since and why, pid, command (what it runs), approval (ok; needed or changed: only the player allows it to run,
-        see approval_note), capabilities (their wk_ tools: wk_<id>_<name>), sources, options (with value), apps, skills,
-        adds (what it adds to apps: {app: {wake, skill}})."""
+        (one more with every change) and home (the extensions folder: packages are unpacked there, and a folder put
+        there is found). Each: id, title, version, author, homepage, path, origin (home: in the extensions folder;
+        linked: registered where it is), enabled, start (use: it starts at its first call; workshop: with 无限工坊),
+        state (off, stopped, starting, running, hung: it answers nothing, its next call starts it afresh; stopping,
+        exited: it ended by itself; backoff: it failed to start, 无限工坊 tries again later) with since and why, pid,
+        command (what it runs), approval (ok; needed or changed: only the player allows it to run, see approval_note),
+        requires and unmet ([{what: workshop | kit, needs, has}]: a version it requires and does not find; without the
+        workshop's it does not start), addons (its game addons: [{folder, version, state}], state current, missing or
+        differs (extension_install or extension_load installs it), foreign (the game has another addon of that name:
+        left alone), broken, unknown (no game folder known)), capabilities (their wk_ tools: wk_<id>_<name>), sources,
+        options (with value), apps, skills, adds (what it adds to apps: {app: {wake, skill}})."""
         return await noted(await call(backend.local_extensions()))
 
     @mcp.tool(annotations=WRITES)
-    async def new_extension(id: str, title: str | None = None, folder: str | None = None) -> dict[str, Any]:
+    async def new_extension(id: str, title: str | None = None, folder: str | None = None,
+                            addon: str | None = None) -> dict[str, Any]:
         """Make a new local extension from the template and register it. Example: {"id": "voice", "title": "声音"}.
         id: lowercase letters, digits and _ (a letter first, 24 at most), not a WuxianKit extension's. folder: a full
-        path (new or empty); default: the workshop's extensions folder. It writes wuxian-extension.json, main.py (a
-        capability, an option, a source), AGENT.md and tests/. Read extension_guide first; then edit, extension_load,
-        call its wk_ tools, extension_logs. A row with approval_note: the player has to allow it before it runs."""
-        answer = await call(backend.new_extension(id, title, folder))
+        path (new or empty); default: <id> in the workshop's extensions folder. It writes wuxian-extension.json,
+        main.py (a capability, an option, a source), AGENT.md and tests/. addon: a folder name for a game addon; it
+        then also writes addons/<addon>/ (a WuxianKit extension for the game, id <id>_game: its .toc and .lua), which
+        extension_load installs into the game. Read extension_guide first; then edit, extension_load, call its wk_
+        tools, extension_logs. A row with approval_note: the player has to allow it before it runs."""
+        answer = await call(backend.new_extension(id, title, folder, addon) if addon else
+                            backend.new_extension(id, title, folder))         # a backend before `addon` takes three
         row = answer.get("row") if isinstance(answer, dict) else None
         presence.registered(row["id"] if isinstance(row, dict) and isinstance(row.get("id"), str) else id)
         return await noted(answer)
 
     @mcp.tool(annotations=WRITES)
     async def extension_add(path: str) -> dict[str, Any]:
-        """Register an existing local extension: the full path of its folder (or of its wuxian-extension.json). A
-        manifest that is not valid fails with its problems; an id another extension has is refused. Answers its row;
-        with approval_note, the player has to allow it before it runs."""
+        """Add an existing local extension by a full path. Its folder, or its wuxian-extension.json: registered where
+        it is (linked: 无限工坊 does not move or delete that folder). A package (.zip, from extension_pack): unpacked
+        into the extensions folder as <id>; one of that id there is replaced (its old folder goes to .removed:
+        package.replaced; enabled and options stay), a linked one of that id refuses it (extension_exists: remove
+        that first). A manifest that is not valid fails with its problems (a package: bad_package); an id another
+        extension has is refused. Answers its row, a package's with package {file, replaced}. With approval_note,
+        the player has to allow it before it runs: always after a package, at every install and update, whatever
+        the player's setting. Its game addons are installed when the player allows it."""
         answer = await call(backend.extension_add(path))
         presence.registered(answer.get("id") if isinstance(answer, dict) else None)
         return await noted(answer)
 
     @mcp.tool(annotations=WRITES)
     async def extension_remove(id: str) -> dict[str, Any]:
-        """Stop a local extension and take it off the registry; its folder and files stay."""
+        """Stop a local extension and take it off the registry. A linked one's folder and files stay (kept: null). One
+        in the extensions folder: its folder moves to .removed there (kept: the path; the newest 20 are kept), or it
+        fails with folder_busy and stays registered. The game addons 无限工坊 installed for it are deleted from the
+        game's AddOns, a version of each kept in its history (addons: [{folder, removed, kept}]; one that is not this
+        extension's is left: removed false). Answers {removed, id, path, kept, addons}."""
         answer = await call(backend.extension_remove(id))
         presence.removed(id)
         return answer
@@ -653,7 +682,11 @@ def build_server(backend, name="wuxian"):
         """Check a local extension and (re)start it: after every change to its code or manifest. Answers {row,
         check}: check.ok, check.problems (each: level, where, message, hint; fix every error), check.capabilities,
         check.tests (its tests/ run with its Python: ran, failed, output). Then call its wk_ tools (list the tools
-        again if they are new). It fails with needs_approval until the player has allowed the extension to run."""
+        again if they are new). Its game addons (the manifest's addons) are installed first when the game has none
+        or another version: the answer then has addons ([{folder, state: installed | current, was, version}]), restart
+        (true: the game finds a new addon or new files only after a restart; tell the player) and hint. One the game
+        runs already takes changed files with `load` {"target": "<folder>"}. It fails with needs_approval until the
+        player has allowed the extension to run, with requires_unmet when it requires a newer 无限工坊."""
         return await noted(await call(backend.extension_load(id)))
 
     @mcp.tool(annotations=WRITES)
@@ -686,6 +719,29 @@ def build_server(backend, name="wuxian"):
         registered, unless the player's setting 本机扩展批准 (Local extension approval) is 自动允许 (allow
         automatically; the default is 首次运行前询问, ask before the first run)."""
         return await call(backend.extension_check(id))
+
+    @mcp.tool(annotations=WRITES)
+    async def extension_pack(id: str, to: str | None = None) -> dict[str, Any]:
+        """Pack a local extension's folder into a package: a .zip another computer adds with extension_add (or the
+        player on the Extensions page). Example: {"id": "voice"}. to: a full path, a folder (the file is
+        <id>-<version>.zip) or the .zip itself; default: 无限工坊's packages folder. The manifest is checked first
+        (bad_manifest with its problems; set its version before you pack). Left out: .git, __pycache__, *.pyc, .venv*,
+        venv, node_modules, logs, cache, *.log, *.local.*, .env* and the like, and the manifest's pack.exclude; keep
+        keys and the player's data out of the folder. Dependencies are not installed where it is added: pack what it
+        needs. Answers {id, version, file, size, files, sha256, skipped}. One above 64 MB (256 MB or 8000 files
+        unpacked) cannot be added."""
+        return await call(backend.extension_pack(id, to))
+
+    @mcp.tool(annotations=WRITES)
+    async def extension_install(id: str) -> dict[str, Any]:
+        """Install or update a local extension's game addons (addons/<Name>/ of its folder, named by the manifest's
+        addons) in the game's AddOns now. extension_load does the same before it starts one, and so does the player's
+        approval. Answers {id, addons: [{folder, state: installed | current, was, version, kept}], restart, hint}:
+        restart true means the game has to be restarted (a new addon, or new code files); else `load` {"target":
+        "<folder>"} takes the change. It never replaces an addon that is not this extension's (addon_exists). It
+        fails with needs_approval until the player has allowed the extension, with no_addons, no_game_folder,
+        bad_addon."""
+        return await call(backend.extension_install(id))
 
     @mcp.tool(annotations=READ_ONLY)
     async def extension_logs(id: str, since: int = 0, limit: int = 200) -> dict[str, Any]:

@@ -9,7 +9,10 @@
   (the registry rows' adds[app].skill): one note first, by extension id, 8,000 characters at most, headings taken down;
 - extension_set sets options only of what this MCP session registered itself, or while the player's setting
   extension_approval is "auto"; extension_check is not read-only; what the player has to allow first says so and how,
-  and no tool allows it.
+  and no tool allows it;
+- the extensions' home (extensions-home.md): extension_pack and extension_install, new_extension's addon, a package
+  given to extension_add; a row the daemon does not allow by itself (allowed false: it came from a package or was
+  found in the extensions folder) waits for the player also while the setting is "auto", and the notes say why.
 
 The registry's rows (adds, approval, state, since, why, command) are stand-ins here: local/host.py's and local/adds.py's
 halves are other packages'."""
@@ -383,6 +386,43 @@ class Table(unittest.TestCase):
         self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc("voice")))
         self.assertFalse([n for n in listed(tools) if "approv" in n or "allow" in n])
 
+    def test_one_from_a_package_waits_also_on_auto(self):
+        """the setting "auto": 无限工坊 allows an extension as it starts, but not one that came from a package or was
+        found in the extensions folder (the row's allowed is false). That one is named, with the reason; one it allows
+        (allowed true, or a row of a daemon that does not say) is not. While the setting is "ask" the words are as
+        they were"""
+        entries = local(entry("voice", [("say", "point")]), entry("facts", [("lookup", "see")]),
+                        entry("older", [("x", "see")]))
+        rows = [row("voice", approval="needed", allowed=False, origin="home"),
+                row("facts", approval="changed", allowed=True, origin="linked"), row("older", approval="needed")]
+        backend = Rows(game(), entries, rows=rows, extension_approval="auto")
+        tools = tools_of(backend)
+        overview = asyncio.run(tools.overview())
+        self.assertIn(f"Not allowed to run yet: `voice` (the player has not allowed it to run yet). {kit.ASKED} "
+                      f"{kit.APPROVE}", overview)
+        self.assertIn("It may not run yet: the player has not allowed it to run yet, so its calls answer needs_approval. "
+                      f"{kit.ASKED} {kit.APPROVE}", asyncio.run(tools.extension_doc("voice")))
+        for eid in ("facts", "older"):
+            self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc(eid)), eid)
+        backend.extension_approval = "ask"
+        overview = asyncio.run(tools.overview())
+        self.assertIn("Not allowed to run yet: `voice` (the player has not allowed it to run yet); `facts` (what it runs "
+                      "changed after the player allowed it); `older` (the player has not allowed it to run yet). "
+                      + kit.APPROVE, overview)
+        doc = asyncio.run(tools.extension_doc("voice"))
+        self.assertIn("so its calls answer needs_approval. " + kit.APPROVE, doc)
+        self.assertNotIn(kit.ASKED, overview + doc)
+
+    def test_approval_of(self):
+        needed, changed = row("v", approval="needed"), row("v", approval="changed", allowed=False)
+        self.assertEqual([kit.approval_of(needed, auto) for auto in (None, False, True)], ["needed", "needed", None])
+        self.assertEqual([kit.approval_of(changed, auto) for auto in (None, False, True)], ["changed"] * 3)
+        self.assertIsNone(kit.approval_of(row("v", approval="needed", allowed=True), True))
+        self.assertEqual(kit.approval_of(row("v", approval="needed", allowed=True), False), "needed")
+        self.assertEqual([kit.approval_of(r, True) for r in (row("v"), row("v", approval="later", allowed=False), None)],
+                         [None, None, None])
+        self.assertIn("本机扩展批准 (Local extension approval) is 自动允许 (allow automatically)", kit.ASKED)
+
     def test_how_its_process_is(self):
         """an extension's docs say its process's state in the registry's word, with why; the overview does not"""
         entries = local(entry("voice", [("say", "point")]))
@@ -647,6 +687,188 @@ class Options(unittest.TestCase):
         mcp.presence.records[("a", "1")]["last"] -= Presence.IDLE + 1
         self.assertEqual(mcp.presence.view(), [])
         self.assertEqual(mcp.presence.by_client, {})
+
+
+PACKED = {"id": "voice", "version": "1.2.0", "file": "C:/w/packages/voice-1.2.0.zip", "size": 20480, "files": 7,
+          "sha256": "ab" * 32, "skipped": ["logs/a.log", ".env"]}
+GAME_SIDE = {"addons": [{"folder": "VoiceGame", "state": "installed", "was": "missing", "version": "1.2.0", "kept": None}],
+             "restart": True, "hint": "VoiceGame is new: the game lists it after a restart"}
+
+
+class HomeService(Service):
+    """the Service of the extensions' home as extensions-home.md has its answers (the real one is another package's):
+    a package's row waits for the player whatever the setting (allowed false) and has `package`, a folder's is linked;
+    remove, load and install answer the game side; it packs. `asked`: what each was called with"""
+
+    def __init__(self, extension_approval="ask", rows=()):
+        super().__init__(extension_approval, rows)
+        self.asked = []
+
+    async def local_extensions(self):
+        return dict(await super().local_extensions(), problem=None, home="C:/w/extensions")
+
+    async def extension_add(self, path):
+        if not path.endswith(".zip"):
+            eid = Path(path).name
+            self.rows[eid] = row(eid, approval="needed", allowed=self.extension_approval == "auto", origin="linked")
+            return self.rows[eid]
+        eid = Path(path).name.split("-")[0]
+        self.rows[eid] = row(eid, approval="needed", allowed=False, origin="home", path=f"C:/w/extensions/{eid}")
+        return dict(self.rows[eid], package={"file": path, "replaced": None})
+
+    async def new_extension(self, *args):
+        self.asked.append(("new", *args))
+        self.rows[args[0]] = row(args[0], approval="needed", allowed=self.extension_approval == "auto", origin="home")
+        return {"row": self.rows[args[0]], "files": ["main.py"], "guide": "extension_load it"}
+
+    async def extension_remove(self, id):
+        gone = self.rows.pop(id)
+        return {"removed": True, "id": id, "path": gone["path"], "kept": f"C:/w/extensions/.removed/{id}-20261110-120000",
+                "addons": [{"folder": "VoiceGame", "removed": True, "kept": "20261110-120000"},
+                           {"folder": "Theirs", "removed": False, "kept": None}]}
+
+    async def extension_load(self, id):
+        return dict(await super().extension_load(id), **GAME_SIDE)
+
+    async def extension_pack(self, *args):
+        self.asked.append(("pack", *args))
+        if self.refuse:
+            raise self.refuse
+        return dict(PACKED)
+
+    async def extension_install(self, *args):
+        self.asked.append(("install", *args))
+        if self.refuse:
+            raise self.refuse
+        return dict(GAME_SIDE, id=args[0])
+
+
+class Home(unittest.TestCase):
+    """the tools of the extensions' home (extensions-home.md): extension_pack, extension_install, new_extension's
+    addon, a package given to extension_add, what remove and load answer of the game side; over the daemon's Service
+    (its /mcp) and over cli.client's DaemonClient (`wuxian mcp`)"""
+
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"WUXIAN_HOME": self.home.name})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.home.cleanup()
+
+    def both(self, extension_approval="ask", rows=()):
+        """[(the stand-in Service, an MCP server over it)]: the daemon's own, and stdio's over HttpBackend"""
+        direct, client = HomeService(extension_approval, rows), Daemon()
+        client.service = HomeService(extension_approval, rows)
+        return [(direct, server.build_server(direct)), (client.service, server.build_server(server.HttpBackend(client)))]
+
+    def call(self, mcp, tool, **args):
+        return asyncio.run(mcp.call_tool(tool, args)).structured_content
+
+    def test_the_tools(self):
+        mcp = server.build_server(HomeService())
+        tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+        for name in ("extension_pack", "extension_install", "extension_add", "extension_remove", "new_extension"):
+            self.assertEqual((tools[name].annotations.read_only_hint, tools[name].annotations.destructive_hint),
+                             (False, False), name)                    # a removed folder is kept: not destructive
+        self.assertFalse([n for n in tools if "approv" in n or "allow" in n])
+        self.assertEqual(sorted(tools["extension_pack"].input_schema["properties"]), ["id", "to"])
+        self.assertEqual(tools["extension_pack"].input_schema["required"], ["id"])
+        self.assertEqual(sorted(tools["extension_install"].input_schema["properties"]), ["id"])
+        self.assertEqual(sorted(tools["new_extension"].input_schema["properties"]), ["addon", "folder", "id", "title"])
+        self.assertEqual(tools["new_extension"].input_schema["required"], ["id"])
+        words = {"local_extensions": ("home", "origin", "linked", "requires", "unmet", "addons", "author", "homepage",
+                                      "current", "missing", "differs", "foreign", "broken", "unknown"),
+                 "new_extension": ("addon", "addons/<addon>/", "extension_load installs"),
+                 "extension_add": (".zip", "linked", "extension_pack", "package {file, replaced}", ".removed",
+                                   "extension_exists", "bad_package", "whatever", "the player's setting", "approval_note"),
+                 "extension_remove": ("linked", ".removed", "folder_busy", "kept", "{folder, removed, kept}", "history"),
+                 "extension_load": ("installed | current", "restart", "hint", "needs_approval", "requires_unmet",
+                                    '`load` {"target": "<folder>"}'),
+                 "extension_pack": (".zip", "extension_add", "<id>-<version>.zip", "bad_manifest", "pack.exclude",
+                                    ".env", "sha256", "skipped", "64 MB"),
+                 "extension_install": ("AddOns", "extension_load", "restart", "needs_approval", "no_addons",
+                                       "no_game_folder", "bad_addon", "addon_exists", "installed | current")}
+        for name, expected in words.items():
+            for word in expected:
+                self.assertIn(word, tools[name].description, name)
+        for name in words:                                           # no promise of what the daemon does not do
+            self.assertNotIn("its files stay.", tools[name].description, name)
+            self.assertLess(len(tools[name].description), 1300, name)
+
+    def test_a_package_waits_whatever_the_setting(self):
+        """extension_add of a package: its row has approval_note also while the setting is "auto" (with the reason), a
+        folder's then has none; the list names only the one that waits. The session registered it all the same"""
+        package, note = "C:/down/voice-1.2.0.zip", ("It may not run yet: the player has not allowed it to run yet, so its "
+                                                    "calls answer needs_approval. ")
+        for service, mcp in self.both("auto"):
+            added = self.call(mcp, "extension_add", path=package)
+            self.assertEqual(added["approval_note"], f"{note}{kit.ASKED} {kit.APPROVE}")
+            self.assertEqual((added["id"], added["origin"], added["package"]),
+                             ("voice", "home", {"file": package, "replaced": None}))
+            self.assertNotIn("approval_note", self.call(mcp, "extension_add", path="C:/ext/linked"))
+            made = self.call(mcp, "new_extension", id="mine")
+            self.assertNotIn("approval_note", made["row"])
+            listing = self.call(mcp, "local_extensions")
+            self.assertEqual(listing["approval_note"], "Not allowed to run yet: voice (the player has not allowed it to "
+                             f"run yet). Their calls answer needs_approval. {kit.ASKED} {kit.APPROVE}")
+            self.assertEqual((listing["home"], [r["id"] for r in listing["extensions"]]),
+                             ("C:/w/extensions", ["voice", "linked", "mine"]))
+            self.assertNotIn("approval_note", service.rows["voice"])
+        service, mcp = self.both("ask")[1]                           # stdio: the process is the session
+        added = self.call(mcp, "extension_add", path=package)
+        self.assertEqual(added["approval_note"], note + kit.APPROVE)                # "ask": the words as they were
+        self.call(mcp, "extension_set", id="voice", options={"volume": 1})          # registered here: its options too
+        self.assertEqual(service.sets, [("voice", None, {"volume": 1})])
+        self.assertTrue(mcp.presence.registers("voice"))
+        self.call(mcp, "extension_remove", id="voice")
+        self.assertFalse(mcp.presence.registers("voice"))
+
+    def test_new_extension_with_an_addon(self):
+        """addon reaches the daemon; without one the Service is called as before it knew the word (three arguments)"""
+        (direct, mcp), (over, stdio) = self.both()
+        self.call(mcp, "new_extension", id="mine", title="我的")
+        made = self.call(mcp, "new_extension", id="voice", addon="VoiceGame")
+        self.assertEqual(direct.asked, [("new", "mine", "我的", None), ("new", "voice", None, None, "VoiceGame")])
+        self.assertEqual((made["row"]["id"], made["files"]), ("voice", ["main.py"]))
+        self.assertIn("approval_note", made["row"])
+        self.call(stdio, "new_extension", id="mine")
+        self.call(stdio, "new_extension", id="voice", folder="C:/e/v", addon="VoiceGame")
+        self.assertEqual(over.asked, [("new", "mine", None, None, None), ("new", "voice", None, "C:/e/v", "VoiceGame")])
+        self.assertTrue(stdio.presence.registers("voice"))
+
+    def test_pack_and_install(self):
+        for service, mcp in self.both(rows=[row("voice")]):
+            self.assertEqual(self.call(mcp, "extension_pack", id="voice"), PACKED)
+            self.assertEqual(self.call(mcp, "extension_pack", id="voice", to="D:/out"), PACKED)
+            self.assertEqual(self.call(mcp, "extension_install", id="voice"), dict(GAME_SIDE, id="voice"))
+            self.assertEqual(service.asked, [("pack", "voice", None), ("pack", "voice", "D:/out"), ("install", "voice")])
+            service.refuse = ApiError(403, "needs_approval", "voice may not run before the player allows it")
+            with self.assertRaises(ToolError) as refused:
+                self.call(mcp, "extension_install", id="voice")
+            self.assertEqual(str(refused.exception), "Error executing tool extension_install: needs_approval: voice may "
+                             "not run before the player allows it " + kit.APPROVE)
+            for tool, code, said in (("extension_install", "addon_exists", "VoiceGame is another addon's folder"),
+                                     ("extension_install", "no_game_folder", "the game's folder is not known"),
+                                     ("extension_pack", "bad_manifest", "version: not a version")):
+                service.refuse = ApiError(409, code, said)
+                with self.assertRaises(ToolError) as refused:
+                    self.call(mcp, tool, id="voice")
+                self.assertEqual(str(refused.exception), f"Error executing tool {tool}: {code}: {said}")
+
+    def test_remove_and_load_answer_the_game_side(self):
+        for service, mcp in self.both(rows=[row("voice", approval="needed", origin="home")]):
+            loaded = self.call(mcp, "extension_load", id="voice")
+            self.assertEqual({k: loaded[k] for k in GAME_SIDE}, GAME_SIDE)
+            self.assertEqual((loaded["check"], loaded["row"]["id"]), ({"ok": True}, "voice"))
+            self.assertIn("approval_note", loaded["row"])
+            self.assertEqual(self.call(mcp, "extension_remove", id="voice"), {
+                "removed": True, "id": "voice", "path": "C:/ext/voice",
+                "kept": "C:/w/extensions/.removed/voice-20261110-120000",
+                "addons": [{"folder": "VoiceGame", "removed": True, "kept": "20261110-120000"},
+                           {"folder": "Theirs", "removed": False, "kept": None}]})
+            self.assertEqual(service.rows, {})
 
 
 class OverHttp(unittest.TestCase):
