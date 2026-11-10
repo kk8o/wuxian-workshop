@@ -3,6 +3,7 @@ data that moves (log lines every second, a link that drops and comes back, pings
 from src/wuxianworkshop/ui/static.
 
     .venv\Scripts\python.exe scripts\dev_fake_api.py [--port 8765] [--token TEXT] [--tick 1.0] [--quiet]
+                                                     [--mode developer|player] [--rotate 400]
         prints the address and the token; open the address in a browser, or open the window on it:
     .venv\Scripts\python.exe -c "from wuxianworkshop.ui.shell import run_app; run_app(['--fake'])"
         (starts this in-process on a free port; or run_app(['--fake', 'http://127.0.0.1:8765/']) for one that is running)
@@ -11,6 +12,11 @@ Same rules as the real daemon: /api/* wants Authorization: Bearer <token> (SSE a
 must be 127.0.0.1 or localhost, and /api/session hands the token to same-origin pages only. Nothing here touches the game:
 snaps are drawn with Pillow into a temporary folder, "run" answers canned values, "install" only turns the doctor's red items
 green. tests/ui/test_fake_api.py drives create_app() with Starlette's TestClient; the shell calls start_in_thread().
+
+The local extensions (the 扩展 page) come in every state: running, stopped, exited, off, not responding, waiting for its
+next try, a manifest that cannot be read. --mode player (or developer mode switched off on the page) also shows the ones
+whose command waits for the player (awaiting approval, command changed): developer mode allows every command by itself.
+--rotate N starts voice's output again at line 1 after N lines, as the real output.log does at 2 MB.
 """
 import argparse
 import asyncio
@@ -60,6 +66,16 @@ ARITHMETIC = re.compile(r"^return\s+([\d\s+\-*/%().]+)$")
 VOICE_LINES = ["said: 小心，精英怪来了 (1.8 s)", "said: 打完这波歇一下吧 (2.1 s)", "queue: 0 waiting",
                "said: 背包快满了 (1.2 s)"]
 EXT_HOME = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\extensions"
+LOCAL_COMMAND = [r"C:\Python314\python.exe", "main.py"]      # a pretend local extension's argv ({path}: its folder)
+LOCAL_LIVE = ("starting", "running", "hung", "stopping")     # the states with a process
+
+
+class Refused(Exception):
+    """an answer with its own status and code: {error: {code, message}}"""
+
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
 
 
 def api_version():
@@ -73,11 +89,12 @@ def api_version():
 class Fake:
     """the pretend daemon's state: logs (a ring of 5,000), subscribers, settings, the link that comes and goes"""
 
-    def __init__(self, token=None, mode="developer", tick=1.0, seed=None):
+    def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400):
         self.token = token or secrets.token_urlsafe(32)
         self.port = None
         self.mode = mode
         self.tick = tick
+        self.rotate = rotate                     # a local extension's output starts again at line 1 after this many
         self.started = time.time()
         self.rng = random.Random(seed)
         self.logs = collections.deque(maxlen=5000)
@@ -240,7 +257,7 @@ class Fake:
             self.broadcast("status", self.status())
         voice = self.local.get("voice")
         if voice and voice["state"] == "running" and n % 4 == 2:     # a running extension writes to its stderr now and then
-            self.local_out["voice"].append(self.rng.choice(VOICE_LINES))
+            self.local_write("voice", self.rng.choice(VOICE_LINES))
 
     async def ticker(self):
         while True:
@@ -513,8 +530,11 @@ class Fake:
         self.entry("INFO", f"extension {ext_id}: {action}")
         return dict(action=action, result=result, addon=self.ext_row(e))
 
-    # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call,
-    #      translate crashed, lab is off and has never described itself
+    # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call and
+    #      adds to the guild app, translate crashed, lab is off and has never described itself; facts waits for the
+    #      player's 允许运行, stats was allowed with another command, ocr no longer answers, sync failed to start and
+    #      waits for its next try, draft has a manifest that cannot be read. In developer mode every row's approval is
+    #      "ok" (a start allows it, by "developer"): --mode player, or 开发者模式 off in the page, shows the rest
     def local_seed(self):
         now = self.started
 
@@ -522,13 +542,18 @@ class Fake:
             return dict(name=name, kind=kind, title=title, doc=doc, args=args or {}, timeout=timeout)
 
         def ext(eid, title, state, start="use", enabled=True, caps=(), sources=(), options=(), apps=(), skills=(),
-                annotate=(), extends=(), pid=None, started=None, exit_code=None, error=None, broken=None,
-                described=True):
-            return dict(id=eid, title=title, version="0.1.0" if eid != "voice" else "0.3.2", path=EXT_HOME + "\\" + eid,
+                adds=None, pid=None, started=None, exit_code=None, error=None, broken=None, described=True,
+                approval="ok", since=None, why=None, command=LOCAL_COMMAND):
+            path = EXT_HOME + "\\" + eid
+            return dict(id=eid, title=title, version="0.1.0" if eid != "voice" else "0.3.2", path=path,
                         enabled=enabled, start=start, state=state, pid=pid, started=started, exit_code=exit_code,
                         error=error, caps=list(caps), sources=list(sources), options=list(options), apps=list(apps),
-                        skills=list(skills), annotate=[dict(a) for a in annotate], extends=list(extends),
-                        broken=broken, described=described,
+                        skills=list(skills), broken=broken, described=described, approval=approval,
+                        adds={app: dict(wake=a.get("wake") and dict(a["wake"]),
+                                        skill=a.get("skill") and path + "\\" + a["skill"])
+                              for app, a in (adds or {}).items()},
+                        since=since if since is not None else started if started is not None else now - 3600, why=why,
+                        command=None if command is None else [c.replace("{path}", path) for c in command],
                         notes=f"（假数据）本机扩展 {title}")
         return {e["id"]: e for e in (
             ext("voice", "声音", "running", start="workshop", pid=31412, started=now - 1500,
@@ -549,35 +574,69 @@ class Fake:
             ext("notes", "笔记", "stopped",
                 caps=[cap("put", "keep", "记一条", "Keeps a note: {text, tags?}.", {"text": "string", "tags": "table?"}),
                       cap("find", "see", "查笔记", "Notes with these words.", {"words": "string?", "wake": "table?"})],
-                annotate=[dict(app="guild", call="notes.find", wake="wake", timeout=3.0)], extends=["guild-chat"],
+                adds=dict(guild=dict(wake=dict(call="notes.find", timeout=3.0), skill=r"skills\guild-chat.md")),
                 options=[dict(name="folder", kind="text", title="保存位置", default="", hint="空着就放在扩展文件夹里",
                               value="")]),
-            ext("translate", "翻译", "exited", started=now - 640, exit_code=1,
-                error="it exited with code 1 (extension_logs shows why)",
+            ext("translate", "翻译", "exited", started=now - 640, since=now - 639, exit_code=1,
+                why="exited with code 1 after 0.4 s: ModuleNotFoundError: No module named 'httpx'",
                 caps=[cap("text", "see", "翻译一段", "Translates text.", {"text": "string", "to": "zh | en"}, 60)],
                 broken="ModuleNotFoundError: No module named 'httpx'"),
             ext("lab", "实验", "off", enabled=False, described=False),
+            ext("facts", "图鉴速查", "stopped", start="workshop", described=False, approval="needed", since=now - 90,
+                adds=dict(guild=dict(wake=dict(call="facts.lookup", timeout=3.0), skill=r"skills\guild-chat.md"),
+                          companion=dict(skill=r"skills\companion.md")),
+                command=[r"C:\Program Files\Python314\python.exe", "-m", "facts", "--index", r"{path}\data\index.db"]),
+            ext("stats", "统计", "stopped", approval="changed", since=now - 300,
+                caps=[cap("today", "see", "今日统计", "Today's numbers: {kills, gold, played}.")],
+                command=[r"{path}\.venv\Scripts\python.exe", "main.py", "--upload", "https://stats.example/api"]),
+            ext("ocr", "识图", "hung", pid=20480, started=now - 900, since=now - 45,
+                why="ocr.read did not answer in 30 s, then no answer to ping in 5 s: the next call restarts it",
+                caps=[cap("read", "see", "识别截图", "The text in a picture: {text}.", {"path": "string"})]),
+            ext("sync", "同步", "backoff", start="workshop", started=now - 12, since=now - 11, exit_code=1,
+                why="3 starts failed (exited with code 1 before it answered initialize): next try in 30 s",
+                caps=[cap("push", "keep", "上传存档", "Uploads the kept notes.")],
+                broken="ConnectionRefusedError: [WinError 10061] 127.0.0.1:7070"),
+            ext("draft", "", "stopped", described=False, approval="needed", since=now - 20, command=None,
+                error="run: a list of strings, the command that starts it (wuxian-extension.json)"),
         )}
 
     def local_log_seed(self, e):
         if e["started"] is None:
             return []
         at = time.strftime("%H:%M:%S", time.localtime(e["started"]))
-        lines = [f"-- {at} started (pid {e['pid'] or 28870}): C:\\Python314\\python.exe main.py"]
+        lines = [f"-- {at} started (pid {e['pid'] or 28870}): {self.local_argv(e)}"]
         if e["broken"]:
             return lines + ["Traceback (most recent call last):", '  File "main.py", line 3, in <module>',
                             "    import httpx", e["broken"], f"-- {at} exited with code {e['exit_code']} after 0.4 s"]
-        return lines + [f"loading model ({e['title']})", "model ready in 7.9 s",
-                        f"-- {at} ready: {len(e['caps'])} capabilities, {len(e['sources'])} sources, "
-                        f"{len(e['options'])} options"] + VOICE_LINES[:2]
+        lines += [f"loading model ({e['title']})", "model ready in 7.9 s",
+                  f"-- {at} ready: {len(e['caps'])} capabilities, {len(e['sources'])} sources, "
+                  f"{len(e['options'])} options"] + VOICE_LINES[:2]
+        if e["state"] == "hung":
+            lines += [f"-- {time.strftime('%H:%M:%S', time.localtime(e['since']))} hung: {e['why']}"]
+        return lines
+
+    def local_write(self, eid, text):
+        """a line of its output; a full file starts again at line 1 (output.log -> output.1.log)"""
+        out = self.local_out.setdefault(eid, [])
+        if len(out) >= self.rotate:
+            del out[:]
+        out.append(text)
+
+    def local_argv(self, e):
+        return " ".join(f'"{c}"' if " " in c else c for c in e["command"] or LOCAL_COMMAND)
+
+    def local_approval(self, e):
+        """ok, needed or changed as registry.approval answers; every one is ok in developer mode"""
+        return "ok" if self.mode == "developer" else e["approval"]
 
     def local_row(self, e):
-        return dict(id=e["id"], title=e["title"], version=e["version"], path=e["path"], enabled=e["enabled"],
+        return dict(id=e["id"], title=e["title"] or e["id"], version=e["version"], path=e["path"], enabled=e["enabled"],
                     start=e["start"], state=e["state"], pid=e["pid"], started=e["started"], exit_code=e["exit_code"],
                     error=e["error"], capabilities=[f"{e['id']}.{c['name']}" for c in e["caps"]],
                     sources=[s["name"] for s in e["sources"]], options=[dict(o) for o in e["options"]],
-                    apps=list(e["apps"]), skills=list(e["skills"]), annotate=[dict(a) for a in e["annotate"]],
-                    extends=sorted(e["extends"]))
+                    apps=list(e["apps"]), skills=list(e["skills"]), adds={app: dict(a) for app, a in e["adds"].items()},
+                    approval=self.local_approval(e), since=e["since"], why=e["why"],
+                    command=None if e["command"] is None else list(e["command"]))
 
     def local_listing(self):
         return dict(revision=self.local_revision, extensions=[self.local_row(e) for e in self.local.values()])
@@ -585,14 +644,13 @@ class Fake:
     def local_manifest(self):
         """the kit-shaped entries the agents' wk_ tools come from: the enabled ones"""
         return dict(revision=self.local_revision, extensions=[dict(
-            id=e["id"], title=e["title"], version=e["version"], notes=e["notes"], state="on", runtime="local",
+            id=e["id"], title=e["title"] or e["id"], version=e["version"], notes=e["notes"], state="on", runtime="local",
             path=e["path"], docs=e["path"] + "\\AGENT.md", skills=e["path"] + "\\skills" if e["skills"] else None,
             capabilities=[dict(id=f"{e['id']}.{c['name']}", kind=c["kind"], title=c["title"], doc=c["doc"],
                                args=dict(c["args"]), timeout=c["timeout"]) for c in e["caps"]],
             sources=[dict(s) for s in e["sources"]], options=[dict(o) for o in e["options"]],
             apps=[dict(app=a, title="陪玩", prompt="companion") for a in e["apps"]],
-            annotate=[dict(a) for a in e["annotate"]],
-            extends={s: e["path"] + "\\skills\\" + s + ".md" for s in e["extends"]})
+            adds={app: dict(a) for app, a in e["adds"].items()})
             for e in self.local.values() if e["enabled"]])
 
     def local_changed(self):
@@ -640,32 +698,60 @@ class Fake:
             return f"option {name}: one of " + ", ".join(str(c["value"]) for c in o["choices"])
         return None
 
+    def local_to(self, e, state, why=None, **more):
+        """it enters a state now (the row's state, since and why)"""
+        e.update(state=state, since=time.time(), why=why, **more)
+
+    def local_allowed(self, e):
+        """before anything that starts its process (load, check): a manifest that cannot be read is a 400; developer
+        mode allows its command by itself; the player's mode answers 403 needs_approval until 允许运行"""
+        if e["command"] is None:
+            raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
+        if e["approval"] == "ok":
+            return
+        if self.mode != "developer":
+            what = "its command changed since the player allowed it" if e["approval"] == "changed" else \
+                "the player has not allowed its command yet"
+            raise Refused(403, "needs_approval", f"{e['id']}: {what}: confirm it on the Extensions (扩展) page of the "
+                                                 f"无限工坊 App")
+        e["approval"] = "ok"
+
     def local_run(self, e, how):
-        """a start (load): running, or (translate) failed again"""
-        e["started"], e["exit_code"], e["error"] = time.time(), None, None
+        """a start (load): running; a broken one exits at once (translate), and waits for its next try when it starts
+        with the workshop (sync)"""
+        e["started"], e["exit_code"] = time.time(), None
         at = time.strftime("%H:%M:%S")
         out = self.local_out.setdefault(e["id"], [])
         if e["broken"]:
-            e.update(state="failed", pid=None, error=f"{e['id']} exited before it answered initialize (code 1)")
-            out += [f"-- {at} started (pid 40112): C:\\Python314\\python.exe main.py", e["broken"],
-                    f"-- {at} failed: {e['error']}"]
+            why = f"exited with code 1 before it answered initialize: {e['broken']}"
+            if e["start"] == "workshop":
+                self.local_to(e, "backoff", why + " (next try in 5 s)", pid=None, exit_code=1)
+            else:
+                self.local_to(e, "exited", why, pid=None, exit_code=1)
+            out += [f"-- {at} started (pid 40112): {self.local_argv(e)}", e["broken"],
+                    f"-- {at} exited with code 1 after 0.4 s"]
         else:
-            e.update(state="running", pid=self.rng.randrange(20000, 60000), described=True)
-            out += [f"-- {at} started (pid {e['pid']}): C:\\Python314\\python.exe main.py",
+            self.local_to(e, "running", pid=self.rng.randrange(20000, 60000), described=True)
+            out += [f"-- {at} started (pid {e['pid']}): {self.local_argv(e)}",
                     f"-- {at} ready: {len(e['caps'])} capabilities, {len(e['sources'])} sources, "
                     f"{len(e['options'])} options"]
         self.entry("INFO", f"local extension {e['id']}: {e['state']} ({how})")
 
     def local_stop(self, e):
-        if e["state"] in ("running", "starting"):
+        """its process ended (one that did not answer is killed: code 1); one waiting for its next try no longer tries"""
+        if e["state"] in LOCAL_LIVE:
             took = time.time() - (e["started"] or time.time())
-            e.update(state="stopped", pid=None, exit_code=0)
-            self.local_out.setdefault(e["id"], []).append(f"-- {time.strftime('%H:%M:%S')} stopped with code 0 after "
-                                                          f"{took:.1f} s")
+            code = 1 if e["state"] == "hung" else 0
+            self.local_to(e, "stopped", pid=None, exit_code=code)
+            self.local_out.setdefault(e["id"], []).append(f"-- {time.strftime('%H:%M:%S')} stopped with code {code} "
+                                                          f"after {took:.1f} s")
             self.entry("INFO", f"local extension {e['id']}: stopped")
+        elif e["state"] == "backoff":
+            self.local_to(e, "stopped")
 
     def local_action(self, action, body):
-        """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400)"""
+        """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400,
+        Refused: its own status and code)"""
         if action == "add":
             path = body.get("path")
             if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\", path.strip()):
@@ -679,7 +765,8 @@ class Fake:
                 raise LookupError(f"the id {eid} is taken by {self.local[eid]['path']}: give this one another id, or "
                                   f"extension_remove that one first")
             seed = self.local_seed()["lab"]
-            self.local[eid] = dict(seed, id=eid, title=eid, path=folder, enabled=True, state="stopped")
+            self.local[eid] = dict(seed, id=eid, title=eid, path=folder, enabled=True, state="stopped",
+                                   since=time.time(), approval="needed")
             self.local_out[eid] = []
             self.entry("INFO", f"local extension {eid}: registered ({folder})")
             self.local_changed()
@@ -692,7 +779,15 @@ class Fake:
             self.entry("INFO", f"local extension {e['id']}: no longer registered ({e['path']})")
             self.local_changed()
             return dict(removed=True, id=e["id"], path=e["path"])
+        if action == "approve":                  # the player's 允许运行: the command as it is now may run
+            if e["command"] is None:
+                raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
+            e["approval"] = "ok"
+            self.entry("INFO", f"local extension {e['id']}: its command allowed by the player")
+            self.local_changed()
+            return self.local_row(e)
         if action == "check":
+            self.local_allowed(e)
             return self.local_check(e)
         if action == "stop":
             self.local_stop(e)
@@ -701,6 +796,7 @@ class Fake:
         if action == "load":
             if not e["enabled"]:
                 raise LookupError(f"{e['id']} is off: extension_set {{\"id\": \"{e['id']}\", \"enabled\": true}} first")
+            self.local_allowed(e)
             self.local_stop(e)
             self.local_run(e, "extension_load")
             self.local_changed()
@@ -720,10 +816,10 @@ class Fake:
                     o["value"] = options[o["name"]]
             if enabled is False and e["enabled"]:
                 self.local_stop(e)
-                e.update(enabled=False, state="off")
+                self.local_to(e, "off", enabled=False)
             elif enabled is True and not e["enabled"]:
-                e.update(enabled=True, state="stopped")
-                if e["start"] == "workshop":
+                self.local_to(e, "stopped", enabled=True)
+                if e["start"] == "workshop" and e["command"] is not None and self.local_approval(e) == "ok":
                     self.local_run(e, "set on")
             if options:
                 self.entry("INFO", f"local extension {e['id']}: options " + ", ".join(f"{k}={v}" for k, v in options.items()))
@@ -861,9 +957,11 @@ class Fake:
             self.settings["autostart"] = bool(changes["autostart"])
         if "onboarded" in changes:
             self.settings["onboarded"] = bool(changes["onboarded"])
-        self.mode = self.settings["mode"]
+        was, self.mode = self.mode, self.settings["mode"]
         self.entry("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in changes.items()))
         self.broadcast("status", self.status())
+        if self.mode != was:                            # the rows' approval follows the mode
+            self.local_changed()
         return dict(self.settings)
 
     PROGRAM = dict(command=r"C:\Users\Someone\AppData\Local\WuxianWorkshop.App\current\wuxian.exe", args=["mcp"], env={})
@@ -1271,6 +1369,8 @@ def create_app(fake=None, ticker=True):
                 if action == "load":
                     await asyncio.sleep(0.6)               # a start takes a moment (initialize, the tests)
                 return JSONResponse(fake.local_action(action, body))
+            except Refused as e:
+                return error(e.code, e.message, e.status)
             except KeyError as e:
                 return error("not_found", str(e.args[0]), 404)
             except LookupError as e:
@@ -1352,7 +1452,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/local/manifest", local_manifest, methods=["GET"]),
         Route("/api/local/logs", local_logs, methods=["GET"]),
         *[Route(f"/api/local/{action}", local_post(action), methods=["POST"])
-          for action in ("set", "load", "stop", "check", "add", "remove")],
+          for action in ("set", "load", "stop", "check", "approve", "add", "remove")],
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
@@ -1407,11 +1507,15 @@ def main(argv=None):
     ap.add_argument("--token", default=None, help="a fixed token (default: a random one, printed)")
     ap.add_argument("--tick", type=float, default=1.0, help="seconds between pretend log lines")
     ap.add_argument("--quiet", action="store_true", help="no access log")
+    ap.add_argument("--mode", choices=("developer", "player"), default="developer",
+                    help="player: the local extensions' commands wait for 允许运行 (developer mode allows them by itself)")
+    ap.add_argument("--rotate", type=int, default=400,
+                    help="a local extension's output starts again at line 1 after this many lines")
     args = ap.parse_args(argv)
     import uvicorn
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    fake = Fake(token=args.token, tick=args.tick)
+    fake = Fake(token=args.token, mode=args.mode, tick=args.tick, rotate=max(2, args.rotate))
     fake.port = args.port
     print(f"fake daemon: http://127.0.0.1:{args.port}/   token: {fake.token}", flush=True)
     print("open that in a browser, or the window on it:\n"

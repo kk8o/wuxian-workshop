@@ -545,6 +545,16 @@ pre.diff .hunk { color: var(--sky); }
    logs' monospace */
 .dot.d-bad { background: var(--bad); }
 .mitem-top .dot { margin: 0 1px; }
+.lx-approve { flex: none; display: grid; gap: 8px; margin: 10px 16px 0; padding: 10px 12px; border-radius: 6px; font-size: 12.5px;
+  border: 1px solid var(--gold-d); background: var(--gold-soft); }
+.lx-approve-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lx-approve-head .grow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.lx-approve-head b { font-weight: 600; color: var(--gold-l); }
+.lx-cmd { display: block; min-width: 0; padding: 4px 8px; border-radius: 4px; background: var(--field); border: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.kv dd.lx-why { display: block; white-space: pre-wrap; }
+.lx-adds { max-width: 820px; }
+.lx-adds td.mono { overflow-wrap: anywhere; }
 .lx-opts { max-width: 640px; }
 .lx-opts .field { grid-template-columns: 140px minmax(0, 1fr); }
 .lx-opt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }

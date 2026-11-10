@@ -838,11 +838,26 @@
                 <label class="check-inline"><input type="checkbox" :checked="lxCur.enabled" :disabled="lx.busy !== ''" @change="lxEnable(lxCur, $event.target.checked)"> 启用</label>
                 <button class="btn primary" :disabled="lx.busy !== '' || !lxCur.enabled" @click="lxAct(lxCur, 'load')"
                         x-text="lxBusy(lxCur, 'load') ? t('载入中…') : lxRunning(lxCur) ? t('重新载入') : t('载入')"></button>
-                <button class="btn" x-show="lxRunning(lxCur)" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'stop')"
+                <button class="btn" x-show="lxStoppable(lxCur)" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'stop')"
                         x-text="lxBusy(lxCur, 'stop') ? t('停止中…') : t('停止')"></button>
                 <button class="btn" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'check')"
                         x-text="lxBusy(lxCur, 'check') ? t('检查中…') : t('检查')"></button>
               </div>
+            </div>
+            <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次 -->
+            <div class="lx-approve" x-show="lxNeeds(lxCur)">
+              <div class="lx-approve-head">
+                <div class="grow">
+                  <b x-text="lxApprovalTitle(lxCur)"></b>
+                  <span class="muted">确认后，无限工坊将在本机运行此命令。</span>
+                </div>
+                <button class="btn primary" :disabled="lx.busy !== '' || !lxCanApprove(lxCur)" @click="lxApprove(lxCur)"
+                        x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : t('允许运行')"></button>
+              </div>
+              <dl class="kv">
+                <dt>命令</dt><dd><code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>
+                <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
+              </dl>
             </div>
             <div class="xp-note bad" x-show="lxCur.error" x-text="lxCur.error"></div>
             <div class="xp-note" :class="{ bad: lx.note && lx.note.bad }" x-show="lx.note" x-text="lx.note && lx.note.text"></div>
@@ -857,7 +872,9 @@
                 <dl class="kv">
                   <dt>状态</dt>
                   <dd><span class="xp-state" :class="lxState(lxCur).cls"><span class="xp-dot"></span><span x-text="lxState(lxCur).text"></span></span>
-                    <span class="muted" x-show="lxRunning(lxCur) && lxCur.pid" x-text="t('进程 {pid}', { pid: lxCur.pid })"></span></dd>
+                    <span class="muted" x-show="lxRunning(lxCur) && lxCur.pid" x-text="t('进程 {pid}', { pid: lxCur.pid })"></span>
+                    <span class="muted" x-show="lxSince(lxCur)" x-text="lxSince(lxCur)"></span></dd>
+                  <dt x-show="lxCur.why">原因</dt><dd x-show="lxCur.why" class="lx-why selectable" x-text="lxCur.why"></dd>
                   <dt>版本</dt><dd class="mono" x-text="lxCur.version || '—'"></dd>
                   <dt>启动方式</dt><dd x-text="lxStart(lxCur)"></dd>
                   <dt x-show="lxCur.started">开始于</dt><dd x-show="lxCur.started" x-text="lxStarted(lxCur)"></dd>
@@ -867,9 +884,18 @@
                   <dt x-show="(lxCur.sources || []).length">事件来源</dt><dd x-show="(lxCur.sources || []).length" class="mono" x-text="(lxCur.sources || []).map((n) => lxCur.id + ':' + n).join('  ')"></dd>
                   <dt x-show="(lxCur.apps || []).length">应用</dt><dd x-show="(lxCur.apps || []).length" class="mono" x-text="(lxCur.apps || []).join('  ')"></dd>
                   <dt x-show="(lxCur.skills || []).length">Agent 技能</dt><dd x-show="(lxCur.skills || []).length" class="mono" x-text="(lxCur.skills || []).join('  ')"></dd>
-                  <dt x-show="lxAdds(lxCur)">补充</dt><dd x-show="lxAdds(lxCur)" x-text="lxAdds(lxCur)"></dd>
                   <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
                 </dl>
+                <div x-show="lxAdds(lxCur).length">
+                  <h3 class="xp-h">补充<span class="muted">为其他应用提供的内容</span></h3>
+                  <table class="table xp-tools lx-adds">
+                    <tr><th>应用</th><th>唤醒附注</th><th>技能补充</th></tr>
+                    <template x-for="a in lxAdds(lxCur)" :key="a.app">
+                      <tr><td><span x-text="a.title"></span> <span class="mono muted" x-show="a.title !== a.app" x-text="a.app"></span></td>
+                        <td class="mono" x-text="a.wake || '—'"></td><td class="mono selectable" x-text="a.skill || '—'"></td></tr>
+                    </template>
+                  </table>
+                </div>
                 <div x-show="lxCheck">
                   <h3 class="xp-h">检查结果<span class="muted" x-text="lxCheck ? lxCheck.summary : ''"></span></h3>
                   <ul class="checks lx-problems">
