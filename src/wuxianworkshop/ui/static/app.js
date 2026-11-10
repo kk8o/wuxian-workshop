@@ -40,7 +40,8 @@
                                           mcp:[{name, url}]} | null}]}: WuxianKit's apps (the kept manifest while the game is
                                           away: on and blocked null); 接入 Agent copies an app's start (its 启动语) and
                                           checks what it needs
-     GET  /api/local                   -> {revision, extensions:[row]}: the local extensions this workshop runs on this
+     GET  /api/local                   -> {revision, extensions:[row], problem, home (the extensions' folder)}: the local
+                                          extensions this workshop runs on this
                                           computer (local/), row {id, title, version, path, enabled, start: use | workshop,
                                           state: off | stopped | starting | running | hung | stopping | exited | backoff,
                                           since, why, pid, started, exit_code, error (a manifest that cannot be read:
@@ -54,7 +55,18 @@
                                           allows its command) -> the row, /load {id} -> {row, check}, /stop {id}, /check
                                           {id} -> {ok, problems:[{level, where, message, hint}], capabilities, tests?}
                                           (/load and /check: 403 needs_approval until its command is allowed); GET
-                                          /api/local/logs?id=&since=&limit= -> {lines:[{n, text}], next, total, reset, cut}
+                                          /api/local/logs?id=&since=&limit= -> {lines:[{n, text}], next, total, reset, cut}.
+                                          A row also says origin: home (in the extensions' folder) | linked, author,
+                                          homepage, requires {workshop?, kit?}, unmet:[{what: workshop | kit, needs, has}]
+                                          (workshop unmet: it cannot run here), addons:[{folder, version, state: unknown |
+                                          broken | missing | current | differs | foreign}] (what it brings for the game).
+                                          POST /api/local/add {path: a folder or a .zip} -> the row (a package's with
+                                          package {file, replaced}), /new {id, title?, addon?} -> the row or {row, files,
+                                          guide}, /remove {id} -> {removed, id, path, kept, addons:[{folder, removed,
+                                          kept}]}, /pack {id} -> {id, version, file, size, files, sha256, skipped},
+                                          /install {id} -> {id, addons:[{folder, state: current | installed, was, version,
+                                          kept}], restart, hint} (its game addons; /load answers addons and restart too
+                                          when it installed some first)
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -175,7 +187,7 @@ const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extens
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
 const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path: '', capabilities: [], options: [], sources: [],
                               apps: [], skills: [], adds: {}, approval: 'ok', command: null, since: null, why: null,
-                              error: null });
+                              error: null, origin: '', author: null, homepage: null, requires: {}, unmet: [], addons: [] });
 const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
@@ -285,14 +297,22 @@ function appState() {
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
     lx: { list: null, revision: null, caps: null, error: '', problem: '', loading: false, again: false, busy: '', note: null,
-          check: null, ask: '' },              // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
-                                               // the id whose start was refused until its command is allowed
+          check: null, ask: '', home: '', menu: '', drop: '', packed: null, game: {} },
+                                               // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
+                                               // the id whose start was refused until its command is allowed; home: the
+                                               // extensions' folder; menu: the one open (add | more); drop: the id whose
+                                               // 移除 waits for 确认; packed: the last package {id, file, folder, line};
+                                               // game: by id, true once game addons went in that need the game restarted
+    lxa: { open: false, kind: 'folder', path: '', busy: false, error: '' },   // 扩展 · 本机 · 添加: the path typed (no shell
+                                               // to pick with), or the one that was refused (kind: folder | zip)
+    lxn: { open: false, id: '', title: '', addon: '', busy: false, error: '' },   // 扩展 · 本机 · 新建扩展
+    lxp: { open: false, path: '' },            // 扩展 · 本机: a folder's path shown (no shell to open it with)
     lout: { id: null, run: null, next: 0, top: 0, total: 0, gen: 0, text: '', count: 0, busy: false, again: false,
             loaded: false, error: '', follow: true, after: 0 },   // 扩展 · 本机: the log of the one shown (its lines are
                                                // lxLines); top: the newest line number had of the file as it is now
     start: { gameInput: '', gameEdit: false, gameNote: '', saving: false, installBusy: false, installNote: '', installRestart: false,
              first: { name: 'MyFirstAddon', title: '我的第一个插件', busy: false, error: '', result: null, loaded: false, fromId: 0 } },
-    canPick: false,
+    canPick: false, canPickFile: false, canOpen: false,   // the shell's dialogs and file manager (window.pywebview.api)
     updBusy: false,
     migrating: false,
     timers: false, linked: false, desktop: false,
@@ -302,7 +322,12 @@ function appState() {
 
     async init() {
       window.wx = { go: (p) => this.go(p), state: this, checkUpdate: () => this.checkUpdate() };   // for the shell (tray)
-      const pick = () => { this.canPick = !!(window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder); };
+      const pick = () => {
+        const shell = (window.pywebview && window.pywebview.api) || {};
+        this.canPick = !!shell.pick_folder;
+        this.canPickFile = !!shell.pick_file;
+        this.canOpen = !!shell.open_folder;
+      };
       pick();
       window.addEventListener('pywebviewready', pick);
       if (!this.desktop) {                     // once: what a desktop program does with keys and the right button
@@ -1295,6 +1320,7 @@ function appState() {
       const old = this.lx.list || [];
       this.lx.list = lxRows(d);
       this.lx.problem = d && typeof d.problem === 'string' ? d.problem : '';   // extensions.json: why it cannot be used
+      if (d && typeof d.home === 'string') this.lx.home = d.home;              // (the stream's rows come without it)
       const rev = d && d.revision != null ? d.revision : null;
       if (rev !== this.lx.revision || this.lx.caps === null) {
         this.lx.revision = rev;
@@ -1335,6 +1361,7 @@ function appState() {
     lxShow(id) {                               // selected in the list
       this.lx.note = null;
       this.lx.ask = '';
+      Object.assign(this.lx, { menu: '', drop: '', packed: null });
       this.lxOutReset(this.selLx || { id });
       const r = this.selLx;                    // the apps it adds to are named by their titles: read them once
       if (r && Object.keys(r.adds || {}).length && !this.apps.data) this.loadApps();
@@ -1364,6 +1391,7 @@ function appState() {
       if (r.state === 'backoff') return { key: 'backoff', cls: 'warn', text: t('等待重试') };
       if (r.state === 'exited') return r.exit_code ? { key: 'crashed', cls: 'bad', text: t('异常退出') }
         : { key: 'exited', cls: '', text: t('已退出') };
+      if (this.lxBlocked(r)) return { key: 'unmet', cls: 'bad', text: t('版本不足') };
       if (r.error) return { key: 'invalid', cls: 'bad', text: t('清单有误') };
       if (this.lxUnapproved(r)) return { key: 'approval', cls: 'warn', text: t('待批准') };
       return { key: 'stopped', cls: '', text: t('未运行') };
@@ -1388,7 +1416,11 @@ function appState() {
     },
     lxCanApprove(r) { return !!r && !(r.error && !Array.isArray(r.command)); },   // not a manifest without a command
     async lxApprove(r) {                       // 允许运行: POST /api/local/approve, the row it answers taken in
-      if (!(await this.lxPost(r, 'approve', null, t('批准失败：')))) return;
+      const fresh = ((r && r.addons) || []).filter((a) => a && a.state === 'missing').map((a) => a.folder);
+      const d = await this.lxPost(r, 'approve', null, t('批准失败：'));
+      if (!d) return;
+      const now = (lxRowOf(d) || {}).addons || [];   // its game addons go in with the yes: a new one needs the game restarted
+      if (now.some((a) => a && a.state === 'current' && fresh.includes(a.folder))) this.lxGameSet(r.id, true);
       this.say(t('已允许 {name} 运行', { name: this.lxTitle(r) }));
     },
     lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
@@ -1445,6 +1477,7 @@ function appState() {
         const d = await this.lxPost(r, 'load', null, t('载入失败：'));
         if (!d) return;
         if (d.check) this.lx.check = { id: r.id, data: d.check };
+        this.lxGameDone(r, d);                 // the game addons it installed on the way
         const bad = d.check && d.check.ok === false;
         if (bad) this.xp.tab = 'info';
         this.say(bad ? t('{name} 检查未通过', { name }) : t('已载入 {name}', { name }));
@@ -1502,6 +1535,182 @@ function appState() {
       if (this.lout.id !== r.id) this.lxOutReset(r);
       this.loadLxOut();
       this.lxScrollEnd();
+    },
+
+    // ---- 本机 · 管理: 添加 (链接文件夹 / 安装扩展包 / 新建扩展), 扩展目录, and of the one shown 打开文件夹 / 打包 / 移除 and
+    //      its 游戏插件. The folders and files are picked through the shell (pywebview's pick_folder / pick_file) and opened
+    //      by it (open_folder, which opens only what the page lists); in a browser the path is typed (lxa) or shown (lxp)
+    lxMenu(which) { this.lx.menu = this.lx.menu === which ? '' : which; },      // 'add' (the group's) | 'more' (the detail's)
+    lxMenuClose(which) { if (this.lx.menu === which) this.lx.menu = ''; },
+    lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('目录'); },   // where its folder is
+    lxBlocked(r) { return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop'); },    // this workshop is too old for it
+    lxUnmet(r) {                               // what it requires and is not there, as one line ('' when all is)
+      return ((r && r.unmet) || []).map((u) => {
+        if (!u || !u.needs) return '';
+        return u.what === 'workshop' ? t('需要无限工坊 {v} 以上', { v: u.needs })
+          : u.what === 'kit' ? t('需要 WuxianKit {v} 以上', { v: u.needs }) : '';
+      }).filter(Boolean).join(t('；'));
+    },
+    lxAddonState(a) {
+      return t({ missing: '未安装', current: '已安装', differs: '有更新', foreign: '同名插件已存在', unknown: '游戏目录未知',
+                 broken: '文件缺失' }[a && a.state] || '—');
+    },
+    lxAddonPill(a) {
+      return { current: 'ok', differs: 'warn', missing: 'warn', foreign: 'bad', broken: 'bad' }[a && a.state] || 'off';
+    },
+    lxGameAct(r) {                             // what the 游戏插件 button does: 'install' | 'update' | '' (nothing to do, or
+      const states = ((r && r.addons) || []).map((a) => a && a.state);   // one of them cannot be installed: none is)
+      if (!states.length || states.some((s) => s === 'foreign' || s === 'broken' || s === 'unknown')) return '';
+      return states.includes('missing') ? 'install' : states.includes('differs') ? 'update' : '';
+    },
+    lxWillInstall(r) {                         // the game addons allowing it to run installs as well, by name ('' when
+      if (!this.lxGameAct(r)) return '';       // there is nothing to install, or they cannot be)
+      return r.addons.filter((a) => a && (a.state === 'missing' || a.state === 'differs')).map((a) => a.folder).join(t('、'));
+    },
+    lxRestart(r) { return !!r && !!r.id && this.lx.game[r.id] === true; },   // 重启游戏后生效 (lx.game: by id, while the page lives)
+    lxGameSet(id, restart) { this.lx.game = Object.assign({}, this.lx.game, { [id]: !!restart }); },
+    lxGameDone(r, d) {                         // an answer that installed game addons: does the game have to start again
+      const done = ((d && d.addons) || []).filter((a) => a && a.state === 'installed');
+      if (done.length) this.lxGameSet(r.id, d.restart);
+      return done.length;
+    },
+    async lxInstall(r) {                       // 安装 / 更新: POST /api/local/install {id}
+      if (!r || !r.id || this.lx.busy) return;
+      const update = this.lxGameAct(r) === 'update';
+      this.lx.busy = r.id + ':install';
+      this.lx.note = null;
+      try {
+        const d = await this.api('/api/local/install', { body: { id: r.id } });
+        this.lxGameDone(r, d);
+        await this.loadLocal(true);
+        this.say(update ? t('游戏插件已更新') : t('游戏插件已安装'));
+      } catch (e) {
+        if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
+          this.lx.ask = r.id;
+          this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
+        } else this.lx.note = { bad: true, text: t('安装失败：') + errText(e) };
+        await this.loadLocal(true);
+      } finally {
+        this.lx.busy = '';
+      }
+    },
+    async lxPack(r) {                          // 打包: POST /api/local/pack {id} -> the package's file, shown with its folder
+      this.lx.menu = '';
+      if (!r || !r.id || this.lx.busy) return;
+      this.lx.busy = r.id + ':pack';
+      this.lx.note = null;
+      this.lx.packed = null;
+      try {
+        const d = (await this.api('/api/local/pack', { body: { id: r.id } })) || {};
+        const file = String(d.file || '');
+        const parts = [];
+        if (d.files) parts.push(t('{n} 个文件', { n: d.files }));
+        if (d.size) parts.push(this.lxSize(d.size));
+        this.lx.packed = { id: r.id, file, folder: file.replace(/[\\/][^\\/]*$/, ''), line: parts.join(' · ') };
+      } catch (e) {
+        this.lx.note = { bad: true, text: t('打包失败：') + errText(e) };
+      } finally {
+        this.lx.busy = '';
+      }
+    },
+    lxSize(b) { return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; },
+    lxDrop(r) {                                // 移除: asked once more in the detail (lxDropLine says what happens)
+      this.lx.menu = '';
+      this.lx.note = null;
+      this.lx.drop = r && r.id ? r.id : '';
+    },
+    lxDropLine(r) {
+      const game = ((r && r.addons) || []).length > 0;
+      if (r && r.origin === 'linked') return game ? t('仅解除链接，文件夹保留，游戏插件一并移除。') : t('仅解除链接，文件夹保留。');
+      return game ? t('文件夹移入回收区，游戏插件一并移除。') : t('文件夹移入回收区。');
+    },
+    async lxRemove(r) {                        // POST /api/local/remove {id}: gone from the list, the selection back to 扩展框架
+      if (!r || !r.id || this.lx.busy) return;
+      const name = this.lxTitle(r), linked = r.origin === 'linked';
+      this.lx.busy = r.id + ':remove';
+      this.lx.note = null;
+      try {
+        await this.api('/api/local/remove', { body: { id: r.id } });
+        this.lx.drop = '';
+        this.lxGameSet(r.id, false);
+        if (this.xp.sel === 'l:' + r.id) this.xpSelect('kit');
+        this.lx.list = (this.lx.list || []).filter((x) => x.id !== r.id);
+        this.say(linked ? t('已解除链接 {name}', { name }) : t('已移除 {name}，文件夹已移入回收区', { name }));
+        await this.loadLocal(true);
+      } catch (e) {
+        this.lx.drop = '';
+        this.lx.note = { bad: true, text: t('移除失败：') + errText(e) };
+        await this.loadLocal(true);
+      } finally {
+        this.lx.busy = '';
+      }
+    },
+    async lxOpen(path) {                       // a folder in the file manager; where nothing can open it, its path is shown
+      this.lx.menu = '';
+      if (!path) return;
+      let opened = false;
+      const shell = window.pywebview && window.pywebview.api;
+      if (shell && shell.open_folder) {
+        try { opened = !!(await shell.open_folder(path)); } catch (e) { opened = false; }
+      }
+      if (!opened) this.lxp = { open: true, path: String(path) };
+    },
+    lxOpenHome() { return this.lxOpen(this.lx.home); },
+    async lxAddFolder() {                      // 链接文件夹: a folder with an extension.json, wherever it is
+      this.lx.menu = '';
+      if (!this.canPick) { this.lxa = { open: true, kind: 'folder', path: '', busy: false, error: '' }; return; }
+      let p = '';
+      try { p = await window.pywebview.api.pick_folder(''); } catch (e) { this.say(t('选择文件夹：') + errText(e)); return; }
+      if (p) await this.lxAdd(p, 'folder');
+    },
+    async lxAddPackage() {                     // 安装扩展包: a .zip, unpacked into the extensions' folder
+      this.lx.menu = '';
+      if (!this.canPickFile) { this.lxa = { open: true, kind: 'zip', path: '', busy: false, error: '' }; return; }
+      let p = '';
+      try { p = await window.pywebview.api.pick_file('zip'); } catch (e) { this.say(t('选择文件：') + errText(e)); return; }
+      if (p) await this.lxAdd(p, 'zip');
+    },
+    async lxAdd(path, kind) {                  // POST /api/local/add {path} -> its row (a package's with `package`), selected;
+      path = String(path || '').trim();        // refused: the dialog with the path and why (to be changed and tried again)
+      if (!path || this.lxa.busy) return;
+      this.lxa.busy = true;
+      this.lxa.error = '';
+      try {
+        const d = await this.api('/api/local/add', { body: { path } });
+        const row = lxRowOf(d);
+        this.lxa = { open: false, kind, path: '', busy: false, error: '' };
+        if (!row) { await this.loadLocal(true); return; }
+        const pkg = row.package || (d && d.package) || null;
+        this.lxRow(row);
+        this.xpSelect('l:' + row.id);
+        const name = this.lxTitle(row);
+        this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已更新 {name}', { name }) : t('已安装 {name}', { name }));
+      } catch (e) {
+        this.lxa = { open: true, kind, path, busy: false, error: errText(e) };
+      }
+    },
+    lxAddSubmit() { return this.lxAdd(this.lxa.path, this.lxa.kind); },
+    lxNewOpen() {
+      this.lx.menu = '';
+      this.lxn = { open: true, id: '', title: '', addon: '', busy: false, error: '' };
+    },
+    async lxNew() {                            // POST /api/local/new {id, title?, addon?} -> its row (or {row, …}), selected
+      const id = this.lxn.id.trim(), title = this.lxn.title.trim(), addon = this.lxn.addon.trim();
+      if (!id || this.lxn.busy) return;
+      this.lxn.busy = true;
+      this.lxn.error = '';
+      try {
+        const body = { id };
+        if (title) body.title = title;
+        if (addon) body.addon = addon;
+        const row = lxRowOf(await this.api('/api/local/new', { body }));
+        this.lxn = { open: false, id: '', title: '', addon: '', busy: false, error: '' };
+        if (row) { this.lxRow(row); this.xpSelect('l:' + row.id); } else await this.loadLocal(true);
+        this.say(t('已创建 {name}', { name: row ? this.lxTitle(row) : id }));
+      } catch (e) {
+        this.lxn.busy = false;
+        this.lxn.error = errText(e);
+      }
     },
 
     // ---- 本机 · 日志: /api/local/logs from the cursor next on (whatever the daemon hands back as next); a line at or below

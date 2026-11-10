@@ -4,6 +4,7 @@ from src/wuxianworkshop/ui/static.
 
     .venv\Scripts\python.exe scripts\dev_fake_api.py [--port 8765] [--token TEXT] [--tick 1.0] [--quiet]
                                                      [--mode developer|player] [--approval ask|auto] [--rotate 400]
+                                                     [--no-game-folder]
         prints the address and the token; open the address in a browser, or open the window on it:
     .venv\Scripts\python.exe -c "from wuxianworkshop.ui.shell import run_app; run_app(['--fake'])"
         (starts this in-process on a free port; or run_app(['--fake', 'http://127.0.0.1:8765/']) for one that is running)
@@ -18,6 +19,39 @@ next try, a manifest that cannot be read, and the ones whose command waits for t
 changed). --approval auto (or 本机扩展批准 set to 自动允许 on the page's 设置) allows every command by itself: the setting
 extension_approval, "ask" unless said. The mode (--mode) has no part in it.
 --rotate N starts voice's output again at line 1 after N lines, as the real output.log does at 2 MB.
+
+Managing them (the 本机扩展 group's 添加, a row's menu, 游戏插件), in the shapes of extensions-home.md (sections 4 and 7).
+A row carries origin (home: its folder is in the extensions' home; linked: it is elsewhere), author, homepage, requires,
+unmet and addons ([{folder, version, state}]); the listing carries home. Three more pretend extensions: herald (in the
+home, with two game addons: one missing, one that differs, so 安装 has something to do), relay (linked, needs a newer
+workshop and a newer WuxianKit: unmet, a load answers 409 requires_unmet) and greeter (came from a package: it waits for
+the player whatever the setting, and its card names the game addon it brings). Nothing is unpacked, written or moved:
+the names in a path decide what is answered.
+
+    POST /api/local/add {path}     a folder (or its wuxian-extension.json): a linked row, its id from the folder's name;
+                                   a .zip: a row in the home that waits for the player, with package {file, replaced}
+                                   (replaced: where the old folder went when the id was in the home already).
+                                     name ends with "exists" -> 409 extension_exists   "bad.zip" -> 400 bad_package
+                                     "big.zip" -> 413 package_too_big                  folder "bad" -> 400 bad_manifest
+                                     a zip whose id is a linked row's -> 409 extension_exists
+                                     name contains "game" -> the row brings a game addon (missing)
+                                     name contains "foreign" -> a game addon another one owns (install: 409 addon_exists)
+                                     name contains "needs" -> the row needs a newer WuxianKit (unmet, not refused)
+    POST /api/local/new {id, title?, folder?, addon?}   {row, files, guide}; in the home unless folder is given; with
+                                   addon the row brings that game addon (missing). An id that is taken (or ends with
+                                   "exists") -> 409 extension_exists; no id -> 400 bad_request; an addon name that is no
+                                   folder name, or WuxianKit / WoWBridge / Blizzard_* -> 400 bad_addon
+    POST /api/local/remove {id}    {removed, id, path, kept, addons: [{folder, removed, kept}]}; kept: where the folder
+                                   went (the home's .removed) or null for a linked one. One in the home whose id ends
+                                   with "busy" -> 409 folder_busy (and it stays)
+    POST /api/local/pack {id, to?} {id, version, file, size, files, sha256, skipped}; to: a folder or a .zip path, else
+                                   the packages folder. One whose manifest cannot be read (draft) -> 400 bad_manifest
+    POST /api/local/install {id}   {id, addons: [{folder, state, was, version, kept}], restart, hint}. Not allowed yet
+                                   -> 403 needs_approval; no game addons -> 400 no_addons; --no-game-folder -> 503
+                                   no_game_folder (and every addon's state is "unknown"); a foreign one -> 409
+                                   addon_exists. 允许运行 (approve) installs them too, and so does a start
+                                   (load answers addons, restart and hint as well when one was missing or differed)
+--no-game-folder: the game's AddOns folder is not known.
 """
 import argparse
 import asyncio
@@ -67,6 +101,9 @@ ARITHMETIC = re.compile(r"^return\s+([\d\s+\-*/%().]+)$")
 VOICE_LINES = ["said: 小心，精英怪来了 (1.8 s)", "said: 打完这波歇一下吧 (2.1 s)", "queue: 0 waiting",
                "said: 背包快满了 (1.2 s)"]
 EXT_HOME = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\extensions"
+PACKAGES = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\packages"       # where 打包 writes unless told
+LOCAL_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")             # manifest.ID
+ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")          # manifest.ADDON_FOLDER
 LOCAL_COMMAND = [r"C:\Python314\python.exe", "main.py"]      # a pretend local extension's argv ({path}: its folder)
 LOCAL_LIVE = ("starting", "running", "hung", "stopping")     # the states with a process
 
@@ -90,13 +127,15 @@ def api_version():
 class Fake:
     """the pretend daemon's state: logs (a ring of 5,000), subscribers, settings, the link that comes and goes"""
 
-    def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400, extension_approval="ask"):
+    def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400, extension_approval="ask",
+                 addons_known=True):
         self.token = token or secrets.token_urlsafe(32)
         self.port = None
         self.mode = mode
         self.extension_approval = "auto" if extension_approval == "auto" else "ask"   # anything else is "ask"
         self.tick = tick
         self.rotate = rotate                     # a local extension's output starts again at line 1 after this many
+        self.addons_known = bool(addons_known)   # False: the game's AddOns folder is not known (--no-game-folder)
         self.started = time.time()
         self.rng = random.Random(seed)
         self.logs = collections.deque(maxlen=5000)
@@ -537,8 +576,11 @@ class Fake:
     # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call and
     #      adds to the guild app, translate crashed, lab is off and has never described itself; facts waits for the
     #      player's 允许运行, stats was allowed with another command, ocr no longer answers, sync failed to start and
-    #      waits for its next try, draft has a manifest that cannot be read. While the setting extension_approval is
-    #      "auto" every row's approval is "ok" (a start allows it, by "developer"): "ask", the default, shows the rest
+    #      waits for its next try, draft has a manifest that cannot be read; herald brings two game addons (one missing,
+    #      one that differs), relay is linked (its folder is elsewhere) and needs a newer workshop and WuxianKit, greeter
+    #      came from a package (ask). While the setting extension_approval is "auto" every row's approval is "ok" (a
+    #      start allows it, by "developer") but greeter's, which the player allows once whatever the setting: "ask", the
+    #      default, shows the rest
     def local_seed(self):
         now = self.started
 
@@ -547,9 +589,12 @@ class Fake:
 
         def ext(eid, title, state, start="use", enabled=True, caps=(), sources=(), options=(), apps=(), skills=(),
                 adds=None, pid=None, started=None, exit_code=None, error=None, broken=None, described=True,
-                approval="ok", since=None, why=None, command=LOCAL_COMMAND):
-            path = EXT_HOME + "\\" + eid
-            return dict(id=eid, title=title, version="0.1.0" if eid != "voice" else "0.3.2", path=path,
+                approval="ok", since=None, why=None, command=LOCAL_COMMAND, path=None, version=None, author=None,
+                homepage=None, requires=None, unmet=(), addons=(), ask=False):
+            path = path or EXT_HOME + "\\" + eid
+            return dict(id=eid, title=title, version=version or ("0.1.0" if eid != "voice" else "0.3.2"), path=path,
+                        author=author, homepage=homepage, requires=dict(requires or {}), unmet=[dict(u) for u in unmet],
+                        addons=[dict(folder=f, version=v, state=s) for f, v, s in addons], ask=ask,
                         enabled=enabled, start=start, state=state, pid=pid, started=started, exit_code=exit_code,
                         error=error, caps=list(caps), sources=list(sources), options=list(options), apps=list(apps),
                         skills=list(skills), broken=broken, described=described, approval=approval,
@@ -574,7 +619,7 @@ class Fake:
                          dict(name="combat", kind="boolean", title="战斗中也说", default=False, value=True),
                          dict(name="speed", kind="number", title="语速", default=1.0, min=0.5, max=2, step=0.1,
                               value=1.0)],
-                apps=["companion"], skills=["companion"]),
+                apps=["companion"], skills=["companion"], author="Someone", homepage="https://example.org/voice"),
             ext("notes", "笔记", "stopped",
                 caps=[cap("put", "keep", "记一条", "Keeps a note: {text, tags?}.", {"text": "string", "tags": "table?"}),
                       cap("find", "see", "查笔记", "Notes with these words.", {"words": "string?", "wake": "table?"})],
@@ -602,6 +647,15 @@ class Fake:
                 broken="ConnectionRefusedError: [WinError 10061] 127.0.0.1:7070"),
             ext("draft", "", "stopped", described=False, approval="needed", since=now - 20, command=None,
                 error="run: a list of strings, the command that starts it (wuxian-extension.json)"),
+            ext("herald", "播报", "stopped", version="0.2.0", author="Someone", homepage="https://example.org/herald",
+                caps=[cap("announce", "point", "播报一条", "Shows a line in the game: {text}.", {"text": "string"})],
+                addons=[("WuxianHerald", "0.2.0", "missing"), ("WuxianHeraldSkin", "0.1.4", "differs")]),
+            ext("relay", "转发", "stopped", path=r"D:\Projects\relay", version="0.4.0", author="Another",
+                requires=dict(workshop="0.9.14", kit="0.7"),
+                unmet=[dict(what="workshop", needs="0.9.14", has=__version__), dict(what="kit", needs="0.7", has="0.6.0")],
+                error=f"requires: it needs 无限工坊 0.9.14 or newer (this is {__version__}): update 无限工坊"),
+            ext("greeter", "迎新", "stopped", version="1.0.0", author="Another", described=False, approval="needed",
+                ask=True, since=now - 30, addons=[("WuxianGreeter", "1.0.0", "missing")]),
         )}
 
     def local_log_seed(self, e):
@@ -630,8 +684,19 @@ class Fake:
         return " ".join(f'"{c}"' if " " in c else c for c in e["command"] or LOCAL_COMMAND)
 
     def local_approval(self, e):
-        """ok, needed or changed as registry.approval answers; with extension_approval "auto" every one is ok"""
-        return "ok" if self.extension_approval == "auto" else e["approval"]
+        """ok, needed or changed as registry.approval answers; with extension_approval "auto" every one is ok but the
+        ones that were not written on this computer (ask: from a package, or found in the home), which the player
+        allows once"""
+        return "ok" if self.extension_approval == "auto" and not e.get("ask") else e["approval"]
+
+    @staticmethod
+    def local_home(path):
+        """whether a folder is right in the extensions' home (home.inside): the workshop manages it"""
+        return path.lower().rsplit("\\", 1)[0] == EXT_HOME.lower()
+
+    def local_addons(self, e):
+        """the row's addons: [{folder, version, state}], every state "unknown" while the game's folder is not known"""
+        return [dict(a, state=a["state"] if self.addons_known else "unknown") for a in e["addons"]]
 
     def local_row(self, e):
         return dict(id=e["id"], title=e["title"] or e["id"], version=e["version"], path=e["path"], enabled=e["enabled"],
@@ -641,10 +706,14 @@ class Fake:
                     apps=list(e["apps"]), skills=list(e["skills"]), adds={app: dict(a) for app, a in e["adds"].items()},
                     approval=self.local_approval(e), allowed=self.local_approval(e) == "ok", since=e["since"],
                     why=e["why"],
-                    command=None if e["command"] is None else list(e["command"]))
+                    command=None if e["command"] is None else list(e["command"]),
+                    origin="home" if self.local_home(e["path"]) else "linked", author=e["author"],
+                    homepage=e["homepage"], requires=dict(e["requires"]), unmet=[dict(u) for u in e["unmet"]],
+                    addons=self.local_addons(e))
 
     def local_listing(self):
-        return dict(revision=self.local_revision, extensions=[self.local_row(e) for e in self.local.values()])
+        return dict(revision=self.local_revision, extensions=[self.local_row(e) for e in self.local.values()],
+                    problem=None, home=EXT_HOME)
 
     def local_manifest(self):
         """the kit-shaped entries the agents' wk_ tools come from: the enabled ones"""
@@ -714,7 +783,7 @@ class Fake:
             raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
         if e["approval"] == "ok":
             return
-        if self.extension_approval != "auto":
+        if self.extension_approval != "auto" or e.get("ask"):
             what = "its command changed since the player allowed it" if e["approval"] == "changed" else \
                 "the player has not allowed its command yet"
             raise Refused(403, "needs_approval", f"{e['id']}: {what}: confirm it on the Extensions (扩展) page of the "
@@ -754,41 +823,189 @@ class Fake:
         elif e["state"] == "backoff":
             self.local_to(e, "stopped")
 
-    def local_action(self, action, body):
-        """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400,
-        Refused: its own status and code)"""
-        if action == "add":
-            path = body.get("path")
-            if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\", path.strip()):
-                raise ValueError("path: the full path of an extension's folder (or its wuxian-extension.json)")
-            folder = path.strip().removesuffix("\\wuxian-extension.json").rstrip("\\")
-            eid = re.sub(r"[^a-z0-9_]", "_", folder.rsplit("\\", 1)[-1].lower()).lstrip("_0123456789")[:24] or "ext"
+    def local_requires(self, e):
+        """before a start: one that needs a newer workshop does not start (409 requires_unmet); WuxianKit's version only
+        shows in the row"""
+        for u in e["unmet"]:
+            if u["what"] == "workshop":
+                raise Refused(409, "requires_unmet", f"{e['id']} needs 无限工坊 {u['needs']} or newer (this is "
+                                                     f"{u['has']}): update 无限工坊")
+
+    def local_keep(self):
+        """a kept version's id (agent/history.py's), for a game addon replaced or removed"""
+        return self.rng.randrange(20, 90)
+
+    def local_fresh(self, eid, title, path, addons=(), **more):
+        """a new entry: no capabilities yet, not running, waiting for the player unless the setting allows it"""
+        seed = self.local_seed()["lab"]
+        e = dict(seed, id=eid, title=title, path=path, enabled=True, state="stopped", since=time.time(),
+                 approval="needed", addons=[dict(folder=f, version=v, state=s) for f, v, s in addons], **more)
+        self.local[eid] = e
+        self.local_out[eid] = []
+        return e
+
+    def local_add(self, path):
+        """POST /api/local/add: a folder (or its manifest) is linked, a .zip goes into the home; what its name says
+        decides the answer (the module's text)"""
+        if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\", path.strip()):
+            raise ValueError("path: the full path of an extension's folder (or its wuxian-extension.json), or of a "
+                             "package (.zip)")
+        folder = path.strip().removesuffix("\\wuxian-extension.json").rstrip("\\")
+        name = folder.rsplit("\\", 1)[-1]
+        package = name.lower().endswith(".zip")
+        stem = name[:-4] if package else name
+        eid = re.sub(r"[^a-z0-9_]", "_", stem.lower()).lstrip("_0123456789")[:24] or "ext"
+        if package and stem.lower().endswith("big"):
+            raise Refused(413, "package_too_big", f"{name}: a package is at most 64 MB (and 256 MB unpacked)")
+        if package and stem.lower().endswith("bad"):
+            raise Refused(400, "bad_package", f"{name}: no wuxian-extension.json in it (at the top, or in its one top "
+                                              f"folder)")
+        if not package and stem.lower().endswith("bad"):
+            raise Refused(400, "bad_manifest", "run: a list of strings, the command that starts it "
+                                               "(wuxian-extension.json)")
+        if stem.lower().endswith("exists"):
+            raise Refused(409, "extension_exists", f"the id {eid} is taken by D:\\Projects\\{eid}: extension_remove that "
+                                                   f"one first")
+        addons = [("Wuxian" + eid.title().replace("_", ""), "0.1.0", "foreign" if "foreign" in eid else "missing")] \
+            if "game" in eid or "foreign" in eid else []
+        more = dict(requires=dict(kit="0.7"), unmet=[dict(what="kit", needs="0.7", has="0.6.0")]) if "needs" in eid else {}
+        if not package:
             same = next((e for e in self.local.values() if e["path"].lower() == folder.lower()), None)
             if same is not None:
                 return self.local_row(same)
             if eid in self.local:
                 raise LookupError(f"the id {eid} is taken by {self.local[eid]['path']}: give this one another id, or "
                                   f"extension_remove that one first")
-            seed = self.local_seed()["lab"]
-            self.local[eid] = dict(seed, id=eid, title=eid, path=folder, enabled=True, state="stopped",
-                                   since=time.time(), approval="needed")
-            self.local_out[eid] = []
+            e = self.local_fresh(eid, eid, folder, addons, **more)
             self.entry("INFO", f"local extension {eid}: registered ({folder})")
             self.local_changed()
-            return self.local_row(self.local[eid])
+            return self.local_row(e)
+        old, replaced = self.local.get(eid), None
+        if old is not None and not self.local_home(old["path"]):
+            raise Refused(409, "extension_exists", f"the id {eid} is linked to {old['path']}: extension_remove that "
+                                                   f"one first, then install the package")
+        if old is not None:                      # an update: the old folder is kept, enabled and options stay
+            self.local_stop(old)
+            replaced = EXT_HOME + f"\\.removed\\{eid}-{time.strftime('%Y%m%d-%H%M%S')}"
+        e = self.local_fresh(eid, old["title"] if old else eid, EXT_HOME + "\\" + eid, addons, ask=True,
+                             version="0.2.0" if old else "0.1.0", author="Someone", **more)
+        if old is not None:
+            e.update(enabled=old["enabled"], options=old["options"], state="stopped" if old["enabled"] else "off")
+        self.entry("INFO", f"local extension {eid}: installed from {folder}" + (" (the old one kept)" if old else ""))
+        self.local_changed()
+        return dict(self.local_row(e), package=dict(file=folder, replaced=replaced))
+
+    def local_new(self, body):
+        """POST /api/local/new: {row, files, guide} as Service.new_extension answers; nothing is written"""
+        eid, title, folder, addon = body.get("id"), body.get("title"), body.get("folder"), body.get("addon")
+        if not isinstance(eid, str) or not LOCAL_ID.match(eid):
+            raise ValueError(f"id: {eid!r} is not an extension id: lowercase letters, digits and _, a letter first, at "
+                             f"most 24 characters (voice, my_tool)")
+        if title is not None and not isinstance(title, str):
+            raise ValueError("title: text")
+        if folder is not None and not (isinstance(folder, str) and re.match(r"^[A-Za-z]:\\", folder.strip())):
+            raise ValueError("folder: the full path of the new extension's folder (new or empty)")
+        if eid in self.local or eid.endswith("exists"):
+            raise Refused(409, "extension_exists", f"the id {eid} is taken: choose another id, or extension_remove that "
+                                                   f"one first")
+        if addon is not None and addon != "":
+            if not isinstance(addon, str) or not ADDON_FOLDER.match(addon):
+                raise Refused(400, "bad_addon", f"addon: {addon!r} is no addon folder's name (letters, digits, _ . ! -)")
+            if addon in ("WuxianKit", "WoWBridge") or addon.startswith("Blizzard_"):
+                raise Refused(400, "bad_addon", f"addon: {addon} is taken: choose another name")
+        path = folder.strip().rstrip("\\") if folder else EXT_HOME + "\\" + eid
+        e = self.local_fresh(eid, (title or "").strip() or eid, path, [(addon, "0.1.0", "missing")] if addon else [])
+        files = [path + "\\" + f for f in ("wuxian-extension.json", "main.py", "AGENT.md", "tests\\test_main.py")]
+        files += [f"{path}\\addons\\{addon}\\{addon}.toc", f"{path}\\addons\\{addon}\\{addon}.lua"] if addon else []
+        self.entry("INFO", f"new local extension {eid} in {path}")
+        self.local_changed()
+        return dict(row=self.local_row(e), files=files,
+                    guide=f"Read {path}\\AGENT.md and extension_guide (the whole guide). Edit main.py, then extension_load "
+                          f"{{\"id\": \"{eid}\"}}.")
+
+    def local_pack(self, e, to=None):
+        """POST /api/local/pack: pack.pack's answer; the file's name is <id>-<version or 0>.zip unless `to` names one"""
+        if e["command"] is None:
+            raise Refused(400, "bad_manifest", e["error"] or f"{e['id']}: its manifest cannot be read")
+        if to is not None and not (isinstance(to, str) and re.match(r"^[A-Za-z]:\\", to.strip())):
+            raise ValueError("to: the full path of a folder, or of the .zip to write")
+        to = (to or PACKAGES).strip().rstrip("\\")
+        file = to if to.lower().endswith(".zip") else f"{to}\\{e['id']}-{e['version'] or 0}.zip"
+        files = 6 + 2 * len(e["caps"]) + 3 * len(e["addons"])
+        self.entry("INFO", f"local extension {e['id']}: packed into {file}")
+        return dict(id=e["id"], version=e["version"], file=file, size=4096 + 1830 * files, files=files,
+                    sha256=f"{self.rng.getrandbits(256):064x}", skipped=["__pycache__/", "logs/"])
+
+    def local_install(self, e):
+        """POST /api/local/install: gameside.install's answer for what this extension brings for the game. Every one is
+        looked at before any is touched"""
+        if self.local_approval(e) != "ok":
+            raise Refused(403, "needs_approval", f"{e['id']}: the player has not allowed it yet: confirm it on the "
+                                                 f"Extensions (扩展) page of the 无限工坊 App")
+        if not e["addons"]:
+            raise Refused(400, "no_addons", f"{e['id']} brings no game addon (addons in its wuxian-extension.json)")
+        if not self.addons_known:
+            raise Refused(503, "no_game_folder", "the game's folder is not known: set it on the 开始 page of the 无限工坊 "
+                                                 "App")
+        for a in e["addons"]:
+            if a["state"] == "foreign":
+                raise Refused(409, "addon_exists", f"the game has an addon {a['folder']} that {e['id']} did not install: "
+                                                   f"it is left as it is")
+            if a["state"] == "broken":
+                raise Refused(400, "bad_addon", f"addons/{a['folder']} has no {a['folder']}.toc")
+        return dict(id=e["id"], **self.local_put(e))
+
+    def local_put(self, e):
+        """its game addons go in: {addons, restart, hint} (a start answers these too when one was missing or differed)"""
+        out = []
+        for a in e["addons"]:
+            was = a["state"]
+            out.append(dict(folder=a["folder"], state="current" if was == "current" else "installed", was=was,
+                            version=a["version"], kept=self.local_keep() if was == "differs" else None))
+            a["state"] = "current"
+        restart = any(a["was"] == "missing" for a in out)
+        new = [a["folder"] for a in out if a["was"] == "missing"]
+        self.entry("INFO", f"local extension {e['id']}: game addons " + ", ".join(f"{a['folder']} {a['state']}" for a in out))
+        self.local_changed()
+        return dict(addons=out, restart=restart,
+                    hint=("new in the game's AddOns: " + ", ".join(new) + " (the game loads them after a restart)") if new
+                    else "load <Name> hot-loads an addon the game has already")
+
+    def local_action(self, action, body):
+        """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400,
+        Refused: its own status and code)"""
+        if action == "add":
+            return self.local_add(body.get("path"))
+        if action == "new":
+            return self.local_new(body)
         e = self.local_entry(body.get("id"))
         if action == "remove":
+            home = self.local_home(e["path"])
+            if home and e["id"].endswith("busy"):
+                raise Refused(409, "folder_busy", f"{e['path']} could not be moved (a file in it is open?): close what "
+                                                  f"uses it and remove {e['id']} again; it is still registered")
             self.local_stop(e)
             del self.local[e["id"]]
             self.local_out.pop(e["id"], None)
+            kept = EXT_HOME + f"\\.removed\\{e['id']}-{time.strftime('%Y%m%d-%H%M%S')}" if home else None
+            addons = [dict(folder=a["folder"], removed=a["state"] in ("current", "differs"),
+                           kept=self.local_keep() if a["state"] in ("current", "differs") else None)
+                      for a in e["addons"]] if self.addons_known else []
             self.entry("INFO", f"local extension {e['id']}: no longer registered ({e['path']})")
             self.local_changed()
-            return dict(removed=True, id=e["id"], path=e["path"])
+            return dict(removed=True, id=e["id"], path=e["path"], kept=kept, addons=addons)
+        if action == "pack":
+            return self.local_pack(e, body.get("to"))
+        if action == "install":
+            return self.local_install(e)
         if action == "approve":                  # the player's 允许运行: the command as it is now may run
             if e["command"] is None:
                 raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
             e["approval"] = "ok"
             self.entry("INFO", f"local extension {e['id']}: its command allowed by the player")
+            if self.addons_known and not any(a["state"] in ("foreign", "broken") for a in e["addons"]):
+                for a in e["addons"]:            # what it brings for the game goes in with the player's yes; one that
+                    a["state"] = "current"       # cannot (the row's addons say why) does not fail the approval
             self.local_changed()
             return self.local_row(e)
         if action == "check":
@@ -802,10 +1019,13 @@ class Fake:
             if not e["enabled"]:
                 raise LookupError(f"{e['id']} is off: extension_set {{\"id\": \"{e['id']}\", \"enabled\": true}} first")
             self.local_allowed(e)
+            self.local_requires(e)
+            states = {a["state"] for a in e["addons"]} if self.addons_known else set()
+            game = self.local_put(e) if states & {"missing", "differs"} and not states & {"foreign", "broken"} else {}
             self.local_stop(e)
             self.local_run(e, "extension_load")
             self.local_changed()
-            return dict(row=self.local_row(e), check=self.local_check(e))
+            return dict(row=self.local_row(e), check=self.local_check(e), **game)
         if action == "set":
             enabled, options = body.get("enabled"), body.get("options")
             if enabled not in (None, True, False):
@@ -1463,7 +1683,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/local/manifest", local_manifest, methods=["GET"]),
         Route("/api/local/logs", local_logs, methods=["GET"]),
         *[Route(f"/api/local/{action}", local_post(action), methods=["POST"])
-          for action in ("set", "load", "stop", "check", "approve", "add", "remove")],
+          for action in ("set", "load", "stop", "check", "approve", "add", "remove", "pack", "install", "new")],
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
@@ -1525,12 +1745,14 @@ def main(argv=None):
                          "auto: every command is allowed by itself")
     ap.add_argument("--rotate", type=int, default=400,
                     help="a local extension's output starts again at line 1 after this many lines")
+    ap.add_argument("--no-game-folder", action="store_true",
+                    help="the game's AddOns folder is not known: every game addon's state is unknown, 安装 answers 503")
     args = ap.parse_args(argv)
     import uvicorn
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     fake = Fake(token=args.token, mode=args.mode, tick=args.tick, rotate=max(2, args.rotate),
-                extension_approval=args.approval)
+                extension_approval=args.approval, addons_known=not args.no_game_folder)
     fake.port = args.port
     print(f"fake daemon: http://127.0.0.1:{args.port}/   token: {fake.token}", flush=True)
     print("open that in a browser, or the window on it:\n"
