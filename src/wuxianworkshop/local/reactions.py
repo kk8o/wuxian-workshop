@@ -22,14 +22,25 @@ source on this computer, {source: "voice", kind: "voice.said", data, time}.
 
 Hearing: the game's sources are heard through one app the daemon opens (kit hear entries); hear(entries) is called with
 the union of the reactions' game entries whenever it changes ([]: nothing to hear). Sources on this computer (the names
-local_sources() gives: the extensions' ids) are not in it: the daemon hands their items to item() itself."""
+local_sources() gives: the extensions' ids) are not in it: the daemon hands their items to item() itself.
+
+An app's own reactions: what a local extension's manifest declares for its app (apps[].reactions: the same fields
+without id and owner) is set while that app runs (app_started: owner the app, ids <app>.1, <app>.2, ...) and goes when
+it stops, with the reactions the agent set for that owner.
+
+Loops: a reaction whose call is not done is not fired again meanwhile; at most MAX_RUNNING calls of all reactions run
+at once (what is heard then is dropped, no cooldown spent); a call's caller is {"by": "workshop", "chain":
+["reaction:<id>"]}, so a capability that calls on (and makes an item that is heard again) ends at the chain's limit."""
 import asyncio
 import copy
 import inspect
+import json
 import re
 import time
 
-MAX_REACTIONS = 32
+MAX_REACTIONS = 32                              # the reactions the agent set (an app's own are not counted)
+MAX_APP_REACTIONS = 16                          # the reactions one app's manifest declares
+MAX_RUNNING = 16                                # calls of all reactions at once
 DEFAULT_COOLDOWN = 10
 MAX_COOLDOWN = 86400
 MAX_WHEN = 8
@@ -47,6 +58,7 @@ CAP = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
 ARG = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
 PATH = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){0,7}$")
 FIELDS = ("id", "owner", "hear", "when", "call", "args", "item", "cooldown", "note")
+DECLARED = ("hear", "when", "call", "args", "item", "cooldown", "note")   # what an app's manifest says of a reaction
 EXAMPLE = ('{"hear": "game:combat.start", "when": {"data.unit.classification": ["elite", "rareelite"]}, '
            '"call": "voice.play", "args": {"pool": "combat_start_elite"}, "owner": "companion"}')
 
@@ -145,7 +157,8 @@ def message_of(error):
 class Reactions:
     """the reactions set now, and what an item makes them call.
 
-    call(cap_id, args, caller) -> awaitable result (raises on failure); caller = {"by": "reaction", "id": <id>}.
+    call(cap_id, args, caller) -> awaitable result (raises on failure); caller = {"by": "workshop", "chain":
+    ["reaction:<id>"]}.
     hear(entries) -> awaitable: the game's hear entries of all reactions (sorted, each once), called when they change.
     kind_of(cap_id) -> "see" | "keep" | "point" | "say" | "do" | None (no such capability); may be async.
     now() -> seconds (time.time). note(text): a line for the daemon's log (a call or hear that failed), optional.
@@ -160,7 +173,9 @@ class Reactions:
         self._heard = []                         # the union hear() was last told
         self._hear_error = None                  # why the last hear() failed (shown on the game reactions), or None
         self._lock = asyncio.Lock()
-        self._tasks = set()
+        self._tasks = set()                      # the calls that run now
+        self._declared = {}                      # app -> the specs of its manifest that are set (as JSON text)
+        self._crowded = False                    # MAX_RUNNING calls ran when something was heard (said once)
 
     # -- what is set ---------------------------------------------------------------------------------------------------
 
@@ -168,17 +183,24 @@ class Reactions:
         """checks spec, sets the reaction (replacing one of the same id) -> its row; ReactionError when it is wrong"""
         clean = await self._check(spec)
         rid = clean["id"]
-        if rid not in self._rows and len(self._rows) >= MAX_REACTIONS:
+        there = self._rows.get(rid)
+        if there is not None and there["declared"]:
+            raise ReactionError(f"{rid} is a reaction the app {there['declared']} declares itself (its extension's "
+                                f"manifest): it is there while the app runs; give yours another id")
+        if there is None and sum(1 for r in self._rows.values() if not r["declared"]) >= MAX_REACTIONS:
             raise ReactionError(f"at most {MAX_REACTIONS} reactions are set at once; reaction_clear the ones no longer "
                                 f"needed (by id, or by owner), or set again an id that is there to replace it")
         if rid is None:
             rid = self._new_id()
         clean["id"] = rid
-        clean.update(fired=0, failed=0, last=None, error=None)
-        self._rows.pop(rid, None)                # a replaced one goes to the end, as a new one
-        self._rows[rid] = clean
+        self._store(clean)
         await self._rehear()
         return self._row(clean)
+
+    def _store(self, clean, declared=None):
+        clean.update(fired=0, failed=0, last=None, error=None, declared=declared, running=False)
+        self._rows.pop(clean["id"], None)        # a replaced one goes to the end, as a new one
+        self._rows[clean["id"]] = clean
 
     def list(self) -> list:
         """the reactions, in the order they were set: rows {id, owner, hear, when, call, args, item, cooldown, note,
@@ -192,14 +214,47 @@ class Reactions:
         gone = [rid for rid, r in self._rows.items()
                 if (id is None or rid == id) and (owner is None or r["owner"] == owner)]
         for rid in gone:
-            del self._rows[rid]
+            self._declared.pop(self._rows.pop(rid)["declared"], None)    # an app's own come back when it runs again
         if gone:
             await self._rehear()
         return len(gone)
 
+    async def app_started(self, app, specs) -> list:
+        """an app runs: the reactions its extension's manifest declares for it (specs: DECLARED fields each, at most
+        MAX_APP_REACTIONS) are set, owner the app, ids <app>.1, <app>.2, ...; the ones set for it before go. The same
+        specs again change nothing (the reactions keep their counts and cooldowns). -> the specs that were not taken,
+        a line each"""
+        if not isinstance(app, str) or not APP.match(app):
+            return [f"{app!r} is no app id"]
+        specs = list(specs or [])[:MAX_APP_REACTIONS]
+        key = json.dumps(specs, sort_keys=True, ensure_ascii=False, default=repr)
+        if self._declared.get(app) == key:
+            return []
+        gone = [rid for rid, r in self._rows.items() if r["declared"] == app]
+        for rid in gone:
+            del self._rows[rid]
+        self._declared.pop(app, None)
+        problems = []
+        for n, spec in enumerate(specs, 1):
+            try:
+                if not isinstance(spec, dict):
+                    raise ReactionError("a reaction is an object")
+                clean = await self._check(dict({k: spec[k] for k in DECLARED if spec.get(k) is not None},
+                                               id=f"{app}.{n}", owner=app))
+            except ReactionError as e:
+                problems.append(f"reaction {n} of app {app}: {e}")
+                continue
+            self._store(clean, declared=app)
+        if not problems:                         # one not taken (its capability is not there yet): again next time
+            self._declared[app] = key
+        if gone or len(problems) < len(specs):
+            await self._rehear()
+        return problems
+
     async def app_stopped(self, app) -> None:
-        """an app stopped: its reactions go"""
+        """an app stopped: its reactions go (its own, and what the agent set with it as owner)"""
         if isinstance(app, str) and app:
+            self._declared.pop(app, None)
             await self.clear(owner=app)
 
     async def refresh(self) -> None:
@@ -214,13 +269,22 @@ class Reactions:
         if not isinstance(item, dict) or not isinstance(item.get("source"), str):
             return
         now = self._now()
+        if self._crowded and len(self._tasks) < MAX_RUNNING:
+            self._crowded = False
         for r in list(self._rows.values()):
             source, what = split(r["hear"])
             if not matches(what, source, item) or not holds(r["when"], item):
                 continue
+            if r["running"]:                     # its last call is not done: no second one meanwhile
+                continue
             if r["last"] is not None and r["cooldown"] and now - r["last"] < r["cooldown"]:
                 continue
-            r["last"], r["fired"] = now, r["fired"] + 1
+            if len(self._tasks) >= MAX_RUNNING:  # too many at once (a loop, or slow capabilities): dropped
+                if not self._crowded:
+                    self._crowded = True
+                    self._say(f"reactions: {MAX_RUNNING} calls run at once: what is heard meanwhile calls nothing")
+                continue
+            r["last"], r["fired"], r["running"] = now, r["fired"] + 1, True
             args = copy.deepcopy(r["args"] or {})
             if r["item"]:
                 args[r["item"]] = copy.deepcopy(item)
@@ -235,7 +299,7 @@ class Reactions:
 
     async def _fire(self, r, args):
         try:
-            await maybe(self._call(r["call"], args, {"by": "reaction", "id": r["id"]}))
+            await maybe(self._call(r["call"], args, {"by": "workshop", "chain": [f"reaction:{r['id']}"]}))
         except asyncio.CancelledError:
             raise
         except Exception as e:                   # noqa: BLE001 - a reaction's failure is kept on it, never raised
@@ -245,6 +309,8 @@ class Reactions:
         else:
             if r["error"] and not r["error"].startswith("not heard:"):
                 r["error"] = None
+        finally:
+            r["running"] = False
 
     # -- hearing -------------------------------------------------------------------------------------------------------
 

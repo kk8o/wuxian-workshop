@@ -263,6 +263,25 @@ def make_app(service, access, handle, mcp=None):
             raise ApiError(400, "bad_json", "the request body must be a JSON object")
         return data
 
+    async def until_gone(request, coro):
+        """coro's result (the request's body was read); cancelled when the client goes first: nobody waits for it"""
+        async def gone():
+            while (await request.receive()).get("type") != "http.disconnect":
+                pass
+        work, left = asyncio.ensure_future(coro), asyncio.ensure_future(gone())
+        try:
+            await asyncio.wait({work, left}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            work.cancel()
+            raise
+        finally:
+            left.cancel()
+        if not work.done():
+            work.cancel()
+            await asyncio.wait({work})
+            raise ApiError(499, "cancelled", "the caller went before the answer")
+        return work.result()
+
     def int_param(request, name, default):
         value = request.query_params.get(name)
         if value in (None, ""):
@@ -569,6 +588,10 @@ def make_app(service, access, handle, mcp=None):
         return await service.extension_set(b.get("id"), b.get("enabled"), b.get("options"))
 
     @api
+    async def local_approve(request):
+        return await service.extension_approve((await body_of(request)).get("id"))
+
+    @api
     async def local_check(request):
         b = await body_of(request)
         return await service.extension_check(b.get("id") if b.get("id") is not None else b.get("path"))
@@ -590,7 +613,9 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def local_call(request):
         b = await body_of(request)
-        return await service.local_call(b.get("cap"), b.get("args"), b.get("timeout_ms", 30000), b.get("caller"))
+        # no timeout_ms: the capability's own; a caller that goes (the connection closed) cancels the call
+        return await until_gone(request, service.local_call(b.get("cap"), b.get("args"), b.get("timeout_ms"),
+                                                            b.get("caller")))
 
     @api
     async def reactions_(request):
@@ -665,6 +690,7 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/local/load", local_load, methods=["POST"]),
         Route("/api/local/stop", local_stop, methods=["POST"]),
         Route("/api/local/set", local_set, methods=["POST"]),
+        Route("/api/local/approve", local_approve, methods=["POST"]),
         Route("/api/local/check", local_check, methods=["POST"]),
         Route("/api/local/new", local_new, methods=["POST"]),
         Route("/api/local/logs", local_logs, methods=["GET"]),
