@@ -683,7 +683,7 @@
     </section>
 
     <!-- 扩展：插件页的列表 + 详情。左边：扩展框架，它带的系统扩展，自定义扩展（网站扩展目录里的包与游戏里由它运行的扩展合成一行），
-         本机扩展（无限工坊在这台电脑上运行的扩展；组标题右边「添加」与「扩展目录」），底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
+         本机扩展（无限工坊在这台电脑上运行的扩展；组标题右边「添加」与扩展文件夹的按钮），底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
          或会话表。扩展的版本跟程序的分开 -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
@@ -734,16 +734,16 @@
                 </li>
               </template>
             </ul>
-            <div class="mgroup"><span>本机扩展</span><span class="mgroup-note">在这台电脑上运行</span>
+            <div class="mgroup"><span>本机扩展</span><span class="mgroup-note">在本机运行</span>
               <span class="menu-wrap" @click.outside="lxMenuClose('add')">
                 <button class="btn tiny" @click="lxMenu('add')"><svg class="ico"><use href="#i-plus"/></svg>添加</button>
-                <div class="menu right" x-show="lx.menu === 'add'" x-transition.opacity>
+                <div class="menu right" x-ref="lxAddMenu" x-show="lx.menu === 'add'" x-transition.opacity>
                   <button class="menu-item" @click="lxAddFolder()">链接文件夹</button>
                   <button class="menu-item" @click="lxAddPackage()">安装扩展包</button>
                   <button class="menu-item" @click="lxNewOpen()">新建扩展</button>
                 </div>
               </span>
-              <button class="btn tiny" x-show="lx.home" :title="lx.home" @click="lxOpenHome()">扩展目录</button>
+              <button class="btn tiny" x-show="lx.home" :title="t('扩展文件夹') + t('：') + lx.home" :aria-label="t('扩展文件夹')" @click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg></button>
             </div>
             <ul class="mlist">
               <template x-for="r in (lx.list || [])" :key="r.id">
@@ -756,7 +756,7 @@
                   </div>
                   <div class="mitem-sub">
                     <span class="mono" x-show="r.version" x-text="r.version"></span>
-                    <span class="pill tiny off" x-text="lxOrigin(r)"></span>
+                    <span class="pill tiny off" x-show="r.origin === 'linked'" x-text="lxOrigin(r)"></span>
                     <span class="lx-by" x-show="r.author" x-text="r.author"></span>
                   </div>
                 </li>
@@ -859,7 +859,7 @@
               </div>
               <div class="xp-acts">
                 <label class="check-inline"><input type="checkbox" :checked="lxCur.enabled" :disabled="lx.busy !== ''" @change="lxEnable(lxCur, $event.target.checked)"> 启用</label>
-                <button class="btn primary" :disabled="lx.busy !== '' || !lxCur.enabled" @click="lxAct(lxCur, 'load')"
+                <button class="btn primary" :disabled="lx.busy !== '' || !lxCur.enabled || lxBlocked(lxCur)" @click="lxAct(lxCur, 'load')"
                         x-text="lxBusy(lxCur, 'load') ? t('载入中…') : lxRunning(lxCur) ? t('重新载入') : t('载入')"></button>
                 <button class="btn" x-show="lxStoppable(lxCur)" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'stop')"
                         x-text="lxBusy(lxCur, 'stop') ? t('停止中…') : t('停止')"></button>
@@ -929,7 +929,7 @@
                     <template x-for="a in (lxCur.addons || [])" :key="a.folder">
                       <span class="lx-addon"><span class="mono selectable" x-text="a.folder"></span><span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span></span>
                     </template>
-                    <button class="btn tiny" x-show="lxGameAct(lxCur)" :disabled="lx.busy !== ''" @click="lxInstall(lxCur)"
+                    <button class="btn tiny" x-show="lxGameAct(lxCur) && !lxUnapproved(lxCur)" :disabled="lx.busy !== ''" @click="lxInstall(lxCur)"
                             x-text="lxBusy(lxCur, 'install') ? t('进行中…') : lxGameAct(lxCur) === 'update' ? t('更新') : t('安装')"></button>
                     <span class="pill tiny warn" x-show="lxRestart(lxCur)" x-text="t('重启游戏后生效')"></span>
                   </dd>
@@ -1058,8 +1058,8 @@
             <form class="form" @submit.prevent="lxAddSubmit()">
               <label class="field"><span x-text="lxa.kind === 'zip' ? t('扩展包') : t('文件夹')"></span>
                 <input class="input mono" x-model="lxa.path" :placeholder="lxa.kind === 'zip' ? t('扩展包文件的路径') : t('扩展文件夹的路径')"></label>
+              <p class="small bad-text selectable lx-why" x-show="lxa.error" x-text="lxa.error"></p>
               <div class="row end">
-                <span class="small bad-text selectable" x-text="lxa.error"></span>
                 <div class="spacer"></div>
                 <button class="btn" type="button" @click="lxa.open = false">取消</button>
                 <button class="btn primary" type="submit" :disabled="lxa.busy || !lxa.path.trim()" x-text="lxa.busy ? t('进行中…') : lxa.kind === 'zip' ? t('安装') : t('添加')"></button>
@@ -1078,8 +1078,8 @@
               <label class="field"><span>标识</span><input x-t class="input mono" x-model="lxn.id" placeholder="小写字母开头，可含数字与下划线"></label>
               <label class="field"><span>名称</span><input x-t class="input" x-model="lxn.title" placeholder="可以不填"></label>
               <label class="field"><span>游戏插件</span><input x-t class="input mono" x-model="lxn.addon" placeholder="插件文件夹名，可以不填"></label>
+              <p class="small bad-text selectable lx-why" x-show="lxn.error" x-text="lxn.error"></p>
               <div class="row end">
-                <span class="small bad-text selectable" x-text="lxn.error"></span>
                 <div class="spacer"></div>
                 <button class="btn" type="button" @click="lxn.open = false">取消</button>
                 <button class="btn primary" type="submit" :disabled="lxn.busy || !lxn.id.trim()" x-text="lxn.busy ? t('创建中…') : t('创建')"></button>

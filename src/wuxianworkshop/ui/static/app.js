@@ -1464,7 +1464,7 @@ function appState() {
           await this.loadLocal(true);
           return null;
         }
-        this.lx.note = { bad: true, text: failed + errText(e) };
+        this.lx.note = { bad: true, text: failed + lxWhy(e) };
         if (action === 'set') await this.loadLocal(true);      // the form shows the values in force again
         return null;
       } finally {
@@ -1537,12 +1537,16 @@ function appState() {
       this.lxScrollEnd();
     },
 
-    // ---- 本机 · 管理: 添加 (链接文件夹 / 安装扩展包 / 新建扩展), 扩展目录, and of the one shown 打开文件夹 / 打包 / 移除 and
+    // ---- 本机 · 管理: 添加 (链接文件夹 / 安装扩展包 / 新建扩展), 扩展文件夹, and of the one shown 打开文件夹 / 打包 / 移除 and
     //      its 游戏插件. The folders and files are picked through the shell (pywebview's pick_folder / pick_file) and opened
     //      by it (open_folder, which opens only what the page lists); in a browser the path is typed (lxa) or shown (lxp)
-    lxMenu(which) { this.lx.menu = this.lx.menu === which ? '' : which; },      // 'add' (the group's) | 'more' (the detail's)
+    lxMenu(which) {                            // 'add' (the group's) | 'more' (the detail's)
+      this.lx.menu = this.lx.menu === which ? '' : which;
+      if (this.lx.menu !== 'add') return;      // the group may be the last thing the list shows: its menu comes into view
+      this.$nextTick(() => { const m = this.$refs.lxAddMenu; if (m && m.scrollIntoView) m.scrollIntoView({ block: 'nearest' }); });
+    },
     lxMenuClose(which) { if (this.lx.menu === which) this.lx.menu = ''; },
-    lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('目录'); },   // where its folder is
+    lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('扩展文件夹'); },   // where its folder is
     lxBlocked(r) { return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop'); },    // this workshop is too old for it
     lxUnmet(r) {                               // what it requires and is not there, as one line ('' when all is)
       return ((r && r.unmet) || []).map((u) => {
@@ -1588,7 +1592,7 @@ function appState() {
         if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
           this.lx.ask = r.id;
           this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
-        } else this.lx.note = { bad: true, text: t('安装失败：') + errText(e) };
+        } else this.lx.note = { bad: true, text: t('安装失败：') + lxWhy(e) };
         await this.loadLocal(true);
       } finally {
         this.lx.busy = '';
@@ -1608,7 +1612,7 @@ function appState() {
         if (d.size) parts.push(this.lxSize(d.size));
         this.lx.packed = { id: r.id, file, folder: file.replace(/[\\/][^\\/]*$/, ''), line: parts.join(' · ') };
       } catch (e) {
-        this.lx.note = { bad: true, text: t('打包失败：') + errText(e) };
+        this.lx.note = { bad: true, text: t('打包失败：') + lxWhy(e) };
       } finally {
         this.lx.busy = '';
       }
@@ -1639,7 +1643,7 @@ function appState() {
         await this.loadLocal(true);
       } catch (e) {
         this.lx.drop = '';
-        this.lx.note = { bad: true, text: t('移除失败：') + errText(e) };
+        this.lx.note = { bad: true, text: t('移除失败：') + lxWhy(e) };
         await this.loadLocal(true);
       } finally {
         this.lx.busy = '';
@@ -1686,7 +1690,7 @@ function appState() {
         const name = this.lxTitle(row);
         this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已更新 {name}', { name }) : t('已安装 {name}', { name }));
       } catch (e) {
-        this.lxa = { open: true, kind, path, busy: false, error: errText(e) };
+        this.lxa = { open: true, kind, path, busy: false, error: lxWhy(e) };
       }
     },
     lxAddSubmit() { return this.lxAdd(this.lxa.path, this.lxa.kind); },
@@ -1709,7 +1713,7 @@ function appState() {
         this.say(t('已创建 {name}', { name: row ? this.lxTitle(row) : id }));
       } catch (e) {
         this.lxn.busy = false;
-        this.lxn.error = errText(e);
+        this.lxn.error = lxWhy(e);
       }
     },
 
@@ -2687,6 +2691,25 @@ function appState() {
 /* an error's words for the page: the daemon's message without its code */
 function errText(e) {
   return (e && e.data && e.data.error && e.data.error.message) || (e && e.message) || String(e);
+}
+
+/* 本机扩展: why the daemon refused, in the page's words. Its messages are written for agents (they name tools), so a
+   code the page knows gets a line of its own; the ones about a file's content keep the daemon's detail after it */
+function lxWhy(e) {
+  const err = (e && e.data && e.data.error) || {};
+  switch (err.code) {
+    case 'extension_exists': return t('标识已被占用，请先移除同名扩展');
+    case 'folder_busy': return t('文件夹被占用，请关闭占用它的程序后重试');
+    case 'requires_unmet': return t('版本不足');
+    case 'no_game_folder': return t('未找到游戏目录');
+    case 'addon_exists': return t('游戏里已有同名插件，未覆盖');
+    case 'no_addons': return t('没有游戏插件');
+    case 'package_too_big': return t('扩展包过大');
+    case 'bad_manifest': return t('清单有误') + t('：') + (err.message || '');
+    case 'bad_package': return t('扩展包无效') + t('：') + (err.message || '');
+    case 'bad_addon': return t('游戏插件无效') + t('：') + (err.message || '');
+    default: return errText(e);
+  }
 }
 
 function apiMessage(data, r) {

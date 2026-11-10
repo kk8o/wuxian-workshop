@@ -499,7 +499,7 @@ pre.diff .hunk { color: var(--sky); }
 /* 扩展: the list and detail of 插件. The list: the framework, then its built-in and the custom extensions under a heading each,
    the agent sessions at its foot. The detail: a state with a dot, the package's actions in its head, the tools as a table */
 .mgroup { display: flex; align-items: baseline; gap: 8px; padding: 14px 14px 4px; font-size: 11px; color: var(--faint); }
-.mgroup > span:first-child { color: var(--gold); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.mgroup > span:first-child { flex: none; white-space: nowrap; color: var(--gold); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
 .master-detail.xp .mlist { padding-top: 2px; padding-bottom: 2px; }
 .mitem.line { padding-top: 7px; padding-bottom: 7px; }
 .mitem.line .mitem-title { flex: 0 1 auto; }
@@ -578,8 +578,9 @@ pre.diff .hunk { color: var(--sky); }
 .menu-item:hover:not(:disabled) { background: var(--panel2); }
 .menu-item:disabled { opacity: .45; cursor: default; }
 .menu-item.bad { color: var(--bad); }
+.lx-why { margin: 0; overflow-wrap: anywhere; }
 .mgroup-note { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mgroup .btn { align-self: center; display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.mgroup .btn { align-self: stretch; display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .mgroup .btn svg.ico { width: 11px; height: 11px; }
 .lx-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lx-empty { padding: 8px 14px 10px; }

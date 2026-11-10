@@ -300,7 +300,7 @@ class Approval(unittest.TestCase):
         self.assertEqual(self.out["deny"], {"note": {"bad": True, "text": "载入失败：not from here"}, "needs": False, "ask": ""})
         d = self.out["draft"]
         self.assertEqual((d["can"], d["title"], d["needs"]), (False, "draft", True))
-        self.assertEqual(d["note"], {"bad": True, "text": "批准失败：run: a list of strings"})
+        self.assertEqual(d["note"], {"bad": True, "text": "批准失败：清单有误：run: a list of strings"})
 
     def test_english(self):
         e = self.out["english"]

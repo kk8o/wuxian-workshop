@@ -374,8 +374,9 @@ class Manage(unittest.TestCase):
         o = self.out
         self.assertEqual(o["home"], "C:\\home\\extensions")
         self.assertEqual(o["homeKept"], "C:\\home\\extensions")
-        self.assertEqual(o["origin"], [["herald", "目录"], ["relay", "链接"], ["kitty", "目录"], ["greeter", "目录"],
-                                       ["plain", "目录"], ["skin", "链接"], ["clash", "目录"], ["lost", "目录"], ["", ""]])
+        self.assertEqual(o["origin"], [["herald", "扩展文件夹"], ["relay", "链接"], ["kitty", "扩展文件夹"],
+                                       ["greeter", "扩展文件夹"], ["plain", "扩展文件夹"], ["skin", "链接"],
+                                       ["clash", "扩展文件夹"], ["lost", "扩展文件夹"], ["", ""]])
         self.assertEqual(o["line"], "herald · 0.2.0")
 
     def test_what_it_requires(self):
@@ -411,7 +412,7 @@ class Manage(unittest.TestCase):
         self.assertEqual(self.out["approved"], {"restart": True, "states": ["current"], "said": "已允许 迎宾 运行"})
 
     def test_install_failed(self):
-        self.assertEqual(self.out["installFailed"], {"bad": True, "text": "安装失败：the game folder is not known"})
+        self.assertEqual(self.out["installFailed"], {"bad": True, "text": "安装失败：未找到游戏目录"})
 
     def test_a_load_installs_them(self):
         self.assertEqual(self.out["loaded"], {"restart": True, "said": "已载入 传令"})
@@ -425,7 +426,7 @@ class Manage(unittest.TestCase):
         self.assertEqual((o["menu"], o["busy"]), ("", ""))
         self.assertEqual(self.out["packBig"], "7 个文件 · 3.0 MB")
         self.assertIsNone(self.out["packGone"])
-        self.assertEqual(self.out["packFailed"], [{"bad": True, "text": "打包失败：extension.json: version is missing"}, None])
+        self.assertEqual(self.out["packFailed"], [{"bad": True, "text": "打包失败：清单有误：extension.json: version is missing"}, None])
 
     def test_remove_says_what_happens(self):
         self.assertEqual(self.out["dropLines"], [
@@ -441,7 +442,7 @@ class Manage(unittest.TestCase):
                          ("kit", "已移除 传令，文件夹已移入回收区", ""))
         self.assertNotIn("skin", o["unlink"]["ids"])
         self.assertEqual(o["unlink"]["said"], "已解除链接 皮肤")
-        self.assertEqual(o["removeFailed"], {"note": {"bad": True, "text": "移除失败：the folder is in use"}, "drop": "",
+        self.assertEqual(o["removeFailed"], {"note": {"bad": True, "text": "移除失败：文件夹被占用，请关闭占用它的程序后重试"}, "drop": "",
                                              "sel": "l:plain", "there": True})
         self.assertEqual(o["dropForgotten"], ["plain", ""])
 
@@ -461,7 +462,7 @@ class Manage(unittest.TestCase):
                          ("l:mapper", "链接", "已链接 mapper", "", False))
         self.assertEqual(self.out["addCancelled"], 0)
         self.assertEqual(self.out["addRefused"], {"open": True, "kind": "folder", "path": "D:\\Work\\bad", "busy": False,
-                                                  "error": "no extension.json in it"})
+                                                  "error": "清单有误：no extension.json in it"})
         o = self.out["addRetried"]
         self.assertEqual(o["posts"], [["/api/local/add", {"path": "D:\\Work\\notes"}]])
         self.assertEqual((o["dialog"]["open"], o["dialog"]["error"], o["sel"]), (False, "", "l:notes"))
@@ -470,10 +471,10 @@ class Manage(unittest.TestCase):
         o = self.out["addPackage"]
         self.assertEqual(o["asked"], [["file", "zip"]])
         self.assertEqual(o["posts"], [["/api/local/add", {"path": "D:\\Downloads\\scout-1.0.0.zip"}]])
-        self.assertEqual((o["sel"], o["origin"], o["said"]), ("l:scout", "目录", "已安装 scout"))
+        self.assertEqual((o["sel"], o["origin"], o["said"]), ("l:scout", "扩展文件夹", "已安装 scout"))
         self.assertEqual(self.out["addPackageAgain"], "已更新 scout")
         self.assertEqual(self.out["addPackageRefused"], {"open": True, "kind": "zip", "path": "D:\\Downloads\\bad-1.0.0.zip",
-                                                         "busy": False, "error": "no extension.json in it"})
+                                                         "busy": False, "error": "扩展包无效：no extension.json in it"})
 
     def test_a_path_typed_without_a_shell(self):
         o = self.out["addTyped"]
@@ -492,7 +493,7 @@ class Manage(unittest.TestCase):
         self.assertEqual((c["addons"], c["will"]), ([["MyTool", "未安装"]], "MyTool"))
         self.assertEqual(o["createdNamed"], [[["/api/local/new", {"id": "named", "title": "有名字"}]], "有名字"])
         self.assertEqual(o["createFailed"], {"open": True, "id": "my_tool", "title": "", "addon": "", "busy": False,
-                                             "error": "my_tool is registered already"})
+                                             "error": "标识已被占用，请先移除同名扩展"})
         self.assertEqual(o["createNothing"], 0)
 
     def test_the_menus(self):
@@ -501,7 +502,7 @@ class Manage(unittest.TestCase):
 
     def test_in_english(self):
         self.assertEqual(self.out["english"], [
-            "Home", "Linked", "Needs Wuxian Workshop 0.9.14 or later; Needs WuxianKit 0.7 or later", "Needs an update",
+            "Extensions folder", "Linked", "Needs Wuxian Workshop 0.9.14 or later; Needs WuxianKit 0.7 or later", "Needs an update",
             "The folder is moved to the workshop's trash, and its game addons are removed too.",
             "Only the link is removed; the folder stays.", "WuxianHerald, WuxianHeraldSkin",
             "Not installed", "Installed", "Update available", "Another addon has this name", "Game folder unknown",
@@ -509,7 +510,7 @@ class Manage(unittest.TestCase):
 
 
 class Page(unittest.TestCase):
-    """index.html: the group's head with 添加 (its menu) and 扩展目录, a row's second line, nothing yet with the same three
+    """index.html: the group's head with 添加 (its menu) and 扩展文件夹, a row's second line, nothing yet with the same three
     ways in, the detail's 更多 with 移除 asked once more, the approval's line for the game, the notes, 概况's new facts,
     the three dialogs; every word has its English; the shell's three calls are looked for"""
 
@@ -529,15 +530,19 @@ class Page(unittest.TestCase):
         head = self.master[:self.master.index('<ul class="mlist">')]
         self.assertIn('<span class="menu-wrap" @click.outside="lxMenuClose(\'add\')">', head)
         self.assertIn('@click="lxMenu(\'add\')"><svg class="ico"><use href="#i-plus"/></svg>添加</button>', head)
-        self.assertIn('<div class="menu right" x-show="lx.menu === \'add\'"', head)
+        self.assertIn('<div class="menu right" x-ref="lxAddMenu" x-show="lx.menu === \'add\'"', head)
+        self.assertIn("const m = this.$refs.lxAddMenu;", self.js)   # the group may be the list's last: its menu comes into view
         items = re.findall(r'<button class="menu-item" @click="(\w+)\(\)">([^<]+)</button>', head)
         self.assertEqual(items, [("lxAddFolder", "链接文件夹"), ("lxAddPackage", "安装扩展包"), ("lxNewOpen", "新建扩展")])
-        self.assertIn('x-show="lx.home" :title="lx.home" @click="lxOpenHome()">扩展目录</button>', head)
+        self.assertIn('x-show="lx.home" :title="t(\'扩展文件夹\') + t(\'：\') + lx.home" :aria-label="t(\'扩展文件夹\')" '
+                      '@click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg></button>', head)
+        self.assertNotIn("扩展目录", head)                           # 扩展目录 is the catalog on this page: the folder has its own word
+        self.assertIn(".mgroup > span:first-child { flex: none; white-space: nowrap;", self.css)
 
     def test_a_row(self):
         row = self.master[self.master.index('<li class="mitem line"'):self.master.index("</li>")]
         sub = row[row.index('<div class="mitem-sub">'):]
-        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-text="lxOrigin(r)"></span>',
+        for piece in ('x-show="r.version" x-text="r.version"', '<span class="pill tiny off" x-show="r.origin === \'linked\'" x-text="lxOrigin(r)"></span>',
                       'x-show="r.author" x-text="r.author"'):
             self.assertIn(piece, sub)
         self.assertNotRegex(row, r">[^<]*[\u4e00-\u9fff][^<]*<")   # a row's words come through x-text (no x-t on it)
@@ -595,7 +600,8 @@ class Page(unittest.TestCase):
         game = game[:game.index("</dd>")]
         self.assertIn('x-for="a in (lxCur.addons || [])" :key="a.folder"', game)
         self.assertIn('<span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span>', game)
-        self.assertIn('x-show="lxGameAct(lxCur)" :disabled="lx.busy !== \'\'" @click="lxInstall(lxCur)"', game)
+        self.assertIn('x-show="lxGameAct(lxCur) && !lxUnapproved(lxCur)" :disabled="lx.busy !== \'\'" @click="lxInstall(lxCur)"',
+                      game)                                        # not before it is approved: approval installs them
         self.assertIn("lxGameAct(lxCur) === 'update' ? t('更新') : t('安装')", game)
         self.assertIn('<span class="pill tiny warn" x-show="lxRestart(lxCur)" x-text="t(\'重启游戏后生效\')"></span>', game)
         self.assertNotIn("x-html", d)
@@ -606,12 +612,12 @@ class Page(unittest.TestCase):
         self.assertIn('@submit.prevent="lxAddSubmit()"', d)
         self.assertIn('x-model="lxa.path"', d)
         self.assertIn("lxa.kind === 'zip' ? t('安装扩展包') : t('链接文件夹')", d)
-        self.assertIn('x-text="lxa.error"', d)
+        self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxa.error" x-text="lxa.error"></p>', d)
         self.assertIn('@submit.prevent="lxNew()"', d)
         fields = re.findall(r'<label class="field"><span>([^<]+)</span><input x-t class="[^"]+" x-model="lxn\.(\w+)"', d)
         self.assertEqual(fields, [("标识", "id"), ("名称", "title"), ("游戏插件", "addon")])
         self.assertIn(':disabled="lxn.busy || !lxn.id.trim()"', d)
-        self.assertIn('x-text="lxn.error"', d)
+        self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxn.error" x-text="lxn.error"></p>', d)
         self.assertIn('<p class="mono selectable lx-path" x-text="lxp.path"></p>', d)
         self.assertIn('@click="copy(lxp.path, t(\'路径\'))">复制</button>', d)
 
@@ -637,10 +643,12 @@ class Page(unittest.TestCase):
             self.assertIn("\n" + rule, self.css)
 
     def test_the_words_have_their_english(self):
-        for word in ("添加", "链接文件夹", "安装扩展包", "新建扩展", "扩展目录", "暂无本机扩展。", "目录", "链接", "主页", "游戏插件",
+        for word in ("添加", "链接文件夹", "安装扩展包", "新建扩展", "扩展文件夹", "暂无本机扩展。", "链接", "主页", "游戏插件",
                      "有更新", "同名插件已存在", "游戏目录未知", "重启游戏后生效", "同时安装游戏插件：{names}",
                      "需要无限工坊 {v} 以上", "需要 WuxianKit {v} 以上", "版本不足", "更多", "打包", "移除", "确认移除",
-                     "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识"):
+                     "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",
+                     "标识已被占用，请先移除同名扩展", "文件夹被占用，请关闭占用它的程序后重试", "未找到游戏目录",
+                     "游戏里已有同名插件，未覆盖", "没有游戏插件", "扩展包过大", "扩展包无效", "游戏插件无效", "清单有误"):
             self.assertIn("\n  '%s': '" % word, self.i18n, word)
         self.assertNotIn("new_extension 新建", self.i18n)
 
