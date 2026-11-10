@@ -26,6 +26,7 @@ import time
 from collections import deque
 
 from .api import ApiError
+from ..local.rpc import REASONS      # the words of a failure (contract §7): ApiError codes too
 from .journal import strict_json
 
 KIT = "WuxianKit"
@@ -39,8 +40,6 @@ LANE_MAX = 32                    # events that wait in one app's lane
 TRIP = 3                         # failures in a row (one extension, one app) that pause it
 PAUSE = 60.0                     # seconds it is not called then
 CONTROL_WAIT = 10.0              # seconds a wake waits for the capabilities its control entries are bound to
-REASONS = ("timeout", "down", "starting", "failed", "bad_args", "no_capability", "busy", "paused", "cancelled",
-           "not_allowed", "needs_approval", "loop")      # the words of a failure (contract §7): ApiError codes too
 UNCOUNTED = ("starting", "needs_approval")               # failures that are not the extension's: the breaker skips them
 
 

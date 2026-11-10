@@ -157,11 +157,12 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         self.assertTrue(until(lambda: self.ok("GET", "/api/local")["extensions"][0]["state"] == "running"))
         self.fails("POST", "/api/local/approve", {"id": "ghost"}, 404, "not_found")
 
-    def test_approving_one_that_starts_on_use_does_not_start_it(self):
+    def test_approving_one_that_starts_on_use_starts_it_only_to_learn_what_it_can_do(self):
         self.add()
-        self.assertEqual(self.ok("POST", "/api/local/approve", {"id": "fx"})["state"], "stopped")
-        time.sleep(0.3)
-        self.assertEqual(self.ok("GET", "/api/local")["extensions"][0]["state"], "stopped")
+        self.assertEqual(self.ok("POST", "/api/local/approve", {"id": "fx"})["approval"], "ok")
+        row = lambda: self.ok("GET", "/api/local")["extensions"][0]
+        self.assertTrue(until(lambda: row()["capabilities"] and row()["state"] == "stopped"))
+        self.assertEqual(row()["pid"], None)
 
     # --- a call's time
 

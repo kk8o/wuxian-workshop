@@ -1824,8 +1824,12 @@ class Service:
 
     async def extension_add(self, path):
         """registers a local extension by its folder (or its wuxian-extension.json): its row; its apps are told to
-        WuxianKit now while the game is online (reconcile_local_apps)"""
+        WuxianKit now while the game is online (reconcile_local_apps). Developer mode asks nobody, so one that
+        starts on use is started here once, only to learn what it can do (Host.describe): its tools and options are
+        there before its first call. Player mode does that when the player allows its command (extension_approve)"""
         row = await asyncio.to_thread(self.local.add, path)
+        if self.mode == "developer" and row.get("enabled") and row.get("start") == "use" and not row.get("error"):
+            self.local.describe(row["id"]).add_done_callback(_seen)   # in the background: its row says how it went
         await self.reconcile_local_apps()
         return row
 
@@ -1846,12 +1850,11 @@ class Service:
 
     async def extension_approve(self, id):
         """the player allows a local extension's command to run (Host.approve; as it is now: a changed command asks
-        again): its row. One that starts with 无限工坊 (start "workshop") starts now; its apps are declared"""
+        again): its row. The host starts it then: for good when it starts with 无限工坊 (start "workshop"), else,
+        when it never said what it can do, only to learn that; its apps are declared"""
         row = await asyncio.to_thread(self.local.approve, id, "player")
         eid = row["id"]
         self.notes.forgive(eid)
-        if row.get("enabled") and row.get("start") == "workshop":
-            self.local.ensure(eid, "approved").add_done_callback(_seen)   # in the background: its row says how it went
         await self.reconcile_local_apps()
         return await asyncio.to_thread(self.local.get, eid)
 

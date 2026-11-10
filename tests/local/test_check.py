@@ -1,6 +1,7 @@
 """The gate before anything of a local extension runs, and its check (host.py allow / approve, check.py), with real
-processes of the fixture. Registry.approval and Registry.approve are another package's (stubs here: "ok", None), so the
-tests put their own in their place: approvals {id: "needed" | "changed" | "ok"}, and approved [(id, by)]."""
+processes of the fixture and the real registry. approved: who the registry was told approved what, [(id, by)];
+change(id): its manifest starts it with something else now (what the player confirmed is not what would run)."""
+import json
 import re
 import time
 import unittest
@@ -17,19 +18,23 @@ A_TEST = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_it(self
 class GateCase(HostCase):
     def setUp(self):
         super().setUp()
-        self.approvals, self.approved = {}, []
-
-        def approve(eid, by):
-            self.approved.append((eid, by))
-            self.approvals[eid] = "ok"
-
-        for name, stub in (("approval", lambda e: self.approvals.get(e["id"], "needed")), ("approve", approve)):
-            patch = mock.patch.object(self.host.reg, name, side_effect=stub)
-            patch.start()
-            self.addCleanup(patch.stop)
+        self.changes = 0
+        self.approving = mock.patch.object(self.host.reg, "approve", wraps=self.host.reg.approve).start()
         self.spawn = mock.patch.object(self.host, "spawn", wraps=self.host.spawn).start()
         self.tests = mock.patch.object(self.host, "run_tests", wraps=self.host.run_tests).start()
         self.addCleanup(mock.patch.stopall)
+
+    @property
+    def approved(self):
+        return [tuple(c.args) for c in self.approving.call_args_list]
+
+    def change(self, eid="fx"):
+        """its manifest's env has one more variable: another command than the one that was confirmed"""
+        file = self.root / "ext" / eid / "wuxian-extension.json"
+        manifest = json.loads(file.read_text(encoding="utf-8"))
+        self.changes += 1
+        manifest["env"]["FIXTURE_CHANGED"] = "x" * self.changes
+        file.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     def refused(self, fn, *args):
         with self.assertRaises(ApiError) as cm:
@@ -63,15 +68,16 @@ class Approval(GateCase):
             self.assertEqual(err.extra["approval"], "needed")
         self.assertIsNotNone(self.host.describe("fx").exception(1))    # not even to learn what it can do
         # the command changed since the player confirmed it: the same, said so
-        self.approvals["fx"] = "changed"
+        self.host.reg.approve("fx", "player")                          # confirmed (the registry only: no start)
+        self.change()
         err = self.refused(self.host.check, "fx")
         self.assertEqual(err.extra["approval"], "changed")
         self.assertIn("fx changed the command it starts with since the player confirmed it", err.message)
         self.assertEqual(self.host.ensure("fx").exception(1).extra["approval"], "changed")
         row = self.host.get("fx")
         self.assertEqual((row["state"], row["approval"], row["capabilities"]), ("stopped", "changed", []))
-        # nothing of it ran, and nothing approved it
-        self.assertEqual((self.spawn.call_count, self.tests.call_count, self.approved), (0, 0, []))
+        # nothing of it ran, and nothing approved it but the test
+        self.assertEqual((self.spawn.call_count, self.tests.call_count, self.approved), (0, 0, [("fx", "player")]))
         self.assertEqual((self.pids(), self.check_pids(), self.host.procs, self.host.starting), ([], [], {}, {}))
 
     def test_one_that_starts_with_the_workshop(self):
@@ -103,7 +109,7 @@ class Approval(GateCase):
         self.assertTrue(self.host.check("fx")["ok"])
         # approved again (its command changed): it has described itself, so nothing is started for that
         self.host.stop("fx")
-        self.approvals["fx"] = "changed"
+        self.change()
         self.refused(self.host.call_sync, "fx.echo", {"text": "a"})
         self.host.approve("fx")
         time.sleep(0.3)
@@ -122,9 +128,9 @@ class Approval(GateCase):
         self.assertTrue(any("local extension fx: its command is approved (developer mode)" in n for n in self.notes))
         self.assertEqual(self.host.get("fx")["approval"], "ok")
         self.host.stop("fx")
-        self.approvals["fx"] = "changed"                               # its check and its reload too
+        self.change()                                                  # its check and its reload too
         self.assertTrue(self.host.check("fx")["ok"])
-        self.approvals["fx"] = "changed"
+        self.change()
         self.assertTrue(self.host.load_("fx")["check"]["ok"])
         self.assertEqual(self.approved, [("fx", "developer")] * 3)
         self.assertEqual(self.host.get("fx")["state"], "running")
@@ -155,10 +161,6 @@ class Approval(GateCase):
 
 
 class Check(GateCase):
-    def setUp(self):
-        super().setUp()
-        self.approvals["fx"] = "ok"
-
     def test_no_second_process_of_one_that_runs(self):
         self.add()
         self.host.call_sync("fx.echo", {"text": "a"})
