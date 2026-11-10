@@ -15,7 +15,8 @@ described itself anew). Every answer is a copy.
 An extension whose command the player has not allowed (registry.approval is not "ok"; where the setting lets the
 workshop allow commands by itself, host.auto(), it does so at the first start) adds nothing: no declaration, no wake,
 no skill supplement, no reaction, no bound control. All of it comes when the player allows it (the registry is saved
-then, so the table is built anew).
+then, so the table is built anew). Neither does one that needs a newer workshop than this one (its manifest's
+requires.workshop; Host.unmet_error): nothing of it runs here.
 
 Standard library only.
 """
@@ -78,13 +79,14 @@ def declaration(app, eid, title):
 
 
 def enabled_manifests(host):
-    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id) and
-    whose command may run (allowed())"""
+    """[(entry, manifest)] of the enabled extensions whose manifest passes its check (and still has their id),
+    whose command may run (allowed()) and which this workshop is not too old for (host.unmet_error: one that needs
+    a newer workshop does not start, so it adds nothing either)"""
     out = []
     for e in host.load()["extensions"]:
         if e["enabled"]:
             m, _ = M.check_manifest(e["path"])
-            if m is not None and m["id"] == e["id"] and allowed(host, e):
+            if m is not None and m["id"] == e["id"] and allowed(host, e) and host.unmet_error(m) is None:
                 out.append((e, m))
     return out
 

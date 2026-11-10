@@ -597,9 +597,18 @@ def make_app(service, access, handle, mcp=None):
         return await service.extension_check(b.get("id") if b.get("id") is not None else b.get("path"))
 
     @api
+    async def local_pack(request):
+        b = await body_of(request)
+        return await service.extension_pack(b.get("id"), b.get("to"))
+
+    @api
+    async def local_install(request):
+        return await service.extension_install((await body_of(request)).get("id"))
+
+    @api
     async def local_new(request):
         b = await body_of(request)
-        return await service.new_extension(b.get("id"), b.get("title"), b.get("folder"))
+        return await service.new_extension(b.get("id"), b.get("title"), b.get("folder"), b.get("addon"))
 
     @api
     async def local_logs(request):
@@ -692,6 +701,8 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/local/set", local_set, methods=["POST"]),
         Route("/api/local/approve", local_approve, methods=["POST"]),
         Route("/api/local/check", local_check, methods=["POST"]),
+        Route("/api/local/pack", local_pack, methods=["POST"]),
+        Route("/api/local/install", local_install, methods=["POST"]),
         Route("/api/local/new", local_new, methods=["POST"]),
         Route("/api/local/logs", local_logs, methods=["GET"]),
         Route("/api/local/manifest", local_manifest, methods=["GET"]),

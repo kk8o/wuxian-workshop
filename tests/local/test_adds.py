@@ -181,6 +181,28 @@ class AddsTests(unittest.TestCase):
             self.assertEqual((len(self.host.adds("guild")), len(self.host.app_reactions("companion")),
                               self.host.control_call("companion", "mute")), (1, 2, {"ext": "fx", "call": "fx.emit"}))
 
+    def test_needs_a_newer_workshop(self):
+        """an extension that needs a newer workshop than this one (requires.workshop) does not start, so it adds
+        nothing either: no declaration, no wake, no skill supplement, no reaction, no bound control. What it needs of
+        WuxianKit alone does not take anything away"""
+        self.host.kit_version = lambda: "0.5.0"
+        self.add("fx", apps=[APP], adds={"guild": {"wake": "echo", "skill": "AGENT.md"}},
+                 requires={"workshop": "10.0.0"})
+        self.add("fa", apps=[{"app": "fa_one"}], adds={"guild": {"wake": "echo"}}, requires={"kit": "0.6.0"})
+        self.assertEqual([u["what"] for u in self.host.get("fx")["unmet"]], ["workshop"])
+        self.assertEqual([u["what"] for u in self.host.get("fa")["unmet"]], ["kit"])
+        self.assertEqual([eid for eid, _ in self.host.declarations()], ["fa"])
+        self.assertEqual([a["ext"] for a in self.host.adds("guild")], ["fa"])
+        self.assertEqual((self.host.app_reactions("companion"), self.host.control_call("companion", "mute")),
+                         ([], None))
+        self.assertEqual([e["id"] for e, _ in self.host.enabled_manifests()], ["fa"])
+        self.host.version = "10.0.0"                           # the workshop was updated (another process: no cache)
+        self.host.adds_cache = None
+        self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
+        self.assertEqual([a["ext"] for a in self.host.adds("guild")], ["fa", "fx"])
+        self.assertEqual((len(self.host.app_reactions("companion")), self.host.control_call("companion", "mute")),
+                         (2, {"ext": "fx", "call": "fx.emit"}))
+
     def test_the_fourth_batchs_names_are_gone(self):
         self.add("fx", adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})
         row = self.host.get("fx")
