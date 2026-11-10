@@ -311,6 +311,17 @@ def probe(info, timeout=3.0):
     return client
 
 
+def reconnect(client, timeout=3.0):
+    """the client to go on with after `client` could not reach its daemon or was refused (401): `client` itself when
+    daemon.json still describes its daemon and that answers, a new client when another daemon runs now (after a
+    restart: a new port and token, and a journal whose ids start again), None when none answers. It never starts one
+    (`wuxian listen` waits with it for the daemon to come back)"""
+    fresh = probe(read_daemon_json(), timeout)
+    if fresh is None:
+        return None
+    return client if (fresh.base, fresh.token) == (client.base, client.token) else fresh
+
+
 def connect(start=True, timeout=START_TIMEOUT, log=None, serve_args=()):
     """a client of the running daemon; with start, the daemon is started (detached) when none answers"""
     log = log or (lambda text: None)
