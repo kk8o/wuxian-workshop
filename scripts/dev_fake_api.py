@@ -16,7 +16,7 @@ green. tests/ui/test_fake_api.py drives create_app() with Starlette's TestClient
 
 The local extensions (the 扩展 page) come in every state: running, stopped, exited, off, not responding, waiting for its
 next try, a manifest that cannot be read, and the ones whose command waits for the player (awaiting approval, command
-changed). --approval auto (or 本机扩展批准 set to 自动允许 on the page's 设置) allows every command by itself: the setting
+changed). --approval auto (or 本机扩展批准 set to 自动批准 on the page's 设置) allows every command by itself: the setting
 extension_approval, "ask" unless said. The mode (--mode) has no part in it.
 --rotate N starts voice's output again at line 1 after N lines, as the real output.log does at 2 MB.
 
@@ -49,7 +49,7 @@ the names in a path decide what is answered.
     POST /api/local/install {id}   {id, addons: [{folder, state, was, version, kept}], restart, hint}. Not allowed yet
                                    -> 403 needs_approval; no game addons -> 400 no_addons; --no-game-folder -> 503
                                    no_game_folder (and every addon's state is "unknown"); a foreign one -> 409
-                                   addon_exists. 允许运行 (approve) installs them too, and so does a start
+                                   addon_exists. 批准运行 (approve) installs them too, and so does a start
                                    (load answers addons, restart and hint as well when one was missing or differed)
 --no-game-folder: the game's AddOns folder is not known.
 """
@@ -577,7 +577,7 @@ class Fake:
 
     # ---- 本机扩展 (local/host.py's shapes): voice runs (started with the workshop), notes waits for its first call and
     #      adds to the guild app, translate crashed, lab is off and has never described itself; facts waits for the
-    #      player's 允许运行, stats was allowed with another command, ocr no longer answers, sync failed to start and
+    #      player's 批准运行, stats was allowed with another command, ocr no longer answers, sync failed to start and
     #      waits for its next try, draft has a manifest that cannot be read; herald brings two game addons (one missing,
     #      one that differs), relay is linked (its folder is elsewhere) and needs a newer workshop and WuxianKit, greeter
     #      came from a package (ask). While the setting extension_approval is "auto" every row's approval is "ok" (a
@@ -780,7 +780,7 @@ class Fake:
 
     def local_allowed(self, e):
         """before anything that starts its process (load, check): a manifest that cannot be read is a 400; with
-        extension_approval "auto" its command is allowed here; with "ask" the answer is 403 needs_approval until 允许运行"""
+        extension_approval "auto" its command is allowed here; with "ask" the answer is 403 needs_approval until 批准运行"""
         if e["command"] is None:
             raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
         if e["approval"] == "ok":
@@ -1000,7 +1000,7 @@ class Fake:
             return self.local_pack(e, body.get("to"))
         if action == "install":
             return self.local_install(e)
-        if action == "approve":                  # the player's 允许运行: the command as it is now may run
+        if action == "approve":                  # the player's 批准运行: the command as it is now may run
             if e["command"] is None:
                 raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
             e["approval"] = "ok"
@@ -1743,7 +1743,7 @@ def main(argv=None):
     ap.add_argument("--mode", choices=("developer", "player"), default="developer",
                     help="the mode the settings and the status say (the page switches player back to developer)")
     ap.add_argument("--approval", choices=("ask", "auto"), default="ask",
-                    help="the setting extension_approval. ask: the local extensions' commands wait for 允许运行; "
+                    help="the setting extension_approval. ask: the local extensions' commands wait for 批准运行; "
                          "auto: every command is allowed by itself")
     ap.add_argument("--rotate", type=int, default=400,
                     help="a local extension's output starts again at line 1 after this many lines")

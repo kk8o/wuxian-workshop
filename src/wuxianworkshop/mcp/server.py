@@ -315,7 +315,7 @@ def build_server(backend, name="wuxian"):
         how = f"{kit_tools.ASKED} {kit_tools.APPROVE}" if auto is True else kit_tools.APPROVE
         if rows is not None:
             names = ", ".join(f"{r.get('id')} ({kit_tools.APPROVALS[r['approval']]})" for r in waiting)
-            return dict(answer, approval_note=f"Not allowed to run yet: {names}. Their calls answer needs_approval. "
+            return dict(answer, approval_note=f"Not approved yet: {names}. Their calls answer needs_approval. "
                                               f"{how}")
         note = (f"It may not run yet: {kit_tools.APPROVALS[waiting[0]['approval']]}, so its calls answer needs_approval. "
                 f"{how}")
@@ -629,7 +629,7 @@ def build_server(backend, name="wuxian"):
         linked: registered where it is), enabled, start (use: it starts at its first call; workshop: with 无限工坊),
         state (off, stopped, starting, running, hung: it answers nothing, its next call starts it afresh; stopping,
         exited: it ended by itself; backoff: it failed to start, 无限工坊 tries again later) with since and why, pid,
-        command (what it runs), approval (ok; needed or changed: only the player allows it to run, see approval_note),
+        command (what it runs), approval (ok; needed or changed: only the player approves it, see approval_note),
         requires and unmet ([{what: workshop | kit, needs, has}]: a version it requires and does not find; without the
         workshop's it does not start), addons (its game addons: [{folder, version, state}], state current, missing or
         differs (extension_install or extension_load installs it), foreign (the game has another addon of that name:
@@ -662,7 +662,7 @@ def build_server(backend, name="wuxian"):
         that first). A manifest that is not valid fails with its problems (a package: bad_package); an id another
         extension has is refused. Answers its row, a package's with package {file, replaced}. With approval_note,
         the player has to allow it before it runs: always after a package, at every install and update, whatever
-        the player's setting. Its game addons are installed when the player allows it."""
+        the player's setting. Its game addons are installed when the player approves it."""
         answer = await call(backend.extension_add(path))
         presence.registered(answer.get("id") if isinstance(answer, dict) else None)
         return await noted(answer)
@@ -701,7 +701,7 @@ def build_server(backend, name="wuxian"):
         """Turn a local extension on or off (off: it stops and its tools go), or set some of its options by name
         (checked against what it declared; a running one is told at once). Example: {"id": "voice", "options":
         {"volume": 80}}. Options: only of an extension you registered in this session (new_extension, extension_add),
-        or while the player's setting 本机扩展批准 (Local extension approval) is 自动允许 (allow automatically); any
+        or while the player's setting 本机扩展批准 (Local extension approval) is 自动批准 (approve automatically); any
         other answers not_allowed, the player sets those in the 无限工坊 App."""
         if (options is not None and not presence.registers(id)
                 and await kit_tools.auto_of(backend) is not True):
@@ -716,8 +716,8 @@ def build_server(backend, name="wuxian"):
         """Check a local extension without touching the running one: an id, or the full path of a folder that is not
         registered yet. Its manifest, a start of its own (it runs the extension's command; initialize: the
         capabilities, sources and options it declares), its tests (they run). Answers {ok, problems, capabilities,
-        tests?}. One the player has not allowed to run fails with needs_approval; so does a folder that is not
-        registered, unless the player's setting 本机扩展批准 (Local extension approval) is 自动允许 (allow
+        tests?}. One the player has not approved fails with needs_approval; so does a folder that is not
+        registered, unless the player's setting 本机扩展批准 (Local extension approval) is 自动批准 (approve
         automatically; the default is 首次运行前询问, ask before the first run)."""
         return await call(backend.extension_check(id))
 

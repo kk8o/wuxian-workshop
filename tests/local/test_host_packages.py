@@ -109,7 +109,7 @@ class Installing(Case):
         self.assertTrue((G.source(folder, NAME) / "core.lua").is_file())
         self.assertFalse((self.home / HOME.INCOMING).exists())                   # nothing left of the unpacking
         self.assertGreater(len(self.revisions), told)
-        self.assertEqual(len(self.said("installed from a package")), 1)
+        self.assertEqual(len(self.said("imported from a package")), 1)
         error = self.host.ensure("fx").exception(5)              # nothing of it runs before the player allows it,
         self.assertEqual(error.code, "needs_approval")           # whatever the setting says
         self.assertFalse((self.addons / NAME).exists())
@@ -200,7 +200,7 @@ class Installing(Case):
         self.assertEqual(e.extra["path"], str(self.home / "fx"))
         self.assertEqual(os.listdir(self.home / "fx"), ["notes.txt"])
         self.nothing_left()
-        self.assertEqual(self.said("installed from a package"), [])
+        self.assertEqual(self.said("imported from a package"), [])
 
     def test_a_folder_that_cannot_be_moved_away(self):
         self.host.add(str(self.package()))

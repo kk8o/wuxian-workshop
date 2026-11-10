@@ -710,7 +710,7 @@ class Host:
             folder = os.path.realpath(target)
             if old is None:
                 try:
-                    self.register(folder, m, ask=True, how="installed from a package")
+                    self.register(folder, m, ask=True, how="imported from a package")
                 except ApiError:                       # extension_exists: its id was registered meanwhile
                     shutil.rmtree(target, ignore_errors=True)
                     raise
@@ -751,7 +751,7 @@ class Host:
                 data["extensions"].append(e)
                 self.save(data)
                 self.note(f"local extension {m['id']}: {how} ({folder})"
-                          + (": the player allows it on the Extensions page before anything of it runs" if ask else ""))
+                          + (": the player approves it on the Extensions page before anything of it runs" if ask else ""))
         self.changed()
         return self.entry(e["id"])
 
@@ -774,7 +774,7 @@ class Host:
             self.save(data)
             self.forgive(e)
             self.runs[e["id"]].update(error=None, exit_code=None)
-        self.note(f"local extension {e['id']}: replaced by another version ({e['path']}): the player allows it on the "
+        self.note(f"local extension {e['id']}: replaced by another version ({e['path']}): the player approves it on the "
                   f"Extensions page before anything of it runs")
         self.changed()
         return self.entry(e["id"])

@@ -4,7 +4,7 @@ r"""The registry of local extensions: what is registered, kept in memory and in 
                                     path the extension's folder, options the values the player set (name -> value),
                                     approved {fingerprint, at, by} or null (whether its command may run, below);
                                     ask: true (only written when it is) on one that was not written on this computer:
-                                    installed from a package, or found in the extensions' home folder (below)
+                                    imported from a package, or found in the extensions' home folder (below)
     <state>\extensions.json.bak     the configuration as it was before its last change
     <state>\extensions-cache.json   the descriptions, {extensions: {id: {path, described}}}: described is the
                                     extension's last answer to initialize (its capabilities, sources and options), so

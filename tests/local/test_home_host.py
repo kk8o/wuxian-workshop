@@ -80,7 +80,7 @@ class Discovery(HomeCase):
                                                      described=None, ask=True))
         (note,) = self.said("found in the extensions folder")
         self.assertIn("local extension fx: found in the extensions folder, registered", note)
-        self.assertIn("the player allows it", note)
+        self.assertIn("the player approves it", note)
         self.assertGreater(len(self.revisions), told)
         told = len(self.revisions)
         self.assertFalse(self.look())                                            # the same folder again: nothing
@@ -428,13 +428,13 @@ class Entries(HomeCase):
     def test_register(self):
         folder = make_extension(self.root / "ext" / "pk", "pk", start="workshop")
         m, _ = M.check_manifest(folder, taken=self.host.taken_ids())
-        e = self.host.register(folder, m, ask=True, how="installed from a package")
+        e = self.host.register(folder, m, ask=True, how="imported from a package")
         self.assertEqual(e, dict(id="pk", path=str(folder), enabled=True, options={}, approved=None, described=None,
                                  ask=True))
         self.assertEqual(self.host.entry("pk"), e)
-        (note,) = self.said("local extension pk: installed from a package")
+        (note,) = self.said("local extension pk: imported from a package")
         self.assertIn(str(folder), note)
-        self.assertIn("the player allows it", note)
+        self.assertIn("the player approves it", note)
         self.assertEqual((len(self.revisions), self.pids("pk")), (1, []))        # told; nothing started, start or not
         self.assertEqual(self.host.get("pk")["state"], "stopped")
         self.assertEqual(self.host.register(str(folder), m), e)                  # registered already: as it is

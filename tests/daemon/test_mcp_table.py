@@ -362,13 +362,13 @@ class Table(unittest.TestCase):
         backend = Rows(game(), entries, rows=rows)
         tools = tools_of(backend)
         overview = asyncio.run(tools.overview())
-        self.assertIn("Not allowed to run yet: `voice` (the player has not allowed it to run yet); `facts` (what it runs "
-                      "changed after the player allowed it). The player allows it on the Extensions (扩展) page of the "
-                      "无限工坊 App: the button 允许运行 (Allow to run) there shows the command it would run. Tell the "
+        self.assertIn("Not approved yet: `voice` (the player has not approved it yet); `facts` (what it runs "
+                      "changed after the player approved it). The player approves it on the Extensions (扩展) page of the "
+                      "无限工坊 App: the button 批准运行 (Approve) there shows the command it would run. Tell the "
                       "player and wait: no tool approves it, and do not work around it.", overview)
         doc = asyncio.run(tools.extension_doc("voice"))
-        self.assertIn("It may not run yet: the player has not allowed it to run yet, so its calls answer needs_approval. "
-                      "The player allows it on the Extensions (扩展) page", doc)
+        self.assertIn("It may not run yet: the player has not approved it yet, so its calls answer needs_approval. "
+                      "The player approves it on the Extensions (扩展) page", doc)
         self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc("fine")))
         backend.refuse = ApiError(403, "needs_approval", "voice may not run before the player allows it")
         with self.assertRaises(ToolError) as refused:
@@ -379,10 +379,10 @@ class Table(unittest.TestCase):
         backend.refuse = None
         for unknown in (None, "developer", True):                                  # not read, not known: as "ask"
             backend.extension_approval = unknown
-            self.assertIn("Not allowed to run yet", asyncio.run(tools.overview()), unknown)
+            self.assertIn("Not approved yet", asyncio.run(tools.overview()), unknown)
             self.assertIn("It may not run yet", asyncio.run(tools.extension_doc("voice")), unknown)
         backend.extension_approval = "auto"
-        self.assertNotIn("Not allowed to run yet", asyncio.run(tools.overview()))
+        self.assertNotIn("Not approved yet", asyncio.run(tools.overview()))
         self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc("voice")))
         self.assertFalse([n for n in listed(tools) if "approv" in n or "allow" in n])
 
@@ -398,16 +398,16 @@ class Table(unittest.TestCase):
         backend = Rows(game(), entries, rows=rows, extension_approval="auto")
         tools = tools_of(backend)
         overview = asyncio.run(tools.overview())
-        self.assertIn(f"Not allowed to run yet: `voice` (the player has not allowed it to run yet). {kit.ASKED} "
+        self.assertIn(f"Not approved yet: `voice` (the player has not approved it yet). {kit.ASKED} "
                       f"{kit.APPROVE}", overview)
-        self.assertIn("It may not run yet: the player has not allowed it to run yet, so its calls answer needs_approval. "
+        self.assertIn("It may not run yet: the player has not approved it yet, so its calls answer needs_approval. "
                       f"{kit.ASKED} {kit.APPROVE}", asyncio.run(tools.extension_doc("voice")))
         for eid in ("facts", "older"):
             self.assertNotIn("It may not run yet", asyncio.run(tools.extension_doc(eid)), eid)
         backend.extension_approval = "ask"
         overview = asyncio.run(tools.overview())
-        self.assertIn("Not allowed to run yet: `voice` (the player has not allowed it to run yet); `facts` (what it runs "
-                      "changed after the player allowed it); `older` (the player has not allowed it to run yet). "
+        self.assertIn("Not approved yet: `voice` (the player has not approved it yet); `facts` (what it runs "
+                      "changed after the player approved it); `older` (the player has not approved it yet). "
                       + kit.APPROVE, overview)
         doc = asyncio.run(tools.extension_doc("voice"))
         self.assertIn("so its calls answer needs_approval. " + kit.APPROVE, doc)
@@ -421,7 +421,7 @@ class Table(unittest.TestCase):
         self.assertEqual(kit.approval_of(row("v", approval="needed", allowed=True), False), "needed")
         self.assertEqual([kit.approval_of(r, True) for r in (row("v"), row("v", approval="later", allowed=False), None)],
                          [None, None, None])
-        self.assertIn("本机扩展批准 (Local extension approval) is 自动允许 (allow automatically)", kit.ASKED)
+        self.assertIn("本机扩展批准 (Local extension approval) is 自动批准 (approve automatically)", kit.ASKED)
 
     def test_how_its_process_is(self):
         """an extension's docs say its process's state in the registry's word, with why; the overview does not"""
@@ -466,7 +466,7 @@ class Table(unittest.TestCase):
         self.assertIn("- `talk` (Talk): open it (wk_kit_app_open), then wait with `wuxian listen talk --once`", doc)
         self.assertIn('extension_set {"id": "voice", "options": {...}} sets them only for an extension you registered in '
                       "this session (new_extension, extension_add), or while the player's setting 本机扩展批准 (Local "
-                      "extension approval) is 自动允许 (allow automatically); else it answers not_allowed.", doc)
+                      "extension approval) is 自动批准 (approve automatically); else it answers not_allowed.", doc)
         self.assertNotIn("developer mode", everything)
         self.assertNotIn("player mode", everything)
         self.assertLessEqual(len(server.INSTRUCTIONS), 2048)
@@ -605,7 +605,7 @@ class Options(unittest.TestCase):
         never while the setting is that)"""
         service, out = self.sessions("legacy", "legacy")
         note = out["new"].structured_content["row"]["approval_note"]
-        self.assertEqual(note, "It may not run yet: the player has not allowed it to run yet, so its calls answer "
+        self.assertEqual(note, "It may not run yet: the player has not approved it yet, so its calls answer "
                                "needs_approval. " + kit.APPROVE)
         self.assertEqual(out["add"].structured_content["approval_note"], note)
         self.assertEqual(out["add"].structured_content["approval"], "needed")
@@ -631,8 +631,8 @@ class Options(unittest.TestCase):
         self.assertEqual(client.service.sets, [("players", False, None), ("mine", None, {"volume": 1})])
         listing = asyncio.run(mcp.call_tool("local_extensions", {})).structured_content
         self.assertEqual(listing["approval_note"],
-                         "Not allowed to run yet: players (the player has not allowed it to run yet), other (what it runs "
-                         "changed after the player allowed it), mine (the player has not allowed it to run yet). Their "
+                         "Not approved yet: players (the player has not approved it yet), other (what it runs "
+                         "changed after the player approved it), mine (the player has not approved it yet). Their "
                          "calls answer needs_approval. " + kit.APPROVE)
         client.service.refuse = ApiError(403, "needs_approval", "players may not run before the player allows it")
         for tool in ("extension_load", "extension_check"):
@@ -657,7 +657,7 @@ class Options(unittest.TestCase):
         self.assertIn("not_allowed", tools["extension_set"].description)
         self.assertIn("needs_approval", tools["extension_check"].description)
         for name in ("extension_set", "extension_check"):                          # the exception: the player's setting
-            self.assertIn("本机扩展批准 (Local extension approval) is 自动允许 (allow", tools[name].description)
+            self.assertIn("本机扩展批准 (Local extension approval) is 自动批准 (approve", tools[name].description)
         for tool in tools.values():                                                # the daemon's mode has no say in it
             self.assertNotIn("developer mode", tool.description or "", tool.name)
             self.assertNotIn("player mode", tool.description or "", tool.name)
@@ -800,7 +800,7 @@ class Home(unittest.TestCase):
     def test_a_package_waits_whatever_the_setting(self):
         """extension_add of a package: its row has approval_note also while the setting is "auto" (with the reason), a
         folder's then has none; the list names only the one that waits. The session registered it all the same"""
-        package, note = "C:/down/voice-1.2.0.zip", ("It may not run yet: the player has not allowed it to run yet, so its "
+        package, note = "C:/down/voice-1.2.0.zip", ("It may not run yet: the player has not approved it yet, so its "
                                                     "calls answer needs_approval. ")
         for service, mcp in self.both("auto"):
             added = self.call(mcp, "extension_add", path=package)
@@ -811,8 +811,8 @@ class Home(unittest.TestCase):
             made = self.call(mcp, "new_extension", id="mine")
             self.assertNotIn("approval_note", made["row"])
             listing = self.call(mcp, "local_extensions")
-            self.assertEqual(listing["approval_note"], "Not allowed to run yet: voice (the player has not allowed it to "
-                             f"run yet). Their calls answer needs_approval. {kit.ASKED} {kit.APPROVE}")
+            self.assertEqual(listing["approval_note"], "Not approved yet: voice (the player has not approved it "
+                             f"yet). Their calls answer needs_approval. {kit.ASKED} {kit.APPROVE}")
             self.assertEqual((listing["home"], [r["id"] for r in listing["extensions"]]),
                              ("C:/w/extensions", ["voice", "linked", "mine"]))
             self.assertNotIn("approval_note", service.rows["voice"])
