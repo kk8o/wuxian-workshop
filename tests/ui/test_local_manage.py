@@ -576,7 +576,8 @@ class Manage(unittest.TestCase):
         tail = "先调用 wuxian 的 guide，按它判断从哪一档做起，从最省事的一档开始；需要我操作时告诉我。最后给我结论（能做 / 有条件能做 / 不能做）和依据。"
         self.assertEqual(o["blank"], "用无限工坊验证一个想法：\n（在这里写你的想法）\n\n" + tail)
         self.assertEqual(o["idle"], [0, False])
-        self.assertEqual(o["samples"], [["游戏内提醒", "背包剩余不足 5 格时，在屏幕中央提醒我"],     # one of each kind
+        self.assertEqual(o["samples"], [["扩充 Agent 能力",                              # what a plain addon is not
+                                         "让 Agent 能读取公会成员的备注和离线天数，帮我列出长期不上线的成员"],
                                         ["接入本机程序", "收到密语时，让电脑把内容读出来"],
                                         ["读取其他插件", "读取任务指引插件当前这一步，告诉我接下来该做什么"]])
         self.assertEqual(o["sample"], "收到密语时，让电脑把内容读出来")
@@ -747,7 +748,7 @@ class Page(unittest.TestCase):
                          [("idea", "idea", "交给 Agent"), ("manual", "manual", "手动创建")])      # the idea first
         self.assertIn('<div class="tabs" x-show="!lxn.sent && !lxn.result">', new)
         self.assertIn('<textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea" '
-                      'placeholder="例如：背包剩余不足 5 格时，在屏幕中央提醒我" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>', new)
+                      'placeholder="例如：收到密语时，让电脑把内容读出来" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>', new)
         self.assertIn('<template x-for="s in lxSamples" :key="s.name">', new)
         self.assertIn('<button class="btn tiny" type="button" :title="t(s.idea)" x-text="t(s.name)" @click="lxSample(s)"></button>', new)
         self.assertIn('<pre class="selectable lx-prompt" x-show="lxn.more" x-text="lxIdeaPrompt(lxn.idea)"></pre>', new)
@@ -803,7 +804,7 @@ class Page(unittest.TestCase):
 
     def test_the_words_have_their_english(self):
         for word in ("添加", "链接文件夹", "导入扩展包", "新建扩展", "扩展文件夹", "还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。", "再建一个",
-                     "手动创建", "复制给 Agent", "示例", "游戏内提醒", "接入本机程序", "读取其他插件", "发给 Agent 的完整内容",
+                     "手动创建", "复制给 Agent", "示例", "扩充 Agent 能力", "接入本机程序", "读取其他插件", "发给 Agent 的完整内容",
                      "已复制。接下来：", "在已接入无限工坊的 Agent 对话中粘贴并发送。", "尚未检测到已接入的 Agent：", "返回修改",
                      "要实现的功能", "生成清单与模板文件，之后自行编写，或交给 Agent 继续。", "（在这里写你的想法）",
                      "（在这里写你想要的功能）",

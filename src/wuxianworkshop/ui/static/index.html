@@ -1101,7 +1101,7 @@
             <div x-show="lxn.mode === 'idea' && !lxn.sent">
               <p class="lx-lead">用一两句话描述想实现的功能，不必考虑实现方式。</p>
               <p class="small muted lx-note">Agent 会查证游戏接口是否支持，判断在游戏内还是本机实现，新建扩展并调试，最后给出能否实现的结论与依据。</p>
-              <textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea" placeholder="例如：背包剩余不足 5 格时，在屏幕中央提醒我" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>
+              <textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea" placeholder="例如：收到密语时，让电脑把内容读出来" @keydown.ctrl.enter.prevent="lxIdeaCopy()"></textarea>
               <div class="lx-samples">
                 <span class="muted">示例</span>
                 <template x-for="s in lxSamples" :key="s.name">

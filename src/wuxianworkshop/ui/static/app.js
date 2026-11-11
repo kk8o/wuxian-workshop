@@ -188,9 +188,11 @@ const LX_LIMIT = 200;                          // 本机扩展's log: the lines 
 const LX_KEEP = 500;                           // … and kept, the newest
 const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
 const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extension's states with a process
-const LX_SAMPLES = [                           // 新建扩展 · 示例: an idea of each kind (in the game, with a program on this
-  { name: '游戏内提醒', idea: '背包剩余不足 5 格时，在屏幕中央提醒我' },          // computer, with another addon's data); keys,
-  { name: '接入本机程序', idea: '收到密语时，让电脑把内容读出来' },               // translated where they are shown
+// 新建扩展 · 示例: what an extension is for and a plain addon is not (something an agent uses in the game, a program on
+// this computer, another addon's data); keys, translated where they are shown
+const LX_SAMPLES = [
+  { name: '扩充 Agent 能力', idea: '让 Agent 能读取公会成员的备注和离线天数，帮我列出长期不上线的成员' },
+  { name: '接入本机程序', idea: '收到密语时，让电脑把内容读出来' },
   { name: '读取其他插件', idea: '读取任务指引插件当前这一步，告诉我接下来该做什么' },
 ];
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;        // a terminal's colours and cursor moves in a log
