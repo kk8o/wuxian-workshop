@@ -16,7 +16,8 @@ capabilities are called with local_call (which also calls WuxianKit's see / keep
 sources' items go into the journal as events of the addon "local" (topic <extension>.<source>; local.changed when the
 extensions changed). Their apps are kept the same in WuxianKit as their manifests say (reconcile_local_apps: after every
 kit.ready and whenever the extensions change, kit.app.declare for what is new or different, kit.app.forget for what is
-gone). Reactions (local/reactions.py) call a capability when an item is heard: a game source through the temporary app
+gone; before that WuxianKit is told which extensions with a local part are added here, kit.local.set, for its window
+to list them: tell_roster). Reactions (local/reactions.py) call a capability when an item is heard: a game source through the temporary app
 "reactions" (kit.app.open), a local source directly; an app's own (its manifest's reactions) are there while it runs.
 The wakes of an app that local extensions add to (their manifest's adds.<app>.wake) go into the journal with those
 extensions' notes, in the order they came with the app's kit.app events (daemon/notes.py).
@@ -203,6 +204,7 @@ class Service:
         self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
         self.declaring = None                # an asyncio.Lock: one round of reconciling the local apps at a time
         self.app_memory = {}                 # app -> (our declaration, WuxianKit's of it) as JSON when they last agreed
+        self.roster_told = None              # (UI session, the roster as JSON) WuxianKit was last told (tell_roster)
         self.reacting = None                 # an asyncio.Lock: the apps' own reactions are put and taken one at a time
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
@@ -1579,13 +1581,38 @@ class Service:
             return None
         return json.dumps(result["decl"], sort_keys=True, ensure_ascii=False)
 
+    async def tell_roster(self, ready=False):
+        """WuxianKit told the extensions added to this computer that have a local part (kit.local.set, the whole list:
+        its /wk window lists them beside the game's own, as the App's 扩展 page does). It keeps the list until its UI
+        reloads, so: once in each UI session (ready: its kit.ready came, it has none), and again when the list is
+        another. A WuxianKit without kit.local.set (or one that refuses the list) is not asked again until then; the
+        game away: at the next round"""
+        if ready:
+            self.roster_told = None
+        session = self.ui_session()
+        roster = await asyncio.to_thread(self.local.roster)
+        told = (session, json.dumps(roster, sort_keys=True, ensure_ascii=False))
+        if self.roster_told == told:
+            return
+        try:
+            await self.call_exposed(KIT, "kit.local.set", {"extensions": roster}, 10000)
+        except ApiError as e:
+            if e.code != "call_failed":
+                return                        # the game went away: at the next round
+            text = str(e.message or "")
+            if "kit.local.set" not in text and "has no WoWBridge handle" not in text:
+                self.journal.add("INFO", "local extensions: WuxianKit did not take their list: "
+                                         + text.partition("\n")[0][:300])
+        self.roster_told = told
+
     async def reconcile_local_apps(self, ready=False):
         """WuxianKit's apps of the local extensions made what the enabled extensions' manifests say, while the game is
         online (after every kit.ready, each time the link comes up, and when an extension was added, removed, turned
         on or off, loaded or approved; the game away: when it is back). An app WuxianKit has as a local one (kit.apps: its row's
         local) that no enabled extension declares any more is forgotten (kit.app.forget: it stops, its declaration
         goes, the player's options of it stay). The others are declared (kit.app.declare) when they are new or not
-        what WuxianKit has (kit.app.describe, against what it answered when it last took ours). The reactions of
+        what WuxianKit has (kit.app.describe, against what it answered when it last took ours). First of all WuxianKit
+        is told the extensions themselves (tell_roster: the rows its window has for them). The reactions of
         the apps that run are set; ready (a new UI session): those of the apps that do not run go, as when they
         stopped (their kit.app event may have been missed)"""
         if self.declaring is None:
@@ -1594,6 +1621,7 @@ class Service:
             async with self.declaring:
                 if self.ui_session() is None or not self.link_is_up():
                     return
+                await self.tell_roster(ready)
                 want = {}
                 for eid, decl in await asyncio.to_thread(self.local.declarations):
                     if isinstance(decl, dict) and isinstance(decl.get("app"), str):

@@ -83,7 +83,9 @@ POLL = 10                                   # seconds between the watch's asks w
 # the calls of the watch: in the background, so they never start the daemon (a daemon the player quit stays quit; a
 # client's own call starts one, as before). HttpBackend reads it
 PASSIVE = contextvars.ContextVar("wuxian_kit_passive", default=False)
-INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities"}             # read by this module, not tools
+# read by this module, or called by the daemon alone (kit.local.set: the extensions added here, for WuxianKit's
+# window): not tools
+INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities", "kit.local.set"}
 FINAL = {"done", "failed", "declined", "expired", "undone"}
 MAX_DOC, MAX_SKILLS = 64 * 1024, 20
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)

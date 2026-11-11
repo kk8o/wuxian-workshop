@@ -1,7 +1,8 @@
 """Local extensions over a real daemon (a FakeGame link; WuxianKit's calls answered here, tests/local/fixture_ext.py as
 the extension): the HTTP routes and their errors, SSE's `event: local`, local_call to a local extension and to the
 game's WuxianKit (see / keep / point only), an extension's own calls, its source's items as journal events, its apps
-declared (again after kit.ready only when they changed) and forgotten, the reactions (a game source through the
+declared (again after kit.ready only when they changed) and forgotten, the extensions with a local part told to
+WuxianKit for its window (kit.local.set), the reactions (a game source through the
 temporary app, a local source directly), new_extension, the MCP tools over /mcp and the command line; and packages and
 the game half of an extension (/api/local/pack, /api/local/install, a .zip given to /api/local/add), whose game addons
 go into the FakeGame's AddOns folder."""
@@ -50,7 +51,7 @@ class Kit:
     the apps it was told of (apps: id -> declaration), on: the ids that run"""
 
     def __init__(self, svc):
-        self.svc, self.calls, self.apps, self.on = svc, [], {}, set()
+        self.svc, self.calls, self.apps, self.on, self.roster = svc, [], {}, set(), None
 
     def emit(self, topic, data):
         self.svc.on_debug("EVENT", json.dumps({"a": "WuxianKit", "t": topic, "d": data}))
@@ -77,6 +78,9 @@ class Kit:
             result = {"on": True}
         elif name == "kit.app.stop":
             result = {"on": False}
+        elif name == "kit.local.set":
+            self.roster = json.loads(json.dumps(args["extensions"]))
+            result = {"count": len(self.roster)}
         elif name == "sense.bags":
             result = {"free": 12, "args": args}
         else:
@@ -124,6 +128,7 @@ class LocalDaemon:
         self.kit.calls.clear()
         self.kit.apps.clear()
         self.kit.on.clear()
+        self.kit.roster = None
 
     def tearDown(self):
         self.ok("POST", "/api/reactions/clear", {})
@@ -479,6 +484,68 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.kit.calls.clear()
         self.ok("POST", "/api/local/remove", {"id": "fx"})
         self.assertEqual(self.kit.asked("kit.app.forget"), [{"app": "companion"}])
+
+    def test_the_roster_told(self):
+        """WuxianKit is told the extensions that have a local part, for its window: the whole list when it is another
+        and after each kit.ready, not again while it is the same; one in the game only is the game's own to show"""
+        _, folder = self.add(author="Ann", notes="Quick answers",
+                             adds={"officers": {"wake": None, "skill": "AGENT.md"}, "guild": {"skill": "AGENT.md"}})
+        title = json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8"))["title"]
+        fx = {"id": "fx", "title": title, "version": "0.1.0", "author": "Ann", "notes": "Quick answers",
+              "where": "local", "on": True, "adds": ["guild", "officers"]}
+        self.assertTrue(until(lambda: self.kit.roster == [fx]), self.kit.roster)
+        self.assertEqual(self.kit.asked("kit.local.set")[-1], {"extensions": [fx]})
+        told = len(self.kit.asked("kit.local.set"))
+        self.ok("POST", "/api/local/load", {"id": "fx"})                # nothing of the list changed: not told again
+        time.sleep(0.3)
+        self.assertEqual(len(self.kit.asked("kit.local.set")), told)
+        self.kit.emit("kit.ready", {})                                  # a login or a reload: it has none, told again
+        self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == told + 1), self.kit.calls)
+        with_game(self.root / "ext" / "pair", "pair", "PairSide", run=["python", "main.py"])
+        toc = self.root / "ext" / "pair" / "addons" / "PairSide" / "PairSide.toc"
+        toc.write_text(toc.read_text(encoding="utf-8").replace("## Version", "## X-WuxianKit-Extension: pair_game\n"
+                                                                             "## Version"),
+                       encoding="utf-8", newline="\n")
+        self.ok("POST", "/api/local/add", {"path": str(self.root / "ext" / "pair")})
+        with_game(self.root / "ext" / "peek", "peek", "PeekSide", run=None, env=None)
+        self.ok("POST", "/api/local/add", {"path": str(self.root / "ext" / "peek")})
+        self.assertTrue(until(lambda: [r["id"] for r in self.kit.roster or ()] == ["fx", "pair"]), self.kit.roster)
+        pair = self.kit.roster[1]
+        self.assertEqual((pair["where"], pair["game"], pair["on"]), ("both", ["pair_game"], True))
+        self.assertNotIn("adds", pair)
+        self.assertNotIn("author", pair)
+        self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
+        self.assertTrue(until(lambda: self.kit.roster[0] == dict(fx, on=False)), self.kit.roster)
+        self.ok("POST", "/api/local/remove", {"id": "fx"})
+        self.assertTrue(until(lambda: [r["id"] for r in self.kit.roster] == ["pair"]), self.kit.roster)
+        self.ok("POST", "/api/local/remove", {"id": "pair"})
+        self.ok("POST", "/api/local/remove", {"id": "peek"})
+        self.assertTrue(until(lambda: self.kit.roster == []), self.kit.roster)
+
+    def test_the_roster_and_a_kit_before_it(self):
+        """a WuxianKit without kit.local.set: asked once, nothing in the journal, the apps declared as ever; asked
+        again only when the list is another or its UI is a new one"""
+        answer = self.kit.call_exposed
+
+        async def old(addon, name, args=None, timeout_ms=10000, shared=None):
+            if name == "kit.local.set":
+                self.kit.calls.append((name, args))
+                raise ApiError(400, "call_failed", "WuxianKit has no kit.local.set")
+            return await answer(addon, name, args, timeout_ms, shared)
+        self.svc.roster_told = None
+        first = self.svc.journal.next_id
+        with mock.patch.object(self.svc, "call_exposed", old):
+            self.add(apps=[{"app": "companion", "title": "语音搭子", "prompt": "companion"}])
+            self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
+            self.assertEqual(len(self.kit.asked("kit.local.set")), 1)
+            self.ok("POST", "/api/local/load", {"id": "fx"})
+            time.sleep(0.3)
+            self.assertEqual(len(self.kit.asked("kit.local.set")), 1)
+            self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
+            self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == 2), self.kit.calls)
+        texts = [e["text"] for e in list(self.svc.journal.entries) if e["id"] >= first]
+        self.assertEqual([t for t in texts if "did not take their list" in t], [])
+        self.assertIsNone(self.kit.roster)
 
     def test_apps_of_a_kit_before_describe(self):
         """a WuxianKit without kit.apps and kit.app.describe: the apps are declared at every kit.ready, as before"""

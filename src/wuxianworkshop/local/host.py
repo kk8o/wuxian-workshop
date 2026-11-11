@@ -614,6 +614,9 @@ class Host:
     def enabled_manifests(self):
         return A.enabled_manifests(self)
 
+    def roster(self):
+        return A.roster(self)
+
     def adds(self, app):
         return A.adds(self, app)
 

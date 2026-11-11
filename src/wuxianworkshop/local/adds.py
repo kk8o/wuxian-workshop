@@ -5,6 +5,7 @@ r"""What the enabled local extensions add to apps, read from their manifests for
     app_reactions(host, app)      the reactions of the app's own declaration (installed while the app runs)
     control_call(host, app, cmd)  the capability a control of the app is bound to
     row(manifest)                 the adds of one manifest for the rows of the API
+    roster(host)                  the extensions with a local part, as WuxianKit's window is told of them
 
 The fifth batch's contract (work/layers/contract5.md, sections 4, 5 and 11). adds() is called for every wake of every
 app (the daemon's frame thread) and the others not much less often, so all of them read one table, kept in
@@ -75,6 +76,32 @@ def declaration(app, eid, title):
         out["controls"] = [c if isinstance(c, str) else c["cmd"] if c["cmd"] in M.CORE_CONTROLS
                            else {"cmd": c["cmd"], "label": c.get("label")} for c in out["controls"]]
     out["local"] = {"id": eid, "title": title}
+    return out
+
+
+def roster(host):
+    """what the game's WuxianKit is told of the extensions added to this computer (kit.local.set; its /wk window lists
+    them beside the game's own): [{id, title, version?, author?, notes?, where, on, game?, adds?}] of those with a
+    local part (where "local" or "both": one in the game only is the game's own to show), in the registry's order.
+    on: enabled and adding what it adds (as enabled_manifests() takes it); game: the ids its addons give WuxianKit;
+    adds: the apps it adds to. One whose manifest does not pass is left out. Read anew each time (an extension that
+    is off counts too, and the table keeps only those that are on)"""
+    out = []
+    with host.lock:
+        for e in host.load()["extensions"]:
+            m, _ = M.check_manifest(e["path"])
+            if m is None or m["id"] != e["id"] or m["where"] == "game":
+                continue
+            item = dict(id=e["id"], title=m.get("title") or e["id"], where=m["where"],
+                        on=bool(e["enabled"]) and allowed(host, e) and host.unmet_error(m) is None)
+            for key in ("version", "author", "notes"):
+                if isinstance(m.get(key), str) and m[key]:
+                    item[key] = m[key]
+            if m.get("game"):
+                item["game"] = list(m["game"])
+            if m.get("adds"):
+                item["adds"] = sorted(m["adds"])
+            out.append(item)
     return out
 
 

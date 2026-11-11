@@ -606,6 +606,8 @@ class KitTools(unittest.TestCase):
             {"id": "kit", "title": "Core", "version": "0.3.0", "addon": "WuxianKit", "docs": "WuxianKit", "state": "on",
              "capabilities": [{"id": "kit.manifest", "kind": "see", "title": "Manifest", "doc": "", "args": {}},
                               {"id": "kit.revision", "kind": "see", "title": "Revision", "doc": "", "args": {}},
+                              {"id": "kit.local.set", "kind": "keep", "title": "Local", "doc": "",
+                               "args": {"extensions": "table"}},
                               {"id": "kit.undo", "kind": "do", "title": "Undo", "doc": "undo", "args": {"id": "number"}}],
              "events": [{"topic": "kit.proposal", "doc": "a proposal changed state", "data": {"id": "number"}}]},
             {"id": "tune", "title": "Tune", "version": "0.3.0", "addon": "WuxianKit", "docs": "WuxianKit/Extensions/Tune",
@@ -675,8 +677,9 @@ class KitTools(unittest.TestCase):
         mcp = build_server(backend)
         tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
         self.assertIn("run", tools)
-        self.assertEqual(sorted(n for n in tools if n.startswith("wk_")),            # not kit.manifest / kit.revision,
-                         ["wk_chat_send", "wk_demo_ping", "wk_docs", "wk_kit_undo",   # nor a kind of a later protocol
+        self.assertEqual(sorted(n for n in tools if n.startswith("wk_")),            # not kit.manifest / kit.revision
+                         ["wk_chat_send", "wk_demo_ping", "wk_docs", "wk_kit_undo",   # / kit.local.set (the daemon's),
+                                                                                      # nor a kind of a later protocol
                           "wk_propose", "wk_tune_cvar_get", "wk_tune_cvar_set", "wk_wait"])
         self.assertTrue(tools["wk_tune_cvar_get"].annotations.read_only_hint)
         self.assertFalse(tools["wk_tune_cvar_set"].annotations.read_only_hint)
