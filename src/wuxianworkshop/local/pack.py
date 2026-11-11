@@ -45,8 +45,6 @@ MAX_MANIFEST = 1 << 20              # bytes of a manifest read from a package
 EXCLUDE = (".git", ".hg", ".svn", "__pycache__", "*.pyc", ".venv*", "venv", "node_modules", ".pytest_cache",
            ".mypy_cache", ".idea", ".vscode", "logs", "cache", "*.log", "*.local.*", ".env*", "Thumbs.db", ".DS_Store")
 STAMP = (1980, 1, 1, 0, 0, 0)       # every member's time: the same files give the same zip
-DEVICES = ({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
-           | {f"{d}{n}" for d in ("COM", "LPT") for n in "0123456789¹²³"})
 METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA)
 MODE = 0o600 << 16                  # every member's attributes: what zipfile gives a member that says nothing
 CHUNK = 1 << 20
@@ -145,7 +143,7 @@ def part_problem(part):
         return "a character Windows takes in no file name"
     if part[-1] in ". ":
         return "a name that ends with a dot or a space"
-    if part.split(".")[0].rstrip(" ").upper() in DEVICES:
+    if M.device_name(part):
         return "a device's name on Windows"
     return None
 

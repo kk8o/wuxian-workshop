@@ -269,6 +269,7 @@ def _rmtree(folder):
 
 
 def main(argv=None):
+    sys.stdout.reconfigure(errors="replace")       # a failure's text on a console that is not UTF-8 (the CI's cp1252)
     ap = argparse.ArgumentParser(description="Run the tests in parallel worker processes.")
     ap.add_argument("names", nargs="*", help="test packages, modules (dotted or paths), classes or tests; default: all")
     ap.add_argument("-j", "--jobs", type=int, default=min(os.cpu_count() or 1, 8), help="worker processes (default: %(default)s)")

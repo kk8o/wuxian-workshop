@@ -801,6 +801,16 @@ def check_wake(wake, own, where, out):
     return dict(call=f"{own or '?'}.{name}", timeout=float(timeout))
 
 
+DEVICES = ({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}      # names Windows keeps for devices (pack.py takes no file so named)
+           | {f"{d}{n}" for d in ("COM", "LPT") for n in "0123456789¹²³"})
+
+
+def device_name(part):
+    """whether a file name is a device's on Windows (CON, nul.md, COM1.txt): by its name, since newer Windows take
+    some of them as files inside a folder and older ones do not"""
+    return part.split(".")[0].rstrip(" ").upper() in DEVICES
+
+
 def check_skill(rel, base, where, out):
     """an adds entry's skill as the host uses it: the absolute path of a file in the extension's folder, or None"""
     if rel is None:
@@ -817,7 +827,7 @@ def check_skill(rel, base, where, out):
     if p.is_dir():
         out.append(problem("error", where, f"{p} is a folder", "name a Markdown file"))
         return None
-    if p.exists() and not p.is_file():                     # a device name (CON, NUL): reading it would never end
+    if any(device_name(part) for part in Path(rel).parts) or (p.exists() and not p.is_file()):   # reading a device would never end
         out.append(problem("error", where, f"{rel} is not a file", "name a Markdown file, such as skills/<app>.md"))
         return None
     try:
