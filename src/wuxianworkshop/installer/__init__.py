@@ -17,10 +17,11 @@ ADDON_FILE_TYPES = (".lua", ".toc", ".xml", ".tga")    # what an addon folder ma
 # client version -> the ## Interface number its addons declare, for the clients this release was verified with
 # (1.60.1.70235: the cn beta the mailbox was measured on; 1.60.1.70245: the update of 2026-10-07, same Interface, link,
 # run and checks verified in the game; 1.60.1.70790: the release client of 2026-11-05 in _forever_, the same, also WGC
-# and GDI capture, minimize / restore and resizes). Other clients are not refused: installer.addons.client_info() takes
+# and GDI capture, minimize / restore and resizes; 1.60.1.70862: the patch of 2026-11-08, extensions, apps and the whole-pull run in
+# the game). Other clients are not refused: installer.addons.client_info() takes
 # the number the game itself reported (WoWBridge's HELLO), else this table, else the one the version gives (1.60.1 ->
 # 16001).
-VERIFIED_CLIENTS = {"1.60.1.70235": 16001, "1.60.1.70245": 16001, "1.60.1.70790": 16001}
+VERIFIED_CLIENTS = {"1.60.1.70235": 16001, "1.60.1.70245": 16001, "1.60.1.70790": 16001, "1.60.1.70862": 16001}
 
 
 def addons_for(mode):
