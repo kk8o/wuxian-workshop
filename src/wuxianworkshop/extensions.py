@@ -7,7 +7,7 @@ own, not the program's.
       "sha256": "...", "min_app": "0.9.7", "protocol": 1, "extensions": [{"id", "title": {"zh", "en"}, "tools", "events"}],
       "skills": [{"name", "extension", "description"}], "notes": {"zh", "en"}, "released": "2026-10-10", "homepage": ...}]}
 
-An addon that extends another (a custom extension of WuxianKit's) names that one "parent" (the page shows it under it)
+An entry may name another as its "parent" (older catalogs do: kept as read, and the page no longer nests by it)
 and the addon folders it needs "requires" (["WuxianKit", "EllesmereUI"]): while one of them is missing it is not installed.
 
 The files sit beside the catalog (a versioned name is never given other contents). An install downloads the zip (its size
