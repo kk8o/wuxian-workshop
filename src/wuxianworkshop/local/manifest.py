@@ -471,16 +471,27 @@ def check_pack(pack, where, out):
 
 
 def locate_file(folder, given, default, is_dir, where, out):
-    """the absolute path a docs / skills field names (default: the default name when it is there), or None"""
-    if given is None:
-        p = folder / default
-        return p if (p.is_dir() if is_dir else p.is_file()) else None
-    if not text_of(given):
+    """the absolute path a docs / skills field names (default: the default name when it is there), or None. What it
+    names is shown to the agent, so it is in the extension folder: a path that leads out of it (an absolute one, ..,
+    a link to somewhere else) is not taken"""
+    if given is not None and (not text_of(given) or Path(given).is_absolute() or Path(given).drive):
         out.append(problem("error", where, "a path relative to the extension folder", f'"{default}"'))
         return None
-    p = Path(given) if Path(given).is_absolute() else folder / given
-    if not (p.is_dir() if is_dir else p.is_file()):
-        out.append(problem("warning", where, f"there is no {p}", "make it, or leave the field out"))
+    p = folder / (default if given is None else given)
+    try:
+        base, real = Path(folder).resolve(), p.resolve()
+        inside = base in real.parents or (is_dir and real == base)
+        there = p.is_dir() if is_dir else p.is_file()
+    except (OSError, ValueError):
+        inside, there = True, False
+    if not inside:
+        out.append(problem("error" if given is not None else "warning", where,
+                           f"{default if given is None else given} is not in the extension folder",
+                           "keep what the agent reads in the extension's own folder"))
+        return None
+    if not there:
+        if given is not None:
+            out.append(problem("warning", where, f"there is no {p}", "make it, or leave the field out"))
         return None
     return p
 
@@ -781,6 +792,9 @@ def check_skill(rel, base, where, out):
         return None
     if p.is_dir():
         out.append(problem("error", where, f"{p} is a folder", "name a Markdown file"))
+        return None
+    if p.exists() and not p.is_file():                     # a device name (CON, NUL): reading it would never end
+        out.append(problem("error", where, f"{rel} is not a file", "name a Markdown file, such as skills/<app>.md"))
         return None
     try:
         p.read_bytes().decode("utf-8-sig")

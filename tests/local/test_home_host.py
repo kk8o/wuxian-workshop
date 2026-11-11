@@ -101,9 +101,13 @@ class Discovery(HomeCase):
             self.assertEqual(e.exception.code, "needs_approval")
         self.assertFalse(A.allowed(self.host, self.host.entry("fx")))
         self.assertEqual(self.host.declarations(), [])
+        (entry,) = self.host.manifest_entries()["extensions"]                    # its words are not the agent's to read yet
+        self.assertEqual((entry["id"], entry["docs"], entry["skills"], entry["allowed"]), ("fx", None, None, False))
         self.assertEqual((self.pids(), self.host.get("fx")["approval"]), ([], "needed"))
         row = self.host.approve("fx")                                            # the player, in the App
         self.assertEqual((row["approval"], row["allowed"]), ("ok", True))
+        (entry,) = self.host.manifest_entries()["extensions"]
+        self.assertEqual((entry["docs"], entry["allowed"]), (str(folder / "AGENT.md"), True))
         self.assertEqual(self.host.call_sync("fx.echo", {"text": "a"})["text"], "a")
         self.assertIs(self.host.entry("fx")["ask"], True)                        # it stays one that asks:
         self.host.stop("fx")

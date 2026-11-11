@@ -1069,6 +1069,12 @@ class KitTools:
                 if row["where"] == "local":
                     row["state"] = self.state_of(row["ext"])
 
+    def held(self, ext):
+        """whether a local extension waits for the player's yes (its entry or its registry row says allowed false):
+        its AGENT.md and skills are not read then, as its adds are not (with_adds)"""
+        row = self.local_rows.get(ext["id"])
+        return ext.get("allowed") is False or (isinstance(row, dict) and row.get("allowed") is False)
+
     def with_adds(self, ext):
         """a local extension's entry with what it adds to apps (adds_of reads it): its registry row's adds once that is
         read, else the entry's own; nothing while the daemon says it is not allowed (allowed false: the player has
@@ -1232,7 +1238,7 @@ class KitTools:
             owners += [(e, None, e.get("docs"), inside(addons, e.get("docs"), "skills"))
                        for e in self.exts.values() if e.get("state") == "on"]
         for e in self.local_exts.values():
-            folder = e.get("skills")
+            folder = None if self.held(e) else e.get("skills")   # (not allowed yet: its words are not read)
             if isinstance(folder, str) and folder and os.path.isabs(folder):
                 owners.append((e, None, None, Path(folder)))
         for ext, app, docs, folder in owners:
@@ -1498,8 +1504,8 @@ class KitTools:
         """a local extension's docs: its AGENT.md (the path its entry gives), where it is, how its process is now and
         whether the player has to allow it first (its registry row), its tools, sources, options, apps, skills and what
         it adds to apps, by the same tables as the game's extensions'"""
-        eid = ext["id"]
-        docs = ext.get("docs")
+        eid, held = ext["id"], self.held(ext)
+        docs = None if held else ext.get("docs")
         body = ((await asyncio.to_thread(read_doc, docs)) if isinstance(docs, str) and os.path.isabs(docs) else None) or ""
         body = body.strip()
         head = re.match(r"#\s+(.+)\n*", body)
@@ -1521,7 +1527,9 @@ class KitTools:
         if approval:
             lines += [f"It may not run yet: {APPROVALS[approval]}, so its calls answer needs_approval. "
                       + (f"{ASKED} " if auto is True else "") + APPROVE, ""]
-        lines += [body.strip() or "It has no AGENT.md: its tools below say what they do.", ""]
+        lines += [body.strip() or ("Its AGENT.md and skills are read once the player has allowed it: until then its "
+                                   "tools below say what they do." if held else
+                                   "It has no AGENT.md: its tools below say what they do."), ""]
         caps = local_caps(ext)
         if caps:
             live = set(self.local_ids.values()) | (set(self.ids.values()) - self.topics)

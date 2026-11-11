@@ -602,7 +602,8 @@ class Host:
         """the enabled extensions as WuxianKit's manifest lists an extension (local_manifest): {id, title, version,
         notes, state "on", runtime "local", path, docs, skills, capabilities: [{id, kind, title, doc, args, timeout}],
         sources: [{name, title, doc}], options: [opt + value], apps: [declaration], adds: {app: {wake, skill}},
-        allowed}. One whose manifest cannot be read now keeps what it described. One in the game only is not among
+        allowed}. One whose manifest cannot be read now keeps what it described. docs and skills are None while it is
+        not allowed: the agent reads its words once the player has said yes to it. One in the game only is not among
         them: what it has, its tools and its docs, the game's WuxianKit lists itself"""
         out = []
         with self.lock:
@@ -615,15 +616,15 @@ class Host:
                 m = None
             if m is not None and not m["run"]:
                 continue
-            desc = e.get("described") or {}
+            desc, ok = e.get("described") or {}, A.allowed(self, e)
             out.append(dict(id=e["id"], title=(m or {}).get("title") or e["id"], version=(m or {}).get("version"),
                             notes=(m or {}).get("notes"), state="on", runtime="local", path=e["path"],
-                            docs=(m or {}).get("docs"), skills=(m or {}).get("skills"),
+                            docs=(m or {}).get("docs") if ok else None, skills=(m or {}).get("skills") if ok else None,
                             capabilities=[{k: c[k] for k in ("id", "kind", "title", "doc", "args", "timeout")}
                                           for c in desc.get("capabilities") or []],
                             sources=[dict(s) for s in desc.get("sources") or []], options=self.option_rows(e),
                             apps=[dict(a) for a in (m or {}).get("apps") or []],
-                            adds=A.row(m), allowed=A.allowed(self, e)))
+                            adds=A.row(m), allowed=ok))
         return dict(revision=int(data.get("revision") or 0), extensions=out)
 
     # what the enabled extensions add to apps (adds.py): the declarations of their apps, the wake notes and skill

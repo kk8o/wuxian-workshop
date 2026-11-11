@@ -1,6 +1,7 @@
 """wuxian-extension.json and an extension's description (initialize's answer), checked: what is taken, and every
 problem with where, message and hint."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,42 @@ class Manifest(unittest.TestCase):
         self.assertEqual(m["apps"], [{"app": "companion", "title": "无限陪玩", "prompt": "companion",
                                       "hear": ["game:combat"], "reactions": []}])
         self.assertEqual(M.check_manifest(self.folder / M.MANIFEST)[0], m)          # its file names it too
+
+    def test_docs_and_skills_stay_in_the_folder(self):
+        """what docs and skills name is shown to the agent: a path that leads out of the extension folder (an absolute
+        one, .., a link) is not taken, whatever is there"""
+        import _winapi
+        ext = self.folder / "ext"
+        (ext / "notes").mkdir(parents=True)
+        (ext / "notes" / "use.md").write_text("# use", encoding="utf-8")
+        (self.folder / "secret.md").write_text("not its own", encoding="utf-8")
+        (self.folder / "other").mkdir()
+
+        def check(**fields):
+            (ext / M.MANIFEST).write_text(json.dumps(dict({"id": "tool", "run": ["python", "main.py"]}, **fields)),
+                                          encoding="utf-8")
+            return M.check_manifest(ext)
+        m, problems = check(docs="notes/use.md", skills="notes")
+        self.assertEqual((problems, m["docs"], m["skills"]), ([], str(ext / "notes" / "use.md"), str(ext / "notes")))
+        for fields, where in (({"docs": "../secret.md"}, "docs"), ({"docs": str(self.folder / "secret.md")}, "docs"),
+                              ({"docs": "notes/../../secret.md"}, "docs"), ({"docs": 3}, "docs"),
+                              ({"docs": "notes/use.md", "skills": "../other"}, "skills"),
+                              ({"docs": "notes/use.md", "skills": str(self.folder / "other")}, "skills")):
+            m, problems = check(**fields)
+            self.assertIsNone(m, fields)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: {where}"], fields)
+            self.assertTrue(all(p["hint"] for p in problems), fields)
+        m, problems = check(docs="notes/none.md", skills="notes/use.md")           # in it, but not there: left out
+        self.assertEqual((m["docs"], m["skills"], where_of(problems), where_of(problems, "warning")),
+                         (None, None, [], [f"{M.MANIFEST}: docs", f"{M.MANIFEST}: skills"]))
+        m, problems = check(docs="CON", skills="notes")                            # a device is no file
+        self.assertEqual((m["docs"], where_of(problems, "warning")), (None, [f"{M.MANIFEST}: docs"]))
+        _winapi.CreateJunction(str(self.folder / "other"), str(ext / "skills"))    # the default name, linked elsewhere
+        m, problems = check(docs="notes/use.md")
+        self.assertEqual((m["docs"], m["skills"], where_of(problems), where_of(problems, "warning")),
+                         (str(ext / "notes" / "use.md"), None, [], [f"{M.MANIFEST}: skills"]))
+        self.assertIn("is not in the extension folder", problems[0]["message"])
+        os.rmdir(ext / "skills")
 
     def test_defaults_and_warnings(self):
         self.write({"id": "tool", "run": ["python", "main.py"], "colour": "red"})
@@ -219,6 +256,8 @@ class Adds(unittest.TestCase):
             ({"guild": {"skill": "../outside.md"}}, "adds.guild.skill"),
             ({"guild": {"skill": str(outside)}}, "adds.guild.skill"),
             ({"guild": {"skill": "skills"}}, "adds.guild.skill"),                 # a folder
+            ({"guild": {"skill": "CON"}}, "adds.guild.skill"),                    # a device: reading it would not end
+            ({"guild": {"skill": "skills/nul.md"}}, "adds.guild.skill"),
         ]
         for value, where in cases:
             m, problems = self.check(adds=value)

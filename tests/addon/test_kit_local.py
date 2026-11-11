@@ -213,6 +213,25 @@ class LocalExtensions(unittest.TestCase):
         odd = Backend(kit_manifest(), {"revision": "x", "extensions": "nope"})
         self.assertNotIn("wk_voice_say", self.names(self.tools(odd)))
 
+    def test_one_that_waits_is_not_read(self):
+        """while the player has not allowed a local extension, its AGENT.md and skills are not read (they could say
+        anything to the agent): wk_docs says so and lists what the manifest declares"""
+        tools = self.tools(Backend(kit_manifest(), self.voice(allowed=False)))    # (even with the paths in the entry)
+        doc = asyncio.run(tools.call("wk_docs", {"extension": "voice"})).content[0].text
+        self.assertTrue(doc.startswith("# 声音\n\nLocal extension `voice` 0.1.0"))
+        self.assertNotIn("Speaks for the player", doc)
+        self.assertIn("Its AGENT.md and skills are read once the player has allowed it", doc)
+        self.assertNotIn("It has no AGENT.md", doc)
+        self.assertIn("| `wk_voice_say` |", doc)
+        self.assertNotIn("## Skills", doc)
+        self.assertEqual([s["prompt"] for s in asyncio.run(tools.skills()) if s["local"]], [])
+        tools = self.tools(Backend(kit_manifest(), self.voice(allowed=True)))
+        self.assertEqual([s["prompt"] for s in asyncio.run(tools.skills()) if s["local"]], ["companion"])
+        self.assertFalse(tools.held({"id": "voice", "allowed": True}))
+        tools.local_rows = {"voice": {"allowed": False}}                          # its registry row says so first
+        self.assertTrue(tools.held({"id": "voice", "allowed": True}))
+        self.assertNotIn("Speaks for the player", asyncio.run(tools.extension_doc("voice")))
+
     def test_its_docs(self):
         """wk_docs {"extension": "voice"}: its AGENT.md (the absolute path the entry gives), where it is, its tools,
         sources, options (their values now), apps and skills; one that never ran says how its tools come"""
