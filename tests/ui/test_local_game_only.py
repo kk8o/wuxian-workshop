@@ -8,6 +8,9 @@ state}, player {action, text}):
 - no command, no 启动方式, no 日志: the card and 概况 name its game addons, 能力 are the game's tools once it is loaded;
 - 载入 says what the game refused (loaded [{folder, ok, error}]) and a Lua syntax error that kept it out (422
   check_failed with the addons' findings); 检查 lists the Lua findings as its problems;
+- a game addon the workshop will not install (state listed / foreign / broken, a summary's cannot) is said before
+  批准 (the tag, a line in the card, the summary's row, no promise to install) and after it (the answer's installed
+  {ok: false}: a note that stays); 原因 of a row this workshop is too old for is the page's own line;
 - the page hides and shows those parts by lxGameOnly, and every word has its English."""
 import json
 import re
@@ -56,7 +59,7 @@ async function api(path, opts) {
   calls.push([path, body ? copyOf(body) : null]);
   if (path === '/api/local') return { extensions: copyOf(rows), capabilities: {} };
   const action = path.startsWith('/api/local/') ? path.slice(11).split('?')[0] : '';
-  if ((action === 'load' || action === 'check') && answer) {
+  if (['load', 'check', 'approve'].includes(action) && answer) {
     const a = answer;
     answer = null;
     if (a instanceof Error) throw a;
@@ -187,9 +190,65 @@ const pill = (r) => { const s = st.lxState(r); return [s.key, s.cls, s.text]; };
   await st.lxAct(st.lxCur, 'check');
   out.checkedDuo = st.lxCheck.summary;
 
+  // a game addon the workshop will not install: said before the yes
+  const clash = gm('clash', 'absent', { approval: 'needed', origin: 'home', addons: [addon('WuxianKit_EllesmereUI', 'listed')],
+                                        player: player('approve') });
+  const taken = Object.assign({}, row('duo'), { id: 'taken', title: 'taken', approval: 'needed', addons: [addon('WxTaken', 'foreign')] });
+  const sumOf = (game) => st.lxSumRows({ game }).filter((x) => x.id === 'game').map((x) => x.v);
+  const stuckSum = [{ folder: 'WuxianKit_EllesmereUI', version: '0.3.3', needs: [], path: null, cannot: 'listed' },
+                    { folder: 'WxTaken', version: '', needs: [{ addon: 'EllesmereUI', installed: true }], path: 'G:\\AddOns\\WxTaken', cannot: 'foreign' },
+                    { folder: 'WxBroken', version: '', needs: [], path: null, cannot: 'broken' },
+                    { folder: 'WxNew', version: '0.1.0', needs: [], path: null, cannot: null },
+                    { folder: 'WxIn', version: '0.1.0', needs: [], path: 'G:\\AddOns\\WxIn' }];
+  out.stuck = {
+    pill: pill(Object.assign({}, clash, { approval: 'ok' })),
+    line: [st.lxStuck(clash), st.lxStuck(taken), st.lxStuck(gm('x', 'absent', { addons: [addon('A'), addon('B', 'broken')] })),
+           st.lxStuck(row('tips')), st.lxStuck(row('asked')), st.lxStuck(row('solo')), st.lxStuck(null)],
+    hint: [st.lxApproveHint(clash), st.lxApproveHint(taken)],
+    act: [st.lxGameAct(clash), st.lxWillInstall(clash), st.lxGameAct(row('asked')), st.lxWillInstall(row('asked'))],
+    addons: ['listed', 'foreign', 'broken'].map((s) => [st.lxAddonState(addon('A', s)), st.lxAddonPill(addon('A', s)), st.lxCannot(s)]),
+    later: st.lxCannot('something_new'),
+    sum: sumOf(stuckSum),
+  };
+
+  // 批准: what became of its game addons (the answer's installed)
+  rows.push(clash);
+  st.lx.list = copyOf(rows);
+  const yes = (r, installed, more) => Object.assign(copyOf(r), { approval: 'ok', player: null, installed }, more);
+  cur('clash');
+  calls.length = 0;
+  answer = yes(clash, { ok: false, code: 'bad_addon', addons: [],
+                        message: "'WuxianKit_EllesmereUI': an addon of the catalog: the 扩展 page installs it" });
+  await st.lxApprove(st.lxCur);
+  await settle();
+  out.approveStuck = { posts: calls.filter((c) => c[1]), note: copyOf(st.lx.note), said: last(), pill: pill(st.lxCur),
+                       restart: st.lxRestart(st.lxCur), row: 'installed' in st.lxCur };
+  cur('asked');                               // nothing in its way, but no game folder
+  answer = yes(row('asked'), { ok: false, code: 'no_game_folder', message: "the game's AddOns folder is not known", addons: [] });
+  await st.lxApprove(st.lxCur);
+  out.approveNoGame = [copyOf(st.lx.note), last()];
+  st.lxRow(copyOf(row('asked')));             // as before the yes; this time they go in
+  answer = yes(row('asked'), { ok: true, restart: true, hint: 'restart the game',
+                               addons: [{ folder: 'WxAsked', state: 'installed', was: 'missing', version: '0.1.0', kept: null }] },
+               { addons: [addon('WxAsked')], game: { extensions: ['asked'], state: 'restart' } });
+  await st.lxApprove(st.lxCur);
+  out.approveFine = [st.lx.note, last(), st.lxRestart(st.lxCur)];
+  cur('solo');                                // one without game addons, and a daemon that does not say
+  answer = yes(row('solo'), null);
+  await st.lxApprove(st.lxCur);
+  out.approvePlain = [st.lx.note, last()];
+  await st.lxApprove(st.lxCur);
+  out.approveOld = [st.lx.note, last()];
+  await settle();
+
   // 原因: a row in the game only at rest has none (its why only says where it runs)
   out.reasons = [st.lxReason({ state: 'game', why: 'it is in the game only' }), st.lxReason({ state: 'exited', why: 'exit code 1' }),
                  st.lxReason({ state: 'stopped', why: null }), st.lxReason(null)];
+  // and one this workshop is too old for says it in the page's words (the daemon's line is written for agents)
+  const short = (what, needs, has) => ({ state: 'stopped', why: 'x needs WuxianWorkshop 0.9.13 or newer, this is 0.9.12: update the workshop',
+                                         unmet: [{ what, needs, has }] });
+  out.short = [st.lxReason(short('workshop', '0.9.13', '0.9.12')), st.lxReason(short('workshop', '0.9.13', null)),
+               st.lxReason(short('kit', '0.7', '0.6.0')), st.lxReason(short('workshop', null, '0.9.12'))];
 
   // the first line for the agent
   out.prompts = [st.lxPrompt(row('tips')), st.lxPrompt(row('duo')), st.lxPrompt(row('solo'))];
@@ -202,6 +261,8 @@ const pill = (r) => { const s = st.lxState(r); return [s.key, s.cls, s.text]; };
     player: ['start_game', 'restart_game', 'enable_addon', 'turn_on'].map((a) => st.lxPlayer(gm('tips', 'off', { player: player(a) }))),
     where: [st.lxWhere(row('tips')), st.lxWhere(row('duo')), st.lxWhere(row('solo')), st.lxWhereTip(row('tips'))],
     approval: [st.lxApprovalTitle(row('edited')), st.lxApproveHint(row('asked'))],
+    stuck: [st.lxStuck(clash), st.lxApproveHint(clash), st.lxAddonState(addon('A', 'listed')), st.lxCannot('foreign'),
+            st.lxCannot('broken'), st.lxReason(short('workshop', '0.9.13', '0.9.12'))].concat(sumOf(stuckSum)),
     caps: st.lxCapsLine(row('fresh'), null),
     prompt: st.lxPrompt(row('tips')),
     idea: st.lxIdeaPrompt(),
@@ -324,6 +385,46 @@ class GameOnly(unittest.TestCase):
     def test_no_reason_at_rest(self):
         self.assertEqual(self.out["reasons"], ["", "exit code 1", "", ""])
 
+    def test_the_reason_of_a_workshop_too_old(self):
+        both, needs, kit, bare = self.out["short"]
+        self.assertEqual(both, "需要无限工坊 0.9.13 以上，当前版本 0.9.12")
+        self.assertEqual(needs, "需要无限工坊 0.9.13 以上")
+        self.assertTrue(kit.startswith("x needs WuxianWorkshop"), kit)       # WuxianKit's does not stop it: the daemon's line
+        self.assertTrue(bare.startswith("x needs WuxianWorkshop"), bare)     # an unmet that does not say what it needs
+
+    def test_an_addon_that_cannot_be_installed_is_said_before_the_yes(self):
+        o = self.out["stuck"]
+        self.assertEqual(o["pill"], ["game-absent", "bad", "与目录插件同名"])
+        self.assertEqual(o["line"], ["WuxianKit_EllesmereUI 与扩展目录中的插件同名", "WxTaken 游戏里已有同名插件", "B 文件缺失",
+                                     "", "", "", ""])
+        self.assertEqual(o["hint"], ["此扩展的游戏插件目前无法安装到游戏。",              # in the game only: not promised
+                                     "确认后，无限工坊将在本机运行此命令。"])              # with a program: the command still runs
+        self.assertEqual(o["act"], ["", "", "install", "WxAsked"])
+        self.assertEqual(o["addons"], [["与目录插件同名", "bad", "与扩展目录中的插件同名"], ["同名插件已存在", "bad", "游戏里已有同名插件"],
+                                       ["文件缺失", "bad", "文件缺失"]])
+        self.assertEqual(o["later"], "—")
+        self.assertEqual(o["sum"], ["WuxianKit_EllesmereUI 0.3.3 · 无法安装：与扩展目录中的插件同名",
+                                    "WxTaken · 需要插件：EllesmereUI · 无法安装：游戏里已有同名插件",
+                                    "WxBroken · 无法安装：文件缺失",
+                                    "WxNew 0.1.0 · 尚未安装到游戏",
+                                    "WxIn 0.1.0 · G:\\AddOns\\WxIn"])
+
+    def test_the_yes_says_what_did_not_go_in(self):
+        o = self.out["approveStuck"]
+        self.assertEqual(o["posts"], [["/api/local/approve", {"id": "clash"}]])
+        self.assertEqual(o["note"], {"bad": True, "text": "已批准，游戏插件未安装：WuxianKit_EllesmereUI 与扩展目录中的插件同名"})
+        self.assertEqual(o["said"], "已批准 clash，游戏插件未安装")
+        self.assertEqual(o["pill"], ["game-absent", "bad", "与目录插件同名"])      # the yes held: the tag is the game's now
+        self.assertFalse(o["restart"])
+        note, said = self.out["approveNoGame"]
+        self.assertEqual(note, {"bad": True, "text": "已批准，游戏插件未安装：未找到游戏目录"})
+        self.assertEqual(said, "已批准 asked，游戏插件未安装")
+
+    def test_the_yes_that_installed_them(self):
+        self.assertEqual(self.out["approveFine"], [None, "已批准 asked", True])     # a new addon: the game starts again
+        self.assertEqual(self.out["approvePlain"], [None, "已批准 solo"])
+        self.assertEqual(self.out["approveOld"], [None, "已批准 solo"])
+
     def test_the_first_line(self):
         game, both, local = self.out["prompts"]
         self.assertTrue(game.startswith("请先读 D:\\ext\\tips\\addons\\WxTips\\AGENT.md 和 guide {\"topic\": \"game-extension\"}。"
@@ -338,7 +439,9 @@ class GameOnly(unittest.TestCase):
         self.assertEqual(e["states"], ["Game folder unknown", "Game not linked", "Restart the game", "Not loaded in the game",
                                        "Addon disabled", "Off", "Installed", "Running"])
         self.assertEqual(e["where"][:3], ["Game", "Game · Local", "Local"])
-        for text in e["player"] + e["approval"] + [e["where"][3], e["caps"], e["prompt"], e["idea"]]:
+        self.assertIn("WuxianKit_EllesmereUI", e["stuck"][0])
+        self.assertIn("0.9.13", e["stuck"][5])
+        for text in e["player"] + e["approval"] + e["stuck"] + [e["where"][3], e["caps"], e["prompt"], e["idea"]]:
             self.assertTrue(text, e)
             self.assertNotRegex(text, r"[\u4e00-\u9fff]", text)
         self.assertIn("WxTips", e["player"][1])
@@ -367,6 +470,9 @@ class Page(unittest.TestCase):
         self.assertIn("x-text=\"lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')\"", card)
         self.assertIn('<dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)">'
                       '<code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>', card)
+        self.assertIn('<div class="lx-stuck" x-show="lxStuck(lxCur)" '
+                      'x-text="t(\'游戏插件无法安装：{why}\', { why: lxStuck(lxCur) })"></div>', card)
+        self.assertIn("\n.lx-stuck {", self.css)
         # the game addons by name until the summary came, which says more of each
         self.assertIn('<dt x-show="lxGameOnly(lxCur) && !lxSumCur">游戏插件</dt>'
                       '<dd x-show="lxGameOnly(lxCur) && !lxSumCur" class="mono selectable" '
@@ -392,7 +498,7 @@ class Page(unittest.TestCase):
 
     def test_calls_exist(self):
         for name in ("lxReason", "lxGameOnly", "lxWhereOf", "lxWhereName", "lxWhereHint", "lxWhere", "lxWhereTip", "lxGameState", "lxPlayer",
-                     "lxCapsLine", "lxCapsHint", "lxApprovalTitle", "lxApproveHint"):
+                     "lxCapsLine", "lxCapsHint", "lxApprovalTitle", "lxApproveHint", "lxCannot", "lxStuck"):
             self.assertRegex(self.js, r"(?m)^\s*%s\s*\(" % name, name)
         for name in ("lxLint", "lxSyntax"):
             self.assertRegex(self.js, r"(?m)^function %s\(" % name, name)
@@ -402,7 +508,10 @@ class Page(unittest.TestCase):
         for word in ("待重启游戏", "插件未启用", "游戏中载入后可查看", "请启动游戏并进入世界", "请重启游戏：新插件 {addon} 重启后才会载入",
                      "请在游戏的插件列表中启用 {addon}，然后重载界面", "请在游戏中输入 /wk，开启此扩展", "批准", "扩展内容已变更",
                      "确认后，无限工坊将把此扩展的游戏插件安装到游戏。", "Lua 有语法错误，未安装到游戏", "游戏中加载失败",
-                     "{name} 在游戏中加载失败", "只含游戏插件，在游戏中运行，没有本机程序", "游戏未连接", "游戏中未加载", "未启用", "已安装"):
+                     "{name} 在游戏中加载失败", "只含游戏插件，在游戏中运行，没有本机程序", "游戏未连接", "游戏中未加载", "未启用", "已安装",
+                     "与目录插件同名", "与扩展目录中的插件同名", "游戏里已有同名插件", "{name} {why}", "无法安装：{why}",
+                     "游戏插件无法安装：{why}", "此扩展的游戏插件目前无法安装到游戏。", "已批准，游戏插件未安装：{why}",
+                     "已批准 {name}，游戏插件未安装", "需要无限工坊 {v} 以上，当前版本 {has}"):
             self.assertRegex(self.i18n, r"\n\s*'%s':" % re.escape(word), word)
 
 

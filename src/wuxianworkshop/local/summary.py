@@ -13,7 +13,11 @@ package replaces a version, a pack's result, extension_summary). It says what is
      "game": [{"folder", "title", "notes", "version", "author",
                "needs": [{"addon", "installed"}],    the other addons its .toc depends on (not WuxianKit, not its own);
                                                      installed None when the game's AddOns folder is not known
-               "path"}],                             where it is in the game's AddOns now, None when it is not there
+               "path",                               where it is in the game's AddOns now, None when it is not there
+               "cannot"}],                           why the workshop will not install it, or None: "listed" (its
+                                                     name is an addon of the catalog's), "foreign" (AddOns holds a
+                                                     folder of the name that is not this extension's), "broken"
+                                                     (its source cannot be installed)
      "addons_dir": the game's AddOns folder or None,
      "local": None | {"run": [argv as written], "python": the manifest's own interpreter (relative) or None,
                       "start": "use" | "workshop", "env": [names the manifest sets], "pass": [names of the player's
@@ -85,12 +89,26 @@ def addon(folder, addons_dir=None, own=()):
         needs.append(dict(addon=dep, installed=(_there(addons_dir, dep) is not None) if addons_dir else None))
     at = _there(addons_dir, folder.name)
     return dict(folder=folder.name, title=d["title"], notes=d["notes"], version=d["version"], author=d["author"],
-                needs=needs, path=str(at) if at else None), toc
+                needs=needs, path=str(at) if at else None, cannot=None), toc
 
 
-def of_folder(m, addons_dir=None, source="folder", package=None):
+CANNOT = ("listed", "foreign", "broken")
+
+
+def cannot(folder, name, addons_dir, eid, listed=None):
+    """why the workshop will not install the extension's addon `name` (gameside.state: one of CANNOT), or None"""
+    from .gameside import state
+    try:
+        found = state(folder, name, addons_dir or None, eid, listed)["state"]
+    except Exception:                       # (a file that went while it was read)
+        return None
+    return found if found in CANNOT else None
+
+
+def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
     """the summary of an extension by its manifest (check_manifest's, not None). source: "folder" or "package";
-    package: {sha256, file} of the package it is or came from"""
+    package: {sha256, file} of the package it is or came from; listed: the catalog's addon folders
+    (extensions.listed_folders()), for a game addon's cannot"""
     folder = Path(m["folder"])
     try:
         files, _ = K.kept(folder, m["pack"]["exclude"])
@@ -102,7 +120,8 @@ def of_folder(m, addons_dir=None, source="folder", package=None):
             size += path.stat().st_size
         except OSError:
             pass
-    game = [addon(folder / M.ADDONS_DIR / name, addons_dir, m["addons"])[0] for name in m["addons"]]
+    game = [dict(addon(folder / M.ADDONS_DIR / name, addons_dir, m["addons"])[0],
+                 cannot=cannot(folder, name, addons_dir, m["id"], listed)) for name in m["addons"]]
     local = None
     if m["run"]:
         local = dict(run=list(m["run"]), python=_rel(m["python"], folder), start=m["start"], env=sorted(m["env"]))
@@ -225,6 +244,9 @@ def same(old, new):
 # --- as text ---------------------------------------------------------------------------------------------------------
 
 WHERE = dict(game="in the game only", local="on this computer", both="in the game and on this computer")
+CANNOT_TEXT = dict(listed="CANNOT BE INSTALLED: its folder name is that of an addon of the catalog (the 扩展 page installs that one): the addon folder needs another name",
+                   foreign="CANNOT BE INSTALLED: the game's AddOns holds a folder of this name that is not this extension's, and it is left as it is",
+                   broken="CANNOT BE INSTALLED: its folder in the extension is missing, has no .toc of its name, or holds a file that is no addon's")
 
 
 def _size(n):
@@ -247,6 +269,8 @@ def lines(s):
         out.append(f"  game addon: {g['folder']}" + (f" {g['version']}" if g.get("version") else "")
                    + (f", needs {needs}" if needs else "")
                    + (f", at {g['path']}" if g.get("path") else ", not in the game's AddOns"))
+        if g.get("cannot"):
+            out.append("    " + CANNOT_TEXT.get(g["cannot"], f"CANNOT BE INSTALLED: {g['cannot']}"))
     local = s.get("local")
     if local:
         out.append("  program: " + " ".join(local.get("run") or [])

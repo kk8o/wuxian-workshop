@@ -102,7 +102,7 @@ class ExtensionsApi(unittest.TestCase):
             self.assertEqual(found[0]["game"], [dict(folder="WuxianGuild", title="WuxianGuild", notes="WuxianGuild 的说明",
                                                      version="1.2.0", author=None,
                                                      needs=[dict(addon="EllesmereUI", installed=False)],
-                                                     path=str(self.addons / "WuxianGuild"))])
+                                                     path=str(self.addons / "WuxianGuild"), cannot=None)])
         finally:
             for name in made:
                 shutil.rmtree(self.addons / name, ignore_errors=True)

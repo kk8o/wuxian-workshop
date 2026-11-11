@@ -2010,13 +2010,15 @@ class Service:
 
     async def extension_approve(self, id):
         """the player allows a local extension's command to run (Host.approve; as it is now: a changed command asks
-        again): its row. The host starts it then: for good when it starts with 无限工坊 (start "workshop"), else,
+        again): its row, with installed: what became of its game addons, which go into the game's AddOns with the
+        yes (None: nothing was tried; {ok: true, addons, restart, hint}; {ok: false, code, message, addons}). The
+        host starts it then: for good when it starts with 无限工坊 (start "workshop"), else,
         when it never said what it can do, only to learn that; its apps are declared"""
         row = await asyncio.to_thread(self.local.approve, id, "player")
         eid = row["id"]
         self.notes.forgive(eid)
         await self.reconcile_local_apps()
-        return await asyncio.to_thread(self.local.get, eid)
+        return dict(await asyncio.to_thread(self.local.get, eid), installed=row.get("installed"))
 
     async def extension_stop(self, id):
         """stops a local extension (shutdown, then its process tree): its row. One in the game only has no process:

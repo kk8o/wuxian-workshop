@@ -93,6 +93,7 @@ def running_one(host, e):
 
 def check(host, ident):
     """an extension checked without touching its running process: {ok, problems, capabilities, running?, tests?}.
+    A game addon the workshop will not install is one of the problems (addon_problems).
     One in the game only: its manifest, and {where: "game", addons: [{folder, path}]}, its addons' sources for the
     caller to check as addons (nothing of it runs here). Else the
     manifest; a process of its own started, initialized (its description checked) and shut down (not while the
@@ -101,6 +102,8 @@ def check(host, ident):
     e, folder = host.resolve(ident)
     m, problems = M.check_manifest(folder, taken=() if e is not None else host.taken_ids())   # (registered: its id is its)
     caps, described, runs = [], None, None
+    if m is not None:
+        addon_problems(host, m, problems)
     if m is not None and not m["run"]:                     # in the game only: no process, no tests of a process
         taken_by_another(host, m, folder, problems)
         return dict(ok=not M.errors_in(problems), problems=problems, capabilities=[], where="game",
@@ -170,6 +173,31 @@ def taken_by_another(host, m, folder, problems):
     if other is not None:
         problems.append(M.problem("error", f"{M.MANIFEST}: id", f"the id {m['id']} is taken by {other['path']}",
                                   "give this one another id"))
+
+
+def addon_problems(host, m, problems):
+    """(check) the game addons the workshop will not install as things are (summary.cannot): one with a name of the
+    catalog's is an error (it never gets into the game), a folder of the name in AddOns that is not this
+    extension's a warning (it is so on this computer). A source that is broken is the manifest's error already"""
+    from . import summary as S
+    try:
+        addons, listed = host.game_addons(), host.listed()
+    except Exception:
+        return
+    for name in m["addons"]:
+        why = S.cannot(m["folder"], name, addons, m["id"], listed)
+        if why == "listed":
+            problems.append(M.problem(
+                "error", f"{M.MANIFEST}: addons",
+                f"{name} is the folder name of an addon of the catalog (the 扩展 page installs that one): the "
+                f"workshop does not install an extension's addon under it, so this one never gets into the game",
+                f"give the addon folder another name ({M.ADDONS_DIR}/<Name>/<Name>.toc, and addons in the manifest)"))
+        elif why == "foreign":
+            problems.append(M.problem(
+                "warning", f"{M.MANIFEST}: addons",
+                f"the game's AddOns holds a folder {name} that is not this extension's: the workshop leaves it as "
+                f"it is and does not install this one",
+                "the player moves that folder away, or the addon folder gets another name"))
 
 
 def check_message(proc, msg):

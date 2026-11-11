@@ -89,7 +89,9 @@ class Ask(Local):
         self.assertEqual(self.rows()["facts"]["state"], "stopped")
         r = self.post("approve", id="facts")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(set(r.json()), ROW)                             # the row, as /api/local/set answers
+        self.assertEqual(set(r.json()), ROW | {"installed"})             # the row, with what became of its game addons
+        self.assertIsNone(r.json()["installed"])                         # it brings none
+        self.assertNotIn("installed", self.rows()["facts"])
         self.assertEqual((r.json()["id"], r.json()["approval"], r.json()["state"]), ("facts", "ok", "stopped"))
         r = self.post("load", id="facts")
         self.assertEqual(r.status_code, 200)

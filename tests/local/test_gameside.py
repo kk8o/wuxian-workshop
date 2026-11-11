@@ -235,6 +235,23 @@ class State(Case):
         self.assertEqual([s["state"] for s in G.states(self.folder, ["One", "Two"], None, "voice")],
                          ["unknown", "unknown"])
 
+    def test_a_name_of_the_catalog(self):
+        self.addon()
+        listed = {NAME.upper(), "Details"}
+        want = dict(folder=NAME, version="1.2.0", state="listed")
+        self.assertEqual(G.state(self.folder, NAME, self.addons, "voice", listed), want)
+        self.assertEqual(G.state(self.folder, NAME, None, "voice", listed), want)    # known without a game folder
+        self.refused(400, "bad_addon", self.install, listed=listed)                  # as install() has it
+        for others in ({"Details"}, set(), None):
+            self.assertEqual(G.state(self.folder, NAME, self.addons, "voice", others)["state"], "missing")
+        self.theirs()                                                                # the catalog's own, in the game
+        self.assertEqual(G.state(self.folder, NAME, self.addons, "voice", listed), want)
+        self.assertEqual(G.state(self.folder, NAME, self.addons, "voice", {"Details"})["state"], "foreign")
+        self.assertEqual(G.state(self.folder, "../x", self.addons, "voice", {"../x"})["state"], "broken")
+        self.addon("Two")
+        self.assertEqual([s["state"] for s in G.states(self.folder, [NAME, "Two"], None, "voice", listed)],
+                         ["listed", "unknown"])
+
 
 class Install(Case):
     def test_a_new_addon(self):

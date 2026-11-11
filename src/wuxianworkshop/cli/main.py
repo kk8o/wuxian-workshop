@@ -1041,7 +1041,9 @@ EXT_ADDON = {"unknown": "the game's folder is not known",
              "missing": "not in the game: `wuxian ext install {id}` installs it (so does `ext load`)",
              "current": "installed",
              "differs": "the game has another version: `wuxian ext install {id}` updates it (so does `ext load`)",
-             "foreign": "the game has an addon of this name that is not this extension's: it is left alone"}
+             "foreign": "the game has an addon of this name that is not this extension's: it is left alone",
+             "listed": "its folder name is that of an addon of the catalog: it is never installed (the addon folder "
+                       "needs another name)"}
 
 
 def ext_unmet(u):

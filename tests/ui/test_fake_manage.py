@@ -29,7 +29,7 @@ class Rows(Local):
                 self.assertIn(u["what"], ("workshop", "kit"))
             for a in row["addons"]:
                 self.assertEqual(set(a), {"folder", "version", "state"})
-                self.assertIn(a["state"], ("unknown", "broken", "missing", "current", "differs", "foreign"))
+                self.assertIn(a["state"], ("unknown", "broken", "missing", "current", "differs", "foreign", "listed"))
         self.assertEqual((rows["voice"]["author"], rows["voice"]["homepage"]), ("Someone", "https://example.org/voice"))
         self.assertEqual((rows["notes"]["author"], rows["notes"]["homepage"], rows["notes"]["addons"]), (None, None, []))
 
@@ -131,6 +131,8 @@ class Add(Local):
         self.assertEqual(row["unmet"], [{"what": "kit", "needs": "0.7", "has": "0.6.0"}])
         row = self.post("add", path="D:\\Work\\foreign").json()
         self.assertEqual([a["state"] for a in row["addons"]], ["foreign"])
+        row = self.post("add", path="D:\\Work\\listed").json()           # a name of the catalog's
+        self.assertEqual([(a["folder"], a["state"]) for a in row["addons"]], [("WuxianListed", "listed")])
 
 
 class New(Local):
@@ -263,6 +265,22 @@ class Install(Local):
         r = self.post("install", id=row["id"])
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (409, "addon_exists"))
 
+    def test_the_yes_says_what_did_not_go_in(self):
+        for name, state, code in (("foreign", "foreign", "addon_exists"), ("listed", "listed", "bad_addon")):
+            row = self.post("add", path="D:\\Work\\" + name).json()
+            d = self.post("approve", id=row["id"]).json()
+            self.assertEqual((d["approval"], [a["state"] for a in d["addons"]]), ("ok", [state]), name)   # the yes holds
+            said = d["installed"]
+            self.assertEqual(set(said), {"ok", "code", "message", "addons"}, name)
+            self.assertEqual((said["ok"], said["code"], said["addons"]), (False, code, []), name)
+            self.assertIn(row["addons"][0]["folder"], said["message"], name)
+            self.assertNotIn("installed", self.rows()[row["id"]], name)    # the answer says it, the row does not
+        r = self.post("install", id="listed")                            # and it is never installed
+        self.assertEqual((r.status_code, r.json()["error"]["code"]), (400, "bad_addon"))
+        self.assertIn("catalog", r.json()["error"]["message"])
+        self.assertEqual(self.post("load", id="listed").status_code, 200)        # a start goes on without it
+        self.assertEqual([a["state"] for a in self.rows()["listed"]["addons"]], ["listed"])
+
     def test_a_start_installs_them_first(self):
         r = self.post("load", id="herald")
         self.assertEqual(r.status_code, 200)
@@ -274,6 +292,9 @@ class Install(Local):
     def test_the_yes_installs_them(self):
         row = self.post("approve", id="greeter").json()
         self.assertEqual((row["approval"], [a["state"] for a in row["addons"]]), ("ok", ["current"]))
+        said = row["installed"]
+        self.assertEqual(set(said), {"ok", "addons", "restart", "hint"})
+        self.assertEqual((said["ok"], [a["state"] for a in said["addons"]]), (True, ["installed"]))
 
 
 class NoGameFolder(Local):
@@ -283,6 +304,10 @@ class NoGameFolder(Local):
 
     def test_nothing_is_known_of_the_game(self):
         self.assertEqual({a["state"] for a in self.rows()["herald"]["addons"]}, {"unknown"})
+        said = self.post("approve", id="greeter").json()["installed"]    # the yes holds, its addons did not go in
+        self.assertEqual((said["ok"], said["code"]), (False, "no_game_folder"))
+        row = self.post("add", path="D:\\Work\\listed").json()           # a name of the catalog's is known without it
+        self.assertEqual([a["state"] for a in row["addons"]], ["listed"])
         r = self.post("install", id="herald")
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (503, "no_game_folder"))
         self.assertEqual(set(self.post("load", id="herald").json()), {"row", "check"})            # it starts all the same
@@ -312,7 +337,11 @@ class Summary(Local):
                          [("WuxianHerald", False), ("WuxianHeraldSkin", True)])                  # one is not there yet
         self.assertEqual(s["game"][1]["needs"], [{"addon": "EllesmereUI", "installed": True}])
         for g in s["game"]:
-            self.assertEqual(set(g), {"folder", "title", "notes", "version", "author", "needs", "path"})
+            self.assertEqual(set(g), {"folder", "title", "notes", "version", "author", "needs", "path", "cannot"})
+            self.assertIsNone(g["cannot"])
+        for name in ("foreign", "listed"):                               # one the workshop will not install says why
+            row = self.post("add", path="D:\\Work\\" + name).json()
+            self.assertEqual([g["cannot"] for g in self.get(id=row["id"]).json()["game"]], [name])
         for app in s["agent"]["adds"]:
             self.assertEqual(set(app), {"app", "wake", "skill"})
 

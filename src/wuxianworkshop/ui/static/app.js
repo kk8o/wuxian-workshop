@@ -60,7 +60,9 @@
                                           A row also says origin: home (in the extensions' folder) | linked, author,
                                           homepage, requires {workshop?, kit?}, unmet:[{what: workshop | kit, needs, has}]
                                           (workshop unmet: it cannot run here), addons:[{folder, version, state: unknown |
-                                          broken | missing | current | differs | foreign}] (what it brings for the game),
+                                          broken | missing | current | differs | foreign | listed}] (what it brings for
+                                          the game; /approve answers the row with installed: null | {ok, code?,
+                                          message?, addons}, what became of them),
                                           where: game | local | both, game: {extensions:[id], state: unknown | absent |
                                           offline | restart | missing | disabled | off | installed | on} | null, player:
                                           {action, text} | null (what is left for the player to do).
@@ -1499,7 +1501,8 @@ function appState() {
         if (typeof g !== 'object') continue;
         const needs = list(g.needs).map((n) => (n.installed === false ? t('{name}（未安装）', { name: n.addon }) : n.addon));
         put('game', t('游戏插件'), [(g.folder || '') + (g.version ? ' ' + g.version : ''),
-          needs.length ? t('需要插件：{names}', { names: needs.join(sep) }) : '', g.path || t('尚未安装到游戏')]);
+          needs.length ? t('需要插件：{names}', { names: needs.join(sep) }) : '',
+          g.cannot ? t('无法安装：{why}', { why: this.lxCannot(g.cannot) }) : g.path || t('尚未安装到游戏')]);
       }
       const l = s.local;
       if (l && typeof l === 'object') {
@@ -1573,7 +1576,10 @@ function appState() {
                          disabled: '插件未启用', off: '未启用', installed: '已安装', on: '运行中' }[s] || '—') };
     },
     lxReason(r) {                              // the 原因 line: why it is not running ('' for a row in the game only at
-      return r && r.why && r.state !== 'game' ? r.why : '';   // rest: its why only says where it runs, the tag does)
+      if (!r || !r.why || r.state === 'game') return '';      // rest: its why only says where it runs, the tag does).
+      const u = (r.unmet || []).find((x) => x && x.what === 'workshop' && x.needs);   // A workshop too old for it: the
+      if (!u) return r.why;                    // page's own line (the daemon's is written for agents)
+      return u.has ? t('需要无限工坊 {v} 以上，当前版本 {has}', { v: u.needs, has: u.has }) : t('需要无限工坊 {v} 以上', { v: u.needs });
     },
     lxPlayer(r) {                              // what is left for the player in the game, as a line ('' when nothing is,
       const p = r && r.player;                 // the 批准 card says it, or a program's game half only waits for the game)
@@ -1612,7 +1618,8 @@ function appState() {
       return r && r.approval === 'changed' ? (this.lxGameOnly(r) ? t('扩展内容已变更') : t('运行命令已变更')) : t('需要批准');
     },
     lxApproveHint(r) {                         // what the yes allows: a command here, or (in the game only) its addons there
-      return this.lxGameOnly(r) ? t('确认后，无限工坊将把此扩展的游戏插件安装到游戏。') : t('确认后，无限工坊将在本机运行此命令。');
+      if (!this.lxGameOnly(r)) return t('确认后，无限工坊将在本机运行此命令。');   // (not promised when they cannot go in)
+      return this.lxStuck(r) ? t('此扩展的游戏插件目前无法安装到游戏。') : t('确认后，无限工坊将把此扩展的游戏插件安装到游戏。');
     },
     lxCommand(r) {                             // the command as one line: an argument with a blank or a quote in quotes
       const c = r && r.command;
@@ -1626,6 +1633,13 @@ function appState() {
       if (!d) return;
       const now = (lxRowOf(d) || {}).addons || [];   // its game addons go in with the yes: a new one needs the game restarted
       if (now.some((a) => a && a.state === 'current' && fresh.includes(a.folder))) this.lxGameSet(r.id, true);
+      const ins = d.installed;                 // what became of its game addons: not in the game is said, and stays
+      if (ins && ins.ok === false) {           // on the page (the tag alone looks like before the yes)
+        const why = this.lxStuck(lxRowOf(d) || r) || lxWhy({ data: { error: ins } });
+        this.lx.note = { bad: true, text: t('已批准，游戏插件未安装：{why}', { why }) };
+        this.say(t('已批准 {name}，游戏插件未安装', { name: this.lxTitle(r) }));
+        return;
+      }
       this.say(t('已批准 {name}', { name: this.lxTitle(r) }));
     },
     lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
@@ -1809,14 +1823,21 @@ function appState() {
     },
     lxAddonState(a) {
       return t({ missing: '未安装', current: '已安装', differs: '有更新', foreign: '同名插件已存在', unknown: '游戏目录未知',
-                 broken: '文件缺失' }[a && a.state] || '—');
+                 broken: '文件缺失', listed: '与目录插件同名' }[a && a.state] || '—');
     },
     lxAddonPill(a) {
-      return { current: 'ok', differs: 'warn', missing: 'warn', foreign: 'bad', broken: 'bad' }[a && a.state] || 'off';
+      return { current: 'ok', differs: 'warn', missing: 'warn', foreign: 'bad', broken: 'bad', listed: 'bad' }[a && a.state] || 'off';
+    },
+    lxCannot(c) {                              // why the workshop will not install a game addon (a summary's cannot, or
+      return t({ listed: '与扩展目录中的插件同名', foreign: '游戏里已有同名插件', broken: '文件缺失' }[c] || '—');   // its state)
+    },
+    lxStuck(r) {                               // the first of its game addons that cannot be installed as things are, as
+      const a = ((r && r.addons) || []).find((x) => x && ['listed', 'foreign', 'broken'].includes(x.state));   // a line ('')
+      return a ? t('{name} {why}', { name: a.folder, why: this.lxCannot(a.state) }) : '';
     },
     lxGameAct(r) {                             // what the 游戏插件 button does: 'install' | 'update' | '' (nothing to do, or
       const states = ((r && r.addons) || []).map((a) => a && a.state);   // one of them cannot be installed: none is)
-      if (!states.length || states.some((s) => s === 'foreign' || s === 'broken' || s === 'unknown')) return '';
+      if (!states.length || states.some((s) => ['foreign', 'broken', 'unknown', 'listed'].includes(s))) return '';
       return states.includes('missing') ? 'install' : states.includes('differs') ? 'update' : '';
     },
     lxWillInstall(r) {                         // the game addons allowing it to run installs as well, by name ('' when

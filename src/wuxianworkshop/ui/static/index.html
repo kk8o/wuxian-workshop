@@ -903,6 +903,7 @@
                 <template x-for="(row, i) in lxSumRows(lxSumCur, true)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
               </dl>
               <div class="muted" x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
+              <div class="lx-stuck" x-show="lxStuck(lxCur)" x-text="t('游戏插件无法安装：{why}', { why: lxStuck(lxCur) })"></div>
               <p class="lx-risk" x-text="lxRiskLine(lxCur)"></p>
             </div>
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>

@@ -476,7 +476,8 @@ class Host:
     def addon_rows(self, e, m):
         """the game addons of an entry's extension as its row shows them: [{folder, version, state}], in the
         manifest's order (gameside.states: version is the source's .toc's; state "unknown" while the game folder is
-        not known, else missing / current / differs / foreign, or broken). Looked at no more often than every
+        not known, else missing / current / differs / foreign, or broken; "listed": its name is an addon of the
+        catalog's, so it is never installed). Looked at no more often than every
         ADDONS_KEPT seconds (each look reads the addons' files); forget_addons() after anything here changed them"""
         names = list((m or {}).get("addons") or [])
         if not names:
@@ -489,12 +490,21 @@ class Host:
             if kept is not None and kept[1] == key and 0 <= now - kept[0] < ADDONS_KEPT:
                 return [dict(r) for r in kept[2]]
         try:
-            rows = G.states(e["path"], names, addons, e["id"])
+            rows = G.states(e["path"], names, addons, e["id"], self.listed())
         except Exception:                              # (a file that went while it was read: said at the next look)
             return [dict(folder=name, version=None, state="unknown") for name in names]
         with self.lock:
             self.addon_states[e["id"]] = (now, key, rows)
         return [dict(r) for r in rows]
+
+    @staticmethod
+    def listed():
+        """the catalog's addon folders (extensions.listed_folders()), which no extension can bring; None when the
+        catalog is not known"""
+        try:
+            return X.listed_folders()
+        except Exception:
+            return None
 
     def forget_addons(self, eid=None):
         """what addon_rows() keeps of an extension (None: of all) is looked at again for its next row"""
@@ -617,10 +627,13 @@ class Host:
         """the player (by "developer": the workshop by itself) allows this extension's command to run
         (registry.approve); its row. Its
         failed starts are forgotten. The player's approval also puts its game addons into the game's AddOns (the
-        manifest's addons, while the game folder is known; what goes wrong there is noted and never fails the
-        approval: the row's addons say where they stand, and extension_install tries again) and starts it: for good
+        manifest's addons; what goes wrong there is noted and never fails the approval: the row's addons say where
+        they stand, and extension_install tries again) and starts it: for good
         when its manifest says start "workshop", else, when it never described itself, for as long as it takes to
-        learn what it can do (describe)"""
+        learn what it can do (describe). The answer says what became of the game addons, installed: None (nothing
+        was tried: it brings none, the workshop allowed it by itself, or this workshop is too old for it), {ok:
+        true, addons, restart, hint} (put_addons) or {ok: false, code, message, addons: the ones installed before
+        it failed} (gameside's codes: no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed)"""
         with self.lock:
             e = self.entry(eid)
             eid = e["id"]
@@ -628,17 +641,18 @@ class Host:
             self.forgive(e)
         self.forget_addons(eid)
         self.changed()
+        installed = None
         if by == "player":
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] == eid:
-                self.approved_addons(e, m)
+                installed = self.approved_addons(e, m)
                 if not m["run"]:                       # in the game only: nothing starts here
                     pass
                 elif e["enabled"] and m["start"] == "workshop":
                     self.ensure(eid, "approved")
                 elif e["enabled"] and e.get("described") is None:
                     self.describe(eid)
-        return self.get(eid)
+        return dict(self.get(eid), installed=installed)
 
     def allow(self, e):
         """the gate before anything of a registered extension runs (a start, a check's process, its tests): nothing
@@ -774,7 +788,8 @@ class Host:
                 raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
             package = dict(sha256=K._sha256(zip_path), file=zip_path.name)
             if old is not None and not replace:
-                raise self.needs_replace(eid, zip_path, S.of_folder(m, self.game_addons(), "package", package))
+                raise self.needs_replace(eid, zip_path, S.of_folder(m, self.game_addons(), "package", package,
+                                                                       listed=self.listed()))
             kept = self.place(eid, tmp, m, new=old is None, package=package)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)     # (moved to its place: not there any more)
@@ -872,7 +887,8 @@ class Host:
             if m is None:
                 raise ApiError(409, "bad_manifest", f"{e['id']}: {M.ManifestError(problems)}", problems=problems)
             package = e.get("package")
-            return S.of_folder(m, addons, package=package if isinstance(package, dict) else None)
+            return S.of_folder(m, addons, package=package if isinstance(package, dict) else None,
+                               listed=self.listed())
         if not isinstance(path, str) or not path.strip() or not Path(path.strip()).is_absolute():
             raise ApiError(400, "bad_request", "path: the full path of a package (.zip), of an extension's folder, or "
                                                "of an addon folder in the game's AddOns")
@@ -889,7 +905,7 @@ class Host:
         m, problems = M.check_manifest(folder)
         if m is None:
             raise ApiError(400, "bad_manifest", str(M.ManifestError(problems)), problems=problems)
-        return S.of_folder(m, addons)
+        return S.of_folder(m, addons, listed=self.listed())
 
     def package_summary(self, zip_path):
         """(summary) a package's summary: unpacked beside the home folder (home.incoming) to be read as a folder is,
@@ -910,7 +926,8 @@ class Host:
             m, problems = M.check_manifest(tmp)
             if m is None:
                 raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
-            return S.of_folder(m, self.game_addons(), "package", dict(sha256=K._sha256(zip_path), file=zip_path.name))
+            return S.of_folder(m, self.game_addons(), "package", dict(sha256=K._sha256(zip_path), file=zip_path.name),
+                               listed=self.listed())
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             try:
@@ -1061,10 +1078,7 @@ class Host:
         """the game addons of a manifest put into the game's AddOns (gameside.install: one that is current stays):
         {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}. GameSideError as
         gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not under the lock"""
-        try:
-            listed = X.listed_folders()
-        except Exception:
-            listed = None
+        listed = self.listed()
         with self.game_lock:
             try:
                 res = G.install(e["path"], m["addons"], self.game_addons(), e["id"],
@@ -1079,17 +1093,25 @@ class Host:
         return dict(addons=res["addons"], restart=bool(res["restart"]), hint=game_hint(res["addons"], res["restart"]))
 
     def approved_addons(self, e, m):
-        """(approve) the game addons of an extension the player just allowed are installed, when it has some, this
-        workshop is not too old for it and the game folder is known. Nothing here fails: what went wrong is noted"""
+        """(approve) the game addons of an extension the player just allowed are installed, when it has some and
+        this workshop is not too old for it. Nothing here fails: what went wrong is noted, and answered for the
+        approval to say: None (nothing was tried), {ok: True, addons, restart, hint} (put_addons), or {ok: False,
+        code, message, addons: the ones installed before it failed}"""
         try:
-            if not m["addons"] or self.unmet_error(m) is not None or self.game_addons() is None:
-                return
-            self.put_addons(e, m)
+            if not m["addons"] or self.unmet_error(m) is not None:
+                return None
+            if self.game_addons() is None:
+                raise G.GameSideError(503, "no_game_folder", "the game's AddOns folder is not known: start the game "
+                                                             "once, or say where it is in the 无限工坊 App")
+            return dict(ok=True, **self.put_addons(e, m))
         except G.GameSideError as ex:
-            self.note(f"local extension {e['id']}: its game addons are not installed: {first_line(ex, 300)} "
-                      f"(extension_install {e['id']} tries again)")
+            if ex.code != "no_game_folder":            # (the row says a game folder that is not known)
+                self.note(f"local extension {e['id']}: its game addons are not installed: {first_line(ex, 300)} "
+                          f"(extension_install {e['id']} tries again)")
+            return dict(ok=False, code=ex.code, message=first_line(ex, 300), addons=list(ex.done))
         except Exception as ex:
             self.note(f"local extension {e['id']}: its game addons are not installed: {ex!r}")
+            return dict(ok=False, code="addon_failed", message=first_line(ex, 300), addons=[])
 
     def loaded_addons(self, e, m, problems):
         """(load_) the game addons of an extension that is about to start, installed where the game has none or
@@ -1178,7 +1200,8 @@ class Host:
         m, _ = M.check_manifest(e["path"])
         if m is not None:
             res["summary"] = S.of_folder(m, self.game_addons(), "package",
-                                         dict(sha256=res["sha256"], file=Path(res["file"]).name))
+                                         dict(sha256=res["sha256"], file=Path(res["file"]).name),
+                                         listed=self.listed())
             if m["env"]:
                 res["warnings"].append(f"{M.MANIFEST}: env sets {', '.join(sorted(m['env']))}, and the values go out "
                                        "with the package. Nothing secret belongs there (a key, a token, a path of "

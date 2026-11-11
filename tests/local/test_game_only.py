@@ -220,9 +220,43 @@ class Approval(GameCase):
         self.assertEqual(self.stands("loot_peek"), ["missing"])                      # nothing of it went into the game
         row = self.host.approve("loot_peek")                                         # the player: its addons go in
         self.assertEqual((row["approval"], row["allowed"], row["state"]), ("ok", True, "game"))
+        installed = row["installed"]                                                 # and the answer says so
+        self.assertEqual((installed["ok"], installed["restart"]), (True, True))
+        self.assertEqual([(a["folder"], a["state"]) for a in installed["addons"]], [(ADDON, "installed")])
+        self.assertIn("restart the game", installed["hint"])
+        self.assertNotIn("installed", self.host.get("loot_peek"))                    # (the answer, not the row)
         self.assertEqual(self.stands("loot_peek"), ["current"])
         self.assertEqual(self.host.get("loot_peek")["player"]["action"], "start_game")
         self.assertEqual(self.said("started"), [])                                   # and nothing was started
+
+    def test_a_name_of_the_catalog_is_said_before_and_after(self):
+        zip_path = Path(K.pack(write(self.root / "work" / "loot_peek"), self.root / "out")["file"])
+        self.host.add(str(zip_path))
+        self.host.listed = lambda: {"lootpeek", "Details"}                           # the catalog has an addon so named
+        self.host.forget_addons()                                                    # (a row keeps its addons a while)
+        self.assertEqual(self.stands("loot_peek"), ["listed"])
+        self.assertEqual(self.host.summary("loot_peek")["game"][0]["cannot"], "listed")
+        self.assertEqual(self.host.summary(path=str(zip_path))["game"][0]["cannot"], "listed")
+        res = self.host.check("loot_peek")
+        (problem,) = res["problems"]
+        self.assertEqual((res["ok"], problem["level"], problem["where"]), (False, "error", f"{M.MANIFEST}: addons"))
+        self.assertIn("LootPeek is the folder name of an addon of the catalog", problem["message"])
+        self.assertIn("another name", problem["hint"])
+        row = self.host.approve("loot_peek")                                         # allowed all the same,
+        installed = row["installed"]                                                 # and the answer says it is not in
+        self.assertEqual((row["approval"], installed["ok"], installed["code"], installed["addons"]),
+                         ("ok", False, "bad_addon", []))
+        self.assertIn("an addon of the catalog", installed["message"])
+        self.assertEqual((row["addons"][0]["state"], (self.addons / ADDON).exists()), ("listed", False))
+        self.assertEqual(len(self.said("its game addons are not installed")), 1)
+        self.game = None                                                             # known without a game folder
+        self.assertEqual(self.stands("loot_peek"), ["listed"])
+        self.game = self.addons
+        self.host.listed = lambda: None                                              # the catalog is not known
+        self.host.forget_addons()
+        self.assertEqual(self.stands("loot_peek"), ["missing"])
+        self.assertTrue(self.host.check("loot_peek")["ok"])
+        self.assertEqual(self.host.install("loot_peek")["addons"][0]["state"], "installed")
 
     def test_the_setting_too(self):
         row, _ = self.game_only()                                                    # auto_now True

@@ -17,6 +17,7 @@ from unittest import mock
 
 from tests.daemon.test_local_api import LocalDaemon, with_game
 from tests.local.util import until
+from wuxianworkshop import extensions as X
 from wuxianworkshop.daemon.api import ApiError
 from wuxianworkshop.local.rpc import RpcError
 
@@ -176,7 +177,7 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         with mock.patch.object(self.svc.local, "approve", wraps=self.svc.local.approve) as approve:
             row = self.ok("POST", "/api/local/approve", {"id": "fx"})
         approve.assert_called_once_with("fx", "player")
-        self.assertEqual((row["id"], row["approval"]), ("fx", "ok"))
+        self.assertEqual((row["id"], row["approval"], row["installed"]), ("fx", "ok", None))   # no game addon
         self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
         self.assertTrue(until(lambda: self.ok("GET", "/api/local")["extensions"][0]["state"] == "running"))
         self.fails("POST", "/api/local/approve", {"id": "ghost"}, 404, "not_found")
@@ -322,6 +323,10 @@ class Asking(LocalDaemon, unittest.TestCase):
         self.assertFalse((self.addons / "WuxianAx").exists())
         row = self.ok("POST", "/api/local/approve", {"id": "ax"})              # allowed: its game addon goes in
         self.assertEqual((row["approval"], row["addons"][0]["state"]), ("ok", "current"))
+        self.assertEqual((row["installed"]["ok"], row["installed"]["restart"],
+                          [(a["folder"], a["state"]) for a in row["installed"]["addons"]]),
+                         (True, True, [("WuxianAx", "installed")]))
+        self.assertNotIn("installed", self.row("ax"))                          # the answer says it, the row does not
         self.assertTrue((self.addons / "WuxianAx" / "core.lua").is_file())
         self.assertEqual(self.ok("POST", "/api/local/install", {"id": "ax"})["restart"], False)
         # auto: the workshop allows one by itself when it first runs; its game addon goes in when it is loaded
@@ -332,6 +337,48 @@ class Asking(LocalDaemon, unittest.TestCase):
         res = self.ok("POST", "/api/local/load", {"id": "ay"})
         self.assertEqual((res["addons"][0]["state"], res["restart"]), ("installed", True))
         self.assertTrue((self.addons / "WuxianAy" / "core.lua").is_file())
+
+    def test_a_game_addon_that_cannot_go_in_is_said_before_and_after(self):
+        store = X.catalog_store()                                              # the catalog as the daemon read it
+        self.assertFalse(store.exists())
+        store.write_text(json.dumps({"addons": [{"folder": "WuxianLx"}]}), encoding="utf-8")
+        self.addCleanup(self.svc.local.forget_addons)
+        self.addCleanup(store.unlink)
+        folder = with_game(self.root / "ext" / "lx", "lx", "WuxianLx")
+        row = self.ok("POST", "/api/local/add", {"path": str(folder)})
+        self.assertEqual((row["approval"], row["addons"][0]["state"]), ("needed", "listed"))
+        game = self.ok("GET", "/api/local/summary?id=lx")["game"]              # before the yes: the summary says it
+        self.assertEqual([(g["folder"], g["cannot"], g["path"]) for g in game], [("WuxianLx", "listed", None)])
+        self.assertEqual(self.ok("POST", "/api/local/summary", {"path": str(folder)})["game"][0]["cannot"], "listed")
+        row = self.ok("POST", "/api/local/approve", {"id": "lx"})              # the yes holds, and says what did not
+        self.assertEqual((row["approval"], row["addons"][0]["state"]), ("ok", "listed"))
+        said = row["installed"]
+        self.assertEqual((said["ok"], said["code"], said["addons"]), (False, "bad_addon", []))
+        self.assertIn("WuxianLx", said["message"])
+        self.assertIn("an addon of the catalog", said["message"])
+        self.assertFalse((self.addons / "WuxianLx").exists())
+        self.assertNotIn("installed", self.row("lx"))
+        res = self.ok("POST", "/api/local/check", {"id": "lx"})                # and the check, for whoever wrote it
+        bad = [p for p in res["problems"] if p["level"] == "error"]
+        self.assertEqual((res["ok"], [p["where"] for p in bad]), (False, ["wuxian-extension.json: addons"]))
+        self.assertIn("WuxianLx is the folder name of an addon of the catalog", bad[0]["message"])
+        self.assertIn("another name", bad[0]["hint"])
+        self.assertIn("an addon of the catalog", self.fails("POST", "/api/local/install", {"id": "lx"}, 400, "bad_addon"))
+        # one of another name in the way: the same answer, with its own code
+        theirs = self.addons / "WuxianFx2"
+        theirs.mkdir()
+        (theirs / "theirs.lua").write_text("-- theirs\n", encoding="utf-8")
+        self.addCleanup(theirs.rmdir)
+        self.addCleanup((theirs / "theirs.lua").unlink)
+        row = self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "fx2", "fx2", "WuxianFx2"))})
+        self.assertEqual(row["addons"][0]["state"], "foreign")
+        self.assertEqual(self.ok("GET", "/api/local/summary?id=fx2")["game"][0]["cannot"], "foreign")
+        row = self.ok("POST", "/api/local/approve", {"id": "fx2"})
+        self.assertEqual((row["approval"], row["installed"]["ok"], row["installed"]["code"]), ("ok", False, "addon_exists"))
+        self.assertEqual([p.name for p in theirs.iterdir()], ["theirs.lua"])
+        res = self.ok("POST", "/api/local/check", {"id": "fx2"})
+        self.assertEqual([(p["level"], p["where"]) for p in res["problems"] if "WuxianFx2" in p["message"]],
+                         [("warning", "wuxian-extension.json: addons")])
 
     def test_auto(self):
         self.add(apps=[APP])

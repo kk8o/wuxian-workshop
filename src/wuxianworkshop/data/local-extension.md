@@ -370,12 +370,15 @@ with a Read capability and an event, and a `main.py` that uses both.
 - The mark: an installed folder holds `.wuxian-extension.json`, which says whose it is. A folder of that name in
   AddOns without the mark, or with another extension's, is someone else's addon: the workshop never replaces or
   deletes it (`addon_exists`; `foreign` in the row). Give yours another name.
+- A name of the catalog: the addon folders the 扩展 page installs (WuxianKit's own and the catalog's extensions)
+  are the catalog's. An extension's addon of such a name is never installed (`bad_addon`; `listed` in the row,
+  `cannot` in the summary, an error of `extension_check`). Give yours another name.
 - Restart or hot load: the game finds a new addon, and new `.lua`, `.xml` or `.toc` files, only when it starts
   (`restart: true`: tell the player). What it runs already takes changes with `extension_load`, then `load {"target":
   "<Name>"}`; write the Lua so that it can run twice, as the template does.
 - A row's `addons`: `[{folder, version, state}]`, `state` one of `current`, `missing` and `differs` (installing puts
-  it right), `foreign`, `broken` (no folder, no `.toc`, or a file that is no addon's) and `unknown` (the workshop does
-  not know the game's folder).
+  it right), `foreign`, `listed`, `broken` (no folder, no `.toc`, or a file that is no addon's) and `unknown` (the
+  workshop does not know the game's folder).
 - Edit the addon in the extension's folder, never its copy in AddOns: the next install replaces the copy.
 
 ### Removing

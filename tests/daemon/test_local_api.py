@@ -256,7 +256,8 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual((mine["from"], mine["where"], mine["risk"], mine["package"], mine["local"]),
                          ("folder", "both", "local", None, packed["summary"]["local"]))
         self.assertEqual(mine["game"], [dict(folder="WuxianGx", title="WuxianGx", notes=None, version="1.2.0",
-                                             author=None, needs=[], path=str(self.addons / "WuxianGx"))])
+                                             author=None, needs=[], path=str(self.addons / "WuxianGx"),
+                                             cannot=None)])
         self.assertEqual(self.ok("POST", "/api/local/summary", {"path": packed["file"]}), packed["summary"])
         self.assertEqual(self.ok("POST", "/api/local/summary", {"path": str(folder)}), mine)
         self.assertEqual(self.ok("GET", "/api/local/summary?id=gx"), mine)     # the App reads it so
@@ -336,6 +337,7 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         row = self.ok("POST", "/api/local/approve", {"id": "px"})              # the player allows it: its game half too
         self.assertEqual((row["approval"], row["addons"]),
                          ("ok", [dict(folder="WuxianPx", version="1.2.0", state="current")]))
+        self.assertEqual((row["installed"]["ok"], row["installed"]["restart"]), (True, True))
         self.assertTrue((self.addons / "WuxianPx" / "core.lua").is_file())
         res = self.ok("POST", "/api/local/install", {"id": "px"})
         self.assertEqual((res["addons"][0]["state"], res["restart"], res["hint"]), ("current", False, None))
@@ -359,6 +361,8 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.fails("POST", "/api/local/call", {"cap": "px.echo", "args": {"text": "a"}}, 403, "needs_approval")
         row = self.ok("POST", "/api/local/approve", {"id": "px"})
         self.assertEqual(row["addons"], [dict(folder="WuxianPx", version="1.3.0", state="current")])
+        self.assertEqual([(a["folder"], a["state"], a["was"]) for a in row["installed"]["addons"]],
+                         [("WuxianPx", "installed", "differs")])
         self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "px.opts"})["result"], {"volume": 70})
         res = self.ok("POST", "/api/local/remove", {"id": "px"})
         self.assertEqual((Path(res["kept"]).parent, [(a["folder"], a["removed"]) for a in res["addons"]]),

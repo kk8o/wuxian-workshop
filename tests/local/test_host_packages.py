@@ -12,6 +12,7 @@ from unittest import mock
 
 from wuxianworkshop import paths
 from wuxianworkshop.daemon.api import ApiError
+from wuxianworkshop.local import check as C
 from wuxianworkshop.local import gameside as G
 from wuxianworkshop.local import home as HOME
 from wuxianworkshop.local import host as H
@@ -404,14 +405,21 @@ class GameHalf(Case):
         row = self.host.approve("fx")
         self.assertEqual((row["approval"], row["addons"]),
                          ("ok", [dict(folder=NAME, version="1.2.0", state="current")]))
+        self.assertEqual(row["installed"], dict(ok=True, addons=[INSTALLED], restart=True,
+                                                hint=f"{NAME}: new in the game's AddOns, restart the game to load it"))
         self.assertEqual(self.mark()["extension"], "fx")
         self.assertEqual(len(self.said("game addon installed")), 1)
+        self.linked("bare", addons=())                           # none to install: nothing is said of them
+        self.assertIsNone(self.host.approve("bare")["installed"])
+        self.linked("newer", addons=("WuxianNewer",), requires={"workshop": "10.0.0"})
+        self.assertIsNone(self.host.approve("newer")["installed"])               # (it cannot be used here at all)
         self.linked("off", addons=("WuxianOff",))                # one that is off: allowed, its addon is there too
         self.host.set("off", enabled=False)
         self.host.approve("off")
         self.assertEqual(self.stands("off"), ["current"])
         self.linked("dev", addons=("WuxianDev",))                # the workshop's own approval installs nothing
-        self.assertEqual(self.host.approve("dev", by="developer")["approval"], "ok")
+        row = self.host.approve("dev", by="developer")
+        self.assertEqual((row["approval"], row["installed"]), ("ok", None))
         self.assertEqual(self.stands("dev"), ["missing"])
 
     def test_an_approval_never_fails_on_the_game(self):
@@ -420,18 +428,47 @@ class GameHalf(Case):
         theirs = put(self.addons / NAME, "theirs.lua", "-- not ours\n")
         row = self.host.approve("fx")
         self.assertEqual((row["approval"], row["addons"][0]["state"]), ("ok", "foreign"))
+        installed = row["installed"]                             # the answer says what became of them
+        self.assertEqual((installed["ok"], installed["code"], installed["addons"]), (False, "addon_exists", []))
+        self.assertIn(NAME, installed["message"])
         (note,) = self.said("its game addons are not installed")
         self.assertIn("extension_install fx", note)
         self.assertTrue(theirs.is_file())
         self.linked("odd", addons=("WuxianOdd",))                # whatever goes wrong there
         with mock.patch.object(G, "install", side_effect=RuntimeError("no")):
-            self.assertEqual(self.host.approve("odd")["approval"], "ok")
+            row = self.host.approve("odd")
+        self.assertEqual((row["approval"], row["installed"]),
+                         ("ok", dict(ok=False, code="addon_failed", message="no", addons=[])))
         self.assertEqual(len(self.said("its game addons are not installed")), 2)
         self.linked("quiet", addons=("WuxianQuiet",))            # no game folder: nothing to say
         self.game = None
         row = self.host.approve("quiet")
         self.assertEqual((row["approval"], row["addons"][0]["state"]), ("ok", "unknown"))
+        self.assertEqual((row["installed"]["ok"], row["installed"]["code"], row["installed"]["addons"]),
+                         (False, "no_game_folder", []))
         self.assertEqual(len(self.said("its game addons are not installed")), 2)
+
+    def test_a_check_says_what_will_not_be_installed(self):
+        _, folder = self.linked(addons=(NAME, "WuxianFx_Options"))
+        m, _ = M.check_manifest(folder)
+
+        def told():
+            problems = []
+            C.addon_problems(self.host, m, problems)
+            return [(p["level"], p["where"], p["message"].split(" ")[0:6]) for p in problems], problems
+        self.assertEqual(told()[1], [])
+        put(self.addons / NAME, "theirs.lua", "-- not ours\n")   # on this computer: a warning
+        short, problems = told()
+        self.assertEqual([p[:2] for p in short], [("warning", f"{M.MANIFEST}: addons")])
+        self.assertIn(f"holds a folder {NAME} that is not this extension's", problems[0]["message"])
+        self.host.listed = lambda: {"wuxianfx_options"}          # everywhere: an error
+        short, problems = told()
+        self.assertEqual([p[0] for p in short], ["warning", "error"])
+        self.assertIn("WuxianFx_Options is the folder name of an addon of the catalog", problems[1]["message"])
+        self.game = None                                         # the catalog's names are known without the game
+        self.assertEqual([p[0] for p in told()[0]], ["error"])
+        self.host.listed = mock.Mock(side_effect=OSError("no"))  # nothing here fails a check
+        self.assertEqual(told()[1], [])
 
     def test_a_load_installs(self):
         _, folder = self.linked()                                # (the workshop allows its command by itself)

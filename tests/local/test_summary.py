@@ -78,14 +78,33 @@ class OfFolder(Case):
         one, two = s["game"]
         self.assertEqual(one, dict(folder="WuxianVoice", title="WuxianVoice", notes="声音的游戏部分", version="1.2.0",
                                    author="某人", needs=[dict(addon="EllesmereUI", installed=False)],
-                                   path=str(self.addons / "WuxianVoice")))
-        self.assertEqual((two["folder"], two["needs"], two["path"]), ("WuxianVoice_Options", [], None))
+                                   path=str(self.addons / "WuxianVoice"), cannot="broken"))   # (the .dll in it)
+        self.assertEqual((two["folder"], two["needs"], two["path"], two["cannot"]),
+                         ("WuxianVoice_Options", [], None, None))
         self.assertEqual(s["agent"], dict(docs="AGENT.md", skills=["speak", "tune"], apps=["voice_app"], adds=[]))
         (self.addons / "EllesmereUI").mkdir()
         self.assertEqual(S.of_folder(m, self.addons)["game"][0]["needs"], [dict(addon="EllesmereUI", installed=True)])
         unknown = S.of_folder(m)                                    # the game folder is not known
         self.assertEqual((unknown["addons_dir"], unknown["game"][0]["needs"], unknown["game"][0]["path"]),
                          (None, [dict(addon="EllesmereUI", installed=None)], None))
+
+    def test_what_the_workshop_will_not_install(self):
+        m = self.both()
+
+        def cannot(*args, **kw):
+            return [g["cannot"] for g in S.of_folder(m, *args, **kw)["game"]]
+        self.assertEqual((cannot(), cannot(self.addons), cannot(self.addons, listed=set())), ([None, None],) * 3)
+        self.assertEqual(cannot(listed={"wuxianvoice_options"}), [None, "listed"])    # known without a game folder
+        (self.addons / "WuxianVoice").mkdir()                       # a folder there that is not this extension's
+        self.assertEqual(cannot(self.addons, listed={"WuxianVoice_Options"}), ["foreign", "listed"])
+        self.assertEqual(cannot(listed={"Details"}), [None, None])  # (and not known without the game folder)
+        G.install(self.folder, ["WuxianVoice_Options"], self.addons, "voice")
+        self.assertEqual(cannot(self.addons), ["foreign", None])    # this extension's own: nothing in the way
+        (self.folder / "addons" / "WuxianVoice_Options" / "WuxianVoice_Options.toc").unlink()
+        self.assertEqual(cannot(self.addons), ["foreign", "broken"])
+        with_package = S.of_folder(m, self.addons, "package", dict(sha256="ab" * 32, file="voice.zip"),
+                                   listed={"WuxianVoice"})
+        self.assertEqual(with_package["game"][0]["cannot"], "listed")
 
     def test_it_counts_what_a_package_holds(self):
         m = self.both()
@@ -134,7 +153,8 @@ class OfAddon(Case):
                          ("game", "game", None, None, []))
         self.assertEqual(s["game"], [dict(folder="WuxianKit_EllesmereUI", title="EllesmereUI 适配",
                                           notes="让 Agent 调整 EllesmereUI 的布局", version="0.3.1", author="某人",
-                                          needs=[dict(addon="EllesmereUI", installed=False)], path=str(folder))])
+                                          needs=[dict(addon="EllesmereUI", installed=False)], path=str(folder),
+                                          cannot=None)])              # (it is in the game: nothing to install)
         self.assertEqual(s["agent"], dict(docs="AGENT.md", skills=["eui-layout"], apps=[], adds=[]))
         self.assertEqual((s["files"], s["addons_dir"]), (4, str(self.addons)))
         (self.addons / "EllesmereUI").mkdir()
@@ -252,6 +272,20 @@ class AsText(unittest.TestCase):
         local = {"id": "tool", "where": "local", "local": {"run": ["tool.exe"], "start": "use"}, "files": 1, "size": 9}
         self.assertEqual(S.lines(local), ["tool", "  runs: on this computer", "  program: tool.exe, started on use",
                                           "  1 files, 9 bytes"])
+
+    def test_lines_say_what_cannot_be_installed(self):
+        s = {"from": "package", "id": "eui", "where": "game", "local": None, "files": None,
+             "agent": {"docs": None, "skills": [], "apps": [], "adds": []},
+             "game": [dict(folder="A", needs=[], path=None, cannot="listed"),
+                      dict(folder="B", needs=[], path="C:/g/B", cannot="foreign"),
+                      dict(folder="C", needs=[], path=None, cannot="broken"),
+                      dict(folder="D", needs=[], path=None, cannot=None), dict(folder="E", needs=[], path=None)]}
+        out = S.lines(s)
+        self.assertEqual(out[2:8], ["  game addon: A, not in the game's AddOns", "    " + S.CANNOT_TEXT["listed"],
+                                    "  game addon: B, at C:/g/B", "    " + S.CANNOT_TEXT["foreign"],
+                                    "  game addon: C, not in the game's AddOns", "    " + S.CANNOT_TEXT["broken"]])
+        self.assertEqual(len([line for line in out if "CANNOT BE INSTALLED" in line]), 3)
+        self.assertEqual(len(out), 10)
 
     def test_changed(self):
         self.assertEqual(S.changed([dict(field="version", old="0.1.0", new="0.2.0"),

@@ -9,7 +9,9 @@ A folder in AddOns that this put there holds a mark, the file MARK:
 A folder of that name without the mark, or with another extension's, is someone else's addon: install() refuses it
 (409 addon_exists) and remove() leaves it, whatever is in it. state() says where an addon stands: "current" (the mark's
 digest is the source's), "differs" (ours, another digest: the source changed since), "missing", "foreign", "broken" (the
-source cannot be installed: no folder, no .toc, a file that is no addon's kind) and "unknown" (no game folder known).
+source cannot be installed: no folder, no .toc, a file that is no addon's kind), "listed" (its name is that of an addon
+of the catalog, which no extension can bring: it is never installed, whatever AddOns holds) and "unknown" (no game
+folder known).
 
 install() checks every name before it touches anything, then writes each addon to a folder beside its place (the .toc
 with the client's Interface number, the mark in it) and swaps that in, a version of what was there kept in the history
@@ -147,15 +149,19 @@ def _held(target, eid):
     return mark
 
 
-def state(folder, name, addons, eid):
+def state(folder, name, addons, eid, listed=None):
     """dict(folder, version, state) of one addon of the extension `eid` in `folder`; addons: the game's AddOns folder,
-    or None. version: what the source's .toc says (None: nothing). state: "broken" (the source cannot be installed:
-    source_problem), "unknown" (addons is None), "missing" (not in AddOns), "foreign" (there, not this extension's),
-    "current" (this extension's, of the source's digest), "differs" (this extension's, another digest)"""
+    or None; listed: the catalog's addon folders (extensions.listed_folders()), or None. version: what the source's
+    .toc says (None: nothing). state: "listed" (the name is one of the catalog's: install() refuses it, with or
+    without a game folder), "broken" (the source cannot be installed: source_problem), "unknown" (addons is None),
+    "missing" (not in AddOns), "foreign" (there, not this extension's), "current" (this extension's, of the source's
+    digest), "differs" (this extension's, another digest)"""
     if _folder_problem(name):
         return dict(folder=name, version=None, state="broken")
     src = source(folder, name)
     out = dict(folder=name, version=_version(src), state="broken")
+    if listed and name.lower() in {str(n).lower() for n in listed}:
+        return dict(out, state="listed")
     if source_problem(folder, name):
         return out
     if addons is None:
@@ -170,9 +176,9 @@ def state(folder, name, addons, eid):
     return dict(out, state="current" if same else "differs")
 
 
-def states(folder, names, addons, eid):
+def states(folder, names, addons, eid, listed=None):
     """state() of each of the names, in their order"""
-    return [state(folder, name, addons, eid) for name in names]
+    return [state(folder, name, addons, eid, listed) for name in names]
 
 
 def _clear(path):
