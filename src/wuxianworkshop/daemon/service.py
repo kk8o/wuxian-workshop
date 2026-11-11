@@ -900,8 +900,8 @@ class Service:
 
     # an addon's API (WoWBridge API.lua): the events it emits, the functions it exposes. A name is passed to the game
     # quoted (probes.lua_str), so any text without control characters will do
-    ADDON_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
-    CALL_NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
+    ADDON_NAME = re.compile(r"^[^\x00-\x1f\x7f]{1,64}\Z")
+    CALL_NAME = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}\Z")
 
     @staticmethod
     def event_view(e):
@@ -1831,7 +1831,7 @@ class Service:
         failed, timeout, busy, cancelled, down (it cannot start: why, with the end of its output; for the game's: the
         game is not online), needs_approval (the player has not allowed its command yet), not_allowed (a say or do),
         loop; bad_request when the request itself is wrong"""
-        if not isinstance(cap, str) or not re.match(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+$", cap):
+        if not isinstance(cap, str) or not re.match(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+\Z", cap):
             raise ApiError(400, "bad_request", "cap: a capability id, <extension>.<name> (voice.say, sense.bags)")
         if args is not None and not isinstance(args, dict):
             raise ApiError(400, "bad_args", f"{cap}: args is an object of its arguments by name")

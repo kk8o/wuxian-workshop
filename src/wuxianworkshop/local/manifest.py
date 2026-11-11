@@ -53,6 +53,7 @@ The checks the SDK makes too (names, specs, option values, the whole description
 validate.py's, under their names here as well. Standard library only.
 """
 import copy
+import functools
 import json
 import re
 from pathlib import Path
@@ -65,14 +66,14 @@ from .validate import (ARG_NAME, ARG_NAME_HINT, CAP_NAME, CAP_NAME_HINT, CAP_NAM
                        finite, problem, text_of, timeout_problem, tool_name, value_problem)
 
 MANIFEST = "wuxian-extension.json"
-ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
 APP_ID = ID
 KIT_EXTENSIONS = ("chat", "game", "route", "sense", "guide", "data", "tune", "gate", "codex", "guides")
 RESERVED = KIT_EXTENSIONS + ("local", "wb", "wk", "kit")
 NOTES_MAX = 400
 NOT_IN_APP = ("temp", "driver", "launch")
 STARTS = ("use", "workshop")
-KIT_APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")   # an app id as WuxianKit writes it
+KIT_APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")   # an app id as WuxianKit writes it
 ADDS_MOST = 8
 ADDS_FIELDS = ("wake", "skill")
 WAKE_FIELDS = ("call", "timeout")
@@ -82,18 +83,18 @@ REACTION_FIELDS = ("hear", "when", "call", "args", "item", "cooldown", "note")
 CONTROLS_MOST = 12                     # as WuxianKit takes them: its own words and the app's {cmd, label} together
 CORE_CONTROLS = ("mute", "unmute", "less", "more", "test", "pause", "resume", "stop")   # WuxianKit's own controls
 CONTROL_FIELDS = ("cmd", "label", "call")
-CONTROL_CMD = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+CONTROL_CMD = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
 PASS_MOST = 16
-ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_()]{0,63}$")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_()]{0,63}\Z")
 FIELDS = ("id", "title", "version", "notes", "author", "homepage", "requires", "addons", "pack", "run", "python", "env",
           "pass", "start", "docs", "skills", "apps", "adds")
 AUTHOR_MAX = 64
 HOMEPAGE_MAX = 200
 REQUIRES = ("workshop", "kit")                      # what a manifest may ask a lowest version of
-VERSION = re.compile(r"^\d{1,6}(\.\d{1,6}){0,3}$")
+VERSION = re.compile(r"^\d{1,6}(\.\d{1,6}){0,3}\Z")
 ADDONS_DIR = "addons"                               # <folder>/addons/<Name>/: the game half
 ADDONS_MOST = 8
-ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")   # as extensions.FOLDER
+ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}\Z")   # as extensions.FOLDER
 ADDONS_TAKEN = ("wuxiankit",)                       # besides the workshop's own (installer.addons.OURS) and Blizzard_*
 EXCLUDE_MOST = 64
 REMOVED = {"annotate": "adds says it now: {\"<app>\": {\"wake\": \"<capability name>\"}}",
@@ -157,6 +158,21 @@ def unmet(requires, workshop=None, kit=None):
     return out
 
 
+def never_raises(check):
+    """(check_manifest) whatever is written in a manifest is a problem of the manifest, never an exception of its
+    check: a number no float holds, a nesting too deep to walk, a string that is no text. Whoever reads the folders
+    (the list, a look at the extensions folder, a removal) goes on with the others"""
+    @functools.wraps(check)
+    def checked(path, taken=()):
+        try:
+            return check(path, taken)
+        except (RecursionError, OverflowError, UnicodeError) as e:
+            return None, [problem("error", MANIFEST, f"it cannot be checked ({type(e).__name__}: {str(e)[:120]})",
+                                  "write plain values: short texts, numbers of a sensible size, no deep nesting")]
+    return checked
+
+
+@never_raises
 def check_manifest(path, taken=()):
     """(manifest or None, problems) of an extension's folder (or its manifest file); taken: id_problem's (an id the
     game lists from one of a game-only extension's own addons is that extension's, not taken). The manifest
@@ -182,8 +198,16 @@ def check_manifest(path, taken=()):
     except ValueError as e:
         return None, [problem("error", where, f"it is not valid JSON: {e}",
                               "JSON has no comments and no trailing commas; strings in double quotes")]
+    except RecursionError:
+        return None, [problem("error", where, "it is nested too deep to read", "a manifest is a few levels deep")]
     if not isinstance(d, dict):
         return None, [problem("error", where, "it must be a JSON object", '{"id": "...", "title": "...", "run": [...]}')]
+    try:
+        json.dumps(d, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:                             # "\ud800": it could not be written to a file or shown
+        return None, [problem("error", where, "it has half of a surrogate pair (an escape such as \\ud800 alone), "
+                                              "which is no character",
+                              "write the character itself, or both halves of its escape")]
 
     def field(name):
         return f"{where}: {name}"
@@ -218,7 +242,7 @@ def check_manifest(path, taken=()):
                            "who wrote the extension: a name"))
     homepage = d.get("homepage")
     if homepage is not None and not (isinstance(homepage, str) and len(homepage) <= HOMEPAGE_MAX
-                                     and re.match(r"^https?://[^\s\"'<>]+$", homepage)):
+                                     and re.match(r"^https?://[^\s\"'<>]+\Z", homepage)):
         out.append(problem("error", field("homepage"), "homepage is an http(s) address",
                            '"https://example.com/my-extension"'))
         homepage = None
@@ -312,7 +336,7 @@ def raw_where(folder):
     asked before anything of it runs (Host.allow): one in the game only starts no process on this computer"""
     try:
         raw = json.loads(locate(Path(folder))[1].read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError):
         return None
     if not isinstance(raw, dict):
         return None

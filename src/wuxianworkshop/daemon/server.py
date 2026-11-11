@@ -44,7 +44,7 @@ from .instance import ERROR_ALREADY_EXISTS, MUTEX, SingleInstance, instance_mute
 from .journal import Journal
 from .service import Service
 
-SNAP_NAME = re.compile(r"^[\w.-]+\.(png|jpg)$")
+SNAP_NAME = re.compile(r"^[\w.-]+\.(png|jpg)\Z")
 SNAP_TYPES = {"png": "image/png", "jpg": "image/jpeg"}
 STATUS_EVERY = 2.0                 # seconds between the status events of /api/events, whether entries come or not
 STARTUP_WAIT = 15.0

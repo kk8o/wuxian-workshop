@@ -12,12 +12,12 @@ import math
 import re
 
 # ---- shared: begin ---------------------------------------------------------------------------------------------------
-CAP_NAME = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$")     # say, pool.list: dotted parts, a letter first each
+CAP_NAME = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*\Z")     # say, pool.list: dotted parts, a letter first each
 CAP_NAME_MAX = 48
 TOOL_NAME_MAX = 48                     # the agent's tool wk_<extension id>_<name, dots as _>
-SOURCE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
-OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,47}$")
+SOURCE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
+OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
+ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,47}\Z")
 KINDS = ("see", "keep", "point")       # Read, Store, Guide; say / do (proposals) come later
 OPTION_KINDS = ("boolean", "text", "number", "choice")
 TYPES = ("string", "number", "boolean", "table", "any")
@@ -37,11 +37,18 @@ def text_of(value, most=None):
     if not isinstance(value, str) or not value.strip():
         return None
     value = " ".join(value.split())
-    return value if most is None or len(value.encode("utf-8")) <= most else None
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:             # half of a surrogate pair ("\ud800"): nothing that can be written or shown
+        return None
+    return value if most is None or size <= most else None
 
 
 def finite(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    try:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    except OverflowError:                  # an integer no float holds
+        return False
 
 
 def tool_name(eid, name):

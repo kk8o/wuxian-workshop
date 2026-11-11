@@ -1117,7 +1117,7 @@ class Host:
             return list(m["addons"])
         try:
             names = json.loads(M.locate(Path(folder))[1].read_text(encoding="utf-8-sig")).get("addons")
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, RecursionError):
             return []
         return [a for a in names if isinstance(a, str) and M.ADDON_FOLDER.match(a)] if isinstance(names, list) else []
 

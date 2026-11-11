@@ -37,8 +37,8 @@ FIRST_CHECK = 20
 TIMEOUT_MS = 30_000
 MAX_FEED = 4 * 1024 * 1024             # releases.<channel>.json: every version's notes, some tens of KB
 KEPT = "update.json"                   # in the state folder: the signed entry of the version downloaded
-PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.nupkg$")
-SHA256 = re.compile(r"^[0-9A-F]{64}$")
+PACKAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.nupkg\Z")
+SHA256 = re.compile(r"^[0-9A-F]{64}\Z")
 
 log = logging.getLogger(__name__)
 

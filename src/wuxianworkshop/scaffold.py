@@ -24,7 +24,7 @@ from pathlib import Path
 from .i18n import language, tr
 from .local import manifest as M
 
-NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{1,39}$")
+NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{1,39}\Z")
 TEMPLATES = {"basic": ("斜杠命令 + 存档变量", "slash command + SavedVariables"),
              "window": ("斜杠命令 + 存档变量 + 一个可拖动的窗口", "slash command + SavedVariables + a window you can drag")}
 INTERFACE = 16001                                 # 1.60.1: what a new addon gets when the client's is not known

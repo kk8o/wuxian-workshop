@@ -143,8 +143,8 @@ VOICE_LINES = ["said: 小心，精英怪来了 (1.8 s)", "said: 打完这波歇�
 EXT_HOME = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\extensions"
 STUCK = {"listed", "foreign", "broken"}       # the states of a game addon the workshop does not install
 PACKAGES = r"C:\Users\Someone\AppData\Local\WuxianWorkshop\packages"       # where 打包 writes unless told
-LOCAL_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")             # manifest.ID
-ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")          # manifest.ADDON_FOLDER
+LOCAL_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")             # manifest.ID
+ADDON_FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}\Z")          # manifest.ADDON_FOLDER
 LOCAL_COMMAND = [r"C:\Python314\python.exe", "main.py"]      # a pretend local extension's argv ({path}: its folder)
 LOCAL_LIVE = ("starting", "running", "hung", "stopping")     # the states with a process
 

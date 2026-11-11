@@ -46,9 +46,9 @@ MAX_UNPACKED = 64 * 1024 * 1024
 MAX_FILES = 4000
 KINDS = {".lua", ".toc", ".xml", ".tga", ".blp", ".md", ".txt", ".ttf", ".otf", ".ogg", ".mp3", ".wav", ".json"}
 CODE = {".lua", ".toc", ".xml"}                     # the files the client finds only when it starts
-ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}$")
-SHA = re.compile(r"^[0-9a-f]{64}$")
+ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
+FOLDER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.!-]{0,63}\Z")
+SHA = re.compile(r"^[0-9a-f]{64}\Z")
 KEPT = "extension-catalog.json"              # the catalog's addons as last read
 
 

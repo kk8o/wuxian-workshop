@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from wuxianworkshop.local import manifest as M
 
@@ -110,11 +111,42 @@ class Manifest(unittest.TestCase):
             raise M.ManifestError(problems)
         self.assertIn("apps[0].hear", str(caught.exception))
 
+    def test_what_is_written_never_raises(self):
+        """JSON that reads, and says what no check expects: a problem of the manifest, not an exception (the list of
+        extensions, a look at the folder and a removal read every manifest)"""
+        base = '"id": "tool", "run": ["python", "main.py"]'
+        deep = 100000
+        cases = [('{%s, "title": "\\ud800"}' % base, "surrogate"),
+                 ('{%s, "notes": "a\\udfff"}' % base, "surrogate"),
+                 ('{%s, "env": {"A": "\\ud800"}}' % base, "surrogate"),
+                 ('{%s, "adds": {"guild": {"wake": {"call": "x", "timeout": 1%s}}}}' % (base, "0" * 400), "timeout"),
+                 ('{%s, "x": %s%s}' % (base, "[" * deep, "]" * deep), "nested too deep"),
+                 ('{"id": "tool\\n", "run": ["python", "main.py"]}', "is not an extension id")]
+        for raw, said in cases:
+            self.write(None, raw=raw)
+            m, problems = M.check_manifest(self.folder)
+            self.assertIsNone(m, raw[:80])
+            self.assertTrue(any(said in p["where"] + " " + p["message"] for p in problems if p["level"] == "error"),
+                            (raw[:80], problems))
+        self.assertIsNone(M.raw_where(self.folder / "deep"))                      # (no file there: None as well)
+        self.assertIsNone(M.text_of("\ud800"))
+        self.assertIsNone(M.text_of("a\ud800", 48))
+        self.assertFalse(M.finite(10 ** 400))
+        with mock.patch.object(M, "id_problem", side_effect=RecursionError("too deep")):   # (wherever it comes from)
+            self.write({"id": "tool", "run": ["python", "main.py"]})
+            m, problems = M.check_manifest(self.folder, taken=("x",))
+        self.assertEqual((m, where_of(problems)), (None, [M.MANIFEST]))
+        self.assertIn("it cannot be checked (RecursionError", problems[0]["message"])
+
     def test_ids(self):
         for good in ("voice", "a", "my_tool2", "a" * 24):
             self.assertIsNone(M.id_problem(good), good)
-        for bad in ("", "1a", "A", "a-b", "a" * 25, None, "chat", "guides", "local", "wb"):
+        for bad in ("", "1a", "A", "a-b", "a" * 25, None, "chat", "guides", "local", "wb", "voice\n", "a\n"):
             self.assertIsNotNone(M.id_problem(bad), bad)
+        for pattern in (M.ID, M.KIT_APP_ID, M.CONTROL_CMD, M.ENV_NAME, M.VERSION, M.ADDON_FOLDER, M.CAP_NAME,
+                        M.ARG_NAME, M.R.ID, M.R.APP, M.R.SOURCE, M.R.WHAT, M.R.CAP, M.R.ARG, M.R.PATH):
+            self.assertTrue(pattern.pattern.endswith("\\Z"), pattern.pattern)    # a name ends where the pattern does
+            self.assertIsNone(pattern.match("a\n"), pattern.pattern)
 
 
 class Description(unittest.TestCase):

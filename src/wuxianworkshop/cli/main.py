@@ -575,8 +575,8 @@ def events_once(client, args):
 
 
 KIT = "WuxianKit"
-APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
-EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")          # a local extension's id (local/manifest.py ID)
+APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")
+EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")          # a local extension's id (local/manifest.py ID)
 
 
 def summary_lines(s):

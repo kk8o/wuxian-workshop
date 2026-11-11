@@ -268,7 +268,7 @@ def topics_of(manifest):
     return out
 
 
-APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
+APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")
 DRIVERS = ("prompt", "program")             # an older WuxianKit's driver field, passed on as it is; the docs never use it
 
 
@@ -301,7 +301,7 @@ def apps_of(manifest):
     return out
 
 
-SOURCE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+SOURCE = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
 MAX_VALUES = 40                             # an extension's docs show at most this many known values of a source
 
 
@@ -653,9 +653,9 @@ def front_matter(text):
     return meta, m.group(2)
 
 
-NEED = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}$")
-SERVER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-SERVER_URL = re.compile(r"^https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[^\s]*)?$")
+NEED = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,47}\Z")
+SERVER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+SERVER_URL = re.compile(r"^https://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[^\s]*)?\Z")
 MAX_NEEDS = 16
 
 
@@ -702,12 +702,12 @@ def skills_from(folder):
             continue
         meta, body = front_matter(text)
         name = (meta.get("name") or p.stem).strip().lower()
-        if not re.match(r"^[a-z0-9][a-z0-9-]{0,47}$", name):
+        if not re.match(r"^[a-z0-9][a-z0-9-]{0,47}\Z", name):
             continue
         args = []
         for a in (meta.get("arguments") or "").split(","):
             a = a.strip()
-            if re.match(r"^[a-z_][a-z0-9_]*\??$", a):
+            if re.match(r"^[a-z_][a-z0-9_]*\??\Z", a):
                 args.append((a.rstrip("?"), not a.endswith("?")))
         out.append(dict(name=name, title=meta.get("title") or name, description=meta.get("description") or "",
                         arguments=args, needs=needs_of(meta.get("needs")), mcp=servers_of(meta.get("mcp")),

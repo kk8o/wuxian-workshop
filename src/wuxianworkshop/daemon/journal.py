@@ -25,7 +25,7 @@ CAPACITY = 5000
 EVENT_CAPACITY = 3000
 SHOWN = 300                   # characters of an event's data in its log line (the entry keeps the data whole)
 NAME_MAX = 64                 # characters of an addon's name or a topic kept
-REQUEST_ID = re.compile(r"^\d{1,5}\.\d{1,9}$")
+REQUEST_ID = re.compile(r"^\d{1,5}\.\d{1,9}\Z")
 _ADDON = re.compile(r"Interface[/\\]AddOns[/\\]([^/\\:\s]+)")
 
 
