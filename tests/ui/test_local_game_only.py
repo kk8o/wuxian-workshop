@@ -37,7 +37,7 @@ const base = { version: '0.1.0', enabled: true, start: 'use', state: 'game', pid
                since: null, why: null, origin: 'linked', author: null, homepage: null, requires: {}, unmet: [],
                command: null, where: 'game', player: null };
 const addon = (folder, state) => ({ folder, version: '0.1.0', state: state || 'current' });
-const gm = (id, gstate, more) => Object.assign({}, base, { id, title: id, path: 'D:\\ext\\' + id,
+const gm = (id, gstate, more) => Object.assign({}, base, { id, title: id, path: 'D:\\ext\\' + id, fingerprint: 'f:' + id,
   addons: [addon('Wx' + id[0].toUpperCase() + id.slice(1))], game: { extensions: [id], state: gstate } }, more);
 const player = (action) => ({ action, text: 'the daemon says: ' + action });
 let rows = [
@@ -53,12 +53,17 @@ let rows = [
   Object.assign({}, base, { id: 'old', title: 'old', path: 'D:\\ext\\old', state: 'stopped', where: undefined,
     command: ['python', 'main.py'], addons: [addon('WxOld')], game: undefined, player: undefined }),
 ];
+rows.forEach((r) => { r.fingerprint = 'f:' + r.id; });
 const row = (id) => rows.find((r) => r.id === id);
 async function api(path, opts) {
   const body = opts && opts.body;
   calls.push([path, body ? copyOf(body) : null]);
   if (path === '/api/local') return { extensions: copyOf(rows), capabilities: {} };
   const action = path.startsWith('/api/local/') ? path.slice(11).split('?')[0] : '';
+  if (action === 'summary') {                  // the one of the row: 批准 waits for it
+    const id = decodeURIComponent(path.split('id=')[1]);
+    return { id, title: id, risk: 'game', fingerprint: 'f:' + id };
+  }
   if (['load', 'check', 'approve'].includes(action) && answer) {
     const a = answer;
     answer = null;
@@ -219,12 +224,14 @@ const pill = (r) => { const s = st.lxState(r); return [s.key, s.cls, s.text]; };
   calls.length = 0;
   answer = yes(clash, { ok: false, code: 'bad_addon', addons: [],
                         message: "'WuxianKit_EllesmereUI': an addon of the catalog: the 扩展 page installs it" });
+  await settle();                             // its summary is read
   await st.lxApprove(st.lxCur);
   await settle();
   out.approveStuck = { posts: calls.filter((c) => c[1]), note: copyOf(st.lx.note), said: last(), pill: pill(st.lxCur),
                        restart: st.lxRestart(st.lxCur), row: 'installed' in st.lxCur };
   cur('asked');                               // nothing in its way, but no game folder
   answer = yes(row('asked'), { ok: false, code: 'no_game_folder', message: "the game's AddOns folder is not known", addons: [] });
+  await settle();
   await st.lxApprove(st.lxCur);
   out.approveNoGame = [copyOf(st.lx.note), last()];
   st.lxRow(copyOf(row('asked')));             // as before the yes; this time they go in
@@ -235,6 +242,7 @@ const pill = (r) => { const s = st.lxState(r); return [s.key, s.cls, s.text]; };
   out.approveFine = [st.lx.note, last(), st.lxRestart(st.lxCur)];
   cur('solo');                                // one without game addons, and a daemon that does not say
   answer = yes(row('solo'), null);
+  await settle();
   await st.lxApprove(st.lxCur);
   out.approvePlain = [st.lx.note, last()];
   await st.lxApprove(st.lxCur);
@@ -411,7 +419,7 @@ class GameOnly(unittest.TestCase):
 
     def test_the_yes_says_what_did_not_go_in(self):
         o = self.out["approveStuck"]
-        self.assertEqual(o["posts"], [["/api/local/approve", {"id": "clash"}]])
+        self.assertEqual(o["posts"], [["/api/local/approve", {"id": "clash", "fingerprint": "f:clash"}]])
         self.assertEqual(o["note"], {"bad": True, "text": "已批准，游戏插件未安装：WuxianKit_EllesmereUI 与扩展目录中的插件同名"})
         self.assertEqual(o["said"], "已批准 clash，游戏插件未安装")
         self.assertEqual(o["pill"], ["game-absent", "bad", "与目录插件同名"])      # the yes held: the tag is the game's now

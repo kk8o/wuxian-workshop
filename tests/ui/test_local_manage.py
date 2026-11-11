@@ -33,7 +33,8 @@ const copyOf = (r) => JSON.parse(JSON.stringify(r));
 const base = { version: '0.1.0', enabled: true, start: 'use', state: 'stopped', pid: null, started: null, exit_code: null,
                error: null, capabilities: [], sources: [], options: [], apps: [], skills: [], adds: {}, approval: 'ok',
                since: null, why: null, origin: 'home', author: null, homepage: null, requires: {}, unmet: [], addons: [] };
-const mk = (id, title, more) => Object.assign({}, base, { id, title, path: HOME + '\\' + id, command: ['python', 'main.py'] }, more);
+const mk = (id, title, more) => Object.assign({}, base, { id, title, path: HOME + '\\' + id, command: ['python', 'main.py'],
+                                                          fingerprint: 'f:' + id }, more);
 const game = (folder, state) => ({ folder, version: '1.0.0', state });
 function reset() {
   rows = [
@@ -93,7 +94,7 @@ async function api(path, opts) {
   if (action.startsWith('summary?id=')) {
     const s = sums[decodeURIComponent(action.slice('summary?id='.length))];
     if (!s) throw apiErr(400, 'bad_manifest', 'extension.json cannot be read');
-    return copyOf(s);
+    return Object.assign(copyOf(s), { fingerprint: (row(s.id) || {}).fingerprint });
   }
   if (action === 'add') {
     const p = body.path, zip = /\.zip$/i.test(p);
@@ -227,6 +228,7 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   await st.lxInstall(r);
   out.installAsk = { ask: st.lx.ask, needs: st.lxNeeds(st.lxCur), said: last(st), note: st.lx.note };
   // the player's yes installs them as well
+  await settle();                                              // (once its summary is read)
   await st.lxApprove(st.lxCur);
   out.approved = { restart: st.lxRestart(st.lxCur), states: st.lxCur.addons.map((a) => a.state), said: last(st) };
   // a failure is said
@@ -664,7 +666,7 @@ class Manage(unittest.TestCase):
                          (True, "zip", zip_, None, None, None, False, ""))
         self.assertEqual((d["new"]["id"], d["new"]["from"], o["title"], o["changes"]), ("scout", "package", "替换 scout？", []))
         o = self.out["replaced"]                                    # 替换: the same path once more, with replace
-        self.assertEqual(o["posts"], [["/api/local/add", {"path": zip_, "replace": True}]])
+        self.assertEqual(o["posts"], [["/api/local/add", {"path": zip_, "replace": True, "sha256": "cd" * 32}]])
         self.assertEqual(o["dialog"], {"open": False, "kind": "zip", "path": "", "old": None, "new": None, "changes": None,
                                        "same": None, "busy": False, "error": ""})
         self.assertEqual(o["sel"], "l:scout")

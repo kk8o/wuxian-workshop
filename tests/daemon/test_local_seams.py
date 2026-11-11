@@ -16,7 +16,7 @@ from concurrent.futures import Future
 from unittest import mock
 
 from tests.daemon.test_local_api import LocalDaemon, with_game
-from tests.local.util import until
+from tests.local.util import make_extension, until
 from wuxianworkshop import extensions as X
 from wuxianworkshop.daemon.api import ApiError
 from wuxianworkshop.local.rpc import RpcError
@@ -176,7 +176,7 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         self.kit.calls.clear()
         with mock.patch.object(self.svc.local, "approve", wraps=self.svc.local.approve) as approve:
             row = self.ok("POST", "/api/local/approve", {"id": "fx"})
-        approve.assert_called_once_with("fx", "player")
+        approve.assert_called_once_with("fx", "player", None)                  # (no fingerprint: as it is now)
         self.assertEqual((row["id"], row["approval"], row["installed"]), ("fx", "ok", None))   # no game addon
         self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
         self.assertTrue(until(lambda: self.ok("GET", "/api/local")["extensions"][0]["state"] == "running"))
@@ -315,6 +315,21 @@ class Asking(LocalDaemon, unittest.TestCase):
         self.assertEqual(self.svc.local.reg.entry("fx")["approved"]["by"], "player")
         self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
         self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}})["result"]["text"], "a")
+
+    def test_a_yes_names_what_was_shown(self):
+        """批准 sends the fingerprint of the row and summary on the page: when the extension is something else by now
+        the answer is changed (409, with what it is now) and nothing is approved"""
+        row, folder = self.add()
+        shown = self.ok("GET", "/api/local/summary?id=fx")
+        self.assertEqual((len(row["fingerprint"]), shown["fingerprint"]), (64, row["fingerprint"]))
+        make_extension(folder, "fx", mode="another")                           # it runs something else by now
+        status, res = self.call("POST", "/api/local/approve", {"id": "fx", "fingerprint": row["fingerprint"]})
+        self.assertEqual((status, res["error"]["code"], res["fingerprint"]), (409, "changed", self.row()["fingerprint"]), res)
+        self.assertIsNone(self.svc.local.reg.entry("fx")["approved"])
+        self.fails("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "a"}}, 403, "needs_approval")
+        self.fails("POST", "/api/local/approve", {"id": "fx", "fingerprint": 7}, 400, "bad_request")
+        row = self.ok("POST", "/api/local/approve", {"id": "fx", "fingerprint": self.row()["fingerprint"]})
+        self.assertEqual((row["approval"], self.svc.local.reg.entry("fx")["approved"]["by"]), ("ok", "player"))
 
     def test_the_game_half_waits_for_the_player(self):
         row = self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "ax", "ax", "WuxianAx"))})

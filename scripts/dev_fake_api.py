@@ -44,12 +44,15 @@ it unless it came in a package, and
     POST /api/local/wait {id}      {row, was, timeout}: answered at once (nobody does the player's part here), timeout
                                    true while the row has something for the player
 
-    POST /api/local/add {path, replace?}   a folder (or its wuxian-extension.json): a linked row, its id from the
+    POST /api/local/approve {id, fingerprint?}   the row with installed; fingerprint (the row's and its summary's,
+                                   the App sends it): another than the row's now -> 409 changed, nothing approved
+    POST /api/local/add {path, replace?, sha256?}   a folder (or its wuxian-extension.json): a linked row, its id from the
                                    folder's name; a .zip: a row in the home that waits for the player, with package
                                    {file, replaced}. A .zip whose id is in the home already -> 409 needs_replace with
                                    old, new (the two summaries), changes and same (name contains "same": true), and
                                    nothing changed; with replace true it takes the old one's place (replaced: where
-                                   the old folder went).
+                                   the old folder went; sha256: new.package.sha256 of that answer, another -> 409
+                                   changed).
                                      name ends with "exists" -> 409 extension_exists   "bad.zip" -> 400 bad_package
                                      "big.zip" -> 413 package_too_big                  folder "bad" -> 400 bad_manifest
                                      a zip whose id is a linked row's -> 409 extension_exists
@@ -93,6 +96,7 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -209,6 +213,7 @@ class Fake:
         self.ext_installed = {"wuxiankit": "0.2.0", "wuxiankit-guides": "0.1.0"}   # extensions.py's shapes: the catalog's addons in the game folder
         self.local = self.local_seed()             # local/host.py's shapes: id -> a local extension, in its order
         self.local_revision = 7
+        self.local_offered = {}                    # id -> the sha256 of the package a needs_replace answer compared
         self.local_out = {i: self.local_log_seed(e) for i, e in self.local.items()}   # id -> its output.log lines
         self.watch = []
         self.reload_pending = False
@@ -837,6 +842,15 @@ class Fake:
         return [dict(a, state=a["state"] if self.addons_known or a["state"] == "listed" else "unknown")
                 for a in e["addons"]]
 
+    def local_seen(self, e):
+        """the row's and the summary's fingerprint (Host.seen): what a yes would allow as it is now; None while its
+        manifest cannot be used"""
+        if not self.local_readable(e):
+            return None
+        what = [e["id"], e["version"], e["path"], e["command"], [a["folder"] for a in e["addons"]],
+                (e.get("package") or {}).get("sha256")]
+        return hashlib.sha256(json.dumps(what, ensure_ascii=False).encode("utf-8")).hexdigest()
+
     def local_row(self, e):
         game = self.local_game(e)
         in_game = e["where"] == "game" and e["state"] == "stopped" and e["error"] is None
@@ -847,6 +861,7 @@ class Fake:
                     sources=[s["name"] for s in e["sources"]], options=[dict(o) for o in e["options"]],
                     apps=list(e["apps"]), skills=list(e["skills"]), adds={app: dict(a) for app, a in e["adds"].items()},
                     approval=self.local_approval(e), allowed=self.local_approval(e) == "ok", since=e["since"],
+                    fingerprint=self.local_seen(e),
                     why="it is in the game only: WuxianKit runs it there, the workshop starts no process" if in_game
                     else e["why"],
                     command=None if e["command"] is None else list(e["command"]),
@@ -1103,7 +1118,8 @@ class Fake:
         """GET / POST /api/local/summary: of a row (id, or its folder), or of a package that is not here (read by its
         name, as add reads it); nothing is added"""
         if eid is not None:
-            return self.local_summary(self.local_entry(eid))
+            e = self.local_entry(eid)
+            return dict(self.local_summary(e), fingerprint=self.local_seen(e))
         if path is None:
             raise ValueError("id (an extension here) or path (an extension's folder, or a package's .zip)")
         folder, name, package, eid, addons, more = self.local_named(path)
@@ -1115,7 +1131,7 @@ class Fake:
         e = self.local_fresh(eid, eid, EXT_HOME + "\\" + eid, addons, keep=False, version="0.1.0", author="Someone", **more)
         return self.local_summary(e, "package", dict(sha256="e" * 64, file=name))
 
-    def local_add(self, path, replace=False):
+    def local_add(self, path, replace=False, seen=None):
         """POST /api/local/add: a folder (or its manifest) is linked, a .zip goes into the home; what its name says
         decides the answer (the module's text)"""
         folder, name, package, eid, addons, more = self.local_named(path)
@@ -1142,7 +1158,14 @@ class Fake:
         version = "0.1.0" if old is None else old["version"] if same else "0.3.0" if old["version"] == "0.2.0" else "0.2.0"
         came = dict(sha256=(old.get("package") or {}).get("sha256") or "a" * 64 if same else f"{self.rng.getrandbits(256):064x}",
                     file=name)
+        if old is not None and replace is True:          # the package that was compared, when one was
+            came["sha256"] = self.local_offered.pop(eid, came["sha256"])
+            if seen is not None and seen != came["sha256"]:
+                raise Refused(409, "changed", f"{name} is not the package that was compared any more. Nothing was "
+                                              f"changed; add it again without replace to compare it as it is",
+                              sha256=came["sha256"])
         if old is not None and replace is not True:      # asked first: nothing of the one here is touched
+            self.local_offered[eid] = came["sha256"]
             try:
                 was = self.local_summary(old)
             except Refused:                      # the one there cannot be read: nothing to compare with
@@ -1278,7 +1301,7 @@ class Fake:
         """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400,
         Refused: its own status and code)"""
         if action == "add":
-            return self.local_add(body.get("path"), body.get("replace"))
+            return self.local_add(body.get("path"), body.get("replace"), body.get("sha256"))
         if action == "summary":
             return self.local_summary_of(body.get("id"), body.get("path"))
         if action == "new":
@@ -1306,6 +1329,11 @@ class Fake:
         if action == "approve":                  # the player's 批准运行: the command as it is now may run
             if not self.local_readable(e):
                 raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
+            seen = body.get("fingerprint")       # what the page showed: a yes to anything else is not one
+            if seen is not None and seen != self.local_seen(e):
+                raise Refused(409, "changed", f"{e['id']} is not what the player looked at any more. Nothing was "
+                                              f"approved; read its row and its summary again",
+                              fingerprint=self.local_seen(e))
             e["approval"] = "ok"
             self.entry("INFO", f"local extension {e['id']}: its command allowed by the player")
             installed = None                     # what it brings for the game goes in with the player's yes; one that

@@ -116,6 +116,42 @@ class Discovery(HomeCase):
         self.assertIn("changed the command it starts with since the player confirmed it", error.message)
         self.assertFalse(self.host.get("fx")["allowed"])
 
+    def test_a_yes_to_what_was_looked_at(self):
+        """the row and the summary carry one fingerprint of what a yes would allow; a yes that names another one (the
+        manifest, what it runs: changed since the player looked) is refused, and nothing is approved"""
+        folder = self.put()
+        self.assertTrue(self.look())
+        token = self.host.get("fx")["fingerprint"]
+        self.assertEqual((len(token), self.host.summary("fx")["fingerprint"]), (64, token))
+        self.assertEqual(self.host.get("fx")["fingerprint"], token)              # the same while nothing changes
+        with self.assertRaises(ApiError) as e:
+            self.host.approve("fx", seen=7)
+        self.assertEqual((e.exception.status, e.exception.code), (400, "bad_request"))
+        make_extension(folder, "fx", notes="说的是另一件事")                      # the manifest says something else
+        now = self.host.get("fx")["fingerprint"]                                 # (what it runs is the same)
+        self.assertNotEqual(now, token)
+        self.assertEqual(self.host.summary("fx")["fingerprint"], now)
+        with self.assertRaises(ApiError) as e:
+            self.host.approve("fx", seen=token)
+        self.assertEqual((e.exception.status, e.exception.code, e.exception.extra), (409, "changed", dict(fingerprint=now)))
+        self.assertIn("Nothing was approved", e.exception.message)
+        self.assertEqual((self.host.entry("fx")["approved"], self.host.get("fx")["approval"], self.pids()),
+                         (None, "needed", []))
+        make_extension(folder, "fx", mode="another", notes="说的是另一件事")      # what it runs changed as well
+        with self.assertRaises(ApiError) as e:
+            self.host.approve("fx", seen=now)
+        self.assertEqual((e.exception.code, self.host.entry("fx")["approved"]), ("changed", None))
+        now = e.exception.extra["fingerprint"]
+        self.assertEqual(self.host.get("fx")["fingerprint"], now)
+        row = self.host.approve("fx", seen=now)                                  # a yes to what is there
+        self.assertEqual((row["approval"], row["allowed"], row["fingerprint"]), ("ok", True, now))
+        self.host.stop("fx")
+        (folder / M.MANIFEST).write_text("{", encoding="utf-8")                  # nothing to read: nothing to say yes to
+        self.assertIsNone(self.host.get("fx")["fingerprint"])
+        with self.assertRaises(ApiError) as e:
+            self.host.approve("fx", seen=now)
+        self.assertEqual(e.exception.code, "bad_manifest")
+
     def test_ask_under_both_settings(self):
         self.put("found")
         self.assertTrue(self.look())

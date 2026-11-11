@@ -104,6 +104,19 @@ class Add(Local):
         self.assertEqual(set(self.rows()["herald"]), ROW)                    # where it came from is the summary's to say
         self.assertEqual(self.post("summary", id="herald").json()["package"]["file"], "herald.zip")
 
+    def test_the_package_that_was_compared(self):
+        """替换 names the package the player compared (new.package.sha256): another one by now is refused"""
+        zip_ = "D:\\Downloads\\herald.zip"
+        before = self.rows()["herald"]
+        offered = self.post("add", path=zip_).json()["new"]["package"]["sha256"]
+        r = self.post("add", path=zip_, replace=True, sha256="0" * 64)
+        self.assertEqual((r.status_code, r.json()["error"]["code"], r.json()["sha256"]), (409, "changed", offered))
+        self.assertEqual(self.rows()["herald"], before)                      # nothing was touched
+        offered = self.post("add", path=zip_).json()["new"]["package"]["sha256"]
+        r = self.post("add", path=zip_, replace=True, sha256=offered)
+        self.assertEqual((r.status_code, r.json()["version"]), (200, "0.3.0"))
+        self.assertEqual(self.post("summary", id="herald").json()["package"]["sha256"], offered)
+
     def test_the_very_package_again(self):
         self.assertEqual(self.post("add", path="D:\\Downloads\\same.zip").status_code, 200)
         d = self.post("add", path="D:\\Downloads\\same.zip").json()
@@ -323,13 +336,15 @@ class Summary(Local):
 
     def test_of_a_row(self):
         s = self.get(id="voice").json()
-        self.assertEqual(set(s), self.KEYS)
+        self.assertEqual(set(s), self.KEYS | {"fingerprint"})            # of one that is here: what a yes would allow
+        self.assertEqual(s["fingerprint"], self.rows()["voice"]["fingerprint"])
         self.assertEqual((s["from"], s["id"], s["risk"], s["package"]), ("folder", "voice", "local", None))
         self.assertEqual(set(s["local"]), {"run", "python", "start", "env", "pass"})
         self.assertEqual((s["local"]["pass"], s["executables"]), (["DEEPSEEK_API_KEY"], ["bin/tts.exe"]))
         self.assertEqual(set(s["agent"]), {"docs", "skills", "apps", "adds"})
         self.assertEqual(self.post("summary", id="voice").json(), s)                             # by POST as well
-        self.assertEqual(self.get(path=self.rows()["voice"]["path"]).json(), s)                  # by its folder
+        del s["fingerprint"]
+        self.assertEqual(self.get(path=self.rows()["voice"]["path"]).json(), s)                  # by its folder: the facts
 
     def test_one_with_game_addons(self):
         s = self.get(id="herald").json()

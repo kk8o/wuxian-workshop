@@ -569,7 +569,7 @@ def make_app(service, access, handle, mcp=None):
     @api
     async def local_add(request):
         b = await body_of(request)
-        return await service.extension_add(b.get("path"), b.get("replace") is True)
+        return await service.extension_add(b.get("path"), b.get("replace") is True, b.get("sha256"))
 
     @api
     async def local_summary(request):                # GET ?id= / ?path= (the App's read) or POST {id?, path?}
@@ -601,7 +601,8 @@ def make_app(service, access, handle, mcp=None):
 
     @api
     async def local_approve(request):
-        return await service.extension_approve((await body_of(request)).get("id"))
+        b = await body_of(request)                   # fingerprint: what the page showed (the App always sends it)
+        return await service.extension_approve(b.get("id"), b.get("fingerprint"))
 
     @api
     async def local_check(request):

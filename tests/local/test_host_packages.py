@@ -97,6 +97,32 @@ class Case(HostCase):
 
 
 class Installing(Case):
+    def test_the_package_that_was_compared(self):
+        """replace names the package the player compared (seen: new.package.sha256 of needs_replace): another file at
+        that path by now is refused, and nothing is touched"""
+        self.host.add(str(self.package()))
+        before = self.host.get("fx")["fingerprint"]
+        newer = self.package(version="0.2.0")
+        e = self.err(409, "needs_replace", self.host.add, str(newer))
+        offered = e.extra["new"]["package"]["sha256"]
+        self.assertEqual(offered, K._sha256(newer))
+        other = self.package(version="0.3.0")                    # another package is written over it
+        newer.write_bytes(other.read_bytes())
+        told = len(self.revisions)
+        e = self.err(409, "changed", self.host.add, str(newer), replace=True, seen=offered)
+        self.assertEqual(e.extra, dict(sha256=K._sha256(newer)))
+        self.assertIn("Nothing was changed", e.message)
+        self.assertEqual((self.host.get("fx")["version"], self.host.get("fx")["fingerprint"], len(self.revisions)),
+                         ("0.1.0", before, told))
+        self.assertFalse((self.home / HOME.INCOMING).exists())
+        self.assertFalse((self.home / HOME.REMOVED).exists())
+        e = self.err(409, "needs_replace", self.host.add, str(newer))               # compared as it is now
+        self.assertEqual((e.extra["new"]["version"], e.extra["new"]["package"]["sha256"]), ("0.3.0", K._sha256(newer)))
+        row = self.host.add(str(newer), replace=True, seen=e.extra["new"]["package"]["sha256"])
+        self.assertEqual((row["version"], row["approval"]), ("0.3.0", "needed"))
+        self.assertNotEqual(row["fingerprint"], before)          # another package: another thing to say yes to
+        self.assertEqual(self.host.summary("fx")["fingerprint"], row["fingerprint"])
+
     def test_a_package_is_installed(self):
         zip_path = self.package()
         told = len(self.revisions)
@@ -289,8 +315,10 @@ class Summaries(Case):
         self.host.install("fx")
         s = self.host.summary("fx")
         self.assertEqual(s["game"][0]["path"], str(self.addons / NAME))
-        self.assertEqual(self.host.summary(path=str(folder)), s)                     # by its folder, by its manifest
-        self.assertEqual(self.host.summary(path=str(folder / M.MANIFEST)), s)
+        self.assertEqual(s["fingerprint"], self.host.get("fx")["fingerprint"])       # of one that is here: what a yes allows
+        facts = {k: v for k, v in s.items() if k != "fingerprint"}
+        self.assertEqual(self.host.summary(path=str(folder)), facts)                 # by its folder, by its manifest
+        self.assertEqual(self.host.summary(path=str(folder / M.MANIFEST)), facts)
         self.game = None                                         # the game folder is not known
         self.assertEqual((self.host.summary("fx")["addons_dir"], self.host.summary("fx")["game"][0]["path"]),
                          (None, None))

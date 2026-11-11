@@ -264,8 +264,11 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                                              author=None, needs=[], path=str(self.addons / "WuxianGx"),
                                              cannot=None)])
         self.assertEqual(self.ok("POST", "/api/local/summary", {"path": packed["file"]}), packed["summary"])
-        self.assertEqual(self.ok("POST", "/api/local/summary", {"path": str(folder)}), mine)
+        facts = {k: v for k, v in mine.items() if k != "fingerprint"}          # (by its id: with what a yes allows)
+        self.assertEqual(self.ok("POST", "/api/local/summary", {"path": str(folder)}), facts)
         self.assertEqual(self.ok("GET", "/api/local/summary?id=gx"), mine)     # the App reads it so
+        rows = {r["id"]: r["fingerprint"] for r in self.ok("GET", "/api/local")["extensions"]}
+        self.assertEqual((len(mine["fingerprint"]), rows["gx"]), (64, mine["fingerprint"]))
         self.fails("GET", "/api/local/summary", None, 400, "bad_request")
         self.fails("GET", "/api/local/summary?id=ghost", None, 404, "not_found")
         for body, status, code in (({}, 400, "bad_request"), ({"id": "ghost"}, 404, "not_found"),
@@ -355,9 +358,12 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                          (409, "needs_replace", "0.1.0", "0.2.0", False), res)
         self.assertEqual(res["changes"], [dict(field="version", old="0.1.0", new="0.2.0")])
         self.assertEqual((res["old"]["package"]["file"], res["new"]["package"]["file"]), ("px-0.1.0.zip", "px-0.2.0.zip"))
+        offered = res["new"]["package"]["sha256"]
         self.fails("POST", "/api/local/add", {"path": newer, "replace": "yes"}, 409, "needs_replace")
+        status, res = self.call("POST", "/api/local/add", {"path": newer, "replace": True, "sha256": "0" * 64})
+        self.assertEqual((status, res["error"]["code"], res["sha256"]), (409, "changed", offered), res)   # not the one compared
         self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "px.opts"})["result"], {"volume": 70})   # untouched
-        row = self.ok("POST", "/api/local/add", {"path": newer, "replace": True})   # the player is asked again
+        row = self.ok("POST", "/api/local/add", {"path": newer, "replace": True, "sha256": offered})   # asked again
         kept = Path(row["package"]["replaced"])
         self.assertEqual((row["version"], row["path"], row["approval"], row["enabled"], kept.parent),
                          ("0.2.0", str(home / "px"), "needed", True, home / ".removed"))

@@ -1922,7 +1922,7 @@ class Service:
         renders them as it renders the game's)"""
         return await asyncio.to_thread(self.local.manifest_entries)
 
-    async def extension_add(self, path, replace=False):
+    async def extension_add(self, path, replace=False, sha256=None):
         """registers a local extension by its folder (or its wuxian-extension.json): its row; its apps are told to
         WuxianKit now while the game is online (reconcile_local_apps). Where the setting asks nobody
         (extension_approval "auto"), one that starts on use is started here once, only to learn what it can do
@@ -1930,8 +1930,9 @@ class Service:
         allows its command (extension_approve). path may be a package (.zip) instead: it is installed into the
         extensions folder: its row with package {file, replaced}; that one always waits for the player. Over the
         version there only with replace true (the player said so): without it needs_replace (409) answers old, new,
-        changes and same, and nothing is touched (Host.add_package)"""
-        row = await asyncio.to_thread(self.local.add, path, replace)
+        changes and same, and nothing is touched (Host.add_package). sha256 (with replace): the package that was
+        compared, new.package.sha256 of that answer; another file there by now answers changed (409)"""
+        row = await asyncio.to_thread(self.local.add, path, replace, sha256)
         self.notes.forgive(row["id"])                      # (a package over the version there: its notes are tried anew)
         if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" \
                 and row.get("allowed") and not row.get("error") and row.get("where") != "game":
@@ -2036,13 +2037,15 @@ class Service:
             if (row.get("player") or {}).get("action") not in same:
                 return dict(row=row, was=was, timeout=False)
 
-    async def extension_approve(self, id):
+    async def extension_approve(self, id, fingerprint=None):
         """the player allows a local extension's command to run (Host.approve; as it is now: a changed command asks
-        again): its row, with installed: what became of its game addons, which go into the game's AddOns with the
+        again). fingerprint: the row's and the summary's, as the player saw them: when the extension is something
+        else by now the answer is changed (409) and nothing is approved. Its row, with installed: what became of
+        its game addons, which go into the game's AddOns with the
         yes (None: nothing was tried; {ok: true, addons, restart, hint}; {ok: false, code, message, addons}). The
         host starts it then: for good when it starts with 无限工坊 (start "workshop"), else,
         when it never said what it can do, only to learn that; its apps are declared"""
-        row = await asyncio.to_thread(self.local.approve, id, "player")
+        row = await asyncio.to_thread(self.local.approve, id, "player", fingerprint)
         eid = row["id"]
         self.notes.forgive(eid)
         await self.reconcile_local_apps()

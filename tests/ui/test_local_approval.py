@@ -4,7 +4,9 @@ stand-in for /api/local* in the shapes of contract5 (sections 7, 8, 11). A row's
 since when and why; a row whose approval is needed or changed shows its command and folder with 批准运行 (POST
 /api/local/approve, the row it answers taken in); a start or a check the daemon refuses with 403 needs_approval shows
 the same, not an error; with approval ok nothing of it shows, nor for a row that says allowed (the setting
-extension_approval is "auto"). The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动批准): the form carries
+extension_approval is "auto"). 批准 waits for the summary (GET /api/local/summary) and for it to be the row's (the
+same fingerprint): while it is read, when it failed or is of before there is a line and 重试 / 重新读取 instead; the
+POST carries that fingerprint, and 409 changed reads both again and says so. The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动批准): the form carries
 it, "ask" unless the daemon says "auto", and the rows are read again when it changes."""
 import json
 import re
@@ -31,7 +33,12 @@ const copyOf = (r) => JSON.parse(JSON.stringify(r));
 const base = { version: '0.1.0', enabled: true, start: 'use', pid: null, started: null, exit_code: null, error: null,
                capabilities: [], sources: [], options: [], apps: [], skills: [], adds: {}, approval: 'ok', since: T0 - 30,
                why: null };
-const mk = (id, title, more) => Object.assign({}, base, { id, title, path: 'C:\\ext\\' + id, command: ['python', id + '.py'] }, more);
+const mk = (id, title, more) => {
+  const r = Object.assign({}, base, { id, title, path: 'C:\\ext\\' + id, command: ['python', id + '.py'] }, more);
+  r.fingerprint = Array.isArray(r.command) ? 'f:' + id + ':1' : null;      // what a yes would allow as it is now
+  return r;
+};
+const sums = {};                                 // id -> 'fail' | 'old' | a promise to wait for: how its summary answers
 function reset() {
   rows = [
     mk('voice', '声音', { state: 'running', pid: 4242, started: T0, since: T0 }),
@@ -50,6 +57,8 @@ function reset() {
     mk('late', '后变', { state: 'stopped' }),
     mk('odd', '只答', { state: 'stopped' }),
     mk('deny', '拒绝', { state: 'stopped' }),
+    mk('slow', '慢读', { state: 'stopped', approval: 'needed' }),
+    mk('moved', '改过', { state: 'stopped', approval: 'needed' }),
   ];
   Object.assign(refuse, { late: 'changed', odd: 'keep', deny: 'forbidden' });
 }
@@ -63,9 +72,16 @@ async function api(path, opts) {
   if (path === '/api/local/manifest') return { revision: 1, extensions: [] };
   if (path === '/api/kit/apps') return { online: true, apps: [] };
   if (path.startsWith('/api/local/logs?')) throw apiErr(404, 'not_found', 'no log yet');
+  if (path.startsWith('/api/local/summary?id=')) {
+    const r = row(decodeURIComponent(path.split('=')[1])), how = sums[r.id];
+    if (how && how.then) await how;
+    if (sums[r.id] === 'fail' || !Array.isArray(r.command)) throw apiErr(409, 'bad_manifest', 'cannot be read');
+    return { id: r.id, title: r.title, risk: 'local', fingerprint: sums[r.id] === 'old' ? 'f:' + r.id + ':0' : r.fingerprint };
+  }
   if (path === '/api/local/approve') {
     const r = row(body.id);
     if (!Array.isArray(r.command)) throw apiErr(400, 'bad_manifest', r.error);
+    if (body.fingerprint !== r.fingerprint) throw apiErr(409, 'changed', r.id + ' is not what the player looked at any more');
     r.approval = 'ok';
     delete refuse[r.id];
     return copyOf(r);
@@ -73,7 +89,7 @@ async function api(path, opts) {
   if (path === '/api/local/load' || path === '/api/local/check') {
     const r = row(body.id);
     if (refuse[r.id] === 'forbidden') throw apiErr(403, 'forbidden', 'not from here');
-    if (refuse[r.id] === 'changed') r.approval = 'changed';      // its command changed after the page read the rows
+    if (refuse[r.id] === 'changed') Object.assign(r, { approval: 'changed', fingerprint: 'f:' + r.id + ':2' });   // its command changed after the page read the rows
     if (r.approval !== 'ok' || refuse[r.id]) {
       throw apiErr(403, 'needs_approval', r.id + ': the player has not allowed its command yet');
     }
@@ -124,7 +140,8 @@ const paths = () => calls.map((c) => c[0]);
   await st.lxAct(st.lxCur, 'load');
   await settle();
   out.refused = { posts: posts(), reread: paths().includes('/api/local'), note: st.lx.note, ask: st.lx.ask,
-                  needs: st.lxNeeds(st.lxCur), said: last(), busy: st.lx.busy, state: st.lxState(st.lxCur).text };
+                  needs: st.lxNeeds(st.lxCur), said: last(), busy: st.lx.busy, state: st.lxState(st.lxCur).text,
+                  ready: [st.lxApproveReady(st.lxCur), st.lxSumState(st.lxCur)] };
 
   // 批准运行: the row it answers taken in; then 载入 runs it
   calls.length = 0;
@@ -139,6 +156,7 @@ const paths = () => calls.map((c) => c[0]);
   calls.length = 0;
   await st.lxAct(st.lxCur, 'check');
   out.changed = { posts: posts(), note: st.lx.note, check: st.lxCheck, title: st.lxApprovalTitle(st.lxCur), said: last() };
+  await settle();
   await st.lxApprove(st.lxCur);
   await st.lxAct(st.lxCur, 'check');
   out.changed.after = { needs: st.lxNeeds(st.lxCur), check: st.lxCheck && st.lxCheck.ok, state: st.lxState(st.lxCur).text };
@@ -149,6 +167,8 @@ const paths = () => calls.map((c) => c[0]);
   await st.lxAct(st.lxCur, 'load');
   Object.assign(out.late, { needs: st.lxNeeds(st.lxCur), title: st.lxApprovalTitle(st.lxCur), approval: st.lxCur.approval,
                             note: st.lx.note });
+  await settle();                              // the row's fingerprint is another: its summary was read again
+  out.late.ready = [st.lxSumState(st.lxCur), st.lx.sum.data.fingerprint];
   await st.lxApprove(st.lxCur);
   Object.assign(out.late, { ask: st.lx.ask, after: st.lxNeeds(st.lxCur) });
 
@@ -160,6 +180,7 @@ const paths = () => calls.map((c) => c[0]);
   out.odd.left = st.lxNeeds(of('odd'));
   st.xpSelect('l:odd');
   await st.lxAct(st.lxCur, 'load');
+  await settle();
   calls.length = 0;
   await st.lxApprove(st.lxCur);
   Object.assign(out.odd, { posts: posts(), ask: st.lx.ask, after: st.lxNeeds(st.lxCur) });
@@ -169,9 +190,66 @@ const paths = () => calls.map((c) => c[0]);
   await st.lxAct(st.lxCur, 'load');
   out.deny = { note: st.lx.note, needs: st.lxNeeds(st.lxCur), ask: st.lx.ask };
   st.xpSelect('l:draft');
+  await settle();
   out.draft = { can: st.lxCanApprove(st.lxCur), title: st.lxTitle(st.lxCur) };
+  calls.length = 0;
   await st.lxApprove(st.lxCur);
-  Object.assign(out.draft, { note: st.lx.note, needs: st.lxNeeds(st.lxCur) });
+  Object.assign(out.draft, { note: st.lx.note, needs: st.lxNeeds(st.lxCur), posts: posts() });
+
+  // 批准 waits for the summary: while it is read, and when it could not be read, nothing is posted
+  let let_go;
+  sums.slow = new Promise((r) => { let_go = r; });
+  st.xpSelect('l:slow');
+  await settle();
+  calls.length = 0;
+  out.slow = { reading: [st.lxSumState(st.lxCur), st.lxSumNote(st.lxCur), st.lxApproveReady(st.lxCur)] };
+  await st.lxApprove(st.lxCur);
+  out.slow.posted = posts();
+  sums.slow = 'fail';
+  let_go();
+  await settle();
+  out.slow.unread = [st.lxSumState(st.lxCur), st.lxSumNote(st.lxCur), st.lxApproveReady(st.lxCur)];
+  await st.lxApprove(st.lxCur);
+  out.slow.still = posts();
+  delete sums.slow;
+  calls.length = 0;
+  await st.lxSumAgain(st.lxCur);               // 重试: the rows, then the summary
+  out.slow.again = { read: paths(), state: st.lxSumState(st.lxCur), ready: st.lxApproveReady(st.lxCur) };
+  await st.lxApprove(st.lxCur);
+  out.slow.approved = [posts().slice(-1)[0], st.lxCur.approval];
+
+  // a summary of before (the row is of now): 重新读取, not 批准
+  sums.moved = 'old';
+  st.xpSelect('l:moved');
+  await settle();
+  out.stale = { state: [st.lxSumState(st.lxCur), st.lxSumNote(st.lxCur), st.lxApproveReady(st.lxCur)] };
+  calls.length = 0;
+  await st.lxApprove(st.lxCur);
+  out.stale.posted = posts();
+  delete sums.moved;
+  await st.lxSumAgain(st.lxCur);
+  out.stale.again = [st.lxSumState(st.lxCur), st.lxApproveReady(st.lxCur)];
+
+  // it changed between the page and the yes: 409 changed, nothing approved, both read again and one line says so
+  rows.find((r) => r.id === 'moved').fingerprint = 'f:moved:9';
+  calls.length = 0;
+  await st.lxApprove(st.lxCur);
+  await settle();
+  out.raced = { posts: posts(), read: paths().slice(1), note: st.lx.note, approval: st.lxCur.approval, busy: st.lx.busy,
+                state: st.lxSumState(st.lxCur), seen: st.lx.sum.data.fingerprint, needs: st.lxNeeds(st.lxCur) };
+  await st.lxApprove(st.lxCur);
+  out.raced.then = [posts().slice(-1)[0], st.lxCur.approval];
+
+  // another one selected while a summary is on its way: the late answer is not this one's
+  let free;
+  sums.slow = new Promise((r) => { free = r; });
+  st.xpSelect('l:slow');
+  st.xpSelect('l:plain');
+  await settle();
+  free();
+  await settle();
+  delete sums.slow;
+  out.switched = [st.lx.sum.id, st.lxSumState(st.lxCur)];
 
   // 等待重试: its log is read every second like a running one's (the next start writes to it)
   st.xpSelect('l:sync');
@@ -240,13 +318,14 @@ class Approval(unittest.TestCase):
             ["stats", "待批准", "warn", "approval"], ["ocr", "无响应", "bad", "hung"], ["halt", "停止中", "warn", "stopping"],
             ["sync", "等待重试", "warn", "backoff"], ["crash", "异常退出", "bad", "crashed"], ["done", "已退出", "off", "exited"],
             ["warm", "启动中", "warn", "starting"], ["draft", "清单有误", "bad", "invalid"], ["gone", "已停用", "off", "off"],
-            ["late", "未运行", "off", "stopped"], ["odd", "未运行", "off", "stopped"], ["deny", "未运行", "off", "stopped"]])
+            ["late", "未运行", "off", "stopped"], ["odd", "未运行", "off", "stopped"], ["deny", "未运行", "off", "stopped"],
+            ["slow", "待批准", "warn", "approval"], ["moved", "待批准", "warn", "approval"]])
 
     def test_which_have_a_process(self):
         o = self.out["live"]
         self.assertEqual(o["running"], ["voice", "ocr", "halt", "warm"])
         self.assertEqual(o["stoppable"], ["voice", "ocr", "halt", "sync", "warm"])       # 等待重试: 停止 calls the retry off
-        self.assertEqual(o["summary"], "15 个本机扩展 · 1 个运行中")
+        self.assertEqual(o["summary"], "17 个本机扩展 · 1 个运行中")
         self.assertEqual(self.out["backoffTick"], 1)
 
     def test_since_and_why(self):
@@ -259,7 +338,8 @@ class Approval(unittest.TestCase):
     def test_which_rows_ask(self):
         self.assertEqual(self.out["asks"], [["facts", "需要批准", True], ["stats", "运行命令已变更", True],
                                             ["done", "运行命令已变更", True], ["draft", "需要批准", False],
-                                            ["gone", "需要批准", True]])              # approval ok: nothing of it
+                                            ["gone", "需要批准", True], ["slow", "需要批准", True],
+                                            ["moved", "需要批准", True]])             # approval ok: nothing of it
 
     def test_the_command_in_one_line(self):
         c = self.out["command"]
@@ -272,10 +352,11 @@ class Approval(unittest.TestCase):
         self.assertTrue(r["reread"])
         self.assertIsNone(r["note"])                                                     # not an error
         self.assertEqual((r["ask"], r["needs"], r["said"], r["busy"], r["state"]), ("facts", True, "图鉴速查 需要批准", "", "待批准"))
+        self.assertEqual(r["ready"], [True, ""])                                         # its summary is on the page
 
     def test_allow(self):
-        a = self.out["approved"]
-        self.assertEqual(a["posts"], [["/api/local/approve", {"id": "facts"}]])
+        a = self.out["approved"]                                                         # with what the page showed
+        self.assertEqual(a["posts"], [["/api/local/approve", {"id": "facts", "fingerprint": "f:facts:1"}]])
         self.assertFalse(a["reread"])                                                    # the row came with the answer
         self.assertEqual((a["approval"], a["ask"], a["needs"], a["said"], a["state"]), ("ok", "", False, "已批准 图鉴速查", "未运行"))
         self.assertEqual(self.out["loaded"], {"state": "运行中", "said": "已载入 图鉴速查", "note": None})
@@ -289,18 +370,46 @@ class Approval(unittest.TestCase):
     def test_a_refusal_the_row_did_not_say(self):
         o = self.out["late"]
         self.assertEqual((o["before"], o["needs"], o["title"], o["approval"], o["note"]), (False, True, "运行命令已变更", "changed", None))
+        self.assertEqual(o["ready"], ["", "f:late:2"])                                   # the summary of what it is now
         self.assertEqual((o["ask"], o["after"]), ("", False))
         o = self.out["odd"]
         self.assertEqual((o["approval"], o["needs"], o["title"], o["state"]), ("ok", True, "需要批准", "未运行"))
         self.assertFalse(o["left"])                                                      # another selected: asked afresh
-        self.assertEqual(o["posts"], [["/api/local/approve", {"id": "odd"}]])
+        self.assertEqual(o["posts"], [["/api/local/approve", {"id": "odd", "fingerprint": "f:odd:1"}]])
         self.assertEqual((o["ask"], o["after"]), ("", False))
 
     def test_other_failures_stay_errors(self):
         self.assertEqual(self.out["deny"], {"note": {"bad": True, "text": "载入失败：not from here"}, "needs": False, "ask": ""})
         d = self.out["draft"]
         self.assertEqual((d["can"], d["title"], d["needs"]), (False, "draft", True))
-        self.assertEqual(d["note"], {"bad": True, "text": "批准失败：清单有误：run: a list of strings"})
+        self.assertEqual((d["note"], d["posts"]), (None, []))                            # nothing to say yes to
+
+    def test_approval_waits_for_the_summary(self):
+        s = self.out["slow"]
+        self.assertEqual(s["reading"], ["loading", "正在读取扩展摘要…", False])
+        self.assertEqual(s["posted"], [])
+        self.assertEqual(s["unread"], ["error", "扩展摘要读取失败，暂不能批准。", False])
+        self.assertEqual(s["still"], [])
+        self.assertEqual(s["again"], {"read": ["/api/local", "/api/local/summary?id=slow"], "state": "", "ready": True})
+        self.assertEqual(s["approved"], [["/api/local/approve", {"id": "slow", "fingerprint": "f:slow:1"}], "ok"])
+
+    def test_a_summary_of_before_is_not_approved(self):
+        s = self.out["stale"]
+        self.assertEqual(s["state"], ["stale", "扩展内容已变化，重新读取后再批准。", False])
+        self.assertEqual(s["posted"], [])
+        self.assertEqual(s["again"], ["", True])
+
+    def test_changed_between_the_page_and_the_yes(self):
+        r = self.out["raced"]
+        self.assertEqual(r["posts"], [["/api/local/approve", {"id": "moved", "fingerprint": "f:moved:1"}]])
+        self.assertEqual(r["read"], ["/api/local", "/api/local/summary?id=moved"])
+        self.assertEqual(r["note"], {"bad": True, "text": "扩展内容在你查看后有改动，已重新读取。请核对后再批准。"})
+        self.assertEqual((r["approval"], r["needs"], r["busy"]), ("needed", True, ""))   # nothing was approved
+        self.assertEqual((r["state"], r["seen"]), ("", "f:moved:9"))                     # … and it can be, as it is now
+        self.assertEqual(r["then"], [["/api/local/approve", {"id": "moved", "fingerprint": "f:moved:9"}], "ok"])
+
+    def test_a_late_summary_of_another(self):
+        self.assertEqual(self.out["switched"], ["plain", ""])
 
     def test_english(self):
         e = self.out["english"]
@@ -376,7 +485,9 @@ class Template(unittest.TestCase):
         self.assertIn('<code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code>', card)
         self.assertIn('x-text="lxCur.path || \'—\'"', card)
         self.assertIn('@click="lxApprove(lxCur)"', card)
-        self.assertIn("!lxCanApprove(lxCur)", card)
+        self.assertIn("!lxApproveReady(lxCur)", card)                                    # … once its summary is here
+        self.assertIn('<div class="lx-sum-state" x-show="lxSumState(lxCur)" role="status">', card)
+        self.assertIn('@click="lxSumAgain(lxCur)"', card)
         self.assertIn("t('批准运行')", card)
 
     def test_the_command_wraps(self):

@@ -885,7 +885,8 @@
               <button class="btn small" @click="lx.drop = ''">取消</button>
             </div>
             <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次。清单有误、算不出命令时只留下面的错误条。
-                 卡片里是扩展摘要和一句话说明批准意味着什么；拿不准的可以先复制给 Agent 审阅 -->
+                 卡片里是扩展摘要和一句话说明批准意味着什么；拿不准的可以先复制给 Agent 审阅。摘要读到、且就是这一行的
+                 （两边的 fingerprint 相同）才能点批准；批准带上它，扩展在这之后变了就不算数 -->
             <div class="lx-approve" x-show="lxNeeds(lxCur) && lxCanApprove(lxCur)">
               <div class="lx-approve-head">
                 <div class="grow">
@@ -893,7 +894,7 @@
                   <span class="muted" x-text="lxApproveHint(lxCur)"></span>
                 </div>
                 <button class="btn" @click="lxCopyReview(lxCur)">复制给 Agent 审阅</button>
-                <button class="btn primary" :disabled="lx.busy !== '' || !lxCanApprove(lxCur)" @click="lxApprove(lxCur)"
+                <button class="btn primary" :disabled="lx.busy !== '' || !lxApproveReady(lxCur)" @click="lxApprove(lxCur)"
                         x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')"></button>
               </div>
               <dl class="kv">
@@ -904,6 +905,11 @@
               </dl>
               <div class="muted" x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
               <div class="lx-stuck" x-show="lxStuck(lxCur)" x-text="t('游戏插件无法安装：{why}', { why: lxStuck(lxCur) })"></div>
+              <div class="lx-sum-state" x-show="lxSumState(lxCur)" role="status">
+                <span x-text="lxSumNote(lxCur)"></span>
+                <button class="btn small" x-show="lxSumState(lxCur) !== 'loading'" :disabled="lx.loading" @click="lxSumAgain(lxCur)"
+                        x-text="lxSumState(lxCur) === 'error' ? t('重试') : t('重新读取')"></button>
+              </div>
               <p class="lx-risk" x-text="lxRiskLine(lxCur)"></p>
             </div>
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>

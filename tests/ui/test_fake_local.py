@@ -18,7 +18,7 @@ from tests.ui.test_fake_api import AUTH, F
 
 ROW = {"id", "title", "version", "path", "enabled", "start", "state", "pid", "started", "exit_code", "error", "capabilities",
        "sources", "options", "apps", "skills", "adds", "approval", "allowed", "since", "why", "command",
-       "origin", "author", "homepage", "requires", "unmet", "addons", "where", "game", "player"}
+       "origin", "author", "homepage", "requires", "unmet", "addons", "where", "game", "player", "fingerprint"}
 STATES = {"off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff", "game"}
 
 
@@ -106,6 +106,19 @@ class Ask(Local):
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (400, "bad_request"))
         self.assertEqual(self.post("approve", id="voice").json()["approval"], "ok")              # allowed already: the row
         self.assertEqual(self.client.post("/api/local/approve", json={"id": "facts"}).status_code, 401)
+
+    def test_a_yes_to_what_was_shown(self):
+        """the row and its summary carry one fingerprint; 批准 sends it back, and a yes to another is refused"""
+        row = self.rows()["facts"]
+        s = self.client.get("/api/local/summary", headers=AUTH, params={"id": "facts"}).json()
+        self.assertEqual((len(row["fingerprint"]), s["fingerprint"]), (64, row["fingerprint"]))
+        self.assertIsNone(self.rows()["draft"]["fingerprint"])           # nothing to read: nothing to say yes to
+        r = self.post("approve", id="facts", fingerprint="0" * 64)
+        self.assertEqual((r.status_code, r.json()["error"]["code"], r.json()["fingerprint"]),
+                         (409, "changed", row["fingerprint"]))
+        self.assertEqual(self.rows()["facts"]["approval"], "needed")     # nothing was approved
+        r = self.post("approve", id="facts", fingerprint=row["fingerprint"])
+        self.assertEqual((r.status_code, r.json()["approval"]), (200, "ok"))
 
     def test_one_added_waits(self):
         r = self.post("add", path="C:\\Users\\me\\mine")

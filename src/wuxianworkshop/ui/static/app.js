@@ -315,7 +315,7 @@ function appState() {
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
     lx: { list: null, revision: null, caps: null, error: '', problem: '', loading: false, again: false, busy: '', note: null,
-          check: null, ask: '', home: '', menu: '', drop: '', packed: null, game: {}, sum: null },
+          check: null, ask: '', home: '', menu: '', drop: '', packed: null, game: {}, sum: null, sumN: 0 },
                                                // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
                                                // the id whose start was refused until its command is allowed; home: the
                                                // extensions' folder; menu: the one open (add | more); drop: the id whose
@@ -1433,14 +1433,19 @@ function appState() {
         this.loadLocalCaps();
       }
       const sel = this.selLx;
-      if (sel) this.lxSeen(sel, old.find((r) => r.id === sel.id));
+      if (!sel) return;
+      const was = old.find((r) => r.id === sel.id);
+      this.lxSeen(sel, was);
+      if (was && (was.fingerprint || null) !== (sel.fingerprint || null)) this.lxSum(sel.id);   // it is something else now
     },
     lxRow(row) {                               // one row the daemon answered (an action's) into the list
       if (!row || !row.id) return;
       const list = this.lx.list || [];
       const old = list.find((r) => r.id === row.id);
       this.lx.list = old ? list.map((r) => (r.id === row.id ? row : r)) : list.concat([row]);
-      if (this.selLx && this.selLx.id === row.id) this.lxSeen(row, old);
+      if (!this.selLx || this.selLx.id !== row.id) return;
+      this.lxSeen(row, old);
+      if (old && (old.fingerprint || null) !== (row.fingerprint || null)) this.lxSum(row.id);
     },
     lxSeen(row, old) {                         // the shown extension's row anew: a new run's log starts afresh
       if (this.lout.id !== row.id) return;
@@ -1473,18 +1478,43 @@ function appState() {
       if (r && Object.keys(r.adds || {}).length && !this.apps.data) this.loadApps();
       this.lxSum(id);
     },
-    async lxSum(id) {                          // 扩展摘要: GET /api/local/summary?id= ; quiet: the detail does without
-      if (!id) return;
+    async lxSum(id) {                          // 扩展摘要: GET /api/local/summary?id= ; lx.sum {id, n, state, data}: state
+      if (!id) return;                         // 'loading', 'ok' or 'error' (the detail does without; 批准 waits for it)
+      const n = (this.lx.sumN = (this.lx.sumN || 0) + 1);
+      const had = this.lx.sum && this.lx.sum.id === id ? this.lx.sum.data : null;
+      this.lx.sum = { id, n, state: 'loading', data: had };
+      let d = null;
       try {
-        const d = await this.api('/api/local/summary?id=' + encodeURIComponent(id));
-        if (this.lxCur.id === id) this.lx.sum = d && typeof d === 'object' ? { id, data: d } : null;
+        d = await this.api('/api/local/summary?id=' + encodeURIComponent(id));
       } catch (e) {
-        if (this.lx.sum && this.lx.sum.id === id) this.lx.sum = null;
+        d = null;
       }
+      if (!this.lx.sum || this.lx.sum.n !== n) return;   // a later read took its place
+      if (this.lxCur.id !== id) { this.lx.sum = null; return; }
+      const ok = !!d && typeof d === 'object';
+      this.lx.sum = { id, n, state: ok ? 'ok' : 'error', data: ok ? d : null };
+      const r = ok ? (this.lx.list || []).find((x) => x.id === id) : null;   // the row is of before: read once more (a new
+      if (r && d.fingerprint && r.fingerprint !== d.fingerprint) this.loadLocal(true);   // fingerprint reads the summary again)
     },
     get lxSumCur() {                           // the shown extension's summary: null until it came
       const s = this.lx.sum;
       return s && s.id === this.lxCur.id ? s.data : null;
+    },
+    lxSumState(r) {                            // what stands between the page and 批准: '' (the summary on the page is the
+      const s = this.lx.sum;                   // row's), 'loading', 'error' or 'stale' (the extension changed since)
+      if (!r || !r.id) return '';
+      if (!s || s.id !== r.id) return 'error';
+      if (s.state !== 'ok') return s.state;
+      return s.data && s.data.fingerprint && s.data.fingerprint === r.fingerprint ? '' : 'stale';
+    },
+    lxSumNote(r) {
+      return t({ loading: '正在读取扩展摘要…', error: '扩展摘要读取失败，暂不能批准。',
+                 stale: '扩展内容已变化，重新读取后再批准。' }[this.lxSumState(r)] || '');
+    },
+    async lxSumAgain(r) {                      // 重试 / 重新读取: the rows, then the summary
+      if (!r || !r.id) return;
+      await this.loadLocal(true);
+      await this.lxSum(r.id);
     },
     lxSumRows(s, brief) {                      // a summary as rows [{ id, k, v }]: the same facts in the detail, at 批准, before
       if (!s || typeof s !== 'object') return [];   // a replace and after 打包 (brief: beside the command, which is not said twice)
@@ -1627,9 +1657,11 @@ function appState() {
       return c.map((a) => (/[\s"]/.test(String(a)) || a === '' ? '"' + String(a).replace(/"/g, '\\"') + '"' : String(a))).join(' ');
     },
     lxCanApprove(r) { return !!r && !(r.error && !Array.isArray(r.command)); },   // not a manifest without a command
-    async lxApprove(r) {                       // 批准运行: POST /api/local/approve, the row it answers taken in
+    lxApproveReady(r) { return this.lxCanApprove(r) && !!r.id && this.lxSumState(r) === ''; },   // … and its summary is here
+    async lxApprove(r) {                       // 批准运行: POST /api/local/approve with the fingerprint of what the page
+      if (!this.lxApproveReady(r)) return;     // shows (a yes to anything else is refused), the row it answers taken in
       const fresh = ((r && r.addons) || []).filter((a) => a && a.state === 'missing').map((a) => a.folder);
-      const d = await this.lxPost(r, 'approve', null, t('批准失败：'));
+      const d = await this.lxPost(r, 'approve', { fingerprint: this.lx.sum.data.fingerprint }, t('批准失败：'));
       if (!d) return;
       const now = (lxRowOf(d) || {}).addons || [];   // its game addons go in with the yes: a new one needs the game restarted
       if (now.some((a) => a && a.state === 'current' && fresh.includes(a.folder))) this.lxGameSet(r.id, true);
@@ -1682,6 +1714,14 @@ function appState() {
           this.lx.ask = r.id;                  // not an error: the same 批准运行 as a row that says it (which is read again)
           this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
           await this.loadLocal(true);
+          return null;
+        }
+        if (action === 'approve' && e && e.status === 409 && e.data && e.data.error && e.data.error.code === 'changed') {
+          const was = r.fingerprint || null;   // it is not what the page showed any more: nothing was approved
+          await this.loadLocal(true);          // (a row with another fingerprint reads its summary again by itself)
+          const now = (this.lx.list || []).find((x) => x.id === r.id);
+          if (now && (now.fingerprint || null) === was) await this.lxSum(r.id);
+          this.lx.note = { bad: true, text: t('扩展内容在你查看后有改动，已重新读取。请核对后再批准。') };
           return null;
         }
         this.lx.note = { bad: true, text: failed + lxWhy(e) };
@@ -1990,7 +2030,8 @@ function appState() {
       x.busy = true;
       x.error = '';
       try {
-        const d = await this.api('/api/local/add', { body: { path: x.path, replace: true } });
+        const sha256 = (x.new && x.new.package && x.new.package.sha256) || undefined;   // the package that was compared
+        const d = await this.api('/api/local/add', { body: { path: x.path, replace: true, sha256 } });
         this.lxr = { open: false, kind: x.kind, path: '', old: null, new: null, changes: null, same: null, busy: false, error: '' };
         await this.lxAdded(d);
       } catch (e) {

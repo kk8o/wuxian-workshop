@@ -602,11 +602,13 @@ class Registry:
             return "needed"
         return "ok" if now == approved["fingerprint"] else "changed"
 
-    def approve(self, eid, by):
+    def approve(self, eid, by, expect=None):
         """the entry's command as it is now is allowed: approved {fingerprint, at, by} ("player": in the App;
         "developer": the workshop by itself, where the setting says so, the name is kept for what is stored);
         saves, and gives the entry. One that is allowed as it is stays as it was. ApiError bad_manifest when its
-        manifest cannot be read (there is no command to allow)"""
+        manifest cannot be read (there is no command to allow). expect: the fingerprint the caller read a moment
+        ago (what was looked at): ApiError changed (409) when the folder runs something else by now, and nothing
+        is stored"""
         if by not in APPROVERS:
             raise ApiError(400, "bad_request", 'by: "player" or "developer"')
         with self.lock:
@@ -616,6 +618,9 @@ class Registry:
             if now is None:
                 raise ApiError(409, "bad_manifest", f"{e['id']}: its {M.MANIFEST} cannot be read, so there is no "
                                                     f"command to allow (extension_check says what is wrong with it)")
+            if expect is not None and now != expect:
+                raise ApiError(409, "changed", f"{e['id']}: what it runs changed a moment ago. Nothing was approved; "
+                                               f"read its row and its summary again")
             if not approved_ok(e["approved"]) or e["approved"]["fingerprint"] != now:
                 e["approved"] = dict(fingerprint=now, at=round(time.time(), 3), by=by)
                 self.save(data)

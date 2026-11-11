@@ -58,6 +58,7 @@ split is still here (the imports below): others import Host and call_error from 
 SHUTDOWN_WAIT and LOG_MAX on it, so the code that reads those three reads this module's (Host below; logs.log_max()).
 Standard library only.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -514,6 +515,25 @@ class Host:
             else:
                 self.addon_states.pop(eid, None)
 
+    def seen(self, e, fresh=False):
+        """(token, fingerprint): what a yes to this extension would allow as it is now. token: one opaque word of
+        the registry's fingerprint of what it runs, the bytes of its manifest file and the package it was imported
+        from (the row's and the summary's `fingerprint`: the App sends the one it showed back with 批准, and a yes
+        to anything else is refused, approve); fingerprint: the registry's (fresh: read anew). (None, None) when
+        its manifest cannot be read"""
+        fp = self.reg.fingerprint(e["path"], kept=not fresh)
+        if fp is None:
+            return None, None
+        try:
+            with open(os.path.join(os.path.realpath(e["path"]), M.MANIFEST), "rb") as f:
+                raw = f.read()
+        except (OSError, ValueError, TypeError):
+            return None, None
+        package = e.get("package")
+        came = package.get("sha256") if isinstance(package, dict) else None
+        text = "\n".join((fp, hashlib.sha256(raw).hexdigest(), came if isinstance(came, str) else ""))
+        return hashlib.sha256(text.encode("utf-8")).hexdigest(), fp
+
     def row(self, e, side=None):
         """an extension as the API shows it. state, since (epoch seconds) and why: where it is (the module's text);
         command: what the workshop runs for it, None while its manifest cannot be used; adds: what its manifest adds to
@@ -525,8 +545,9 @@ class Host:
         (addon_rows). A manifest that cannot be read: None, None, {}, [], []. where: "game", "local" or "both"
         (manifest.where_of; None: neither can be read); one in the game only has state "game" (no process: off when
         it is set off, stopped with the error when it cannot be used) and command None. game: its game half
-        (game_of), None without addons; player: what only the player can do now (player_of), or None. side: side(),
-        when the caller asked it already"""
+        (game_of), None without addons; player: what only the player can do now (player_of), or None. fingerprint:
+        what a yes would allow as it is now (seen; None: its manifest cannot be read). side: side(), when the
+        caller asked it already"""
         m, problems = M.check_manifest(e["path"])
         error = None
         if m is None:
@@ -552,7 +573,7 @@ class Host:
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
-                    adds=A.row(m), approval=approval, allowed=allowed,
+                    adds=A.row(m), approval=approval, allowed=allowed, fingerprint=self.seen(e)[0],
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
                     addons=addons, where=where, game=game, player=self.player_of(e, m, allowed, approval, game))
@@ -626,9 +647,11 @@ class Host:
     def control_call(self, app, cmd):
         return A.control_call(self, app, cmd)
 
-    def approve(self, eid, by="player"):
+    def approve(self, eid, by="player", seen=None):
         """the player (by "developer": the workshop by itself) allows this extension's command to run
-        (registry.approve); its row. Its
+        (registry.approve); its row. seen: the fingerprint of the row and summary the player looked at (seen());
+        when the extension is something else by now (its manifest, what it runs, the package it came from),
+        ApiError changed (409, with fingerprint: what it is now) and nothing is approved. Its
         failed starts are forgotten. The player's approval also puts its game addons into the game's AddOns (the
         manifest's addons; what goes wrong there is noted and never fails the approval: the row's addons say where
         they stand, and extension_install tries again) and starts it: for good
@@ -637,10 +660,18 @@ class Host:
         was tried: it brings none, the workshop allowed it by itself, or this workshop is too old for it), {ok:
         true, addons, restart, hint} (put_addons) or {ok: false, code, message, addons: the ones installed before
         it failed} (gameside's codes: no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed)"""
+        if seen is not None and not isinstance(seen, str):
+            raise ApiError(400, "bad_request", "fingerprint: the fingerprint of the extension's row, as it was read")
         with self.lock:
             e = self.entry(eid)
             eid = e["id"]
-            self.reg.approve(eid, by)
+            token, fp = self.seen(e, fresh=True)
+            if seen is not None and token is not None and seen != token:
+                raise ApiError(409, "changed",
+                               f"{eid} is not what the player looked at any more: its manifest, what it runs or the "
+                               f"package it came from changed since. Nothing was approved; read its row and its "
+                               f"summary again and show them to the player", fingerprint=token)
+            self.reg.approve(eid, by, expect=fp)
             self.forgive(e)
         self.forget_addons(eid)
         self.changed()
@@ -712,13 +743,14 @@ class Host:
 
     # --- registering
 
-    def add(self, path, replace=False):
+    def add(self, path, replace=False, seen=None):
         """registers an extension by its folder or its manifest (an absolute path): its row (the one there when the
         folder is registered already, whatever its manifest says now). ApiError bad_manifest (with problems: an id
         one of WuxianKit's extensions has is one, taken_ids), extension_exists (another folder has its id). Started
         at once when its manifest says start "workshop". A package (a .zip that is no folder) is installed instead
         (add_package): its row with package {file, replaced}; replace: the player said it takes the place of the
-        version there (without it needs_replace asks)"""
+        version there (without it needs_replace asks), seen: the sha256 of the package they compared (new.package
+        .sha256 of that answer; another file by now: ApiError changed)"""
         if not isinstance(path, str) or not path.strip():
             raise ApiError(400, "bad_request", "path: the full path of an extension's folder (or its "
                                                "wuxian-extension.json), or of a package (.zip)")
@@ -726,7 +758,7 @@ class Host:
         if not p.is_absolute():
             raise ApiError(400, "bad_request", f"path: a full path ({path} is not)")
         if p.suffix.lower() == ".zip" and not p.is_dir():
-            return self.add_package(p, replace=replace is True)
+            return self.add_package(p, replace=replace is True, seen=seen)
         check_folder(p)
         folder, _ = M.locate(p.resolve())
         key = os.path.normcase(str(folder))
@@ -742,7 +774,7 @@ class Host:
             self.ensure(m["id"], "start workshop")
         return self.get(e["id"])
 
-    def add_package(self, zip_path, replace=False):
+    def add_package(self, zip_path, replace=False, seen=None):
         """installs a package (pack.py) into the extensions' home folder: read, unpacked beside its place
         (home.incoming) and its manifest checked there, then moved to <home>/<id>. Its row, with package {file: the
         zip, replaced: where the folder it replaced is kept now (.removed), or None}.
@@ -751,7 +783,9 @@ class Host:
         `replace` is true. Without it the answer is needs_replace (409) with old and new (the two summaries,
         summary.py; old None when the one there cannot be read), changes (summary.compare; None without old) and
         same (True: the very package the one there was imported from), for the player to say whether the new one
-        takes its place. With replace that one is stopped, its folder moved to .removed and the new one takes its
+        takes its place. seen (with replace): the sha256 of the package that was compared (new.package.sha256);
+        when the file at the path is another by now, ApiError changed (409, with sha256) and nothing is touched.
+        With replace that one is stopped, its folder moved to .removed and the new one takes its
         place; enabled and options stay. Both are new to the player
         (ask, not approved, not described): nothing of it runs before the player allows it, whatever the setting.
         The entry keeps package {sha256, file}: what it was imported from.
@@ -790,6 +824,11 @@ class Host:
             if m is None:
                 raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
             package = dict(sha256=K._sha256(zip_path), file=zip_path.name)
+            if replace and seen is not None and seen != package["sha256"]:
+                raise ApiError(409, "changed",
+                               f"{zip_path.name} is not the package that was compared any more (its SHA-256 is "
+                               f"{package['sha256']} now). Nothing was changed; add it again without replace to "
+                               f"compare it as it is", sha256=package["sha256"])
             if old is not None and not replace:
                 raise self.needs_replace(eid, zip_path, S.of_folder(m, self.game_addons(), "package", package,
                                                                        listed=self.listed()))
@@ -879,7 +918,8 @@ class Host:
 
     def summary(self, eid=None, path=None):
         """extension_summary: the facts of an extension before it is approved, shared or replaced (summary.py), of a
-        registered one (eid) or of what lies at a full path: a package (.zip: unpacked to look, nothing installed),
+        registered one (eid: with fingerprint, what a yes to it would allow as it is now, seen()) or of what lies
+        at a full path: a package (.zip: unpacked to look, nothing installed),
         an extension's folder (or its manifest), or an addon folder that gives WuxianKit an extension (in the game's
         AddOns, say). ApiError not_found, bad_request, bad_manifest (with problems), and a package's bad_package
         and package_too_big"""
@@ -890,8 +930,8 @@ class Host:
             if m is None:
                 raise ApiError(409, "bad_manifest", f"{e['id']}: {M.ManifestError(problems)}", problems=problems)
             package = e.get("package")
-            return S.of_folder(m, addons, package=package if isinstance(package, dict) else None,
-                               listed=self.listed())
+            return dict(S.of_folder(m, addons, package=package if isinstance(package, dict) else None,
+                                    listed=self.listed()), fingerprint=self.seen(e)[0])
         if not isinstance(path, str) or not path.strip() or not Path(path.strip()).is_absolute():
             raise ApiError(400, "bad_request", "path: the full path of a package (.zip), of an extension's folder, or "
                                                "of an addon folder in the game's AddOns")
