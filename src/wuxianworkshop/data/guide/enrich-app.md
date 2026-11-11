@@ -38,7 +38,7 @@ extension off takes the addition away.
 
    beside the fields `new_extension` wrote. `start: workshop` keeps it warm, so the first wake is not the slow one.
 5. `extension_load {"id": "facts"}`: it checks the app id, the file, and that `lookup` exists and is `see`.
-   `needs_approval`: `row.player.text`, then `extension_wait {"id": "facts"}`.
+   `needs_approval`: tell the player the sentence the error ends with, then `extension_wait {"id": "facts"}`.
 
 ## 3. Prove it
 

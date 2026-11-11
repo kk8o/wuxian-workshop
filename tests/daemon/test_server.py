@@ -299,11 +299,14 @@ class LiveDaemon(unittest.TestCase):
 
     @unittest.skipUnless((server.ui_static_dir() / "app.js").is_file(), "the page is not in this checkout")
     def test_page_files_carry_their_types(self):
-        """from UI_TYPES, not the registry; revalidated on every load"""
+        """from UI_TYPES, not the registry; revalidated on every load; never a frame of another page"""
         with urllib.request.urlopen(self.base + "/app.js", timeout=10) as resp:
             self.assertEqual(resp.headers["Content-Type"], "text/javascript; charset=utf-8")
             self.assertEqual(resp.headers["Cache-Control"], "no-cache")
             etag = resp.headers["ETag"]
+        with urllib.request.urlopen(self.base + "/", timeout=10) as resp:      # the page itself
+            self.assertEqual((resp.headers["X-Frame-Options"], resp.headers["Content-Security-Policy"]),
+                             ("DENY", "frame-ancestors 'none'"))
         req = urllib.request.Request(self.base + "/app.js", headers={"If-None-Match": etag})
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req, timeout=10)

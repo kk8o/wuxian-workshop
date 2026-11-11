@@ -316,7 +316,7 @@ def build_server(backend, name="wuxian"):
             return await coro
         except ApiError as e:
             if e.code == "needs_approval":             # only the player allows a local extension to run: say how
-                raise ToolError(f"{e.code}: {e.message} {kit_tools.APPROVE}") from None
+                raise ToolError(kit_tools.not_approved(e)) from None
             if e.code == "needs_replace":              # a tool's error is its text: what differs goes into it
                 raise ToolError(f"{e.code}: {e.message}{replace_note(e.extra)}") from None
             raise ToolError(f"{e.code}: {e.message}") from None
@@ -798,7 +798,8 @@ def build_server(backend, name="wuxian"):
     async def extension_pack(id: str, to: str | None = None) -> dict[str, Any]:
         """Pack a local extension's folder into a package: a .zip another computer adds with extension_add (or the
         player on the Extensions page). Example: {"id": "voice"}. to: a full path, a folder (the file is
-        <id>-<version>.zip) or the .zip itself; default: 无限工坊's packages folder. The manifest is checked first
+        <id>-<version>.zip) or the .zip itself; default: 无限工坊's packages folder. A file of that name there is
+        replaced. The manifest is checked first
         (bad_manifest with its problems; set its version before you pack). Left out: .git, __pycache__, *.pyc, .venv*,
         venv, node_modules, logs, cache, *.log, *.local.*, .env* and the like, and the manifest's pack.exclude; keep
         keys and the player's data out of the folder. Dependencies are not installed where it is added: pack what it

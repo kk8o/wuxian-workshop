@@ -85,7 +85,14 @@ class GameOnly(LocalDaemon, unittest.TestCase):
         self.assertEqual([e["file"] for e in res["addons"][0]["errors"]], ["LootPeek.lua"])
         message = self.fails("POST", "/api/local/load", {"id": "loot_peek"}, 422, "check_failed")
         self.assertIn("extension_load loot_peek: nothing installed, LootPeek/LootPeek.lua:", message)
+        self.assertNotIn("more of the kind", message)
         self.assertFalse((self.addons / "LootPeek").exists())                  # nothing reached the game
+        toc = folder / "LootPeek.toc"                                          # a second file that does not parse
+        toc.write_text(toc.read_text(encoding="utf-8") + "\nMore.lua\n", encoding="utf-8")
+        (folder / "More.lua").write_text("local = = 6\n", encoding="utf-8")
+        message = self.fails("POST", "/api/local/load", {"id": "loot_peek"}, 422, "check_failed")
+        self.assertIn("; 1 more of the kind: extension_check lists them", message)
+        self.assertFalse((self.addons / "LootPeek").exists())
 
     def test_load_stop_and_logs(self):
         """load: approved by the workshop itself, the addon in the game's AddOns and run in the running game; the

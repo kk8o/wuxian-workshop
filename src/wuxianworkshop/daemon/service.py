@@ -1959,12 +1959,14 @@ class Service:
         before = await asyncio.to_thread(self.local.get, id)
         if before.get("where") == "game" and before.get("enabled"):
             found = (await self.extension_check(before["id"])).get("addons") or []
-            first = next(((a, f) for a in found for f in a["errors"] if f.get("code") in ("syntax", "unreadable")), None)
-            if first:
-                a, f = first
+            bad = [(a, f) for a in found for f in a["errors"] if f.get("code") in ("syntax", "unreadable")]
+            if bad:
+                (a, f), more = bad[0], len(bad) - 1
                 at = f"{a['folder']}/{f['file']}:{f['line']}: " if f.get("file") else f"{a['folder']}: "
                 raise ApiError(422, "check_failed", f"extension_load {before['id']}: nothing installed, {at}{f['message']}"
-                                                    + (f" ({f['hint']})" if f.get("hint") else ""), addons=found)
+                                                    + (f" ({f['hint']})" if f.get("hint") else "")
+                                                    + (f"; {more} more of the kind: extension_check lists them"
+                                                       if more else ""), addons=found)
         res = await asyncio.to_thread(self.local.load_, id)
         row = res["row"]
         self.notes.forgive(row["id"])         # loaded again: its notes are tried at once

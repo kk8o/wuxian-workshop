@@ -257,7 +257,8 @@ class Client:
     # ---- capabilities and proposals
 
     def call(self, name: str, args: Optional[dict] = None, *, timeout_ms: int = CALL_TIMEOUT_MS) -> Any:
-        """a WuxianKit capability (`sense.character`, `chat.send`, ...): its result. A Send or Change answers with its
+        """a WuxianKit capability in the game (`sense.character`, `chat.send`, ...; a local extension's is called with
+        `wuxian wk` or its `wk_` tool, not from here): its result. A Send or Change answers with its
         proposal {id, state, steps}; _title, _ttl and _after in args set its title, ttl and earliest time. A capability
         that refused (bad args, an error in the game) is WuxianError code call_failed"""
         body = {"addon": self.addon, "name": name, "timeout_ms": int(timeout_ms)}

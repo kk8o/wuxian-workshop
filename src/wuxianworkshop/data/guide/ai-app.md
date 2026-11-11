@@ -42,8 +42,8 @@ If all three check out, the verdict is already 能做: the rest is assembly.
 1. `new_extension {"id": "kb", "title": "知识库"}` and read `guide {"topic": "local-extension"}` in full.
 2. One capability per thing the brain needs, small: `search` (see) taking `{"query": "string"}` and answering the
    three best passages with their sources. Wrap their program; do not rewrite it.
-3. `extension_load {"id": "kb"}` until the check is clean. `needs_approval`: tell the player `row.player.text`, then
-   `extension_wait {"id": "kb"}`. Then call `wk_kb_search` yourself.
+3. `extension_load {"id": "kb"}` until the check is clean. `needs_approval`: tell the player the sentence the error
+   ends with (`Tell the player: ...`), then `extension_wait {"id": "kb"}`. Then call `wk_kb_search` yourself.
 4. Run the chain once by hand: read a real question from the peek app, call `wk_kb_search`, draft a reply, and (only
    because the player asked for replies) `wk_chat_send`, then `wk_wait`.
 

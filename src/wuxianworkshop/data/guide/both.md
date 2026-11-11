@@ -22,7 +22,7 @@ game half is for what no capability gives yet.
    `guide {"topic": "game-extension"}` for the Lua.
 3. `extension_load {"id": "zones"}`: it checks, installs the game half when the game has none or other files
    (`addons`, `restart`, `hint` in the answer), restarts the process and runs its tests. `needs_approval`: tell the
-   player `row.player.text`, then `extension_wait {"id": "zones"}`.
+   player the sentence the error ends with (`Tell the player: ...`), then `extension_wait {"id": "zones"}`.
 4. Changed Lua of the game half: `extension_load`, then `load {"target": "<Addon>"}` (a load of a local extension
    does not run Lua in the game by itself). New files and `.toc` changes need a game restart: `row.player` says so.
 5. Test each half by itself, then together: `wk_zones_game_<name>` (the game), `wk_zones_<name>` (this computer),

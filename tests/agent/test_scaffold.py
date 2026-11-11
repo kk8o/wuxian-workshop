@@ -200,7 +200,8 @@ class Extensions(unittest.TestCase):
         agent = texts["AGENT.md"]
         for said in ("## The game half", "`addons/ZoneTrail`", "`wk_zones_where`", "`wk_zones_game_where`",
                      'extension_install {"id": "zones"}', 'load {"target": "ZoneTrail"}', "restarts the game",
-                     'reaction_set {"hear": "bus:zones_game.moved", "call": "zones.moved", "item": "event", "cooldown": 0}'):
+                     'reaction_set {"spec": {"hear": "bus:zones_game.moved", "call": "zones.moved", "item": "event", '
+                     '"cooldown": 0}}'):
             self.assertIn(said, agent)
 
     def test_the_game_half_passes_the_lint(self):

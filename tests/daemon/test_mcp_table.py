@@ -375,6 +375,15 @@ class Table(unittest.TestCase):
             asyncio.run(tools.call("wk_voice_say", {}))
         self.assertEqual(str(refused.exception), "needs_approval: voice may not run before the player allows it "
                          + kit.APPROVE)
+        backend.refuse = ApiError(403, "needs_approval", "voice is new", approval="needed",
+                                  player=dict(action="approve", text="请在无限工坊 App 的「扩展」页批准「声音」"))
+        with self.assertRaises(ToolError) as refused:                              # the sentence for the player with it
+            asyncio.run(tools.call("wk_voice_say", {}))
+        self.assertEqual(str(refused.exception), "needs_approval: voice is new " + kit.APPROVE
+                         + "\nTell the player: 请在无限工坊 App 的「扩展」页批准「声音」")
+        for odd in (None, "x", {}, {"text": 5}, {"text": ""}):                     # (whatever the refusal holds)
+            self.assertEqual(kit.not_approved(ApiError(403, "needs_approval", "voice is new", player=odd)),
+                             "needs_approval: voice is new " + kit.APPROVE)
         self.assertIn("wk_voice_say", listed(tools))                               # still a tool: it works once allowed
         backend.refuse = None
         for unknown in (None, "developer", True):                                  # not read, not known: as "ask"
@@ -650,6 +659,10 @@ class Options(unittest.TestCase):
                 asyncio.run(mcp.call_tool(tool, {"id": "players"}))
             self.assertEqual(str(refused.exception), f"Error executing tool {tool}: needs_approval: players may not run "
                              "before the player allows it " + kit.APPROVE)
+        client.service.refuse = ApiError(403, "needs_approval", "players is new", player=dict(action="approve", text="请批准"))
+        with self.assertRaises(ToolError) as refused:
+            asyncio.run(mcp.call_tool("extension_load", {"id": "players"}))
+        self.assertTrue(str(refused.exception).endswith(kit.APPROVE + "\nTell the player: 请批准"), refused.exception)
 
     def test_the_tools(self):
         """extension_check starts a process and runs tests: not read-only; no tool allows an extension to run; the

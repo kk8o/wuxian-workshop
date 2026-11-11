@@ -66,7 +66,8 @@ class UiFiles(StaticFiles):
     """the page's files, revalidated on every load (their ETag / Last-Modified make that cheap): after an update of the
     program the window must not go on with the previous version's script or styles from the WebView2 cache. Their types
     come from UI_TYPES: mimetypes reads the Windows registry at its first use (40 ms on the server's loop, the page's
-    other requests waiting), and a registry may say text/plain for .js"""
+    other requests waiting), and a registry may say text/plain for .js. The page is the App's window and never a frame:
+    a page of the web that drew it under its own buttons could have the player click 批准 without seeing it"""
 
     def file_response(self, full_path, stat_result, scope, status_code=200):
         response = FileResponse(full_path, status_code=status_code, stat_result=stat_result,
@@ -74,6 +75,8 @@ class UiFiles(StaticFiles):
         if self.is_not_modified(response.headers, Headers(scope=scope)):
             response = NotModifiedResponse(response.headers)
         response.headers["Cache-Control"] = "no-cache"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         return response
 
 

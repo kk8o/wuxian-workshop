@@ -125,6 +125,14 @@ ASKED = ("It came from a package or was found in the extensions folder: the play
          "the setting 本机扩展批准 (Local extension approval) is 自动批准 (approve automatically).")
 
 
+def not_approved(e):
+    """a needs_approval refusal as a tool's error: how the player approves, and the sentence written for the player
+    (the refusal's player.text) for the agent to pass on, since an error brings no row to read it from"""
+    player = e.extra.get("player") if isinstance(getattr(e, "extra", None), dict) else None
+    text = player.get("text") if isinstance(player, dict) else None
+    return f"{e.code}: {e.message} {APPROVE}" + (f"\nTell the player: {text}" if isinstance(text, str) and text else "")
+
+
 def kind_label(cap):
     """(name, what it does) of a capability's kind; one that runs at once and answers with a proposal (proposes, as
     tune.profile.apply) is no Guide"""
@@ -1727,7 +1735,7 @@ class KitTools:
             answer = await awaited(self.backend.local_call(cap, arguments, self.local_timeout(row)))
         except ApiError as e:
             if e.code == "needs_approval":
-                raise ToolError(f"{e.code}: {e.message} {APPROVE}") from None
+                raise ToolError(not_approved(e)) from None
             if e.code == "no_capability":
                 self.local_stale = True
                 await self.local_current(wait=True)

@@ -106,7 +106,8 @@ it.
   environment).
 - `start`: `use` (default) starts it at the first call of one of its capabilities; `workshop` starts it with the
   workshop, for a model that takes long to load.
-- `docs`, `skills`: default `AGENT.md` and `skills/` when they exist.
+- `docs`, `skills`: default `AGENT.md` and `skills/` when they exist. Paths inside the extension folder (one that
+  leads out of it is an error). The agent reads them once the player has allowed the extension.
 - `apps`: optional, see Apps and skills.
 - `adds`: optional, see Adding to apps.
 
@@ -189,7 +190,8 @@ Settings the player changes on the extension's row in the workshop App: `boolean
 again, all of them, whenever one changes.
 
 Options are the player's. The agent sets them (`extension_set`) only for an extension it registered itself in this
-session (`new_extension`, `extension_add`), or where the player's setting approves extensions automatically; for any
+session (`new_extension`, `extension_add`; adding one that was registered before, `already: true` in the answer, does
+not make it the session's), or where the player's setting approves extensions automatically; for any
 other the answer is `not_allowed`: ask the player to change it in the App. Turning an extension on or off is not limited this way.
 
 ## Apps and skills
@@ -561,7 +563,8 @@ A minimal exchange:
    player first.
 2. Edit `main.py`, `AGENT.md` and the tests; with a game half, `addons/<Name>/` too.
 3. `extension_load {"id": "<id>"}`: checks, then starts it again with the new code. Fix every error in its `check`.
-   `needs_approval`: tell the player the row's `player.text` (they approve it in the App, see Who lets it run),
+   `needs_approval`: tell the player the sentence the error ends with (`Tell the player: ...`; they approve it in
+   the App, see Who lets it run),
    call `extension_wait {"id": "<id>"}`, then load again. A game half
    whose files changed is installed first: `restart: true` in the answer means the player restarts the game,
    otherwise `load {"target": "<Name>"}` takes the change (see The game half).
@@ -576,11 +579,11 @@ A minimal exchange:
    it, `extension_remove` removes it (see Removing).
 8. To hand it on: set the manifest's `version`, then `extension_pack {"id": "<id>"}` (see Packages).
 
-The same from a shell: `wuxian ext list`, `new`, `add`, `load`, `check`, `logs`, `set`, `stop`, `install`, `pack`,
-`remove`, `dir`.
+The same from a shell: `wuxian ext list`, `new`, `add`, `summary`, `load`, `wait`, `check`, `logs`, `set`, `stop`,
+`install`, `pack`, `remove`, `dir`.
 
 Sources: see their items with `events` (addon `local`, topic `<id>.<name>`), or act on them with a reaction
-(`reaction_set {"hear": "<id>:<name>", "call": "...", ...}`). An app of the manifest: `extension_load`, then
+(`reaction_set {"spec": {"hear": "<id>:<name>", "call": "...", ...}}`). An app of the manifest: `extension_load`, then
 `wk_kit_app_open`, then `wuxian listen <app>`; its reactions and bound controls work while it runs.
 
 ## Rules

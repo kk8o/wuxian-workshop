@@ -30,8 +30,9 @@
     wuxian install [--no-clean] [--game DIR]  install the addon
     wuxian update [check|download|apply]      the program's updates (an installed copy; apply restarts it)
     wuxian new <Name> [--title] [--template]  a new addon from a template (with AGENTS.md for the agent)
-    wuxian ext list | add <folder|manifest|zip> | remove <id> | load <id> | stop <id> | set <id> [--on|--off]
-               [--option k=v] | check <id|path> | new <id> [--title T] [--addon Name] | pack <id> [--to PATH]
+    wuxian ext list | add <folder|manifest|zip> [--replace] | summary <id|path> | remove <id> | load <id> | stop <id>
+               | wait <id> [--seconds N] | set <id> [--on|--off] [--option k=v] | check <id|path>
+               | new <id> [--title T] [--addon Name] [--where game|local|both] | pack <id> [--to PATH]
                | install <id> | dir | logs <id> [-f]   local extensions (on this computer), their packages, game addons
     wuxian wk <capability> ['<json args>']    call a capability: a local extension's, or WuxianKit's in the game
     wuxian reaction list | set '<json>' | clear [--id X] [--owner A]   reactions: an item heard calls a capability
@@ -223,8 +224,8 @@ def build_parser():
     p.add_argument("--title", help="the name shown in the game (default: the folder name)")
     p.add_argument("--notes", default="", help="one line about it")
     p.add_argument("--template", choices=("basic", "window"), default="basic")
-    p = sub.add_parser("ext", help="local extensions (WuxianKit's extensions on this computer): list, add, remove, load, "
-                                    "stop, wait, set, check, new, pack, install, dir, logs")
+    p = sub.add_parser("ext", help="local extensions (WuxianKit's extensions on this computer): list, add, summary, "
+                                    "remove, load, stop, wait, set, check, new, pack, install, dir, logs")
     act = p.add_subparsers(dest="action", metavar="<action>", required=True)
     q = act.add_parser("list", help="the registered local extensions and their state")
     q.add_argument("--json", action="store_true", help="print JSON")
@@ -398,6 +399,16 @@ def print_findings(found, limit=None):
         print(f"{level:<8}{where}: {f['message']}" + (f" ({f['hint']})" if f.get("hint") else ""))
     if limit is not None and len(rows) > limit:
         print(f"... {len(rows) - limit} more (wuxian check)")
+
+
+def print_addon_findings(addons, limit=None):
+    """the findings of an extension's game addons (extension_check's addons, a check_failed's of extension_load), each
+    file under its addon's folder"""
+    for g in addons or []:
+        if isinstance(g, dict):
+            print_findings({level: [dict(f, file=f"{g.get('folder')}/{f.get('file') or ''}")
+                                    for f in g.get(level) or [] if isinstance(f, dict)]
+                            for level in ("errors", "warnings")}, limit)
 
 
 def cmd_try(client, args):
@@ -1272,15 +1283,14 @@ def cmd_ext(client, args):
         print_ext(client.extension_set(args.id, args.enabled, options))
         return 0
     if a == "check":
-        res = client.extension_check(args.id)
+        what = args.id                                           # an id, or a path as `summary` takes it: the daemon
+        if not EXT_ID.fullmatch(what) or Path(what).exists():    # reads a full one (its folder is not this one)
+            what = str(Path(what).resolve())
+        res = client.extension_check(what)
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
-            for g in res.get("addons") or []:                    # one in the game only: its addons as `check` reads them
-                if isinstance(g, dict):
-                    print_findings({level: [dict(f, file=f"{g.get('folder')}/{f.get('file') or ''}")
-                                            for f in g.get(level) or [] if isinstance(f, dict)]
-                                    for level in ("errors", "warnings")})
+            print_addon_findings(res.get("addons"))              # one in the game only: its addons as `check` reads them
             print_check(res)
         return 0 if res.get("ok") else 1
     if a == "new":
@@ -1678,6 +1688,8 @@ def main(argv=None):
         say_error(f"{e.message} ({e.status} {e.code})")
         if e.code == "check_failed" and isinstance(e.extra.get("check"), dict):
             print_findings(e.extra["check"], limit=10)
+        if e.code == "check_failed" and isinstance(e.extra.get("addons"), list):     # ext load: a game half's Lua
+            print_addon_findings(e.extra["addons"], limit=10)
         if e.code == "timeout" and e.extra.get("job") is not None:
             print(f"job {e.extra['job']}: its result, if it comes later, is in `wuxian logs --kinds RUN`", file=sys.stderr)
         return 1

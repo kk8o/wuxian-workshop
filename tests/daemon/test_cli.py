@@ -431,6 +431,30 @@ class ExtLines(unittest.TestCase):
         code, lines, _ = self.run_ext(client, "check", "loot_peek")
         self.assertEqual((code, lines), (1, ["error   LootPeek/LootPeek.lua:3: unexpected symbol",
                                              "not ok: 0 capabilities"]))
+        asked = []                                                   # an id as it is, a path made a full one
+        with mock.patch.object(Client, "extension_check", lambda self, what: asked.append(what) or dict(ok=True)), \
+                mock.patch.object(cli, "print_check"), tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            Path("mine").mkdir()
+            for what in ("loot_peek", "mine", ".", "sub/wuxian-extension.json"):
+                self.run_ext(client, "check", what)
+            self.assertEqual(asked, ["loot_peek", str(Path("mine").resolve()), str(Path(".").resolve()),
+                                     str(Path("sub/wuxian-extension.json").resolve())])
+
+        class Broken:                                                # a load its game half's Lua stops: every finding
+            def extension_load(self, eid):
+                raise ApiError(422, "check_failed", "extension_load loot_peek: nothing installed, LootPeek/LootPeek.lua:3: "
+                               "unexpected symbol; 1 more of the kind: extension_check lists them", addons=[
+                                   dict(folder="LootPeek", ok=False, warnings=[], errors=[
+                                       dict(file="LootPeek.lua", line=3, code="syntax", message="unexpected symbol"),
+                                       dict(file="More.lua", line=1, code="syntax", message="unexpected symbol")]), "?"])
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "connect", return_value=Broken()), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = cli.main(["ext", "load", "loot_peek"])
+        self.assertEqual((code, out.getvalue().splitlines()), (1, ["error   LootPeek/LootPeek.lua:3: unexpected symbol",
+                                                                   "error   LootPeek/More.lua:1: unexpected symbol"]))
+        self.assertIn("nothing installed", err.getvalue())
         code, lines, _ = self.run_ext(client, "load", "loot_peek")
         self.assertEqual((code, lines[1:3]), (0, ["game addon LootPeek: ran in the game",
                                                   "game addon LootMore: failed in the game: LootMore.lua: boom"]))

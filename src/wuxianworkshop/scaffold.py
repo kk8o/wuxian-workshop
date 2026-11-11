@@ -595,8 +595,8 @@ def moved(event):
 '''
 
 EXT_TEST = '''"""{{id}}'s tests: ExtensionTest runs the extension in memory the way 无限工坊 runs it. extension_check
-{"id": "{{id}}"} runs them; by hand: python -m unittest discover -s tests (in the extension's folder, with the
-workshop's sdk/python on PYTHONPATH)."""
+{"id": "{{id}}"} runs them; by hand: python -m unittest discover -s tests (in the extension's folder, with the folder
+of 无限工坊's wuxiankit.py on PYTHONPATH: sdk/python in its source, _internal/sdk in the installed program)."""
 import sys
 import unittest
 from pathlib import Path
@@ -716,7 +716,7 @@ The two halves work through the workshop:
   `no_capability` means the addon is not loaded in the game, `down` that the game is not running.
 - the local half hears the game half through a reaction, which calls `{{id}}.moved` with each item:
 
-      reaction_set {"hear": "bus:{{gid}}.moved", "call": "{{id}}.moved", "item": "event", "cooldown": 0}
+      reaction_set {"spec": {"hear": "bus:{{gid}}.moved", "call": "{{id}}.moved", "item": "event", "cooldown": 0}}
 
   A reaction set this way lasts until the workshop exits: set it again in a new session, or declare it in an app of
   the manifest (`apps[].reactions`), which sets it while that app runs.
