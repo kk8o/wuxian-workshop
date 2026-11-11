@@ -79,6 +79,7 @@ from . import manifest as M
 from . import pack as K
 from . import process as P
 from . import rpc as R
+from . import summary as S
 from .check import TESTS_OUTPUT, TESTS_TIMEOUT                                             # noqa: F401
 from .logs import (LINE_MAX, LOG_MAX, LOGS_MOST, TAIL, Lines, Output, check_window, clock,  # noqa: F401
                    output_path, tail, window)
@@ -694,12 +695,13 @@ class Host:
 
     # --- registering
 
-    def add(self, path):
+    def add(self, path, replace=False):
         """registers an extension by its folder or its manifest (an absolute path): its row (the one there when the
         folder is registered already, whatever its manifest says now). ApiError bad_manifest (with problems: an id
         one of WuxianKit's extensions has is one, taken_ids), extension_exists (another folder has its id). Started
         at once when its manifest says start "workshop". A package (a .zip that is no folder) is installed instead
-        (add_package): its row with package {file, replaced}"""
+        (add_package): its row with package {file, replaced}; replace: the player said it takes the place of the
+        version there (without it needs_replace asks)"""
         if not isinstance(path, str) or not path.strip():
             raise ApiError(400, "bad_request", "path: the full path of an extension's folder (or its "
                                                "wuxian-extension.json), or of a package (.zip)")
@@ -707,7 +709,7 @@ class Host:
         if not p.is_absolute():
             raise ApiError(400, "bad_request", f"path: a full path ({path} is not)")
         if p.suffix.lower() == ".zip" and not p.is_dir():
-            return self.add_package(p)
+            return self.add_package(p, replace=replace is True)
         check_folder(p)
         folder, _ = M.locate(p.resolve())
         key = os.path.normcase(str(folder))
@@ -723,14 +725,19 @@ class Host:
             self.ensure(m["id"], "start workshop")
         return self.get(e["id"])
 
-    def add_package(self, zip_path):
+    def add_package(self, zip_path, replace=False):
         """installs a package (pack.py) into the extensions' home folder: read, unpacked beside its place
         (home.incoming) and its manifest checked there, then moved to <home>/<id>. Its row, with package {file: the
         zip, replaced: where the folder it replaced is kept now (.removed), or None}.
 
-        No extension of its id yet: a new entry. One of its id in the home folder: that one is stopped, its folder
-        moved to .removed and the new one takes its place; enabled and options stay. Both are new to the player
+        No extension of its id yet: a new entry. One of its id in the home folder: nothing of it is touched unless
+        `replace` is true. Without it the answer is needs_replace (409) with old and new (the two summaries,
+        summary.py; old None when the one there cannot be read), changes (summary.compare; None without old) and
+        same (True: the very package the one there was imported from), for the player to say whether the new one
+        takes its place. With replace that one is stopped, its folder moved to .removed and the new one takes its
+        place; enabled and options stay. Both are new to the player
         (ask, not approved, not described): nothing of it runs before the player allows it, whatever the setting.
+        The entry keeps package {sha256, file}: what it was imported from.
         ApiError bad_package (400: no package, or its manifest does not pass, with problems), package_too_big (413),
         extension_exists (409: its id is registered by a folder elsewhere, a linked one, which a package never
         replaces), folder_not_empty (409: <home>/<id> is there and is something else), folder_busy (409: the old
@@ -765,7 +772,10 @@ class Host:
                 m = None
             if m is None:
                 raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
-            kept = self.place(eid, tmp, m, new=old is None)
+            package = dict(sha256=K._sha256(zip_path), file=zip_path.name)
+            if old is not None and not replace:
+                raise self.needs_replace(eid, zip_path, S.of_folder(m, self.game_addons(), "package", package))
+            kept = self.place(eid, tmp, m, new=old is None, package=package)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)     # (moved to its place: not there any more)
             try:
@@ -775,10 +785,28 @@ class Host:
         self.forget_addons(eid)
         return dict(self.get(eid), package=dict(file=str(zip_path), replaced=kept))
 
-    def place(self, eid, tmp, m, new):
+    def needs_replace(self, eid, zip_path, new):
+        """(add_package) the answer to a package whose id is here already and that nobody said replaces it: an
+        ApiError 409 needs_replace with old, new, changes and same. Nothing was changed"""
+        try:
+            was = self.summary(eid)
+        except ApiError:                               # the one there cannot be read: nothing to compare with
+            was = None
+        return ApiError(409, "needs_replace",
+                        f"{eid} is here already" + (f" (version {was['version']})" if was and was["version"] else "")
+                        + f": the package {zip_path.name}" + (f" (version {new['version']})" if new["version"] else "")
+                        + " would take its place. Nothing was changed. Tell the player what differs (changes; same true: "
+                          "it is the very package that one came from), and add it again with replace true only when "
+                          "the player says so: the version there is then kept in the extensions folder's .removed, "
+                          "and the player approves the new one before anything of it runs",
+                        old=was, new=new, changes=S.compare(was, new) if was else None,
+                        same=S.same(was, new) if was else None)
+
+    def place(self, eid, tmp, m, new, package=None):
         """(add_package) the unpacked folder tmp takes its place in the home folder and the registry; where the
-        folder it replaced is kept, or None. The lock is held from before a folder moves until the registry says
-        what is there (discover() waits for it: it sees the old one, or the new one registered)"""
+        folder it replaced is kept, or None. package: {sha256, file} of the zip, kept on the entry. The lock is held
+        from before a folder moves until the registry says what is there (discover() waits for it: it sees the old
+        one, or the new one registered)"""
         target = self.home / eid
         if not new:
             self.stop(eid, quiet=True)                 # (ApiError not_found: removed meanwhile)
@@ -823,7 +851,72 @@ class Host:
                     raise
             else:
                 self.reset(eid, folder)
+            if package:
+                data = self.load()
+                self.entry(eid, data)["package"] = dict(package)
+                self.save(data)
         return kept
+
+    # --- the summary (summary.py)
+
+    def summary(self, eid=None, path=None):
+        """extension_summary: the facts of an extension before it is approved, shared or replaced (summary.py), of a
+        registered one (eid) or of what lies at a full path: a package (.zip: unpacked to look, nothing installed),
+        an extension's folder (or its manifest), or an addon folder that gives WuxianKit an extension (in the game's
+        AddOns, say). ApiError not_found, bad_request, bad_manifest (with problems), and a package's bad_package
+        and package_too_big"""
+        addons = self.game_addons()
+        if path is None:
+            e = self.entry(eid)
+            m, problems = M.check_manifest(e["path"])
+            if m is None:
+                raise ApiError(409, "bad_manifest", f"{e['id']}: {M.ManifestError(problems)}", problems=problems)
+            package = e.get("package")
+            return S.of_folder(m, addons, package=package if isinstance(package, dict) else None)
+        if not isinstance(path, str) or not path.strip() or not Path(path.strip()).is_absolute():
+            raise ApiError(400, "bad_request", "path: the full path of a package (.zip), of an extension's folder, or "
+                                               "of an addon folder in the game's AddOns")
+        p = Path(path.strip())
+        if p.suffix.lower() == ".zip" and not p.is_dir():
+            return self.package_summary(p)
+        folder, file = M.locate(p)
+        if not folder.is_dir():
+            raise ApiError(404, "not_found", f"there is no folder {folder}")
+        if not file.is_file():                         # no extension folder: an addon that gives WuxianKit one?
+            found = S.of_addon(folder, addons if addons and H.real(folder.parent) == H.real(addons) else None)
+            if found is not None:
+                return found
+        m, problems = M.check_manifest(folder)
+        if m is None:
+            raise ApiError(400, "bad_manifest", str(M.ManifestError(problems)), problems=problems)
+        return S.of_folder(m, addons)
+
+    def package_summary(self, zip_path):
+        """(summary) a package's summary: unpacked beside the home folder (home.incoming) to be read as a folder is,
+        and taken away again; nothing is installed or registered"""
+        zip_path = Path(zip_path)
+        try:
+            info = K.read(zip_path)
+            tmp = H.incoming(self.home, info["id"])
+        except K.PackError as ex:
+            raise api_error(ex) from None
+        except OSError as ex:
+            raise ApiError(500, "internal", f"the extensions folder {self.home} cannot be written: {ex}") from None
+        try:
+            try:
+                K.unpack(zip_path, tmp)
+            except K.PackError as ex:
+                raise api_error(ex) from None
+            m, problems = M.check_manifest(tmp)
+            if m is None:
+                raise ApiError(400, "bad_package", f"{zip_path.name}: {M.ManifestError(problems)}", problems=problems)
+            return S.of_folder(m, self.game_addons(), "package", dict(sha256=K._sha256(zip_path), file=zip_path.name))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            try:
+                os.rmdir(tmp.parent)
+            except OSError:
+                pass
 
     def register(self, folder, m, ask=False, how="registered"):
         """a new entry for the extension in `folder`: {id, path, enabled true, options {}, described None}, with
@@ -1064,7 +1157,9 @@ class Host:
 
     def pack(self, eid, to=None):
         """extension_pack: the extension's folder as a package (pack.pack): {id, version, file, size, files,
-        unpacked, sha256, skipped}. to: a folder (the file is <id>-<version>.zip there) or the .zip's own path, a
+        unpacked, sha256, skipped, summary, warnings}; summary: what whoever gets the package will see of it
+        (summary.py; None when the manifest cannot be read again), warnings: what to look at before it is sent
+        ([texts]: the manifest's env sets values, which go out with it). to: a folder (the file is <id>-<version>.zip there) or the .zip's own path, a
         full path; not given: <WUXIAN_HOME>\\packages, made when needed. ApiError bad_request, and pack's
         bad_manifest (400, with problems), bad_package (400), package_too_big (413)"""
         e = self.entry(eid)
@@ -1079,6 +1174,16 @@ class Host:
         except K.PackError as ex:
             raise api_error(ex) from None
         self.note(f"local extension {e['id']}: packed as {res['file']}")
+        res.update(summary=None, warnings=[])
+        m, _ = M.check_manifest(e["path"])
+        if m is not None:
+            res["summary"] = S.of_folder(m, self.game_addons(), "package",
+                                         dict(sha256=res["sha256"], file=Path(res["file"]).name))
+            if m["env"]:
+                res["warnings"].append(f"{M.MANIFEST}: env sets {', '.join(sorted(m['env']))}, and the values go out "
+                                       "with the package. Nothing secret belongs there (a key, a token, a path of "
+                                       "this computer): name the variable in pass instead and leave its value to "
+                                       "whoever runs it")
         return res
 
     # --- the extensions' home folder (home.py)

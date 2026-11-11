@@ -24,6 +24,11 @@ Extensions (扩展) page of their 无限工坊 App, or their agent with `extensi
 anything of it runs. Dependencies are not installed for them: pack what it needs. There is no marketplace and no
 automatic update: a package is a file one person gives another.
 
+The answer says what goes out. Tell the player `skipped` (what stayed out), every line of `warnings`, and `summary`:
+what the other player will see before they approve (the name, the author as the manifest says it, the command, the
+game addons, what it needs in the game). Give them `sha256` to send along, so the other side can tell the file is
+the one that was sent. On the other computer the player's agent can read it first: `guide {"topic": "review"}`.
+
 ## 3. Make it an AI app
 
 An extension is parts: tools, events. An app is what the player starts: a card in the game with 交给 AI (Hand to

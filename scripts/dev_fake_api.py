@@ -44,9 +44,12 @@ it unless it came in a package, and
     POST /api/local/wait {id}      {row, was, timeout}: answered at once (nobody does the player's part here), timeout
                                    true while the row has something for the player
 
-    POST /api/local/add {path}     a folder (or its wuxian-extension.json): a linked row, its id from the folder's name;
-                                   a .zip: a row in the home that waits for the player, with package {file, replaced}
-                                   (replaced: where the old folder went when the id was in the home already).
+    POST /api/local/add {path, replace?}   a folder (or its wuxian-extension.json): a linked row, its id from the
+                                   folder's name; a .zip: a row in the home that waits for the player, with package
+                                   {file, replaced}. A .zip whose id is in the home already -> 409 needs_replace with
+                                   old, new (the two summaries), changes and same (name contains "same": true), and
+                                   nothing changed; with replace true it takes the old one's place (replaced: where
+                                   the old folder went).
                                      name ends with "exists" -> 409 extension_exists   "bad.zip" -> 400 bad_package
                                      "big.zip" -> 413 package_too_big                  folder "bad" -> 400 bad_manifest
                                      a zip whose id is a linked row's -> 409 extension_exists
@@ -64,8 +67,17 @@ it unless it came in a package, and
     POST /api/local/remove {id}    {removed, id, path, kept, addons: [{folder, removed, kept}]}; kept: where the folder
                                    went (the home's .removed) or null for a linked one. One in the home whose id ends
                                    with "busy" -> 409 folder_busy (and it stays)
-    POST /api/local/pack {id, to?} {id, version, file, size, files, sha256, skipped}; to: a folder or a .zip path, else
-                                   the packages folder. One whose manifest cannot be read (draft) -> 400 bad_manifest
+    POST /api/local/pack {id, to?} {id, version, file, size, files, sha256, skipped, summary, warnings}; to: a folder
+                                   or a .zip path, else the packages folder. summary: the package's (below); warnings:
+                                   one for stats (its manifest's env sets a value). One whose manifest cannot be read
+                                   (draft) -> 400 bad_manifest
+    GET  /api/local/summary?id= | ?path=   (POST {id?, path?} as well) what an extension says of itself, as
+                                   local/summary.py gives it: {from: folder | package, id, title, version, notes, author,
+                                   homepage, package, where, risk: game | local, game: [{folder, title, notes, version,
+                                   author, needs: [{addon, installed}], path}], addons_dir, local: {run, python, start,
+                                   env, pass} | null, executables, agent: {docs, skills, apps, adds}, files, size}.
+                                   path: a row's folder, or a .zip (read by its name as add reads it; nothing is added).
+                                   Neither -> 400 bad_request; unknown -> 404 not_found
     POST /api/local/install {id}   {id, addons: [{folder, state, was, version, kept}], restart, hint}. Not allowed yet
                                    -> 403 needs_approval; no game addons -> 400 no_addons; --no-game-folder -> 503
                                    no_game_folder (and every addon's state is "unknown"); a foreign one -> 409
@@ -189,7 +201,7 @@ class Fake:
         self.agents = {"claude": "other", "codex": "absent", "cursor": "missing", "trae-cn": "absent", "trae": "missing",
                        "workbuddy": "absent", "workbuddy-ai": "missing"}
         self.kept = self.kept_seed()             # agent/history.py's shapes: addon -> versions oldest first, and "now"
-        self.ext_installed = {"wuxiankit": "0.2.0"}   # extensions.py's shapes: the catalog's addons in the game folder
+        self.ext_installed = {"wuxiankit": "0.2.0", "wuxiankit-guides": "0.1.0"}   # extensions.py's shapes: the catalog's addons in the game folder
         self.local = self.local_seed()             # local/host.py's shapes: id -> a local extension, in its order
         self.local_revision = 7
         self.local_out = {i: self.local_log_seed(e) for i, e in self.local.items()}   # id -> its output.log lines
@@ -528,34 +540,54 @@ class Fake:
          "notes": {"zh": "0.3.0：新增远程、数据、指引三个扩展；界面用语改写，支持中英文切换。",
                    "en": "0.3.0: Remote, Data and Guide extensions; plainer wording with a Chinese/English switch."},
          "released": "2026-10-10", "homepage": "https://wuxianwow.com/workshop/extensions"},
-        {"id": "wuxiankit-eui", "folder": "WuxianKit_EllesmereUI", "version": "0.3.1", "parent": "wuxiankit",
-         "requires": ["WuxianKit", "EllesmereUI"], "title": {"zh": "扩展框架 · EllesmereUI", "en": "WuxianKit · EllesmereUI"},
-         "summary": {"zh": "让 AI Agent 经扩展框架读取和调整 EllesmereUI 的设置、配置档、界面布局与缩放。每次更改都由玩家确认，可以撤销。"
-                           "需要另装 EllesmereUI；由无限工坊制作，非 EllesmereUI 作者出品。",
-                     "en": "Lets an AI agent read and adjust EllesmereUI's settings, profiles, layout and scale through WuxianKit."},
-         "file": "WuxianKit_EllesmereUI-0.3.1.zip", "size": 37620, "sha256": "d" * 64, "min_app": "0.9.7", "protocol": 1,
-         "extensions": [{"id": "eui", "title": {"zh": "EllesmereUI", "en": "EllesmereUI"}, "tools": 20, "events": 0}],
-         "skills": [], "notes": {"zh": "0.3.1：布局撤销按原位置还原；导入配置档只导入配置档本身。", "en": ""},
-         "released": "2026-10-11", "homepage": "https://wuxianwow.com/workshop/extensions#wuxiankit-eui"},
-        {"id": "raidnotes", "folder": "RaidNotes", "version": "1.1.0", "title": {"zh": "团队笔记", "en": "Raid Notes"},
-         "summary": {"zh": "团长的 Agent 给全团发战术提示，每人在自己的客户端里确认。",
-                     "en": "The raid leader's agent sends tactics to the raid; each member confirms them."},
-         "file": "RaidNotes-1.1.0.zip", "size": 12034, "sha256": "c" * 64, "min_app": "0.9.7",
-         "extensions": [{"id": "raidnotes", "title": {"zh": "团队笔记", "en": "Raid Notes"}, "tools": 3, "events": 1}],
+        {"id": "wuxiankit-guides", "folder": "WuxianKit_Guides", "version": "0.1.0",
+         "requires": ["WuxianKit"], "title": {"zh": "无限工坊 · 任务指引适配", "en": "Wuxian Workshop · Guide adapter"},
+         "summary": {"zh": "把任务指引插件当前的一步交给 AI Agent。没有装指引插件时不做任何事。",
+                     "en": "Hands the current step of a questing guide addon to an AI agent."},
+         "file": "WuxianKit_Guides-0.1.0.zip", "size": 9620, "sha256": "d" * 64, "min_app": "0.9.7", "protocol": 1,
+         "extensions": [{"id": "guides", "title": {"zh": "任务指引适配", "en": "Guide adapter"}, "tools": 2, "events": 1}],
+         "skills": [], "notes": {"zh": "0.1.0：第一版。", "en": ""},
+         "released": "2026-10-11", "homepage": "https://wuxianwow.com/workshop/extensions"},
+        {"id": "wuxiankit-atlas", "folder": "WuxianKit_Atlas", "version": "1.1.0", "requires": ["WuxianKit", "AtlasData"],
+         "title": {"zh": "无限工坊 · 地图标记", "en": "Wuxian Workshop · Map marks"},
+         "summary": {"zh": "AI Agent 在世界地图上放标记，玩家在自己的客户端里确认。",
+                     "en": "An AI agent puts marks on the world map; the player confirms them."},
+         "file": "WuxianKit_Atlas-1.1.0.zip", "size": 12034, "sha256": "c" * 64, "min_app": "0.9.7",
+         "extensions": [{"id": "atlas", "title": {"zh": "地图标记", "en": "Map marks"}, "tools": 3, "events": 1}],
          "skills": [], "notes": {"zh": "", "en": ""}, "homepage": "https://wuxianwow.com/workshop/extensions"},
     ]
+    ADDONS_THERE = ("EllesmereUI",)              # addons of others in the pretend game's AddOns
 
     def ext_row(self, e):
         mine = self.ext_installed.get(e["id"])
         state = "available" if mine is None else "update" if mine != e["version"] else "current"
-        there = {"EllesmereUI"} | {x["folder"] for x in self.EXT_CATALOG if self.ext_installed.get(x["id"])}
+        there = set(self.ADDONS_THERE) | {x["folder"] for x in self.EXT_CATALOG if self.ext_installed.get(x["id"])}
         return dict(e, there=mine is not None, installed=mine, state=state,
                     missing=[f for f in e.get("requires", []) if f not in there])
+
+    def detected(self):
+        """what summary.detected finds in the game's AddOns: the addons that give WuxianKit an extension, that are not
+        the catalog's and that no local extension put there. One of WuxianKit's own (official: the game lists it with
+        builtin false), one the game runs (tips), one it does not run (its needed addon is not there)"""
+        addons = GAME_DIR + "\\Interface\\AddOns"
+
+        def one(folder, eid, title, version, notes, official=False, author=None, needs=(), skills=(), files=4):
+            row = dict(folder=folder, title=title, notes=notes, version=version, author=author,
+                       needs=[dict(addon=n, installed=n in self.ADDONS_THERE) for n in needs], path=addons + "\\" + folder)
+            return dict({"from": "game"}, id=eid, title=title, version=version, notes=notes, author=author, homepage=None,
+                        package=None, where="game", risk="game", game=[row], addons_dir=addons, local=None, executables=[],
+                        agent=dict(docs="AGENT.md" if skills else None, skills=list(skills), apps=[], adds=[]),
+                        files=files, size=2048 * files, official=official)
+        return [one("WuxianKit_Route", "route", "无限工坊 · 路线", "0.2.0", "把当前路线的下一站交给 Agent。", official=True),
+                one("WuxianLayout", "layout", "界面布局助手", "0.4.1", "让 Agent 读取和调整界面插件的布局；每次更改由玩家确认。",
+                    author="Someone", needs=("EllesmereUI", "LayoutLib"), skills=("layout",), files=9),
+                one("WuxianTips", "tips", "提示", "0.1.0", "在游戏里显示 Agent 给的提示。", author="Someone")]
 
     def extensions(self):
         return dict(catalog=dict(url="https://wuxianwow.com/workshop/data/extensions.json", updated="2026-10-10T08:00:00+00:00",
                                  checked=time.time(), error=""),
-                    addons=[self.ext_row(e) for e in self.EXT_CATALOG], addons_dir=GAME_DIR + "\\Interface\\AddOns", app="0.9.7")
+                    addons=[self.ext_row(e) for e in self.EXT_CATALOG], addons_dir=GAME_DIR + "\\Interface\\AddOns", app="0.9.7",
+                    detected=self.detected() if self.addons_known else [])
 
     KIT_TOOLS = {   # the 扩展 page's Agent 接入: a few tools of each extension, as Service.agent_access lists them
         "kit": ("核心", [("history", "see", "Read", "执行记录"), ("undo", "do", "Change", "撤销")]),
@@ -573,11 +605,13 @@ class Fake:
                      tools=[dict(name=f"wk_{i}_{c.replace('.', '_')}", cap=f"{i}.{c}", kind=k, label=lab, title=t)
                             for c, k, lab, t in tools]) for i, (title, tools) in self.KIT_TOOLS.items()]
         exts.append(dict(id="gate", title="远程", version="0.4.0", addon="WuxianKit", builtin=True, state="off", tools=[]))
-        exts.append(dict(id="eui", title="扩展框架 · EllesmereUI", version="0.3.1", addon="WuxianKit_EllesmereUI", builtin=False,
-                         state="on", tools=[dict(name="wk_eui_setting_get", cap="eui.setting.get", kind="see", label="Read",
-                                                 title="读取设置"),
-                                            dict(name="wk_eui_layout_tidy", cap="eui.layout.tidy", kind="do", label="Change",
-                                                 title="整理布局")]))
+        exts.append(dict(id="guides", title="任务指引适配", version="0.1.0", addon="WuxianKit_Guides", builtin=False,
+                         state="on", tools=[dict(name="wk_guides_step", cap="guides.step", kind="see", label="Read",
+                                                 title="当前一步"),
+                                            dict(name="wk_guides_skip", cap="guides.skip", kind="do", label="Change",
+                                                 title="跳过这一步")]))
+        exts.append(dict(id="route", title="路线", version="0.2.0", addon="WuxianKit_Route", builtin=False, state="on",
+                         tools=[dict(name="wk_route_next", cap="route.next", kind="see", label="Read", title="下一站")]))
         exts.append(dict(id="herald", title="播报", version="0.1.4", addon="WuxianHeraldSkin", builtin=False, state="on",
                          tools=[dict(name="wk_herald_show", cap="herald.show", kind="point", label="Guide", title="显示播报")]))
         exts.append(dict(id="tips", title="提示", version="0.1.0", addon="WuxianTips", builtin=False, state="on",
@@ -989,7 +1023,7 @@ class Fake:
         """a kept version's id (agent/history.py's), for a game addon replaced or removed"""
         return self.rng.randrange(20, 90)
 
-    def local_fresh(self, eid, title, path, addons=(), where=None, **more):
+    def local_fresh(self, eid, title, path, addons=(), where=None, keep=True, **more):
         """a new entry: no capabilities yet, not running, waiting for the player unless the setting allows it. where:
         game (no command; its addon is the WuxianKit extension <id>), local or both (its addon is <id>_game); None: both
         with addons, else local. The game lists what its addons bring after it starts again"""
@@ -999,13 +1033,14 @@ class Fake:
                  approval="needed", addons=[dict(folder=f, version=v, state=s) for f, v, s in addons], where=where,
                  game=[eid if where == "game" else eid + "_game"] if addons else [], game_state="restart",
                  command=None if where == "game" else seed["command"], **more)
-        self.local[eid] = e
-        self.local_out[eid] = []
+        if keep:
+            self.local[eid] = e
+            self.local_out[eid] = []
         return e
 
-    def local_add(self, path):
-        """POST /api/local/add: a folder (or its manifest) is linked, a .zip goes into the home; what its name says
-        decides the answer (the module's text)"""
+    def local_named(self, path):
+        """(folder, name, package, eid, addons, more): what the name of a folder or a .zip says it is (the module's
+        text); Refused for the ones that cannot be read"""
         if not isinstance(path, str) or not re.match(r"^[A-Za-z]:\\", path.strip()):
             raise ValueError("path: the full path of an extension's folder (or its wuxian-extension.json), or of a "
                              "package (.zip)")
@@ -1022,14 +1057,63 @@ class Fake:
         if not package and stem.lower().endswith("bad"):
             raise Refused(400, "bad_manifest", "run: a list of strings, the command that starts it "
                                                "(wuxian-extension.json)")
-        if stem.lower().endswith("exists"):
-            raise Refused(409, "extension_exists", f"the id {eid} is taken by D:\\Projects\\{eid}: extension_remove that "
-                                                   f"one first")
         addons = [("Wuxian" + eid.title().replace("_", ""), "0.1.0", "foreign" if "foreign" in eid else "missing")] \
             if "game" in eid or "foreign" in eid else []
         more = dict(requires=dict(kit="0.7"), unmet=[dict(what="kit", needs="0.7", has="0.6.0")]) if "needs" in eid else {}
         if "ingame" in eid:
             more["where"] = "game"
+        return folder, name, package, eid, addons, more
+
+    def local_summary(self, e, source="folder", package=None):
+        """what an extension says of itself (local/summary.py's shape), from a row as it is here"""
+        if not self.local_readable(e):
+            raise Refused(400, "bad_manifest", e["error"] or f"{e['id']}: its manifest cannot be read")
+        addons = GAME_DIR + "\\Interface\\AddOns" if self.addons_known else None
+        runs = e["where"] != "game" and e["command"] is not None
+        game = [dict(folder=a["folder"], title=a["folder"], notes=None, version=a["version"], author=None,
+                     needs=[dict(addon="EllesmereUI", installed=True if addons else None)] if "Skin" in a["folder"] else [],
+                     path=addons + "\\" + a["folder"] if addons and a["state"] in ("current", "differs", "foreign") else None)
+                for a in e["addons"]]
+        local = None
+        if runs:
+            local = dict(run=list(e["command"]), python=None, start=e["start"],
+                         env=["STATS_MODE"] if e["id"] == "stats" else [])
+            local["pass"] = ["DEEPSEEK_API_KEY"] if e["id"] in ("voice", "translate") else []
+        files = 6 + 2 * len(e["caps"]) + 3 * len(e["addons"])
+        rel = lambda p: p[len(e["path"]) + 1:].replace("\\", "/") if p else None
+        return dict({"from": source}, id=e["id"], title=e["title"] or None, version=e["version"], notes=e["notes"],
+                    author=e["author"], homepage=e["homepage"], package=package or e.get("package"), where=e["where"],
+                    risk="local" if runs else "game", game=game, addons_dir=addons, local=local,
+                    executables=["bin/tts.exe"] if e["id"] == "voice" else [],
+                    agent=dict(docs="AGENT.md", skills=list(e["skills"]), apps=list(e["apps"]),
+                               adds=[dict(app=app, wake=(a.get("wake") or {}).get("call"), skill=rel(a.get("skill")))
+                                     for app, a in sorted(e["adds"].items())]),
+                    files=files, size=4096 + 1830 * files)
+
+    def local_summary_of(self, eid=None, path=None):
+        """GET / POST /api/local/summary: of a row (id, or its folder), or of a package that is not here (read by its
+        name, as add reads it); nothing is added"""
+        if eid is not None:
+            return self.local_summary(self.local_entry(eid))
+        if path is None:
+            raise ValueError("id (an extension here) or path (an extension's folder, or a package's .zip)")
+        folder, name, package, eid, addons, more = self.local_named(path)
+        here = next((e for e in self.local.values() if e["path"].lower() == folder.lower()), None)
+        if here is not None:
+            return self.local_summary(here)
+        if not package:
+            raise KeyError(f"{folder}: no folder of an extension")
+        e = self.local_fresh(eid, eid, EXT_HOME + "\\" + eid, addons, keep=False, version="0.1.0", author="Someone", **more)
+        return self.local_summary(e, "package", dict(sha256="e" * 64, file=name))
+
+    def local_add(self, path, replace=False):
+        """POST /api/local/add: a folder (or its manifest) is linked, a .zip goes into the home; what its name says
+        decides the answer (the module's text)"""
+        folder, name, package, eid, addons, more = self.local_named(path)
+        stem = name[:-4] if package else name
+        if stem.lower().endswith("exists"):
+            raise Refused(409, "extension_exists", f"the id {eid} is taken by D:\\Projects\\{eid}: extension_remove that "
+                                                   f"one first")
         if not package:
             same = next((e for e in self.local.values() if e["path"].lower() == folder.lower()), None)
             if same is not None:
@@ -1045,11 +1129,29 @@ class Fake:
         if old is not None and not self.local_home(old["path"]):
             raise Refused(409, "extension_exists", f"the id {eid} is linked to {old['path']}: extension_remove that "
                                                    f"one first, then install the package")
+        same = old is not None and "same" in eid
+        version = "0.1.0" if old is None else old["version"] if same else "0.3.0" if old["version"] == "0.2.0" else "0.2.0"
+        came = dict(sha256=(old.get("package") or {}).get("sha256") or "a" * 64 if same else f"{self.rng.getrandbits(256):064x}",
+                    file=name)
+        if old is not None and replace is not True:      # asked first: nothing of the one here is touched
+            try:
+                was = self.local_summary(old)
+            except Refused:                      # the one there cannot be read: nothing to compare with
+                was = None
+            base = old if was is not None else self.local_fresh(eid, eid, old["path"], addons, keep=False, **more)
+            new = self.local_summary(dict(base, version=version, author=old["author"] or "Someone"), "package", came)
+            changes = None if was is None else [dict(field=f, old=was[f], new=new[f]) for f in ("version", "author")
+                                                if was[f] != new[f]]
+            raise Refused(409, "needs_replace",
+                          f"{eid} is here already (version {old['version']}): the package {name} (version {version}) would "
+                          f"take its place. Nothing was changed. Tell the player what differs, and add it again with "
+                          f"replace true only when the player says so",
+                          old=was, new=new, changes=changes, same=None if was is None else same)
         if old is not None:                      # an update: the old folder is kept, enabled and options stay
             self.local_stop(old)
             replaced = EXT_HOME + f"\\.removed\\{eid}-{time.strftime('%Y%m%d-%H%M%S')}"
         e = self.local_fresh(eid, old["title"] if old else eid, EXT_HOME + "\\" + eid, addons, ask=True,
-                             version="0.2.0" if old else "0.1.0", author="Someone", **more)
+                             version=version, author=(old or {}).get("author") or "Someone", package=came, **more)
         if old is not None:
             e.update(enabled=old["enabled"], options=old["options"], state="stopped" if old["enabled"] else "off")
         self.entry("INFO", f"local extension {eid}: installed from {folder}" + (" (the old one kept)" if old else ""))
@@ -1116,8 +1218,14 @@ class Fake:
         file = to if to.lower().endswith(".zip") else f"{to}\\{e['id']}-{e['version'] or 0}.zip"
         files = 6 + 2 * len(e["caps"]) + 3 * len(e["addons"])
         self.entry("INFO", f"local extension {e['id']}: packed into {file}")
+        sha = f"{self.rng.getrandbits(256):064x}"
+        summary = self.local_summary(e, "package", dict(sha256=sha, file=file.rsplit("\\", 1)[-1]))
+        warnings = [f"wuxian-extension.json: env sets {', '.join(summary['local']['env'])}, and the values go out with "
+                    f"the package. Nothing secret belongs there (a key, a token, a path of this computer): name the "
+                    f"variable in pass instead and leave its value to whoever runs it"] \
+            if summary["local"] and summary["local"]["env"] else []
         return dict(id=e["id"], version=e["version"], file=file, size=4096 + 1830 * files, files=files,
-                    sha256=f"{self.rng.getrandbits(256):064x}", skipped=["__pycache__/", "logs/"])
+                    sha256=sha, skipped=["__pycache__/", "logs/"], summary=summary, warnings=warnings)
 
     def local_install(self, e):
         """POST /api/local/install: gameside.install's answer for what this extension brings for the game. Every one is
@@ -1159,7 +1267,9 @@ class Fake:
         """POST /api/local/<action>: what the daemon answers (KeyError: not_found, LookupError: 409, ValueError: 400,
         Refused: its own status and code)"""
         if action == "add":
-            return self.local_add(body.get("path"))
+            return self.local_add(body.get("path"), body.get("replace"))
+        if action == "summary":
+            return self.local_summary_of(body.get("id"), body.get("path"))
         if action == "new":
             return self.local_new(body)
         e = self.local_entry(body.get("id"))
@@ -1793,7 +1903,7 @@ def create_app(fake=None, ticker=True):
     def local_post(action):
         async def handle(request):
             try:
-                body = await json_body(request)
+                body = dict(request.query_params) if request.method == "GET" else await json_body(request)
                 if action == "load":
                     await asyncio.sleep(0.6)               # a start takes a moment (initialize, the tests)
                 return JSONResponse(fake.local_action(action, body))
@@ -1882,6 +1992,7 @@ def create_app(fake=None, ticker=True):
         Route("/api/local/logs", local_logs, methods=["GET"]),
         *[Route(f"/api/local/{action}", local_post(action), methods=["POST"])
           for action in ("set", "load", "stop", "check", "approve", "add", "remove", "pack", "install", "new", "wait")],
+        Route("/api/local/summary", local_post("summary"), methods=["GET", "POST"]),
         Mount("/", UiFiles(directory=STATIC_DIR, html=True)),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)

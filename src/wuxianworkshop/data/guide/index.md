@@ -45,6 +45,9 @@ before you finish, `local_extensions` for the list.
 
 {{chapters}}
 
+`review` is not about an idea of the player's: it is for an extension somebody else made, which the player asks you
+to read before they approve it.
+
 ## Worked cases
 
 Each is one kind of idea taken from the first sentence to the verdict, with the calls in order.

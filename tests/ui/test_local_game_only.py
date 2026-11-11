@@ -367,7 +367,9 @@ class Page(unittest.TestCase):
         self.assertIn("x-text=\"lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')\"", card)
         self.assertIn('<dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)">'
                       '<code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>', card)
-        self.assertIn('<dt x-show="lxGameOnly(lxCur)">游戏插件</dt><dd x-show="lxGameOnly(lxCur)" class="mono selectable" '
+        # the game addons by name until the summary came, which says more of each
+        self.assertIn('<dt x-show="lxGameOnly(lxCur) && !lxSumCur">游戏插件</dt>'
+                      '<dd x-show="lxGameOnly(lxCur) && !lxSumCur" class="mono selectable" '
                       'x-text="(lxCur.addons || []).map((a) => a.folder).join(\'  \')"></dd>', card)
 
     def test_the_players_line(self):

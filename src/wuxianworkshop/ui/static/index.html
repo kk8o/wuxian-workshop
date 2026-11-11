@@ -683,10 +683,11 @@
       </div>
     </section>
 
-    <!-- 扩展：插件页的列表 + 详情。左边按谁提供分组：扩展框架；内置（随它提供）；已添加（游戏里由其他插件运行的扩展与本机扩展，
-         按名称排；本机扩展的游戏插件在游戏里运行的扩展与它合成一行，行上写在哪里运行：游戏 / 本机 / 游戏 · 本机）；扩展目录（网站目录里
-         还没装进游戏的包）。「添加」与扩展文件夹的按钮在页面顶栏。底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、更新内容，
-         或会话表。扩展的版本跟程序的分开 -->
+    <!-- 扩展：插件页的列表 + 详情。左边按谁提供分两组：扩展框架与内置（无限工坊提供的：框架自带的、它在别的插件里的、网站目录里的，
+         没装进游戏的写「未安装」）；已添加（游戏插件文件夹里别的插件提供的扩展与本机扩展，按名称排；本机扩展的游戏插件在游戏里运行的
+         扩展与它合成一行，行上写在哪里运行：游戏 / 本机 / 游戏 · 本机）。游戏没开时，游戏插件文件夹里的也读得出来。「添加」与扩展文件夹的
+         按钮在页面顶栏。底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、
+         更新内容，或会话表。本机扩展另有「扩展摘要」：详情、批准、同名替换、打包后看到的是同一份。扩展的版本跟程序的分开 -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
@@ -720,7 +721,7 @@
                 </div>
               </li>
             </ul>
-            <div class="mgroup" x-t title="随扩展框架提供，在游戏中运行，不能单独移除" x-show="xpSys.length"><span>内置</span><span>随扩展框架提供</span></div>
+            <div class="mgroup" x-t title="由无限工坊提供，在游戏中运行" x-show="xpSys.length || xpCatalog.length"><span>内置</span><span>由无限工坊提供</span></div>
             <ul class="mlist">
               <template x-for="m in xpSys" :key="m.id">
                 <li x-t class="mitem line" :class="{ active: xp.sel === 'x:' + m.id }" @click="xpSelect('x:' + m.id)">
@@ -729,6 +730,16 @@
                     <span class="mono mitem-aside" x-text="m.id"></span>
                     <span class="pill tiny off" x-show="m.state && m.state !== 'on'">未启用</span>
                     <span class="mitem-badge" x-show="m.count" :title="t('{n} 个 Agent 工具', { n: m.count })" x-text="m.count"></span>
+                  </div>
+                </li>
+              </template>
+              <template x-for="c in xpCatalog" :key="c.key">
+                <li x-t class="mitem line" :class="{ active: xp.sel === c.key }" @click="xpSelect(c.key)">
+                  <div class="mitem-top">
+                    <span class="mitem-title" x-text="c.title"></span>
+                    <span class="mono mitem-aside" x-text="xpVersionOf(c)"></span>
+                    <span class="pill tiny" x-show="xpBadge(c)" :class="xpBadge(c) && xpBadge(c).cls" x-text="xpBadge(c) && xpBadge(c).text"></span>
+                    <span class="mitem-badge" x-show="c.count" :title="t('{n} 个 Agent 工具', { n: c.count })" x-text="c.count"></span>
                   </div>
                 </li>
               </template>
@@ -763,19 +774,6 @@
                 <button class="btn small" @click="lxAddPackage()">导入扩展包</button>
               </div>
             </div>
-            <div class="mgroup" x-t title="无限工坊扩展目录中尚未安装到游戏的扩展" x-show="xpAvailable.length"><span>扩展目录</span><span>可安装到游戏</span></div>
-            <ul class="mlist">
-              <template x-for="c in xpAvailable" :key="c.key">
-                <li x-t class="mitem line" :class="{ active: xp.sel === c.key }" @click="xpSelect(c.key)">
-                  <div class="mitem-top">
-                    <span class="mitem-title" x-text="c.title"></span>
-                    <span class="mono mitem-aside" x-text="xpVersionOf(c)"></span>
-                    <span class="pill tiny" x-show="xpBadge(c)" :class="xpBadge(c) && xpBadge(c).cls" x-text="xpBadge(c) && xpBadge(c).text"></span>
-                    <span class="mitem-badge" x-show="c.count" :title="t('{n} 个 Agent 工具', { n: c.count })" x-text="c.count"></span>
-                  </div>
-                </li>
-              </template>
-            </ul>
           </div>
           <div class="master-foot">
             <a href="#" class="mfoot-item" :class="{ active: xp.sel === 'sessions' }" @click.prevent="xpSelect('sessions')">
@@ -823,7 +821,8 @@
                 <dl class="kv">
                   <dt>状态</dt><dd><span class="xp-state" :class="xpState.cls"><span class="xp-dot"></span><span x-text="xpState.text"></span></span></dd>
                   <dt>版本</dt><dd><span class="mono" x-text="xpVer.text"></span><span class="pill" x-show="xpVer.pill" :class="xpVer.cls" x-text="xpVer.pill"></span></dd>
-                  <dt x-show="xpSel.needs">需要</dt><dd x-show="xpSel.needs" x-text="xpSel.needs"></dd>
+                  <dt x-show="xpSel.author">作者</dt><dd x-show="xpSel.author" x-text="xpSel.author"></dd>
+                  <dt x-show="xpSel.needs">需要插件</dt><dd x-show="xpSel.needs" x-text="xpSel.needs"></dd>
                   <dt x-show="xpSel.kind === 'kit'">扩展</dt><dd x-show="xpSel.kind === 'kit'" x-text="xpExtLine"></dd>
                   <dt>Agent 工具</dt><dd x-text="xpToolsLine"></dd>
                   <dt x-show="xpSel.released">发布</dt><dd x-show="xpSel.released" x-text="xpSel.released"></dd>
@@ -868,12 +867,13 @@
                         x-text="lxBusy(lxCur, 'stop') ? t('停止中…') : t('停止')"></button>
                 <button class="btn" :disabled="lx.busy !== ''" @click="lxAct(lxCur, 'check')"
                         x-text="lxBusy(lxCur, 'check') ? t('检查中…') : t('检查')"></button>
+                <button class="btn" :disabled="lx.busy !== ''" @click="lxPack(lxCur)"
+                        x-text="lxBusy(lxCur, 'pack') ? t('打包中…') : t('打包分享')"></button>
                 <span class="menu-wrap" @click.outside="lxMenuClose('more')">
-                  <button class="btn" @click="lxMenu('more')" x-text="lxBusy(lxCur, 'pack') ? t('打包中…') : t('更多')"></button>
+                  <button class="btn" @click="lxMenu('more')">更多</button>
                   <div class="menu right" x-show="lx.menu === 'more'" x-transition.opacity>
                     <button class="menu-item" @click="lxCopyPrompt(lxCur)">复制给 Agent 的第一句话</button>
                     <button class="menu-item" @click="lxOpen(lxCur.path)" x-text="canOpen ? t('打开文件夹') : t('文件夹路径')"></button>
-                    <button class="menu-item" :disabled="lx.busy !== ''" @click="lxPack(lxCur)">打包</button>
                     <button class="menu-item bad" :disabled="lx.busy !== ''" @click="lxDrop(lxCur)">移除</button>
                   </div>
                 </span>
@@ -884,22 +884,26 @@
               <button class="btn confirm small" :disabled="lx.busy !== ''" @click="lxRemove(lxCur)" x-text="lxBusy(lxCur, 'remove') ? t('移除中…') : t('确认移除')"></button>
               <button class="btn small" @click="lx.drop = ''">取消</button>
             </div>
-            <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次。清单有误、算不出命令时只留下面的错误条 -->
+            <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次。清单有误、算不出命令时只留下面的错误条。
+                 卡片里是扩展摘要和一句话说明批准意味着什么；拿不准的可以先复制给 Agent 审阅 -->
             <div class="lx-approve" x-show="lxNeeds(lxCur) && lxCanApprove(lxCur)">
               <div class="lx-approve-head">
                 <div class="grow">
                   <b x-text="lxApprovalTitle(lxCur)"></b>
                   <span class="muted" x-text="lxApproveHint(lxCur)"></span>
                 </div>
+                <button class="btn" @click="lxCopyReview(lxCur)">复制给 Agent 审阅</button>
                 <button class="btn primary" :disabled="lx.busy !== '' || !lxCanApprove(lxCur)" @click="lxApprove(lxCur)"
                         x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')"></button>
               </div>
               <dl class="kv">
                 <dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)"><code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>
-                <dt x-show="lxGameOnly(lxCur)">游戏插件</dt><dd x-show="lxGameOnly(lxCur)" class="mono selectable" x-text="(lxCur.addons || []).map((a) => a.folder).join('  ')"></dd>
+                <dt x-show="lxGameOnly(lxCur) && !lxSumCur">游戏插件</dt><dd x-show="lxGameOnly(lxCur) && !lxSumCur" class="mono selectable" x-text="(lxCur.addons || []).map((a) => a.folder).join('  ')"></dd>
                 <dt>文件夹</dt><dd class="mono selectable" x-text="lxCur.path || '—'"></dd>
+                <template x-for="(row, i) in lxSumRows(lxSumCur, true)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
               </dl>
               <div class="muted" x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
+              <p class="lx-risk" x-text="lxRiskLine(lxCur)"></p>
             </div>
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>
             <div class="xp-note bad" x-show="lxCur.error && !lxBlocked(lxCur)" x-text="lxCur.error"></div>
@@ -911,6 +915,18 @@
               <span class="muted" x-text="lx.packed ? lx.packed.line : ''"></span>
               <button class="btn small" x-show="canOpen" @click="lxOpen(lx.packed.folder)">打开所在文件夹</button>
               <button class="btn small" @click="lx.packed = null">关闭</button>
+            </div>
+            <!-- 打包之后：怎么交给对方，对方导入时会看到什么（同一份扩展摘要），哪些文件没打进去 -->
+            <div class="lx-packed" x-show="lx.packed && lx.packed.id === lxCur.id">
+              <p>把此文件发给对方；对方在「添加 → 导入扩展包」中选择它即可导入，批准后生效。</p>
+              <div x-show="lx.packed && lx.packed.rows && lx.packed.rows.length">
+                <div class="muted small">对方导入时将看到：</div>
+                <dl class="kv">
+                  <template x-for="(row, i) in (lx.packed ? lx.packed.rows || [] : [])" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
+                </dl>
+              </div>
+              <p class="muted small" x-show="lx.packed && lx.packed.skipped" x-text="lx.packed ? t('未打包：{names}', { names: lx.packed.skipped }) : ''"></p>
+              <p class="lx-risk" x-show="lx.packed && lx.packed.warn" x-text="lx.packed ? lx.packed.warn : ''"></p>
             </div>
             <div class="tabs">
               <button class="tab" :class="{ on: xpTab === 'info' }" @click="lxTab('info')">概况</button>
@@ -951,6 +967,12 @@
                   <dt x-show="lxCur.origin === 'linked'">交给 Agent</dt>
                   <dd x-show="lxCur.origin === 'linked'"><button class="btn tiny" @click="lxCopyPrompt(lxCur)">复制给 Agent 的第一句话</button></dd>
                 </dl>
+                <div x-show="lxSumRows(lxSumCur).length && !(lxNeeds(lxCur) && lxCanApprove(lxCur))">
+                  <h3 class="xp-h">扩展摘要<span class="muted">批准、替换与分享时显示相同内容</span></h3>
+                  <dl class="kv">
+                    <template x-for="(row, i) in lxSumRows(lxSumCur)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
+                  </dl>
+                </div>
                 <div x-show="lxAdds(lxCur).length">
                   <h3 class="xp-h">补充<span class="muted">为其他应用提供的内容</span></h3>
                   <table class="table xp-tools lx-adds">
@@ -1180,6 +1202,33 @@
             <div class="row end">
               <button class="btn" @click="copy(lxp.path, t('路径'))">复制</button>
               <button class="btn primary" @click="lxp.open = false">关闭</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 导入的扩展包与已添加的同名：先给新旧对比，确认了才替换；取消则原样不动 -->
+      <div class="modal-back" x-show="lxr.open" x-transition.opacity @keydown.escape.window="lxr.open = false" @click.self="lxr.open = false">
+        <div class="modal">
+          <div class="modal-head"><span x-text="lxReplaceTitle()"></span><button x-t class="x" @click="lxr.open = false" title="关闭（Esc）">✕</button></div>
+          <div class="modal-body lx-replace">
+            <p x-show="lxr.same === true">与已添加的版本相同。</p>
+            <p x-show="lxr.same !== true && !lxr.old">现有扩展的清单无法读取，无法比较。</p>
+            <p x-show="lxr.same !== true && lxr.old && !lxChangeRows(lxr.changes).length">摘要各项无变化，文件内容可能不同。</p>
+            <div x-show="lxr.same !== true && lxr.old && lxChangeRows(lxr.changes).length">
+              <h3 class="xp-h">变更</h3>
+              <dl class="kv">
+                <template x-for="(row, i) in lxChangeRows(lxr.changes)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
+              </dl>
+            </div>
+            <h3 class="xp-h">新扩展包</h3>
+            <dl class="kv">
+              <template x-for="(row, i) in lxSumRows(lxr.new)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
+            </dl>
+            <p class="muted small">替换后需重新批准；现有版本移入回收区。</p>
+            <p class="small bad-text selectable lx-why" x-show="lxr.error" x-text="lxr.error"></p>
+            <div class="row end">
+              <button class="btn" @click="lxr.open = false">取消</button>
+              <button class="btn primary" :disabled="lxr.busy" @click="lxReplace()" x-text="lxr.busy ? t('进行中…') : t('替换')"></button>
             </div>
           </div>
         </div>

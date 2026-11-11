@@ -247,7 +247,25 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         res = self.ok("POST", "/api/local/load", {"id": "fx"})
         self.assertEqual((res["addons"], res["restart"], res["hint"]), ([], False, None))
         packed = self.ok("POST", "/api/local/pack", {"id": "gx"})
-        self.assertEqual(sorted(packed), ["file", "files", "id", "sha256", "size", "skipped", "unpacked", "version"])
+        self.assertEqual(sorted(packed), ["file", "files", "id", "sha256", "size", "skipped", "summary", "unpacked",
+                                          "version", "warnings"])
+        self.assertEqual((packed["summary"]["from"], packed["summary"]["package"]["sha256"], len(packed["warnings"])),
+                         ("package", packed["sha256"], 1))
+        self.assertIn("env sets FIXTURE_MODE", packed["warnings"][0])
+        mine = self.ok("POST", "/api/local/summary", {"id": "gx"})             # the same facts, of the folder
+        self.assertEqual((mine["from"], mine["where"], mine["risk"], mine["package"], mine["local"]),
+                         ("folder", "both", "local", None, packed["summary"]["local"]))
+        self.assertEqual(mine["game"], [dict(folder="WuxianGx", title="WuxianGx", notes=None, version="1.2.0",
+                                             author=None, needs=[], path=str(self.addons / "WuxianGx"))])
+        self.assertEqual(self.ok("POST", "/api/local/summary", {"path": packed["file"]}), packed["summary"])
+        self.assertEqual(self.ok("POST", "/api/local/summary", {"path": str(folder)}), mine)
+        self.assertEqual(self.ok("GET", "/api/local/summary?id=gx"), mine)     # the App reads it so
+        self.fails("GET", "/api/local/summary", None, 400, "bad_request")
+        self.fails("GET", "/api/local/summary?id=ghost", None, 404, "not_found")
+        for body, status, code in (({}, 400, "bad_request"), ({"id": "ghost"}, 404, "not_found"),
+                                   ({"path": "relative.zip"}, 400, "bad_request"),
+                                   ({"path": str(self.root / "nothing")}, 404, "not_found")):
+            self.fails("POST", "/api/local/summary", body, status, code)
         self.assertEqual((packed["id"], packed["version"], packed["file"]),
                          ("gx", "0.1.0", str(self.root / "home" / "packages" / "gx-0.1.0.zip")))
         self.assertEqual(K.read(packed["file"])["id"], "gx")
@@ -325,7 +343,14 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(res["result"]["text"], "到了")
         self.ok("POST", "/api/local/set", {"id": "px", "options": {"volume": 70}})
         newer = K.pack(with_game(folder, "px", "WuxianPx", addon_version="1.3.0", version="0.2.0"), sent)["file"]
-        row = self.ok("POST", "/api/local/add", {"path": newer})               # an update: the player is asked again
+        status, res = self.call("POST", "/api/local/add", {"path": newer})     # an update: asked first
+        self.assertEqual((status, res["error"]["code"], res["old"]["version"], res["new"]["version"], res["same"]),
+                         (409, "needs_replace", "0.1.0", "0.2.0", False), res)
+        self.assertEqual(res["changes"], [dict(field="version", old="0.1.0", new="0.2.0")])
+        self.assertEqual((res["old"]["package"]["file"], res["new"]["package"]["file"]), ("px-0.1.0.zip", "px-0.2.0.zip"))
+        self.fails("POST", "/api/local/add", {"path": newer, "replace": "yes"}, 409, "needs_replace")
+        self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "px.opts"})["result"], {"volume": 70})   # untouched
+        row = self.ok("POST", "/api/local/add", {"path": newer, "replace": True})   # the player is asked again
         kept = Path(row["package"]["replaced"])
         self.assertEqual((row["version"], row["path"], row["approval"], row["enabled"], kept.parent),
                          ("0.2.0", str(home / "px"), "needed", True, home / ".removed"))
@@ -567,12 +592,14 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                            "reactions": await c.call_tool("reactions", {}),
                            "clear": await c.call_tool("reaction_clear", {}),
                            "pack": await c.call_tool("extension_pack", {"id": "fx", "to": str(self.root / "by-mcp")}),
+                           "summary": await c.call_tool("extension_summary", {"id": "fx"}),
+                           "no summary": await c.call_tool("extension_summary", {}),
                            "install": await c.call_tool("extension_install", {"id": "fx"}),
                            "logs": await c.call_tool("extension_logs", {"id": "ghost"})}
                     return tools, out
 
         tools, out = asyncio.run(go())
-        for name in ("local_extensions", "extension_logs", "extension_guide", "reactions"):
+        for name in ("local_extensions", "extension_logs", "extension_guide", "reactions", "extension_summary"):
             self.assertTrue(tools[name].annotations.read_only_hint, name)
         for name in ("new_extension", "extension_add", "extension_remove", "extension_load", "extension_stop",
                      "extension_set", "extension_check", "extension_pack", "extension_install", "reaction_set",
@@ -585,6 +612,12 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(len(out["reactions"].structured_content["reactions"]), 1)
         self.assertEqual(out["clear"].structured_content, {"cleared": 1})
         self.assertEqual(out["pack"].structured_content["file"], str(self.root / "by-mcp" / "fx-0.1.0.zip"))
+        self.assertEqual(out["pack"].structured_content["summary"]["package"]["file"], "fx-0.1.0.zip")
+        s = out["summary"].structured_content
+        self.assertEqual((s["from"], s["id"], s["risk"], s["local"]["run"], s["package"]),
+                         ("folder", "fx", "local", ["python", "main.py"], None))
+        self.assertTrue(out["no summary"].is_error)
+        self.assertIn("bad_request", out["no summary"].content[0].text)
         self.assertTrue(out["install"].is_error)
         self.assertIn("no_addons", out["install"].content[0].text)
         self.assertTrue(out["logs"].is_error)

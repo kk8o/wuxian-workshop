@@ -568,7 +568,13 @@ def make_app(service, access, handle, mcp=None):
 
     @api
     async def local_add(request):
-        return await service.extension_add((await body_of(request)).get("path"))
+        b = await body_of(request)
+        return await service.extension_add(b.get("path"), b.get("replace") is True)
+
+    @api
+    async def local_summary(request):                # GET ?id= / ?path= (the App's read) or POST {id?, path?}
+        b = request.query_params if request.method == "GET" else await body_of(request)
+        return await service.extension_summary(b.get("id"), b.get("path"))
 
     @api
     async def local_remove(request):
@@ -710,6 +716,7 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/local/approve", local_approve, methods=["POST"]),
         Route("/api/local/check", local_check, methods=["POST"]),
         Route("/api/local/pack", local_pack, methods=["POST"]),
+        Route("/api/local/summary", local_summary, methods=["GET", "POST"]),
         Route("/api/local/install", local_install, methods=["POST"]),
         Route("/api/local/new", local_new, methods=["POST"]),
         Route("/api/local/logs", local_logs, methods=["GET"]),

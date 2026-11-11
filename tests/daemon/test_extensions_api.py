@@ -1,8 +1,10 @@
 """The 扩展 page's API over a real daemon (/api/extensions): the catalog (WUXIAN_EXTENSIONS_FEED: a local one) with what
-the game folder holds of each addon; install, then remove, of an addon of the catalog; the refusals."""
+the game folder holds of each addon; install, then remove, of an addon of the catalog; the refusals; and the addons
+found in the game's AddOns that give WuxianKit an extension (detected)."""
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import unittest
 import urllib.error
@@ -79,6 +81,32 @@ class ExtensionsApi(unittest.TestCase):
         finally:
             (site / "extensions.json").write_text(before, encoding="utf-8")
             request(self.handle, "GET", "/api/extensions?refresh=1")
+
+    def test_the_extensions_found_in_the_game(self):
+        """detected: the addons with X-WuxianKit-Extension that are no catalog entry's folder and that no local
+        extension put there, each as its summary with official (one of WuxianKit's own ids)"""
+        from tests.local.test_summary import toc
+        from wuxianworkshop.local import gameside
+
+        made = {"WuxianKit_Guides": "guides", "WuxianGuild": "guild", "Demo": "demo", "Brought": "brought"}
+        self.assertFalse(any((self.addons / name).exists() for name in made))
+        try:
+            for name, gid in made.items():
+                (self.addons / name).mkdir()
+                (self.addons / name / f"{name}.toc").write_bytes(toc(name, notes=f"{name} 的说明", gid=gid,
+                                                                     deps="WuxianKit, EllesmereUI"))
+            (self.addons / "Brought" / gameside.MARK).write_text("{}", encoding="utf-8")
+            found = request(self.handle, "GET", "/api/extensions")["detected"]
+            self.assertEqual([(s["id"], s["official"], s["from"], s["risk"]) for s in found],
+                             [("guild", False, "game", "game"), ("guides", True, "game", "game")])
+            self.assertEqual(found[0]["game"], [dict(folder="WuxianGuild", title="WuxianGuild", notes="WuxianGuild 的说明",
+                                                     version="1.2.0", author=None,
+                                                     needs=[dict(addon="EllesmereUI", installed=False)],
+                                                     path=str(self.addons / "WuxianGuild"))])
+        finally:
+            for name in made:
+                shutil.rmtree(self.addons / name, ignore_errors=True)
+        self.assertEqual(request(self.handle, "GET", "/api/extensions")["detected"], [])
 
     def test_removing_wuxiankit_forgets_its_manifest(self):
         """the agents' wk_ tools go with WuxianKit: its kept manifest is forgotten when the App removes it"""

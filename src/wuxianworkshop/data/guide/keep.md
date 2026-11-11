@@ -27,8 +27,9 @@ pick up without this one:
 
 ## 2. Give it to a friend
 
-- An extension: set `version` in the manifest, `extension_pack {"id": "..."}`; the answer names the file and what
-  was left out. Tell the player what the friend needs: 无限工坊, WuxianKit for a game half, and whatever the process
+- An extension: set `version` in the manifest, `extension_pack {"id": "..."}`; the answer names the file, what
+  was left out (`skipped`), what to look at before it is sent (`warnings`) and what the friend will see of it
+  before they approve (`summary`). Tell the player what the friend needs: 无限工坊, WuxianKit for a game half, and whatever the process
   uses (Python packages, a model, a key of their own). The friend adds the file on the Extensions (扩展) page and
   approves it there.
 - An addon: its folder in the game's AddOns is the whole thing; it works without 无限工坊 if you kept the

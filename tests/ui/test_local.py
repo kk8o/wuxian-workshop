@@ -388,12 +388,12 @@ class Template(unittest.TestCase):
     def test_calls_exist(self):
         start = self.html.index('<span>已添加</span>')
         part = self.part() + self.html[start:self.html.index('<div class="master-foot">', start)]
-        exprs = " ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', part))
+        exprs = " ; ".join(v for _, v in re.findall(r'\s(x-[\w:.-]+|:[\w-]+|@[\w.:-]+)="([^"]*)"', part))   # one's end, the next's start
         names = set(re.findall(r"(?<![\w.$'])([A-Za-z_]\w*)\s*\(", exprs)) - {"t", "in", "String"}
         self.assertTrue({"lxAct", "lxSet", "lxEnable", "lxTab", "lxState", "lxCaps", "xpSelect", "onLxOutScroll"} <= names)
         for name in names:
             self.assertTrue(re.search(r"(?m)^\s*(?:async\s+)?%s\s*\(" % name, self.js), name)
-        for getter in ("lxCur", "lxCheck", "lxOutLine", "lxOutEmpty", "xpTab"):
+        for getter in ("lxCur", "lxCheck", "lxOutLine", "lxOutEmpty", "xpTab", "lxSumCur"):
             self.assertIn(getter, exprs)
             self.assertTrue(re.search(r"(?m)^\s*get\s+%s\s*\(" % getter, self.js), getter)
         self.assertIn('x-ref="lxout"', self.part())

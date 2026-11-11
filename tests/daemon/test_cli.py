@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from wuxianworkshop.cli import client as daemon_client, main as cli, mcpconfig
+from wuxianworkshop.daemon.api import ApiError
 
 
 class Parser(unittest.TestCase):
@@ -165,7 +166,13 @@ class Parser(unittest.TestCase):
         ns, _ = self.parse("ext", "logs", "voice", "-f", "--since", "5", "--limit", "50")
         self.assertEqual((ns.action, ns.id, ns.follow, ns.since, ns.limit), ("logs", "voice", True, 5, 50))
         ns, _ = self.parse("ext", "add", r"C:\down\voice-1.2.0.zip")                # a package is a path like any
-        self.assertEqual((ns.action, ns.path), ("add", r"C:\down\voice-1.2.0.zip"))
+        self.assertEqual((ns.action, ns.path, ns.replace), ("add", r"C:\down\voice-1.2.0.zip", False))
+        ns, _ = self.parse("ext", "add", "--replace", "voice-1.2.0.zip")
+        self.assertEqual((ns.path, ns.replace), ("voice-1.2.0.zip", True))
+        ns, _ = self.parse("ext", "summary", "voice")
+        self.assertEqual((ns.action, ns.what, ns.json), ("summary", "voice", False))
+        ns, _ = self.parse("ext", "summary", r"C:\down\voice-1.2.0.zip", "--json")
+        self.assertEqual((ns.what, ns.json), (r"C:\down\voice-1.2.0.zip", True))
         ns, _ = self.parse("ext", "pack", "voice")
         self.assertEqual((ns.action, ns.id, ns.to, ns.json), ("pack", "voice", None, False))
         ns, _ = self.parse("ext", "pack", "voice", "--to", "out", "--json")
@@ -175,7 +182,7 @@ class Parser(unittest.TestCase):
         ns, _ = self.parse("ext", "dir")
         self.assertEqual(ns.action, "dir")
         for argv in (("ext",), ("ext", "begin"), ("ext", "load"), ("ext", "set", "v", "--on", "--off"),
-                     ("ext", "pack"), ("ext", "install"), ("ext", "pack", "v", "--to"),
+                     ("ext", "pack"), ("ext", "install"), ("ext", "pack", "v", "--to"), ("ext", "summary"),
                      ("program", "list")):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 self.parse(*argv)
@@ -464,6 +471,90 @@ class ExtLines(unittest.TestCase):
         code, lines, _ = self.run_ext(client, "add", "voice-1.2.0.zip")
         self.assertEqual(lines[2], "    the folder it replaced is kept: " + client.replaced)
 
+    def test_a_package_over_the_version_here_asks_first(self):
+        """needs_replace: what differs is printed, nothing is changed, and it says how to go on; --replace sends true"""
+        asked = []
+        differs = dict(old=dict(id="voice", version="1.1.0"), new=dict(id="voice", version="1.2.0"), same=False,
+                       changes=[dict(field="version", old="1.1.0", new="1.2.0"),
+                                dict(field="pass", added=["OPENAI_API_KEY"], removed=[])])
+
+        class Client:
+            def extension_add(self, path, *replace):
+                asked.append(replace)
+                if replace != (True,):
+                    raise ApiError(409, "needs_replace", "voice is here already", **differs)
+                return dict(id="voice", title="声音", path="p", state="stopped", approval="needed",
+                            package=dict(file=path, replaced="kept"))
+
+        code, lines, _ = self.run_ext(Client(), "add", "voice-1.2.0.zip")
+        self.assertEqual((code, asked), (1, [()]))
+        self.assertEqual(lines[:3], ["voice is here already (version 1.1.0): the package is version 1.2.0. Nothing was "
+                                     "changed.", "    version: 1.1.0 -> 1.2.0", "    pass: + OPENAI_API_KEY"])
+        self.assertTrue(lines[3].startswith("to replace it ("), lines)
+        self.assertTrue(lines[3].endswith("wuxian ext add --replace <the .zip>"), lines)
+        self.assertEqual(len(lines), 4)
+        differs.update(changes=[], same=True)
+        self.assertEqual(self.run_ext(Client(), "add", "voice-1.2.0.zip")[1][1],
+                         "    it is the very package the one here was imported from")
+        differs.update(same=False)
+        self.assertEqual(self.run_ext(Client(), "add", "voice-1.2.0.zip")[1][1],
+                         "    the two say the same of themselves; their files may differ")
+        differs.update(old=None, changes=None, same=None)            # the one here cannot be read
+        code, lines, _ = self.run_ext(Client(), "add", "voice-1.2.0.zip")
+        self.assertEqual((code, len(lines)), (1, 2))
+        self.assertTrue(lines[0].startswith("voice is here already: the package is version 1.2.0."), lines)
+        del asked[:]
+        code, lines, _ = self.run_ext(Client(), "add", "--replace", "voice-1.2.0.zip")
+        self.assertEqual((code, asked), (0, [(True,)]))
+        self.assertTrue(lines[0].startswith("installed: voice "), lines)
+        self.assertEqual(lines[-1], "    the folder it replaced is kept: kept")
+
+        class Other:
+            def extension_add(self, path):
+                raise ApiError(409, "extension_exists", "a linked one")
+
+        with self.assertRaises(ApiError):                            # any other refusal goes up as it did
+            self.run_ext(Other(), "add", "voice-1.2.0.zip")
+
+    def test_summary(self):
+        asked = []
+        answer = {"from": "package", "id": "voice", "title": "声音", "version": "1.2.0", "author": "某人",
+                  "homepage": None, "package": {"sha256": "ab" * 32, "file": "voice-1.2.0.zip"}, "where": "both",
+                  "risk": "local", "game": [dict(folder="WuxianVoice", version="1.2.0", path=None, needs=[
+                      dict(addon="EllesmereUI", installed=False), dict(addon="Other", installed=True)])],
+                  "local": {"run": ["python", "main.py"], "python": None, "start": "workshop", "env": ["VOICE_RATE"],
+                            "pass": ["DEEPSEEK_API_KEY"]}, "executables": ["bin/tts.exe"],
+                  "agent": {"docs": "AGENT.md", "skills": ["speak"], "apps": [], "adds": [dict(app="guild", wake=True)]},
+                  "files": 12, "size": 20480}
+
+        class Client:
+            def extension_summary(self, id=None, path=None):
+                asked.append((id, path))
+                return answer
+
+        code, lines, _ = self.run_ext(Client(), "summary", "voice")                 # an id: no such path here
+        self.assertEqual((code, asked), (0, [("voice", None)]))
+        self.assertEqual(lines, [
+            'voice 1.2.0 "声音"',
+            "  package: voice-1.2.0.zip, sha256 " + "ab" * 32,
+            "  from: author 某人 (as it says itself: not verified)",
+            "  runs: in the game and on this computer",
+            "  game addon: WuxianVoice 1.2.0, needs EllesmereUI (not installed), Other, not in the game's AddOns",
+            "  program: python main.py, started with 无限工坊",
+            "    sets the variables: VOICE_RATE",
+            "    gets the player's variables: DEEPSEEK_API_KEY",
+            "  executables: bin/tts.exe",
+            "  an agent reads: AGENT.md; skills speak; adds to the app guild: wake",
+            "  12 files, 20.0 KB"])
+        self.run_ext(Client(), "summary", "voice-1.2.0.zip")         # anything else is a path: the daemon gets it whole
+        self.assertEqual(asked[1], (None, str(Path("voice-1.2.0.zip").resolve())))
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            Path("voice").mkdir()                                    # a folder of that name here is meant
+            self.run_ext(Client(), "summary", "voice")
+            self.assertEqual(asked[2], (None, str(Path("voice").resolve())))
+        code, lines, _ = self.run_ext(Client(), "summary", "voice", "--json")
+        self.assertEqual(json.loads("\n".join(lines)), answer)
+
     def test_remove_says_where_it_went(self):
         answers = []
 
@@ -548,6 +639,9 @@ class ExtLines(unittest.TestCase):
         self.assertEqual(self.run_ext(Client(), "pack", "voice")[1], ["packed voice: v.zip", "    900 bytes, 1 files"])
         answer = dict(file="v.zip", size=2048, skipped=3)            # skipped as a number, less said
         self.assertEqual(self.run_ext(Client(), "pack", "voice")[1], ["packed voice: v.zip", "    2.0 KB, 3 left out"])
+        answer = dict(file="v.zip", size=2048, skipped=[], summary={}, warnings=["env sets KEY", "another"])
+        self.assertEqual(self.run_ext(Client(), "pack", "voice")[1],
+                         ["packed voice: v.zip", "    2.0 KB", "    warning: env sets KEY", "    warning: another"])
 
     def test_dir_and_new(self):
         made = []
@@ -601,6 +695,16 @@ class ExtRoutes(unittest.TestCase):
     def test_add_waits_for_a_package(self):
         self.assertEqual(self.asked(lambda c: c.extension_add(r"C:\down\voice-1.2.0.zip")),
                          ("POST", "/api/local/add", {"path": r"C:\down\voice-1.2.0.zip"}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_add("v.zip", True)),      # only when it is to replace
+                         ("POST", "/api/local/add", {"path": "v.zip", "replace": True}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_add("v.zip", False))[2], {"path": "v.zip"})
+
+    def test_summary(self):
+        self.assertEqual(self.asked(lambda c: c.extension_summary("voice")),
+                         ("POST", "/api/local/summary", {"id": "voice"}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_summary(path="v.zip")),
+                         ("POST", "/api/local/summary", {"path": "v.zip"}, 180))
+        self.assertEqual(self.asked(lambda c: c.extension_summary(None, "v.zip"))[2], {"path": "v.zip"})
 
     def test_new_with_an_addon(self):
         self.assertEqual(self.asked(lambda c: c.new_extension("voice", "声音")),      # as before: no field it has not

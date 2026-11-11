@@ -37,6 +37,7 @@ from pathlib import Path
 
 from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
 from ..local import manifest as local_manifest
+from ..local import summary as local_summary
 from ..local.host import Host as LocalHost, call_error
 from ..local.reactions import ReactionError, Reactions
 from ..agent import history, lint, probes
@@ -1217,7 +1218,10 @@ class Service:
     async def extensions(self, refresh=False):
         """the extension catalog's addons and what the game folder holds of each: {catalog: {url, updated, checked,
         error}, addons: [the catalog's entry with there, installed (its .toc's version), state and missing (the folders
-        it needs that are not there)], addons_dir, app}"""
+        it needs that are not there)], addons_dir, app, detected}. detected: the addons in the game's AddOns that give
+        WuxianKit an extension and that neither the catalog lists nor a local extension put there, read from the
+        folder (the game need not run): [their summary (local/summary.py of_addon) with official: the extension is
+        one of WuxianKit's own]"""
         cat = self.ext_catalog
         if refresh or cat.checked is None or time.time() - cat.checked > self.CATALOG_AGE:
             await asyncio.to_thread(cat.refresh)
@@ -1233,8 +1237,14 @@ class Service:
                 out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version),
                                 missing=extensions.missing(addons, e) if addons else []))
             return out
+
+        def found():
+            if not addons:
+                return []
+            return local_summary.detected(addons, skip=[e["folder"] for e in cat.addons],
+                                          official=local_manifest.KIT_EXTENSIONS)
         return dict(catalog=cat.status(), addons=await asyncio.to_thread(look), addons_dir=str(addons) if addons else None,
-                    app=extensions.app_version())
+                    app=extensions.app_version(), detected=await asyncio.to_thread(found))
 
     async def extension(self, action, ext_id):
         """install (an update too) or remove an addon of the catalog: {action, result, addon (as extensions() lists it)}.
@@ -1884,15 +1894,16 @@ class Service:
         renders them as it renders the game's)"""
         return await asyncio.to_thread(self.local.manifest_entries)
 
-    async def extension_add(self, path):
+    async def extension_add(self, path, replace=False):
         """registers a local extension by its folder (or its wuxian-extension.json): its row; its apps are told to
         WuxianKit now while the game is online (reconcile_local_apps). Where the setting asks nobody
         (extension_approval "auto"), one that starts on use is started here once, only to learn what it can do
         (Host.describe): its tools and options are there before its first call. Else that is done when the player
         allows its command (extension_approve). path may be a package (.zip) instead: it is installed into the
-        extensions folder, or over the version there (Host.add_package): its row with package {file, replaced};
-        that one always waits for the player"""
-        row = await asyncio.to_thread(self.local.add, path)
+        extensions folder: its row with package {file, replaced}; that one always waits for the player. Over the
+        version there only with replace true (the player said so): without it needs_replace (409) answers old, new,
+        changes and same, and nothing is touched (Host.add_package)"""
+        row = await asyncio.to_thread(self.local.add, path, replace)
         self.notes.forgive(row["id"])                      # (a package over the version there: its notes are tried anew)
         if self.extension_approval == "auto" and row.get("enabled") and row.get("start") == "use" \
                 and row.get("allowed") and not row.get("error") and row.get("where") != "game":
@@ -2049,9 +2060,19 @@ class Service:
 
     async def extension_pack(self, id, to=None):
         """a local extension's folder as a package, one .zip another computer's extension_add takes (Host.pack):
-        {id, version, file, size, files, unpacked, sha256, skipped}. to: a folder or the .zip's path (a full path);
-        not given: %WUXIAN_HOME%\\packages"""
+        {id, version, file, size, files, unpacked, sha256, skipped, summary, warnings}; summary: what whoever gets
+        it will see of it, warnings: what to look at before it is sent. to: a folder or the .zip's path (a full
+        path); not given: %WUXIAN_HOME%\\packages"""
         return await asyncio.to_thread(self.local.pack, id, to)
+
+    async def extension_summary(self, id=None, path=None):
+        """the facts of an extension before it is approved, shared or replaced (Host.summary, local/summary.py): of a
+        registered one (id), or of what lies at a full path: a package (.zip; nothing is installed), an extension's
+        folder, an addon folder in the game's AddOns that gives WuxianKit an extension"""
+        if id is None and path is None:
+            raise ApiError(400, "bad_request", "id: a registered extension, or path: the full path of a package, an "
+                                               "extension's folder or a game addon's folder")
+        return await asyncio.to_thread(self.local.summary, id, path)
 
     async def extension_install(self, id):
         """a local extension's game addons put into the game's AddOns now (Host.install): {id, addons, restart,

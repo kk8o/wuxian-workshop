@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "wuxianworkshop"
 TOPIC = re.compile(r'guide \{+\\?"topic\\?": \\?"([^"\\]+)\\?"\}+')
 CALL = re.compile(r"`([a-z][a-z_]*) (\{.*?\})`", re.S)
-CHAPTERS = ["probe", "addon", "game-extension", "other-addon", "local-extension", "both", "after"]
+CHAPTERS = ["probe", "addon", "game-extension", "other-addon", "local-extension", "both", "after", "review"]
 CASES = ["can-the-game", "ai-app", "addon-data", "show-and-compute", "enrich-app", "keep"]
 
 

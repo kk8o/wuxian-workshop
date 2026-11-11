@@ -80,14 +80,40 @@ class Add(Local):
         self.assertEqual(self.post("approve", id=row["id"]).json()["approval"], "ok")
         self.assertEqual([a["state"] for a in self.rows()[row["id"]]["addons"]], ["current"])     # the yes installs them
 
-    def test_a_package_again_is_an_update(self):
+    def test_a_package_again_asks_first(self):
+        """the id is in the home already: 409 needs_replace with the two summaries and what differs, nothing changed;
+        with replace true it takes the old one's place and waits for the player"""
         self.post("set", id="herald", options={})
+        before = self.rows()["herald"]
         r = self.post("add", path="D:\\Downloads\\herald.zip")
+        d = r.json()
+        self.assertEqual((r.status_code, d["error"]["code"]), (409, "needs_replace"))
+        self.assertEqual((d["old"]["from"], d["old"]["version"], d["new"]["from"], d["new"]["version"], d["same"]),
+                         ("folder", before["version"], "package", "0.3.0", False))
+        self.assertEqual(d["new"]["package"]["file"], "herald.zip")
+        self.assertIn({"field": "version", "old": before["version"], "new": "0.3.0"}, d["changes"])
+        self.assertEqual(d["error"]["changes"], d["changes"])                # as ApiError.body gives it
+        self.assertEqual(self.rows()["herald"], before)                      # nothing was touched
+        self.assertEqual(self.post("add", path="D:\\Downloads\\herald.zip", replace=False).status_code, 409)
+        r = self.post("add", path="D:\\Downloads\\herald.zip", replace=True)
         self.assertEqual(r.status_code, 200)
         row = r.json()
-        self.assertEqual((row["id"], row["version"], row["approval"]), ("herald", "0.2.0", "needed"))
+        self.assertEqual((row["id"], row["version"], row["approval"]), ("herald", "0.3.0", "needed"))
         self.assertTrue(row["package"]["replaced"].startswith(HOME + "\\.removed\\herald-"))
         self.assertEqual(sum(1 for i in self.rows() if i == "herald"), 1)
+        self.assertEqual(set(self.rows()["herald"]), ROW)                    # where it came from is the summary's to say
+        self.assertEqual(self.post("summary", id="herald").json()["package"]["file"], "herald.zip")
+
+    def test_the_very_package_again(self):
+        self.assertEqual(self.post("add", path="D:\\Downloads\\same.zip").status_code, 200)
+        d = self.post("add", path="D:\\Downloads\\same.zip").json()
+        self.assertEqual((d["error"]["code"], d["changes"], d["same"]), ("needs_replace", [], True))
+        self.assertEqual(d["old"]["package"]["sha256"], d["new"]["package"]["sha256"])
+
+    def test_over_one_that_cannot_be_read(self):
+        d = self.post("add", path="D:\\Downloads\\draft.zip").json()
+        self.assertEqual((d["error"]["code"], d["old"], d["changes"], d["same"]), ("needs_replace", None, None, None))
+        self.assertEqual(d["new"]["id"], "draft")
         r = self.post("add", path="D:\\Downloads\\relay.zip")           # a linked one has that id
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (409, "extension_exists"))
 
@@ -181,7 +207,14 @@ class Pack(Local):
         r = self.post("pack", id="herald")
         self.assertEqual(r.status_code, 200)
         d = r.json()
-        self.assertEqual(set(d), {"id", "version", "file", "size", "files", "sha256", "skipped"})
+        self.assertEqual(set(d), {"id", "version", "file", "size", "files", "sha256", "skipped", "summary", "warnings"})
+        s = d["summary"]                                                 # what whoever gets it will see
+        self.assertEqual((s["from"], s["id"], s["package"]), ("package", "herald", {"sha256": d["sha256"],
+                                                                                    "file": "herald-0.2.0.zip"}))
+        self.assertEqual((d["warnings"], d["files"], d["size"]), ([], s["files"], s["size"]))
+        w = self.post("pack", id="stats").json()["warnings"]             # its manifest's env sets a value
+        self.assertEqual(len(w), 1)
+        self.assertIn("env sets STATS_MODE", w[0])
         self.assertEqual((d["id"], d["version"], d["file"]), ("herald", "0.2.0", F.PACKAGES + "\\herald-0.2.0.zip"))
         self.assertIsInstance(d["files"], int)
         self.assertIsInstance(d["size"], int)
@@ -254,6 +287,52 @@ class NoGameFolder(Local):
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (503, "no_game_folder"))
         self.assertEqual(set(self.post("load", id="herald").json()), {"row", "check"})            # it starts all the same
         self.assertEqual(self.post("remove", id="herald").json()["addons"], [])
+
+
+class Summary(Local):
+    KEYS = {"from", "id", "title", "version", "notes", "author", "homepage", "package", "where", "risk", "game",
+            "addons_dir", "local", "executables", "agent", "files", "size"}
+
+    def get(self, **q):
+        return self.client.get("/api/local/summary", headers=AUTH, params=q)
+
+    def test_of_a_row(self):
+        s = self.get(id="voice").json()
+        self.assertEqual(set(s), self.KEYS)
+        self.assertEqual((s["from"], s["id"], s["risk"], s["package"]), ("folder", "voice", "local", None))
+        self.assertEqual(set(s["local"]), {"run", "python", "start", "env", "pass"})
+        self.assertEqual((s["local"]["pass"], s["executables"]), (["DEEPSEEK_API_KEY"], ["bin/tts.exe"]))
+        self.assertEqual(set(s["agent"]), {"docs", "skills", "apps", "adds"})
+        self.assertEqual(self.post("summary", id="voice").json(), s)                             # by POST as well
+        self.assertEqual(self.get(path=self.rows()["voice"]["path"]).json(), s)                  # by its folder
+
+    def test_one_with_game_addons(self):
+        s = self.get(id="herald").json()
+        self.assertEqual([(g["folder"], g["path"] is not None) for g in s["game"]],
+                         [("WuxianHerald", False), ("WuxianHeraldSkin", True)])                  # one is not there yet
+        self.assertEqual(s["game"][1]["needs"], [{"addon": "EllesmereUI", "installed": True}])
+        for g in s["game"]:
+            self.assertEqual(set(g), {"folder", "title", "notes", "version", "author", "needs", "path"})
+        for app in s["agent"]["adds"]:
+            self.assertEqual(set(app), {"app", "wake", "skill"})
+
+    def test_one_in_the_game_only(self):
+        row = self.post("add", path="D:\\Downloads\\ingame.zip").json()
+        s = self.get(id=row["id"]).json()
+        self.assertEqual((s["where"], s["risk"], s["local"]), ("game", "game", None))
+
+    def test_of_a_package_that_is_not_here(self):
+        before = self.rows()
+        s = self.get(path="D:\\Downloads\\gamehelper-1.zip").json()
+        self.assertEqual((s["from"], s["package"]["file"], s["version"]), ("package", "gamehelper-1.zip", "0.1.0"))
+        self.assertEqual(self.rows(), before)                                                    # nothing is added
+
+    def test_refusals(self):
+        for q, status, code in (({}, 400, "bad_request"), ({"id": "nope"}, 404, "not_found"),
+                                ({"id": "draft"}, 400, "bad_manifest"), ({"path": "D:\\Work\\nothing"}, 404, "not_found"),
+                                ({"path": "D:\\Downloads\\bad.zip"}, 400, "bad_package"), ({"path": "x"}, 400, "bad_request")):
+            r = self.get(**q)
+            self.assertEqual((r.status_code, r.json()["error"]["code"]), (status, code), q)
 
 
 del Local                                                            # its tests run in test_fake_local

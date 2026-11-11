@@ -121,6 +121,20 @@ def walk(folder, leave=None):
     return sorted(files), sorted(skipped)
 
 
+def kept(folder, exclude=()):
+    """(files, skipped) of an extension's folder as a package takes them: walk()'s, with what EXCLUDE and the patterns
+    in `exclude` (the manifest's pack.exclude) name left out, and the names under addons/ that start with a dot; the
+    manifest itself is always in. What pack() packs and summary.py counts"""
+    patterns = EXCLUDE + tuple(exclude or ())
+
+    def leave(rel):
+        if rel.lower() == M.MANIFEST:
+            return False
+        return left_out(rel, patterns) or (in_addons(rel) and hidden(rel))
+
+    return walk(folder, leave)
+
+
 def part_problem(part):
     """why a name cannot be one part of a path in a package, or None"""
     if part in ("", ".", ".."):
@@ -174,18 +188,11 @@ def pack(folder, to, exclude=None):
         if found:
             p = found[0]
             raise PackError(400, "bad_request", f"{p['where']}: {p['message']} ({p['hint']})", found)
-    patterns = EXCLUDE + tuple(mine)
     dest = _target(to, eid, manifest["version"])
     tmp = dest.with_name(dest.name + ".tmp")
     own = {str(p.resolve()).lower() for p in (dest, tmp)}         # the zip itself, when it is written into the folder
-
-    def leave(rel):
-        if rel.lower() == M.MANIFEST:
-            return False
-        return left_out(rel, patterns) or (in_addons(rel) and hidden(rel))
-
     try:
-        files, skipped = walk(folder, leave)
+        files, skipped = kept(folder, mine)
     except OSError as e:
         raise _bad(f"{folder} cannot be read: {e}") from None
     files = [(rel, path) for rel, path in files if str(path.resolve()).lower() not in own]

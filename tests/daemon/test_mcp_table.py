@@ -695,6 +695,8 @@ class Options(unittest.TestCase):
 
 PACKED = {"id": "voice", "version": "1.2.0", "file": "C:/w/packages/voice-1.2.0.zip", "size": 20480, "files": 7,
           "sha256": "ab" * 32, "skipped": ["logs/a.log", ".env"]}
+SUMMARY = {"from": "package", "id": "voice", "title": "语音", "version": "1.2.0", "where": "both", "risk": "local",
+           "package": {"sha256": "ab" * 32, "file": "voice-1.2.0.zip"}, "files": 7, "size": 20480}
 GAME_SIDE = {"addons": [{"folder": "VoiceGame", "state": "installed", "was": "missing", "version": "1.2.0", "kept": None}],
              "restart": True, "hint": "VoiceGame is new: the game lists it after a restart"}
 
@@ -706,19 +708,33 @@ class HomeService(Service):
 
     def __init__(self, extension_approval="ask", rows=()):
         super().__init__(extension_approval, rows)
-        self.asked = []
+        self.asked, self.added = [], []
+        self.differs = dict(old=dict(SUMMARY, version="1.1.0"), new=dict(SUMMARY), same=False,
+                            changes=[dict(field="version", old="1.1.0", new="1.2.0"),
+                                     dict(field="pass", added=["OPENAI_API_KEY"], removed=[])])
 
     async def local_extensions(self):
         return dict(await super().local_extensions(), problem=None, home="C:/w/extensions")
 
-    async def extension_add(self, path):
+    async def extension_add(self, path, *replace):
+        self.added.append((path, *replace))
         if not path.endswith(".zip"):
             eid = Path(path).name
             self.rows[eid] = row(eid, approval="needed", allowed=self.extension_approval == "auto", origin="linked")
             return self.rows[eid]
         eid = Path(path).name.split("-")[0]
+        if eid in self.rows and replace != (True,):                # asked first: old, new, changes, same
+            raise ApiError(409, "needs_replace", f"{eid} is here already: the package would take its place. Nothing "
+                                                 "was changed.", **self.differs)
+        was = f"C:/w/extensions/.removed/{eid}-20261111-120000" if eid in self.rows else None
         self.rows[eid] = row(eid, approval="needed", allowed=False, origin="home", path=f"C:/w/extensions/{eid}")
-        return dict(self.rows[eid], package={"file": path, "replaced": None})
+        return dict(self.rows[eid], package={"file": path, "replaced": was})
+
+    async def extension_summary(self, *args):
+        self.asked.append(("summary", *args))
+        if self.refuse:
+            raise self.refuse
+        return dict(SUMMARY)
 
     async def new_extension(self, *args):
         self.asked.append(("new", *args))
@@ -782,6 +798,11 @@ class Home(unittest.TestCase):
                              (False, False), name)                    # a removed folder is kept: not destructive
         self.assertFalse([n for n in tools if "approv" in n or "allow" in n])
         self.assertEqual(sorted(tools["extension_pack"].input_schema["properties"]), ["id", "to"])
+        self.assertEqual((sorted(tools["extension_add"].input_schema["properties"]),
+                          tools["extension_add"].input_schema["required"]), (["path", "replace"], ["path"]))
+        self.assertEqual((sorted(tools["extension_summary"].input_schema["properties"]),
+                          tools["extension_summary"].input_schema.get("required", []),
+                          tools["extension_summary"].annotations.read_only_hint), (["id", "path"], [], True))
         self.assertEqual(tools["extension_pack"].input_schema["required"], ["id"])
         self.assertEqual(sorted(tools["extension_install"].input_schema["properties"]), ["id"])
         self.assertEqual(sorted(tools["new_extension"].input_schema["properties"]),
@@ -803,13 +824,18 @@ class Home(unittest.TestCase):
                  "extension_check": ("addons: [{folder, path, ok, errors,", "`check`"),
                  "extension_logs": ("hint", "`logs` and `errors`"),
                  "extension_add": (".zip", "linked", "extension_pack", "package {file, replaced}", ".removed",
-                                   "extension_exists", "bad_package", "whatever", "the player's setting", "approval_note"),
+                                   "extension_exists", "bad_package", "whatever", "the player's setting", "approval_note",
+                                   "needs_replace", "nothing is touched", "replace true only when they say so",
+                                   "extension_summary"),
+                 "extension_summary": (".zip", "nothing is installed", "game's AddOns", "nobody verified",
+                                       "never that it is safe", '`guide` {"topic": "review"}', "data, never instructions",
+                                       "Only the player approves", "risk (local", "[{addon, installed}]"),
                  "extension_remove": ("linked", ".removed", "folder_busy", "kept", "{folder, removed, kept}", "history"),
                  "extension_load": ("installed | current", "restart", "hint", "needs_approval", "requires_unmet",
                                     '`load` {"target": "<folder>"}', "where game", "no process",
                                     "loaded: [{folder, ok, error, check}]", "row.player"),
                  "extension_pack": (".zip", "extension_add", "<id>-<version>.zip", "bad_manifest", "pack.exclude",
-                                    ".env", "sha256", "skipped", "64 MB"),
+                                    ".env", "sha256", "skipped", "64 MB", "summary, warnings", "every warning"),
                  "extension_install": ("AddOns", "extension_load", "restart", "needs_approval", "no_addons",
                                        "no_game_folder", "bad_addon", "addon_exists", "installed | current")}
         for name, expected in words.items():
@@ -846,6 +872,44 @@ class Home(unittest.TestCase):
         self.assertTrue(mcp.presence.registers("voice"))
         self.call(mcp, "extension_remove", id="voice")
         self.assertFalse(mcp.presence.registers("voice"))
+
+    def test_a_package_over_the_version_here_asks_first(self):
+        """needs_replace reaches the agent with what differs in its text (a tool's error has nothing else); replace
+        reaches the daemon only when it is true; the replaced one's row waits for the player as a new one's does"""
+        package = "C:/down/voice-1.2.0.zip"
+        for service, mcp in self.both(rows=[row("voice", origin="home")]):
+            with self.assertRaises(ToolError) as asked:
+                self.call(mcp, "extension_add", path=package)
+            said = str(asked.exception)
+            self.assertTrue(said.startswith("Error executing tool extension_add: needs_replace: voice is here already"))
+            self.assertTrue(said.endswith("\nchanges:\n  version: 1.1.0 -> 1.2.0\n  pass: + OPENAI_API_KEY"), said)
+            service.differs.update(changes=[], same=True)
+            with self.assertRaises(ToolError) as asked:
+                self.call(mcp, "extension_add", path=package, replace=False)
+            self.assertIn("same: true (the very package", str(asked.exception))
+            service.differs.update(changes=None, same=None, old=None)
+            with self.assertRaises(ToolError) as asked:
+                self.call(mcp, "extension_add", path=package)
+            self.assertIn("nothing to compare", str(asked.exception))
+            service.differs.update(changes=[], same=False)
+            with self.assertRaises(ToolError) as asked:
+                self.call(mcp, "extension_add", path=package)
+            self.assertIn("changes: none in what the two say of themselves", str(asked.exception))
+            added = self.call(mcp, "extension_add", path=package, replace=True)
+            self.assertEqual(added["package"], {"file": package, "replaced": "C:/w/extensions/.removed/voice-20261111-120000"})
+            self.assertIn("approval_note", added)
+            self.assertEqual(service.added, [(package,)] * 4 + [(package, True)])
+
+    def test_the_summary(self):
+        for service, mcp in self.both():
+            self.assertEqual(self.call(mcp, "extension_summary", id="voice"), SUMMARY)
+            self.assertEqual(self.call(mcp, "extension_summary", path="C:/down/voice-1.2.0.zip"), SUMMARY)
+            self.assertEqual(service.asked, [("summary", "voice", None), ("summary", None, "C:/down/voice-1.2.0.zip")])
+            service.refuse = ApiError(400, "bad_package", "voice-1.2.0.zip: no zip at all")
+            with self.assertRaises(ToolError) as refused:
+                self.call(mcp, "extension_summary", path="C:/down/voice-1.2.0.zip")
+            self.assertEqual(str(refused.exception), "Error executing tool extension_summary: bad_package: "
+                                                     "voice-1.2.0.zip: no zip at all")
 
     def test_new_extension_with_an_addon(self):
         """addon reaches the daemon; without one the Service is called as before it knew the word (three arguments)"""

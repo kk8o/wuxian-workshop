@@ -564,6 +564,16 @@ pre.diff .hunk { color: var(--sky); }
 .lx-approve { flex: none; display: grid; gap: 8px; margin: 10px 16px 0; padding: 10px 12px; border-radius: 6px; font-size: 12.5px;
   border: 1px solid var(--gold-d); background: var(--gold-soft); }
 .lx-approve-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* the summary: its rows are cloned into a dl.kv, the wrapper stays out of the grid */
+.lx-sum-row { display: contents; }
+.lx-risk { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); line-height: 1.6; color: var(--fg); }
+.lx-packed { flex: none; display: grid; gap: 8px; margin: 6px 16px 0; padding: 10px 12px; border-radius: 6px; font-size: 12.5px;
+  background: var(--field); border: 1px solid var(--line); }
+.lx-packed p { margin: 0; line-height: 1.6; }
+.lx-packed .lx-risk { color: var(--gold-l); }
+.lx-replace p { margin: 10px 0 0; line-height: 1.6; }
+.lx-replace .xp-h { margin-top: 16px; }
+.lx-replace .row.end { margin-top: 14px; }
 .lx-approve-head .grow { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .lx-approve-head b { font-weight: 600; color: var(--gold-l); }
 .lx-cmd { display: block; min-width: 0; padding: 4px 8px; border-radius: 4px; background: var(--field); border: 1px solid var(--line);

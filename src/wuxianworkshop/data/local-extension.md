@@ -131,7 +131,10 @@ workshop waits 1, 5, 30, then 120 seconds between tries); when the workshop exit
 
 An extension is a command on the player's computer, so the player decides whether it runs. The first time an
 extension would run, its calls answer `needs_approval` until the player clicks 批准运行 (Approve) on its card in the
-workshop App (Extensions page), which shows the command. Tell the player, then go on. When the command changes (the
+workshop App (Extensions page). The card shows the extension's summary (`extension_summary`: who it says wrote it,
+the command, what starts with the workshop, the variables handed to it, its game addons and what they need) and one
+sentence on what approving means; 复制给 Agent 审阅 copies a request the player can give an agent, which then reads
+the extension for them (`guide {"topic": "review"}`). Tell the player, then go on. When the command changes (the
 folder, or the manifest's `run`, `python`, `env`, `pass` or the names in `addons`), the player is asked again;
 changes to the code alone do not ask.
 
@@ -309,19 +312,25 @@ A package is an extension's folder as one `.zip`: how it gets to another player 
 
 - Make one: `extension_pack {"id": "<id>"}` (`wuxian ext pack <id> [--to <folder or .zip>]`), after
   `extension_check` and with the manifest's `version` set. It answers `{id, version, file, size, files, sha256,
-  skipped}`; `file` is `<id>-<version>.zip` in `%WUXIAN_HOME%\packages` unless `to` (a full path: a folder, or the
-  `.zip`) says otherwise. The same files give the same `sha256`.
+  skipped, summary, warnings}`; `file` is `<id>-<version>.zip` in `%WUXIAN_HOME%\packages` unless `to` (a full path:
+  a folder, or the `.zip`) says otherwise. The same files give the same `sha256`. `summary` is what whoever gets the
+  package will see before they approve it; `warnings` is what to look at before it goes out (the manifest's `env`
+  sets values, and they travel with it: a key belongs in `pass`, never in `env`). Tell the player all three.
 - Left out, at any depth: `.git .hg .svn __pycache__ *.pyc .venv* venv node_modules .pytest_cache .mypy_cache .idea
   .vscode logs cache *.log *.local.* .env* Thumbs.db .DS_Store`, links, and what the manifest's `pack.exclude` names
   (`models/*`, `*.wav`: a pattern with `/` is matched against the path relative to the folder, one without against
   every name on the way). `skipped` lists what stayed out: read it. A package is at most 64 MB, and 256 MB in 8,000
   files unpacked.
+- Look at one without adding it: `extension_summary {"path": "<the .zip>"}` (`wuxian ext summary <id or path>`):
+  the same facts the player sees before they approve, with the package's `sha256`. Nothing is unpacked.
 - Import one: `extension_add {"path": "<the .zip>"}` (`wuxian ext add`; the player: 添加, then 导入扩展包, on the
   Extensions page). It is checked before anything is unpacked, then becomes `<id>` in the extensions folder; the
   answer is its row with `package: {file, replaced}`. `bad_package` says what is wrong with it; `package_too_big`.
-- Update one: import a package of the same id. The old folder moves to the recycle area (`package.replaced`; see
-  Removing); whether it is on, and its options, stay. `extension_exists`: that id is a linked folder here: remove
-  the link first.
+- Update one: import a package of the same id. Nothing is replaced unasked: it fails with `needs_replace` and says
+  what differs between the one here and the one in the package (the App shows the player the two side by side, with
+  替换 and 取消). Tell the player the differences, and call again with `replace` true (`wuxian ext add --replace`)
+  only when they say so. Then the old folder moves to the recycle area (`package.replaced`; see Removing); whether
+  it is on, and its options, stay. `extension_exists`: that id is a linked folder here: remove the link first.
 - Every package asks the player, at every import and update (see Who lets it run): tell them, then go on.
 - Nothing is installed with a package: no `pip`, and no virtual environment comes along. It runs with the workshop's
   interpreter and the standard library, or brings what it needs in its folder; what the player has to set up

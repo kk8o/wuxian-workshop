@@ -232,6 +232,13 @@ def build_parser():
                                    "stays where it is), or a package (.zip: unpacked into the extensions folder, the "
                                    "player allows it in the App before it runs)")
     q.add_argument("path", help="a folder, a wuxian-extension.json or a package's .zip")
+    q.add_argument("--replace", action="store_true", help="a package takes the place of the version of its id that is "
+                                                          "here (without it the two are compared and nothing changes)")
+    q = act.add_parser("summary", help="the facts of an extension before it is approved, shared or replaced: what it "
+                                       "brings into the game, what runs on this computer, what an agent reads")
+    q.add_argument("what", help="a registered extension's id, or a path: a package's .zip, an extension's folder, an "
+                                "addon folder in the game's AddOns")
+    q.add_argument("--json", action="store_true", help="print JSON")
     q = act.add_parser("remove", help="take an extension off the registry (stopped first): a linked folder stays, one "
                                       "in the extensions folder moves to its .removed; the game addons it installed "
                                       "are deleted")
@@ -569,6 +576,19 @@ def events_once(client, args):
 
 KIT = "WuxianKit"
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}$")
+EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}$")          # a local extension's id (local/manifest.py ID)
+
+
+def summary_lines(s):
+    """an extension's summary as lines of text (local/summary.py lines)"""
+    from ..local import summary
+    return summary.lines(s)
+
+
+def summary_changed(changes):
+    """what differs between two summaries as lines of text (local/summary.py changed)"""
+    from ..local import summary
+    return summary.changed(changes)
 RETRY = 5.0                 # seconds between tries after a failure (the game away, the daemon gone, a call that failed)
 clock, sleep, wall = time.monotonic, time.sleep, time.time      # tests replace them
 
@@ -1146,7 +1166,25 @@ def cmd_ext(client, args):
         print(home)
         return 0
     if a == "add":
-        res = client.extension_add(str(Path(args.path).resolve()))
+        path = str(Path(args.path).resolve())
+        try:
+            res = client.extension_add(path, True) if args.replace else client.extension_add(path)
+        except ApiError as e:
+            if e.code != "needs_replace":
+                raise
+            old, new = (e.extra.get(k) if isinstance(e.extra.get(k), dict) else {} for k in ("old", "new"))
+            print(f"{new.get('id') or 'it'} is here already" + (f" (version {old['version']})" if old.get("version") else "")
+                  + f": the package is version {new.get('version') or '?'}. Nothing was changed.")
+            if e.extra.get("same") is True:
+                print("    it is the very package the one here was imported from")
+            changes = e.extra.get("changes")
+            for line in summary_changed(changes) if isinstance(changes, list) else ():
+                print(f"    {line}")
+            if isinstance(changes, list) and not changes and e.extra.get("same") is not True:
+                print("    the two say the same of themselves; their files may differ")
+            print("to replace it (the version here is kept in the extensions folder's .removed, and the player allows "
+                  "the new one in the App): wuxian ext add --replace <the .zip>")
+            return 1
         package = res.get("package") if isinstance(res.get("package"), dict) else None
         print_ext(res, "installed: " if package else "registered: ")     # a package's row says the player allows it
         if package and package.get("replaced"):
@@ -1182,6 +1220,17 @@ def cmd_ext(client, args):
         if not res.get("addons"):
             print(f"{res.get('id', args.id)}: no game addons to install")
         return 0
+    if a == "summary":
+        if EXT_ID.fullmatch(args.what) and not Path(args.what).exists():
+            res = client.extension_summary(id=args.what)
+        else:
+            res = client.extension_summary(path=str(Path(args.what).resolve()))
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0
+        for line in summary_lines(res):
+            print(line)
+        return 0
     if a == "pack":
         res = client.extension_pack(args.id, str(Path(args.to).resolve()) if args.to else None)
         if args.json:
@@ -1196,6 +1245,8 @@ def cmd_ext(client, args):
                  f"sha256 {res['sha256']}" if res.get("sha256") else None]
         if any(facts):
             print("    " + ", ".join(f for f in facts if f))
+        for w in res.get("warnings") if isinstance(res.get("warnings"), list) else ():
+            print(f"    warning: {w}")
         return 0
     if a == "stop":
         res = client.extension_stop(args.id)

@@ -185,24 +185,45 @@ class Endpoints(unittest.TestCase):
         d = self.client.get("/api/extensions", headers=AUTH).json()
         self.assertEqual(d["catalog"]["error"], "")
         rows = {a["id"]: a for a in d["addons"]}
-        self.assertEqual((rows["wuxiankit"]["state"], rows["wuxiankit"]["installed"], rows["raidnotes"]["state"]),
+        self.assertEqual((rows["wuxiankit"]["state"], rows["wuxiankit"]["installed"], rows["wuxiankit-atlas"]["state"]),
                          ("update", "0.2.0", "available"))
         self.assertEqual(rows["wuxiankit"]["extensions"][0]["title"], {"zh": "调校", "en": "Tune"})
-        self.assertEqual((rows["wuxiankit-eui"]["parent"], rows["wuxiankit-eui"]["missing"]), ("wuxiankit", []))
+        self.assertEqual((rows["wuxiankit-guides"]["state"], rows["wuxiankit-guides"]["missing"]), ("current", []))
+        self.assertEqual(rows["wuxiankit-atlas"]["missing"], ["AtlasData"])
+        self.assertFalse(any("parent" in a for a in d["addons"]))                # none hangs under another
         self.assertEqual([s["title"]["zh"] for s in rows["wuxiankit"]["skills"]], ["写一个扩展", "调一套设置", "分步讲解界面"])
         r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit"}, headers=AUTH).json()
         self.assertEqual((r["result"]["restart"], r["addon"]["state"]), (False, "current"))
-        r = self.client.post("/api/extensions", json={"action": "install", "id": "raidnotes"}, headers=AUTH).json()
-        self.assertTrue(r["result"]["restart"])                                  # new: the game starts again
-        r = self.client.post("/api/extensions", json={"action": "remove", "id": "raidnotes"}, headers=AUTH).json()
+        r = self.client.post("/api/extensions", json={"action": "remove", "id": "wuxiankit-guides"}, headers=AUTH).json()
         self.assertEqual((r["result"]["removed"], r["addon"]["state"]), (True, "available"))
+        r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit-guides"}, headers=AUTH).json()
+        self.assertTrue(r["result"]["restart"])                                  # new: the game starts again
         self.assertEqual(self.client.post("/api/extensions", json={"action": "install", "id": "nope"}, headers=AUTH).status_code, 404)
         self.assertEqual(self.client.post("/api/extensions", json={"action": "zap", "id": "x"}, headers=AUTH).status_code, 400)
         r = self.client.post("/api/extensions", json={"action": "remove", "id": "wuxiankit"}, headers=AUTH).json()
         rows = {a["id"]: a for a in self.client.get("/api/extensions", headers=AUTH).json()["addons"]}
-        self.assertEqual(rows["wuxiankit-eui"]["missing"], ["WuxianKit"])            # its parent went: as the service says
-        r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit-eui"}, headers=AUTH)
+        self.assertEqual(rows["wuxiankit-guides"]["missing"], ["WuxianKit"])         # what it needs went: as the service says
+        r = self.client.post("/api/extensions", json={"action": "install", "id": "wuxiankit-atlas"}, headers=AUTH)
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (409, "needs_addons"))
+
+    def test_detected(self):
+        """summary.detected's shape: the addons in the game's AddOns that give WuxianKit an extension, the catalog's
+        and the local extensions' left out; one of WuxianKit's own, one whose needed addon is not there"""
+        d = self.client.get("/api/extensions", headers=AUTH).json()
+        rows = {s["id"]: s for s in d["detected"]}
+        self.assertEqual({i: s["official"] for i, s in rows.items()}, {"route": True, "layout": False, "tips": False})
+        for s in rows.values():
+            self.assertEqual(set(s), {"from", "id", "title", "version", "notes", "author", "homepage", "package", "where",
+                                      "risk", "game", "addons_dir", "local", "executables", "agent", "files", "size",
+                                      "official"})
+            self.assertEqual((s["from"], s["where"], s["risk"], s["local"], s["package"]), ("game", "game", "game", None, None))
+            self.assertEqual(s["game"][0]["path"], d["addons_dir"] + "\\" + s["game"][0]["folder"])
+        self.assertEqual(rows["layout"]["game"][0]["needs"], [{"addon": "EllesmereUI", "installed": True},
+                                                              {"addon": "LayoutLib", "installed": False}])
+        catalog = {a["folder"] for a in d["addons"]}
+        self.assertFalse(catalog & {s["game"][0]["folder"] for s in rows.values()})
+        self.fake.addons_known = False                                           # no game folder: nothing to read
+        self.assertEqual(self.client.get("/api/extensions", headers=AUTH).json()["detected"], [])
 
     def test_agent_access_shape(self):
         """Service.agent_access's fields, which the 扩展 page reads: the kit's state and folder, a custom extension"""
@@ -211,7 +232,8 @@ class Endpoints(unittest.TestCase):
         self.assertEqual((d["kit_state"], set(d["kit_addon"])), ("running", {"there", "version"}))
         custom = [e for e in d["kit"]["extensions"] if not e["builtin"]]
         self.assertEqual([(e["id"], e["addon"]) for e in custom],
-                         [("eui", "WuxianKit_EllesmereUI"), ("herald", "WuxianHeraldSkin"), ("tips", "WuxianTips")])
+                         [("guides", "WuxianKit_Guides"), ("route", "WuxianKit_Route"), ("herald", "WuxianHeraldSkin"),
+                          ("tips", "WuxianTips")])
 
     def test_check(self):
         """agent/lint.py's shape, which the 插件 page's 检查 reads"""

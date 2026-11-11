@@ -183,8 +183,13 @@ class DaemonClient:
     def local_extensions(self):
         return self.get("/api/local")
 
-    def extension_add(self, path):               # a folder, a manifest or a package (.zip); post(path=...) is the route
-        return self.request("POST", "/api/local/add", body=dict(path=path), timeout=PACK_WAIT)
+    def extension_add(self, path, replace=False):   # a folder, a manifest or a package (.zip); post(path=...) is the route
+        body = dict(path=path, replace=True) if replace else dict(path=path)    # replace: over the version there
+        return self.request("POST", "/api/local/add", body=body, timeout=PACK_WAIT)
+
+    def extension_summary(self, id=None, path=None):
+        body = {k: v for k, v in (("id", id), ("path", path)) if v is not None}
+        return self.request("POST", "/api/local/summary", body=body, timeout=PACK_WAIT)
 
     def extension_remove(self, id):
         return self.post("/api/local/remove", id=id, timeout=60)

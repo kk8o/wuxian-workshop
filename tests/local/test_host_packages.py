@@ -1,6 +1,7 @@
 """Packages and the game half of a local extension through the host (host.py with pack.py and gameside.py), with real
-processes of the fixture: a package installed and one installed over the version there, what a package never replaces,
-a bad package that leaves nothing, where pack writes, and the game addons: installed when asked, when the player allows
+processes of the fixture: a package installed and one installed over the version there (asked first: needs_replace),
+what a package never replaces, a bad package that leaves nothing, where pack writes and what its result says, the
+summaries the host gives (summary.py), and the game addons: installed when asked, when the player allows
 the extension and when it is loaded, taken out when it is removed, and how long a row's look at them is kept. The
 extensions' home folder, the game's AddOns folder and the history (WUXIAN_HOME) all lie in a temporary folder."""
 import json
@@ -17,6 +18,7 @@ from wuxianworkshop.local import host as H
 from wuxianworkshop.local import manifest as M
 from wuxianworkshop.local import pack as K
 from wuxianworkshop.local import process as P
+from wuxianworkshop.local import summary as S
 
 from .util import HostCase, gone, make_extension, until
 
@@ -128,7 +130,23 @@ class Installing(Case):
         pid = self.host.get("fx")["pid"]
         self.assertEqual(self.stands(), ["current"])
         newer = self.package(version="0.2.0", addon_version="1.3.0")
-        row = self.host.add(str(newer))
+        told = len(self.revisions)
+        e = self.err(409, "needs_replace", self.host.add, str(newer))           # asked first: nothing is touched
+        self.assertEqual((e.extra["old"]["version"], e.extra["new"]["version"], e.extra["same"]),
+                         ("0.1.0", "0.2.0", False))
+        self.assertEqual((e.extra["old"]["from"], e.extra["new"]["from"], e.extra["new"]["package"]["file"]),
+                         ("folder", "package", newer.name))
+        self.assertEqual(e.extra["changes"], [dict(field="version", old="0.1.0", new="0.2.0")])
+        self.assertIn("replace true only when the player says so", e.message)
+        self.assertEqual(e.body()["changes"], e.extra["changes"])
+        self.assertEqual((self.host.get("fx")["pid"], self.host.get("fx")["version"], self.host.entry("fx").get("approved")
+                          is not None, self.stands()), (pid, "0.1.0", True, ["current"]))
+        self.assertEqual(self.host.call_sync("fx.opts"), {"volume": 70})         # it still runs
+        self.assertFalse((self.home / HOME.INCOMING).exists())
+        self.assertFalse((self.home / HOME.REMOVED).exists())
+        self.assertEqual((len(self.revisions), self.said("replaced by another version")), (told, []))
+        self.err(409, "needs_replace", self.host.add, str(newer), replace="yes")      # true, nothing else
+        row = self.host.add(str(newer), replace=True)
         folder, kept = self.home / "fx", Path(row["package"]["replaced"])
         self.assertEqual(row["package"]["file"], str(newer))
         self.assertTrue(gone(pid))                               # the one that ran was stopped
@@ -148,8 +166,12 @@ class Installing(Case):
         self.host.approve("fx")                                  # allowed again: it runs with the options kept
         self.assertEqual(self.host.call_sync("fx.opts"), {"volume": 70})
         self.assertEqual(self.host.get("fx")["addons"], [dict(folder=NAME, version="1.3.0", state="current")])
+        self.assertEqual(self.host.entry("fx")["package"],       # what it was imported from stays on the entry
+                         dict(sha256=K._sha256(newer), file=newer.name))
+        e = self.err(409, "needs_replace", self.host.add, str(newer))                # the very package again
+        self.assertEqual((e.extra["same"], e.extra["changes"]), (True, []))
         self.host.set("fx", enabled=False)                       # one that is off stays off
-        row = self.host.add(str(self.package(version="0.3.0")))
+        row = self.host.add(str(self.package(version="0.3.0")), replace=True)
         self.assertEqual((row["version"], row["enabled"], row["approval"]), ("0.3.0", False, "needed"))
         self.assertEqual(self.host.entry("fx")["options"], {"volume": 70})
         self.assertEqual(len(os.listdir(self.home / HOME.REMOVED)), 2)
@@ -206,11 +228,19 @@ class Installing(Case):
         self.host.add(str(self.package()))
         newer = self.package(version="0.2.0")
         with mock.patch.object(HOME, "trash", side_effect=PermissionError(13, "in use")):
-            e = self.err(409, "folder_busy", self.host.add, str(newer))
+            e = self.err(409, "folder_busy", self.host.add, str(newer), replace=True)
         self.assertEqual(e.extra["path"], str(self.home / "fx"))
         self.assertEqual((self.ids(), self.host.get("fx")["version"]), (["fx"], "0.1.0"))   # the version there stays
         self.assertFalse((self.home / HOME.INCOMING).exists())
-        self.assertEqual(self.host.add(str(newer))["version"], "0.2.0")
+        self.assertEqual(self.host.add(str(newer), replace=True)["version"], "0.2.0")
+
+    def test_one_that_cannot_be_read_is_asked_about_all_the_same(self):
+        self.host.add(str(self.package()))
+        (self.home / "fx" / M.MANIFEST).write_text("{", encoding="utf-8")
+        e = self.err(409, "needs_replace", self.host.add, str(self.package(version="0.2.0")))
+        self.assertEqual((e.extra["old"], e.extra["changes"], e.extra["same"], e.extra["new"]["version"]),
+                         (None, None, None, "0.2.0"))
+        self.assertEqual(self.ids(), ["fx"])
 
 
 class Packing(Case):
@@ -218,7 +248,16 @@ class Packing(Case):
         _, folder = self.linked()
         res = self.host.pack("fx")
         default = self.root / "home" / H.PACKAGES / "fx-0.1.0.zip"               # <WUXIAN_HOME>\packages
-        self.assertEqual(sorted(res), ["file", "files", "id", "sha256", "size", "skipped", "unpacked", "version"])
+        self.assertEqual(sorted(res), ["file", "files", "id", "sha256", "size", "skipped", "summary", "unpacked",
+                                       "version", "warnings"])
+        s = res["summary"]                                       # what whoever gets it will see
+        self.assertEqual((s["from"], s["id"], s["version"], s["package"], s["files"], s["size"]),
+                         ("package", "fx", "0.1.0", dict(sha256=res["sha256"], file="fx-0.1.0.zip"), res["files"],
+                          res["unpacked"]))
+        self.assertEqual((s["risk"], s["local"]["env"], s["game"][0]["folder"]), ("local", ["FIXTURE_MODE"], NAME))
+        (warning,) = res["warnings"]                             # the fixture's manifest sets a variable's value
+        self.assertIn("env sets FIXTURE_MODE", warning)
+        self.assertIn("pass", warning)
         self.assertEqual((res["id"], res["version"], res["file"]), ("fx", "0.1.0", str(default)))
         self.assertEqual((K.read(default)["id"], default.stat().st_size), ("fx", res["size"]))
         self.assertEqual(len(self.said("packed as")), 1)
@@ -232,6 +271,66 @@ class Packing(Case):
         (folder / M.MANIFEST).write_text("{", encoding="utf-8")
         e = self.err(400, "bad_manifest", self.host.pack, "fx")
         self.assertTrue(e.extra["problems"])
+
+    def test_nothing_to_warn_of(self):
+        self.linked(env=None)
+        res = self.host.pack("fx")
+        self.assertEqual((res["warnings"], res["summary"]["local"]["env"]), ([], []))
+
+
+class Summaries(Case):
+    def test_of_a_registered_one(self):
+        _, folder = self.linked()
+        s = self.host.summary("fx")
+        self.assertEqual((s["from"], s["id"], s["package"], s["where"], s["risk"], s["addons_dir"]),
+                         ("folder", "fx", None, "both", "local", str(self.addons)))
+        self.assertEqual(s["game"][0]["path"], None)             # not in the game yet
+        self.host.install("fx")
+        s = self.host.summary("fx")
+        self.assertEqual(s["game"][0]["path"], str(self.addons / NAME))
+        self.assertEqual(self.host.summary(path=str(folder)), s)                     # by its folder, by its manifest
+        self.assertEqual(self.host.summary(path=str(folder / M.MANIFEST)), s)
+        self.game = None                                         # the game folder is not known
+        self.assertEqual((self.host.summary("fx")["addons_dir"], self.host.summary("fx")["game"][0]["path"]),
+                         (None, None))
+        self.err(404, "not_found", self.host.summary, "nobody")
+        (folder / M.MANIFEST).write_text("{", encoding="utf-8")
+        e = self.err(409, "bad_manifest", self.host.summary, "fx")
+        self.assertTrue(e.extra["problems"])
+
+    def test_of_a_package_nothing_is_installed(self):
+        zip_path = self.package()
+        s = self.host.summary(path=str(zip_path))
+        self.assertEqual((s["from"], s["id"], s["version"], s["package"]),
+                         ("package", "fx", "0.1.0", dict(sha256=K._sha256(zip_path), file=zip_path.name)))
+        self.nothing_left()
+        self.assertFalse((self.home / "fx").exists())
+        self.host.add(str(zip_path))                             # imported: the entry says what from
+        mine = self.host.summary("fx")
+        self.assertEqual((mine["from"], mine["package"]), ("folder", s["package"]))
+        self.assertIs(S.same(mine, s), True)
+        self.assertEqual(S.compare(mine, s), [])
+        out = self.root / "out"
+        (out / "junk.zip").write_bytes(b"no zip at all")
+        self.err(400, "bad_package", self.host.summary, path=str(out / "junk.zip"))
+        half = out / "half.zip"
+        with zipfile.ZipFile(half, "w") as z:
+            z.writestr(f"fx/{M.MANIFEST}", json.dumps({"id": "fx", "title": "half"}))
+        e = self.err(400, "bad_package", self.host.summary, path=str(half))
+        self.assertTrue(e.extra["problems"])
+        self.assertFalse((self.home / HOME.INCOMING).exists())
+
+    def test_of_an_addon_in_the_game(self):
+        put(self.addons / "Found", "Found.toc", "## Interface: 16001\n## Title: 找到的\n## Version: 0.3.1\n"
+                                                "## Dependencies: WuxianKit, Other\n## X-WuxianKit-Extension: found\n")
+        s = self.host.summary(path=str(self.addons / "Found"))
+        self.assertEqual((s["from"], s["id"], s["title"], s["game"][0]["path"], s["game"][0]["needs"]),
+                         ("game", "found", "找到的", str(self.addons / "Found"), [dict(addon="Other", installed=False)]))
+        put(self.addons / "Plain", "Plain.toc", toc("Plain"))    # no extension of WuxianKit's, and no extension folder
+        self.err(400, "bad_manifest", self.host.summary, path=str(self.addons / "Plain"))
+        self.err(404, "not_found", self.host.summary, path=str(self.addons / "Nothing"))
+        for bad in ("", "relative/path", 7):
+            self.err(400, "bad_request", self.host.summary, path=bad)
 
 
 class GameHalf(Case):
