@@ -830,7 +830,8 @@ def build_server(backend, name="wuxian"):
         addons) in the game's AddOns now. extension_load does the same before it starts one, and so does the player's
         approval. Answers {id, addons: [{folder, state: installed | current, was, version, kept}], restart, hint}:
         restart true means the game has to be restarted (a new addon, or new code files); else `load` {"target":
-        "<folder>"} takes the change. It never replaces an addon that is not this extension's (addon_exists). It
+        "<folder>"} takes the change. removed (only when there are some): the addon folders it installed before and
+        names no more, deleted from AddOns. It never replaces an addon that is not this extension's (addon_exists). It
         fails with needs_approval until the player has allowed the extension, with no_addons, no_game_folder,
         bad_addon."""
         return await call(backend.extension_install(id))
@@ -856,8 +857,9 @@ def build_server(backend, name="wuxian"):
         ["elite", "rareelite"]}, "call": "voice.play", "args": {"pool": "combat_elite"}, "cooldown": 30}}.
         hear: one entry <source>:<what> (a game source as an app hears it, or a local extension's: voice:said); when:
         dotted paths into the item, all must match (a list: any of its values); call: a see, keep or point capability;
-        item: the name of an argument that gets the whole item; cooldown: seconds (default 10, 0 none); owner: an app
-        id, its reactions go when it stops. At most 32; the same id again replaces it."""
+        item: the name of an argument that gets the whole item; cooldown: seconds (default 10, 0 none: it still calls
+        240 times a minute at most); owner: an app id, its reactions go when it stops. At most 32; the same id again
+        replaces it."""
         return await call(backend.reaction_set(spec))
 
     @mcp.tool(annotations=WRITES)

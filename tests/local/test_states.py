@@ -299,6 +299,43 @@ class Events(HostCase):
         self.assertTrue(until(lambda: self.events[-1][1]["data"] == {"text": "now"}))
         self.assertEqual(len(self.events), 101)
 
+    def test_too_large_and_too_many(self):
+        """an event's data has a size, and an extension's events a number: what goes over is dropped, and its output
+        says how many (a line every EVENT_SAID seconds at most)"""
+        self.add()
+        self.host.call_sync("fx.emit", {"text": "a"})
+        self.assertTrue(until(lambda: len(self.events) == 1))
+        proc = self.host.procs["fx"]
+
+        def said(words):
+            return sum(words in line for line in self.output())
+        self.host.deliver(proc, {"source": "said", "data": {"text": "x" * H.EVENT_MAX}})
+        self.assertEqual(len(self.events), 1)
+        self.assertTrue(until(lambda: said("1 event dropped: the data of one of said is more than 64 KB") == 1))
+        self.host.deliver(proc, {"source": "said", "data": {"text": "x" * (H.EVENT_MAX - 100)}})    # just under it
+        self.assertEqual(len(self.events), 2)
+        with mock.patch.object(H, "EVENT_RATE", 0.0):                  # (no time passes)
+            proc.events[0] = H.EVENT_BURST - 2.0                       # (two were told, whatever came back since)
+            for n in range(H.EVENT_BURST + 50):
+                self.host.deliver(proc, {"source": "said", "data": {"n": n}})
+            self.assertEqual(len(self.events), H.EVENT_BURST)          # the two before, and what was left of the burst
+            self.assertEqual([item["data"]["n"] for _, item in self.events[2:]], list(range(H.EVENT_BURST - 2)))
+            self.assertEqual(proc.lost, 52)                            # counted, not said again yet
+            proc.lost_said -= H.EVENT_SAID
+            self.host.deliver(proc, {"source": "said", "data": {"n": -1}})
+            self.assertTrue(until(lambda: said("53 events dropped: it tells more than 200 at once and 0 a second "
+                                               "after") == 1))
+            self.assertEqual((proc.lost, len(self.events)), (0, H.EVENT_BURST))
+        proc.events[1] -= 1.0                                          # a second later it may tell some again
+        self.host.deliver(proc, {"source": "said", "data": {"n": "later"}})
+        self.assertEqual(self.events[-1][1]["data"], {"n": "later"})
+        self.host.deliver(proc, {"source": "said", "data": {"text": "\ud800"}})
+        self.assertEqual((proc.lost, len(self.events)), (1, H.EVENT_BURST + 1))
+        self.host.stop("fx")                                           # the next run starts with a bucket of its own
+        self.host.call_sync("fx.emit", {"text": "b"})
+        self.assertTrue(until(lambda: self.events[-1][1]["data"] == {"text": "b"}))
+        self.assertIsNot(self.host.procs["fx"], proc)
+
 
 class Describe(HostCase):
     def test_describe(self):

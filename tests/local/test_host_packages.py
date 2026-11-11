@@ -6,6 +6,7 @@ the extension and when it is loaded, taken out when it is removed, and how long 
 extensions' home folder, the game's AddOns folder and the history (WUXIAN_HOME) all lie in a temporary folder."""
 import json
 import os
+import shutil
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -562,7 +563,10 @@ class GameHalf(Case):
         self.linked("c", addons=("WuxianC",))                    # the game folder is not known: it stays there
         self.host.install("c")
         self.game = None
-        self.assertEqual(self.host.remove("c")["addons"], [])
+        res = self.host.remove("c")
+        self.assertEqual(res["addons"], [])
+        self.assertEqual(res["hint"], "the game's AddOns folder is not known, so nothing was looked for there: if "
+                                      "WuxianC is in it, delete it there")
         self.assertTrue((self.addons / "WuxianC" / G.MARK).is_file())
         self.game = self.addons
         _, folder = self.linked("g", addons=("WuxianG",))        # a manifest that does not pass any more
@@ -582,6 +586,65 @@ class GameHalf(Case):
         self.assertEqual(res["addons"], busy)
         self.assertEqual(res["hint"], "WuxianE: still in the game's AddOns, the game holds its files: quit the game, "
                                       "then delete the folder there")
+
+    def test_what_it_names_no_more_goes(self):
+        """another version of the extension brings another addon: the one it installed before and names no more is
+        taken out of AddOns when the new one is installed (known by its mark; someone else's stays)"""
+        self.host.add(str(self.package(addons=("WuxianOld",))))
+        self.host.approve("fx")
+        self.assertTrue(until(lambda: self.host.entry("fx")["described"] is not None))
+        self.assertEqual(self.mark("WuxianOld")["extension"], "fx")
+        theirs = put(self.addons / "Plain", "theirs.lua", "-- not ours\n")
+        shutil.rmtree(self.root / "work" / "fx")
+        self.host.add(str(self.package(version="0.2.0", addons=("WuxianNew",))), replace=True)
+        self.assertTrue((self.addons / "WuxianOld").is_dir())    # nothing goes before the player allows the new one
+        got = self.host.approve("fx")["installed"]
+        self.assertEqual((got["ok"], [a["folder"] for a in got["addons"]], got["removed"]),
+                         (True, ["WuxianNew"], ["WuxianOld"]))
+        self.assertIn("WuxianNew: new in the game's AddOns", got["hint"])
+        self.assertIn("WuxianOld: no longer one of its addons, deleted from the game's AddOns", got["hint"])
+        self.assertEqual(sorted(p.name for p in self.addons.iterdir()), ["Plain", "WuxianNew"])
+        self.assertTrue(theirs.is_file())
+        self.assertEqual(len(self.said("no longer one of its addons")), 1)
+        again = self.host.install("fx")                          # nothing more to take out
+        self.assertNotIn("removed", again)
+        self.assertEqual(len(self.said("no longer one of its addons")), 1)
+        res = self.host.remove("fx")                             # and a removal takes what it names now
+        self.assertEqual([(a["folder"], a["removed"]) for a in res["addons"]], [("WuxianNew", True)])
+
+    def test_a_removal_takes_what_carries_its_mark(self):
+        """an addon of the extension that its manifest names no more and that is still in AddOns (the game held it
+        when the new version was installed) goes with the removal"""
+        _, folder = self.linked(addons=(NAME, "WuxianTwo"))
+        self.host.install("fx")
+        manifest = json.loads((folder / M.MANIFEST).read_text(encoding="utf-8"))
+        manifest["addons"] = [NAME]
+        (folder / M.MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+        res = self.host.remove("fx")
+        self.assertEqual([(a["folder"], a["removed"]) for a in res["addons"]], [(NAME, True), ("WuxianTwo", True)])
+        self.assertEqual(list(self.addons.iterdir()), [])
+
+    def test_a_folder_deleted_from_the_extensions_folder(self):
+        """the player deletes an extension's folder in the extensions folder: at the next look it is taken off the
+        registry, and the game addons it installed go out of AddOns with it (nothing else would take them out)"""
+        self.host.add(str(self.package()))
+        self.host.approve("fx")
+        self.assertTrue(until(lambda: self.host.entry("fx")["described"] is not None))
+        self.host.stop("fx", quiet=True)
+        self.assertTrue(until(lambda: shutil.rmtree(self.home / "fx", ignore_errors=True)
+                              or not (self.home / "fx").exists()))
+        theirs = put(self.addons / "Plain", "theirs.lua", "-- not ours\n")
+        self.assertTrue(self.host.discover(force=True))
+        self.assertEqual(self.ids(), [])
+        self.assertEqual(sorted(p.name for p in self.addons.iterdir()), ["Plain"])
+        self.assertTrue(theirs.is_file())
+        self.assertEqual(len(self.said("deleted from AddOns")), 1)
+        self.game = None                                         # no game folder known: the look goes on all the same
+        self.host.add(str(self.package("gx", addons=("WuxianGx",))))
+        shutil.rmtree(self.home / "gx")
+        self.assertTrue(self.host.discover(force=True))
+        self.assertEqual(self.ids(), [])
+        self.game = self.addons
 
     def test_the_look_is_kept(self):
         _, folder = self.linked()

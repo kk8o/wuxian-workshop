@@ -1025,10 +1025,10 @@
                           </select>
                         </template>
                         <template x-if="o.kind === 'number'">
-                          <span class="row tight"><input class="input tiny" type="number" :min="o.min" :max="o.max" :step="o.step || 'any'" :value="lxValue(o)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)"><span class="muted" x-show="o.unit" x-text="o.unit"></span></span>
+                          <span class="row tight"><input class="input tiny" type="number" :min="o.min" :max="o.max" :step="o.step || 'any'" :value="lxShown(o, $el)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)"><span class="muted" x-show="o.unit" x-text="o.unit"></span></span>
                         </template>
                         <template x-if="o.kind === 'text'">
-                          <input class="input" :value="lxValue(o) == null ? '' : lxValue(o)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)">
+                          <input class="input" :value="lxShown(o, $el)" :disabled="lx.busy !== ''" @change="lxSet(lxCur, o, $event.target.value)">
                         </template>
                         <span class="small muted" x-show="o.hint" x-text="loc(o.hint)"></span>
                       </div>

@@ -36,6 +36,8 @@
                | install <id> | dir | logs <id> [-f]   local extensions (on this computer), their packages, game addons
     wuxian wk <capability> ['<json args>']    call a capability: a local extension's, or WuxianKit's in the game
     wuxian reaction list | set '<json>' | clear [--id X] [--owner A]   reactions: an item heard calls a capability
+    (a JSON argument can also be @<file>, read from that file, or -, read from the input: Windows PowerShell drops
+    the double quotes of an argument)
     wuxian api <words> | --get NAME | --manual [TOPIC]   this client's API manual (built in; no daemon needed)
     wuxian quit                               stop the daemon
     wuxian mcp-config [claude|codex|cursor|trae-cn|trae|workbuddy|workbuddy-ai]   snippets that register the MCP server
@@ -53,6 +55,7 @@ agent.monitor): `wuxian companion --help` shows those options.
 import argparse
 import importlib
 import json
+import locale
 import re
 import sys
 import time
@@ -176,11 +179,11 @@ def build_parser():
     p = sub.add_parser("call", help="call a function an addon exposed with WoWBridge's Expose")
     p.add_argument("addon", help="the addon's folder name")
     p.add_argument("name", help="the name it exposed")
-    p.add_argument("args", nargs="?", help="""its arguments as JSON ('{"n": 2}')""")
+    p.add_argument("args", nargs="?", help="""its arguments as JSON ('{"n": 2}'; @<file> or - for the input)""")
     p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
     p = sub.add_parser("respond", help="answer an addon's question (WoWBridge's Request: an event with a request id)")
     p.add_argument("request", help="the request id the event carries (5974.3)")
-    p.add_argument("data", nargs="?", help="""the answer as JSON ('{"text": "..."}')""")
+    p.add_argument("data", nargs="?", help="""the answer as JSON ('{"text": "..."}'; @<file> or - for the input)""")
     p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
     p = sub.add_parser("addon-api", help="what addons expose (functions to call) and emit (event topics)")
     p.add_argument("addon", nargs="?", help="the addon (nothing: every addon with a WoWBridge handle)")
@@ -289,7 +292,7 @@ def build_parser():
     q.add_argument("--limit", type=int, default=200, help="at most this many lines (default 200)")
     p = sub.add_parser("wk", help="call a capability: a local extension's, or the game's WuxianKit's (see, keep, point)")
     p.add_argument("cap", help="its id, <extension>.<name>: voice.say, sense.bags")
-    p.add_argument("args", nargs="?", help="its arguments as a JSON object")
+    p.add_argument("args", nargs="?", help="its arguments as a JSON object (or @<file>, or - for the input)")
     p.add_argument("--timeout-ms", type=int, default=None, help="how long to wait for its answer (default: the time "
                                                                 "the capability declares, 30 seconds without one)")
     p = sub.add_parser("reaction", help="reactions: an item heard calls a capability, without the agent")
@@ -297,7 +300,7 @@ def build_parser():
     q = act.add_parser("list", help="the reactions set now")
     q.add_argument("--json", action="store_true", help="print JSON")
     q = act.add_parser("set", help="set one: '{\"hear\": \"game:combat\", \"call\": \"voice.play\", \"args\": {...}}'")
-    q.add_argument("spec", help="the reaction as a JSON object")
+    q.add_argument("spec", help="the reaction as a JSON object (or @<file>, or - for the input)")
     q = act.add_parser("clear", help="clear reactions: --id, --owner, or (neither) all")
     q.add_argument("--id")
     q.add_argument("--owner", help="an app id: the reactions it owns")
@@ -328,6 +331,40 @@ def build_parser():
 
 def say_error(text):
     print(f"error: {text}", file=sys.stderr, flush=True)
+
+
+def text_of(data):
+    """the text of a file's or the input's bytes: UTF-8 (with or without its mark), UTF-16 with its mark (what Windows
+    PowerShell's > writes), else this computer's own encoding (what its Set-Content writes)"""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode(locale.getpreferredencoding(False), errors="replace")
+
+
+def json_arg(text, name):
+    """a JSON argument of the command line (None: not given): the JSON itself, @<file> (that file's text) or - (the
+    input). Raises ValueError with what to say: what is wrong, and the two other ways (a shell that drops the double
+    quotes of an argument, as Windows PowerShell does, leaves no JSON)"""
+    if text is None:
+        return None
+    raw = text
+    if text == "-":
+        buffer = getattr(sys.stdin, "buffer", None)
+        raw = sys.stdin.read() if buffer is None else text_of(buffer.read())
+    elif text.startswith("@"):
+        try:
+            raw = text_of(Path(text[1:]).read_bytes())
+        except OSError as e:
+            raise ValueError(f"{name}: the file {text[1:]} cannot be read ({e.strerror or e})") from None
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        raise ValueError(f"{name}: not JSON ({e})" + ("" if raw is not text else
+                         ". Windows PowerShell drops the double quotes of an argument: write the JSON to a file and "
+                         "give @<file>, or pipe it in and give -")) from None
 
 
 def fmt_time(t):
@@ -883,9 +920,9 @@ def cmd_listen(client, args):
 
 def cmd_call(client, args):
     try:
-        call_args = json.loads(args.args) if args.args else None
+        call_args = json_arg(args.args or None, "args")
     except ValueError as e:
-        say_error(f"args: not JSON ({e})")
+        say_error(str(e))
         return 2
     res = client.call_exposed(args.addon, args.name, call_args, args.timeout_ms)
     print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
@@ -894,9 +931,9 @@ def cmd_call(client, args):
 
 def cmd_respond(client, args):
     try:
-        data = json.loads(args.data) if args.data else None
+        data = json_arg(args.data or None, "data")
     except ValueError as e:
-        say_error(f"data: not JSON ({e})")
+        say_error(str(e))
         return 2
     res = client.respond(args.request, data, args.timeout_ms)
     print(f"delivered to {res.get('addon')} ({res.get('topic')})"
@@ -1327,9 +1364,9 @@ def ext_logs(client, args):
 
 def cmd_wk(client, args):
     try:
-        call_args = json.loads(args.args) if args.args else None
+        call_args = json_arg(args.args or None, "args")
     except ValueError as e:
-        say_error(f"args: not JSON ({e})")
+        say_error(str(e))
         return 2
     res = client.local_call(args.cap, call_args, args.timeout_ms)
     print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
@@ -1360,9 +1397,9 @@ def cmd_reaction(client, args):
         return 0
     if a == "set":
         try:
-            spec = json.loads(args.spec)
+            spec = json_arg(args.spec, "spec")
         except ValueError as e:
-            say_error(f"spec: not JSON ({e})")
+            say_error(str(e))
             return 2
         print(reaction_line(client.reaction_set(spec)))
         return 0

@@ -29,8 +29,10 @@ without id and owner) is set while that app runs (app_started: owner the app, id
 it stops, with the reactions the agent set for that owner.
 
 Loops: a reaction whose call is not done is not fired again meanwhile; at most MAX_RUNNING calls of all reactions run
-at once (what is heard then is dropped, no cooldown spent); a call's caller is {"by": "workshop", "chain":
-["reaction:<id>"]}, so a capability that calls on (and makes an item that is heard again) ends at the chain's limit."""
+at once (what is heard then is dropped, no cooldown spent); a reaction calls MAX_PER_MINUTE times a minute at most
+(what it hears until that minute is over calls nothing, and its error says so: a cooldown of 0 and a source that tells
+without end, or its own call making what it hears); a call's caller is {"by": "workshop", "chain": ["reaction:<id>"]},
+so a capability that calls on (and makes an item that is heard again) ends at the chain's limit."""
 import asyncio
 import copy
 import inspect
@@ -41,6 +43,7 @@ import time
 MAX_REACTIONS = 32                              # the reactions the agent set (an app's own are not counted)
 MAX_APP_REACTIONS = 16                          # the reactions one app's manifest declares
 MAX_RUNNING = 16                                # calls of all reactions at once
+MAX_PER_MINUTE = 240                            # calls of one reaction within a minute
 DEFAULT_COOLDOWN = 10
 MAX_COOLDOWN = 86400
 MAX_WHEN = 8
@@ -198,14 +201,14 @@ class Reactions:
         return self._row(clean)
 
     def _store(self, clean, declared=None):
-        clean.update(fired=0, failed=0, last=None, error=None, declared=declared, running=False)
+        clean.update(fired=0, failed=0, last=None, error=None, declared=declared, running=False, minute=None, calls=0)
         self._rows.pop(clean["id"], None)        # a replaced one goes to the end, as a new one
         self._rows[clean["id"]] = clean
 
     def list(self) -> list:
         """the reactions, in the order they were set: rows {id, owner, hear, when, call, args, item, cooldown, note,
-        fired (calls made), failed (calls that failed), last (time of the last call), error (the last failure, or why
-        the game does not hear it)}"""
+        fired (calls made), failed (calls that failed), last (time of the last call), error (the last failure, why
+        the game does not hear it, or that it called too often and calls nothing for the rest of a minute)}"""
         return [self._row(r) for r in self._rows.values()]
 
     async def clear(self, id=None, owner=None) -> int:
@@ -265,7 +268,8 @@ class Reactions:
 
     async def item(self, item) -> None:
         """an item heard: each reaction that hears it, whose when holds and whose cooldown is over, calls its capability
-        (in the background: drain() waits for the calls)"""
+        (in the background: drain() waits for the calls); not while its last call runs, not more than MAX_PER_MINUTE
+        times within a minute, and not while MAX_RUNNING calls run"""
         if not isinstance(item, dict) or not isinstance(item.get("source"), str):
             return
         now = self._now()
@@ -279,12 +283,21 @@ class Reactions:
                 continue
             if r["last"] is not None and r["cooldown"] and now - r["last"] < r["cooldown"]:
                 continue
+            if r["minute"] is None or now - r["minute"] >= 60:
+                r["minute"], r["calls"] = now, 0
+            if r["calls"] >= MAX_PER_MINUTE:     # (no cooldown, and what it hears comes without end): said once
+                if not (r["error"] or "").startswith("too often:"):
+                    r["error"] = (f"too often: it called {MAX_PER_MINUTE} times within a minute: what it hears until "
+                                  f"that minute is over calls nothing (give it a cooldown, or a narrower hear or when)")
+                    self._say(f"reaction {r['id']}: {r['error']}")
+                continue
             if len(self._tasks) >= MAX_RUNNING:  # too many at once (a loop, or slow capabilities): dropped
                 if not self._crowded:
                     self._crowded = True
                     self._say(f"reactions: {MAX_RUNNING} calls run at once: what is heard meanwhile calls nothing")
                 continue
             r["last"], r["fired"], r["running"] = now, r["fired"] + 1, True
+            r["calls"] += 1
             args = copy.deepcopy(r["args"] or {})
             if r["item"]:
                 args[r["item"]] = copy.deepcopy(item)

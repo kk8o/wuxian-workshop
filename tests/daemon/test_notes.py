@@ -218,10 +218,10 @@ class NotesAlone(unittest.TestCase):
         self.answers["facts.lookup"] = slow
         self.state["facts"] = "starting"
         self.assertEqual([self.note_of("guild", n)["reason"] for n in range(4)], ["starting"] * 4)
-        self.assertEqual(len(self.calls), 8)                             # neither is the extension failing
-        self.state["facts"] = "running"
+        self.assertEqual(len(self.calls), 5)                             # neither is the extension failing; and the
+        self.state["facts"] = "running"                                  # start is waited for once, not by every wake
         self.assertEqual([self.note_of("guild", n)["reason"] for n in range(4)], ["timeout"] * 3 + ["paused"])
-        self.assertEqual(len(self.calls), 11)
+        self.assertEqual(len(self.calls), 8)
 
     def test_forgiven_when_it_was_loaded_or_turned_on(self):
         async def boom(args):

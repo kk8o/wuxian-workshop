@@ -493,6 +493,23 @@ class Remove(Case):
                           dict(folder=NAME, removed=True, kept=mock.ANY, why=None)])
         self.assertTrue((self.addons / "Plain" / "theirs.lua").is_file())
 
+    def test_marked(self):
+        """what an extension installed is known by its mark, whatever its manifest names now"""
+        self.addon()
+        self.addon("Two", version="2.0")
+        self.install([NAME, "Two"])
+        self.theirs("Plain")
+        self.theirs("Others", mark={"extension": "other", "digest": "x", "version": "1"})
+        self.theirs("Broken", mark=b"{")
+        put(self.addons, "AFile", b"a file")
+        put(self.addons / ".Hidden.wuxian-old", G.MARK, json.dumps({"extension": "voice"}).encode("utf-8"))
+        self.assertEqual(G.marked(self.addons, "voice"), sorted([NAME, "Two"]))
+        self.assertEqual(G.marked(self.addons, "other"), ["Others"])
+        self.assertEqual(G.marked(self.addons, "nobody"), [])
+        self.assertEqual(G.marked(self.addons, None), [])
+        self.assertEqual(G.marked(None, "voice"), [])
+        self.assertEqual(G.marked(self.root / "nowhere", "voice"), [])
+
     def test_no_game_folder(self):
         self.assertEqual(G.remove([NAME, "Two"], None, "voice"),
                          [dict(folder=NAME, removed=False, kept=None, why="no_game_folder"),

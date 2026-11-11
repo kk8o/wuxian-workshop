@@ -70,7 +70,7 @@ while app.ended is None:
 print("应用停了：", app.ended)                        # player、left、expired、forgotten……
 ```
 
-`app` 不会因为无限工坊没开、游戏没连上而抛异常：它按 1、2、5、10 秒退避重试，`app.state` 说明在等什么。玩家停了应用（`/wk` 的应用页、`stop` 指令），`app.ended` 就是原因，循环结束。程序退出时 `app.close(stop=True)` 顺便在游戏里停掉它；`close()` 只是不再听，应用到租期（`lease`）自己停。
+`app` 不会因为无限工坊没开、游戏没连上而抛异常：它按 1、2、5、10 秒退避重试，`app.state` 说明在等什么。玩家停了应用（`/wk` 窗口里的应用卡片、`stop` 指令），`app.ended` 就是原因，循环结束。程序退出时 `app.close(stop=True)` 顺便在游戏里停掉它；`close()` 只是不再听，应用到租期（`lease`）自己停。
 
 陪玩做成本机扩展时不用自己听：应用写进清单的 `apps`，反应快的事交给清单里的反射（`reactions`）和绑定了能力的控制（`controls` 的 `call`），工坊在应用运行期间替它做。见下一节和 `extension_guide`。
 

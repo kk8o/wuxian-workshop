@@ -527,7 +527,8 @@ Workshop to extension:
 
 Extension to workshop:
 
-- notification `event {source: "<name>", data: {...}}`: an item of a source.
+- notification `event {source: "<name>", data: {...}}`: an item of a source. Its data is 64 KB at most, and the
+  workshop passes on 200 at once and 50 a second after: more are dropped (the extension's output says how many).
 - request `call {cap: "<capability id>", args, chain?}` -> its result or an error: another capability, Read, Store
   and Guide only. Use your own ids; the answer comes on stdin like the requests. `chain`: when the call is made for a
   call being served, that call's `caller.chain`, unchanged. The workshop refuses a chain of more than 4 hops with

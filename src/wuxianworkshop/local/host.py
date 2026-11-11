@@ -50,7 +50,8 @@ Where an extension is, is one field, its state (self.runs[id], changed only by t
 and the row says since when (since, epoch seconds) and why.
 
 The extension tells event {source, data} (an item {source: <id>, kind: <id>.<source>, data, time} for on_event; the
-first HELD_EVENTS it tells before it has answered initialize are kept until then, more are dropped)
+first HELD_EVENTS it tells before it has answered initialize are kept until then, more are dropped; one whose data is
+more than EVENT_MAX bytes, and those over EVENT_BURST at once and EVENT_RATE a second after, are dropped too)
 and asks call {cap, args} (on_call: any capability, the game's or this computer's; the daemon allows see, keep and point).
 
 Any thread may call the host; calls answer with concurrent.futures.Future. Every name this module had before it was
@@ -101,6 +102,9 @@ GAME_STATES = ("unknown", "absent", "offline", "restart", "missing", "disabled",
 PLAYER_ACTIONS = ("approve", "start_game", "restart_game", "enable_addon", "turn_on")   # a row's player.action
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
+EVENT_MAX = 64 * 1024                 # bytes of one event's data (as JSON) at most: a larger one is dropped
+EVENT_BURST, EVENT_RATE = 200, 50.0   # events of one extension passed on at once, and a second after that; more: dropped
+EVENT_SAID = 10.0                     # seconds between two lines of its output about dropped events at least
 QUIET_CODES = ("stopping", "stopped", "needs_approval", "not_found", "off")   # a start that ended so did not fail
 DISCOVER_EVERY = 2.0                  # seconds between two looks at the extensions' home folder at least (discover)
 
@@ -1077,8 +1081,9 @@ class Host:
         (409) when it cannot be moved now: then it is still registered, and stopped. Its game addons go out of the
         game's AddOns then (take_addons: only folders with its mark, a version of each kept in the history): addons
         [{folder, removed, kept, why}] of those found there ([] when it has none, none is there or the game folder
-        is not known; why "foreign": not this extension's, left; "busy": the game holds it, left, and the answer's
-        hint says what to do). What it kept in its data folder stays (the folder is not touched here)"""
+        is not known: then the answer's hint names the folders that may still be there; why "foreign": not this
+        extension's, left; "busy": the game holds it, left, and the answer's hint says what to do). What it kept in
+        its data folder stays (the folder is not touched here)"""
         e = self.entry(eid)
         home = self.origin(e) == "home"
         names = self.addon_names(e["path"])            # (read while the folder is there)
@@ -1104,6 +1109,10 @@ class Host:
         if busy:
             out["hint"] = (f"{', '.join(busy)}: still in the game's AddOns, the game holds its files: quit the game, "
                            f"then delete the folder{'s' if len(busy) > 1 else ''} there")
+        elif names and not out["addons"] and self.game_addons() is None:
+            out["hint"] = (f"the game's AddOns folder is not known, so nothing was looked for there: if "
+                           f"{', '.join(names)} {'is' if len(names) == 1 else 'are'} in it, delete "
+                           f"{'it' if len(names) == 1 else 'them'} there")
         return out
 
     # --- the game half (gameside.py)
@@ -1123,21 +1132,46 @@ class Host:
 
     def put_addons(self, e, m):
         """the game addons of a manifest put into the game's AddOns (gameside.install: one that is current stays):
-        {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}. GameSideError as
-        gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not under the lock"""
+        {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}, and, only when there
+        are some, removed: the folders it installed there before and names no more (stale_addons), taken out now.
+        GameSideError as gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not
+        under the lock"""
         listed = self.listed()
         with self.game_lock:
             try:
-                res = G.install(e["path"], m["addons"], self.game_addons(), e["id"],
+                addons = self.game_addons()
+                res = G.install(e["path"], m["addons"], addons, e["id"],
                                 interface=self.client_interface(), listed=listed)
+                stale = self.stale_addons(e["id"], m["addons"], addons)
             finally:
                 self.forget_addons(e["id"])
         new = [f"{r['folder']} {r['version'] or ''}".strip() for r in res["addons"] if r["state"] == "installed"]
         if new:
             self.note(f"local extension {e['id']}: game addon{'s' if len(new) > 1 else ''} installed: {', '.join(new)}"
                       + (" (the game finds them when it starts again)" if res["restart"] else ""))
+        if stale:
+            self.note(f"local extension {e['id']}: no longer one of its addons, deleted from AddOns: {', '.join(stale)}")
+        if new or stale:
             self.changed()
-        return dict(addons=res["addons"], restart=bool(res["restart"]), hint=game_hint(res["addons"], res["restart"]))
+        out = dict(addons=res["addons"], restart=bool(res["restart"]), hint=game_hint(res["addons"], res["restart"]))
+        if stale:
+            out["removed"] = stale
+            out["hint"] = "; ".join(filter(None, [out["hint"], f"{', '.join(stale)}: no longer one of its addons, "
+                                                               f"deleted from the game's AddOns (a game that runs "
+                                                               f"has it until it starts again)"]))
+        return out
+
+    def stale_addons(self, eid, names, addons):
+        """(put_addons, under the game lock) the folders in AddOns with this extension's mark that its manifest names
+        no more (another version of it brought other addons): taken out, a version of each kept in the history;
+        the names of those that went. Nothing here fails: one the game holds stays, and goes with the next install"""
+        try:
+            now = {n.casefold() for n in names}
+            old = [n for n in G.marked(addons, eid) if n.casefold() not in now]
+            return [g["folder"] for g in G.remove(old, addons, eid) if g["removed"]] if old else []
+        except Exception as ex:
+            self.note(f"local extension {eid}: the addons it names no more could not be taken out of AddOns: {ex!r}")
+            return []
 
     def approved_addons(self, e, m):
         """(approve) the game addons of an extension the player just allowed are installed, when it has some and
@@ -1180,14 +1214,20 @@ class Host:
             return dict(addons=done, restart=restart, hint=game_hint(done, restart))
 
     def take_addons(self, eid, names):
-        """(remove) the extension's addon folders taken out of the game's AddOns (gameside.remove): the rows of those
-        that were there, [{folder, removed, kept, why}]; [] while the game folder is not known. Not under the lock"""
+        """(remove, and look: its folder in the extensions folder went) the extension's addon folders taken out of
+        the game's AddOns (gameside.remove): the ones named, and whatever else carries its mark there (an addon of
+        an earlier version of it); the rows of those that were there, [{folder, removed, kept, why}]; [] while the
+        game folder is not known. Not under the lock"""
         self.forget_addons(eid)
         addons = self.game_addons()
-        if not names or addons is None:
+        if addons is None:
             return []
         try:
             with self.game_lock:
+                named = {n.casefold() for n in names if isinstance(n, str)}
+                names = list(names) + [n for n in G.marked(addons, eid) if n.casefold() not in named]
+                if not names:
+                    return []
                 rows = G.remove(names, addons, eid)
         except Exception as ex:
             self.note(f"local extension {eid}: its game addons could not be taken out of AddOns: {ex!r}")
@@ -1263,7 +1303,8 @@ class Host:
         is registered when its manifest passes its check and nobody has its id ({enabled: true, ask: true}, not
         approved: the player allows it in the App; noted). One that does not pass, or whose id is taken, is left
         out (noted once, and again when the reason is another one). A registered extension of the home folder whose
-        folder is not there any more is stopped and taken off the registry (noted). True when the registry changed
+        folder is not there any more is stopped and taken off the registry, and the game addons it installed go out
+        of the game's AddOns (noted). True when the registry changed
         (saved, told: changed()).
 
         Called before a listing and before autostart; it looks at most once in DISCOVER_EVERY seconds (force: now).
@@ -1303,6 +1344,7 @@ class Host:
                 held = self.drop(e, gone=True)
             if held is not None:
                 self.forgotten(e, held, "; its folder in the extensions folder is gone")
+                self.take_addons(e["id"], [])          # what it installed in the game (by its mark) goes with it
                 changed = True
         for folder, name in folders:
             key = os.path.normcase(str(folder))
@@ -1701,16 +1743,48 @@ class Host:
         self.deliver(proc, params)
 
     def deliver(self, proc, params):
-        """an event of an extension that described itself: an item for on_event, when it is of one of its sources"""
+        """an event of an extension that described itself: an item for on_event, when it is of one of its sources.
+        Whatever hears it (a reaction, an app's wake, an agent that listens) pays for each one, so an extension that
+        tells too much is not passed on in full: an event whose data is more than EVENT_MAX bytes is dropped, and so
+        are those over EVENT_BURST at once and EVENT_RATE a second after (a bucket of its own for each process); its
+        output says how many (drop_event)"""
         name, data = params.get("source"), params.get("data")
         sources = proc.sources or []
         if not isinstance(name, str) or name not in sources:
             proc.output.write(f"-- {clock()} event from source {name!r} dropped: declare it (it declares: "
                               f"{', '.join(sources) or 'none'})")
             return
+        try:
+            size = len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        except (TypeError, ValueError, RecursionError):    # (half a surrogate pair, a nesting too deep)
+            size = None
+        if size is None or size > EVENT_MAX:
+            self.drop_event(proc, f"the data of one of {name} is " + ("not plain JSON" if size is None else
+                                                                      f"more than {EVENT_MAX // 1024} KB"))
+            return
+        now = time.monotonic()
+        with self.lock:                                    # (its reader thread, and release from its start)
+            left, at = proc.events or (float(EVENT_BURST), now)
+            left = min(float(EVENT_BURST), left + max(0.0, now - at) * EVENT_RATE)
+            passed = left >= 1.0
+            proc.events = [left - 1.0 if passed else left, now]
+        if not passed:
+            self.drop_event(proc, f"it tells more than {EVENT_BURST} at once and {EVENT_RATE:g} a second after")
+            return
         item = dict(source=proc.id, kind=f"{proc.id}.{name}", data=data, time=round(time.time(), 3))
         if self.on_event is not None:
             self.on_event(proc.id, item)
+
+    def drop_event(self, proc, why):
+        """(deliver) an event that is not passed on: counted, and its output says so every EVENT_SAID seconds at most,
+        with how many it was since the line before"""
+        now = time.monotonic()
+        with self.lock:
+            proc.lost += 1
+            if proc.lost_said is not None and now - proc.lost_said < EVENT_SAID:
+                return
+            n, proc.lost, proc.lost_said = proc.lost, 0, now
+        proc.output.write(f"-- {clock()} {n} event{'s' if n > 1 else ''} dropped: {why}")
 
     def release(self, proc):
         """(its start, once it is ready) the events kept for it go on, in the order it told them; from then on its

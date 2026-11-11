@@ -226,6 +226,61 @@ class Parser(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.cmd_wk(c, self.parse("wk", "voice.say", "{bad")[0]), 2)
 
+    def test_a_json_argument_from_a_file_or_the_input(self):
+        """Windows PowerShell drops the double quotes of an argument ({text: hi} arrives): the error says the two
+        other ways, @<file> and -; a file is read as UTF-8, as UTF-16 with its mark, or in this computer's encoding"""
+        asked = []
+
+        class Client:
+            def local_call(self, cap, args, timeout_ms):
+                asked.append(args)
+                return {"result": None}
+
+            def call_exposed(self, addon, name, args, timeout_ms):
+                asked.append(args)
+                return {"result": None}
+
+            def reaction_set(self, spec):
+                asked.append(spec)
+                return dict(spec, id="r1", fired=0)
+
+        def run(*argv, stdin=None):
+            ns, err = self.parse(*argv)[0], io.StringIO()
+            command = dict(wk=cli.cmd_wk, call=cli.cmd_call, reaction=cli.cmd_reaction)[ns.command]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), \
+                    mock.patch.object(cli.sys, "stdin", stdin if stdin is not None else io.StringIO("")):
+                return command(Client(), ns), err.getvalue().strip()
+
+        code, said = run("wk", "voice.say", "{text: hi}")
+        self.assertEqual(code, 2)
+        self.assertTrue(said.startswith("error: args: not JSON (") and "give @<file>, or pipe it in and give -" in said,
+                        said)
+        with tempfile.TemporaryDirectory() as d:
+            for n, data in enumerate(('{"text": "你好"}'.encode("utf-8"), '﻿{"text": "你好"}'.encode("utf-8"),
+                                      '﻿{"text": "你好"}'.encode("utf-16-le"))):
+                f = Path(d) / f"{n}.json"
+                f.write_bytes(data)
+                self.assertEqual(run("wk", "voice.say", f"@{f}"), (0, ""))
+            self.assertEqual(asked, [{"text": "你好"}] * 3)
+            code, said = run("wk", "voice.say", "@" + str(Path(d) / "none.json"))
+            self.assertEqual(code, 2)
+            self.assertIn("none.json cannot be read", said)
+            (Path(d) / "bad.json").write_text("{text: hi}", encoding="utf-8")
+            code, said = run("call", "Foo", "ping", "@" + str(Path(d) / "bad.json"))
+            self.assertEqual(code, 2)
+            self.assertTrue("args: not JSON" in said and "PowerShell" not in said, said)   # (the file is what is wrong)
+        del asked[:]
+        self.assertEqual(run("wk", "voice.say", "-", stdin=io.StringIO('{"text": "in"}')), (0, ""))
+        piped = mock.Mock(buffer=io.BytesIO('{"text": "管道"}'.encode("utf-8")))
+        self.assertEqual(run("call", "Foo", "ping", "-", stdin=piped), (0, ""))
+        self.assertEqual(run("reaction", "set", "-", stdin=io.StringIO('{"hear": "game:combat", "call": "voice.play"}')),
+                         (0, ""))
+        self.assertEqual(run("wk", "voice.say"), (0, ""))                              # none given: none
+        self.assertEqual(asked, [{"text": "in"}, {"text": "管道"}, {"hear": "game:combat", "call": "voice.play"}, None])
+        self.assertEqual(run("reaction", "set", "{hear: x}")[0], 2)
+        with mock.patch.object(cli.locale, "getpreferredencoding", return_value="gbk"):   # (Set-Content's file)
+            self.assertEqual(cli.text_of('{"text": "好"}'.encode("gbk")), '{"text": "好"}')
+
     def test_ext_logs_follow(self):
         """`wuxian ext logs -f`: the new lines as they come; a file moved aside said once, its new lines from the
         first"""

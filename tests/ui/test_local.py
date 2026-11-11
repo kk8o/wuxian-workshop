@@ -167,6 +167,12 @@ const posts = () => calls.filter((c) => c[1]).map((c) => [c[0], c[1]]);
   await st.lxSet(st.lxCur, opt('name'), '老王');
   out.set = { posts: posts(), badNumber, value: st.lxValue(opt('volume')), def: st.lxValue(opt('name')) === '老王',
               said: st.said[st.said.length - 1] };
+  const field = { value: '7' };                                 // a field of the form, and what is typed into it
+  out.shown = [st.lxShown(opt('volume'), field)];
+  document.activeElement = field;
+  out.shown.push(st.lxShown(opt('volume'), field));
+  document.activeElement = null;
+  out.shown.push(st.lxShown({ name: 'none' }, field), st.lxShown(opt('volume')));
   failSet = true;
   calls.length = 0;
   await st.lxSet(st.lxCur, opt('volume'), '120');
@@ -316,6 +322,9 @@ class LocalPart(unittest.TestCase):
                                       ["/api/local/set", {"id": "voice", "options": {"name": "老王"}}]])
         self.assertEqual(s["badNumber"], {"bad": True, "text": "「音量」需要数字"})
         self.assertEqual((s["value"], s["def"], s["said"]), (70, True, "已保存 称呼"))
+        self.assertEqual(self.out["shown"], [70, "7", "", 70])        # the value in force; with the focus, what is typed
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertEqual(len(re.findall(r':value="lxShown\(o, \$el\)"', html)), 2)   # the number field and the text
         f = self.out["setFailed"]
         self.assertEqual(f["note"], {"bad": True, "text": "保存设置失败：volume: at most 100"})
         self.assertTrue(f["reread"])                                  # the form shows the values in force again

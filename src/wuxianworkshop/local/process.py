@@ -305,6 +305,8 @@ class Proc(Wire):
         self.held, self.dropped = [], 0             # (the host's) its events before it is ready, and how many more
         self.pinging = False                        # (the host's) a ping waits for its answer
         self.sources = None                         # (the host's) the names of the sources it described
+        self.events = None                          # (the host's) [the events it may tell now, when that was counted]
+        self.lost, self.lost_said = 0, None         # (the host's) its events dropped since its output said so; when
         self.odd = set()                            # the streams that were said not to be UTF-8
         self.exit_code, self.ended = None, threading.Event()
         self.finished = threading.Event()           # ended, and the host has taken note (on_end returned)

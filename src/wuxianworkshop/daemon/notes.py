@@ -108,6 +108,7 @@ class Notes:
         self.lock = threading.Lock()      # the queues; an event is delivered under it (the order of a lane)
         self.queues = {}                  # app -> deque of what its lane holds (items); there while its runner runs
         self.failed = {}                  # ext -> the reason of its last note when it failed (said once in a row)
+        self.slow = set()                 # extensions a wake waited its timeout for while they started: no second wait
         self.breakers = {}                # (ext, app) -> [failures in a row, paused until (now()) or None]
         self.full = set()                 # apps whose lane overflowed (said once until it empties)
         self.closed = False
@@ -286,10 +287,17 @@ class Notes:
 
     async def one(self, app, w, wake):
         """one extension's note: its wake capability's result, or {error, reason}. Waits w["timeout"] (the call's own
-        timeout) and a little; then the call is cancelled, a start of the extension goes on"""
+        timeout) and a little; then the call is cancelled, a start of the extension goes on. An extension that was
+        still starting then is not waited for again while it starts (a start of a minute would hold every wake of the
+        app back by the timeout): its note is the error at once, until it has started or failed to"""
         ext, cap, timeout = w["ext"], w["call"], w["timeout"]
         if self.paused(ext, app):
             return error(f"{ext} failed {TRIP} times in a row for {app}: it is not called for {PAUSE:.0f} s", "paused")
+        if ext in self.slow:
+            if await self.starting(ext):
+                return self.failure(app, w, error(f"{ext} is still starting (it goes on: the next wake is quicker)",
+                                                  "starting"))
+            self.slow.discard(ext)
         caller = {"by": "workshop", "app": app, "chain": [f"wake:{app}"]}
         task = asyncio.ensure_future(self.call(cap, {"wake": wake}, int(timeout * 1000), caller))
         try:
@@ -302,6 +310,7 @@ class Notes:
             task.add_done_callback(_quiet)
             task.cancel()
             if await self.starting(ext):
+                self.slow.add(ext)
                 return self.failure(app, w, error(f"{ext} is still starting (it goes on: the next wake is quicker)",
                                                   "starting"))
             return self.failure(app, w, error(f"{cap} did not answer within {timeout:g} s", "timeout"))
@@ -366,6 +375,7 @@ class Notes:
         for key in [k for k in list(self.breakers) if k[0] == ext]:
             self.breakers.pop(key, None)
         self.failed.pop(ext, None)
+        self.slow.discard(ext)
 
     def close(self):
         """(the daemon stops) what the lanes still hold goes into the journal now, in order, each note an error; later

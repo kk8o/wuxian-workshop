@@ -1766,6 +1766,11 @@ function appState() {
       }
     },
     lxValue(o) { return o.value !== undefined && o.value !== null ? o.value : o.default; },
+    lxShown(o, el) {                           // what a field of the form shows: the value in force; while the field
+      if (el && document.activeElement === el) return el.value;   // has the focus, what is typed (the list is read
+      const v = this.lxValue(o);                                  // again every few seconds, and would take it back)
+      return v === undefined || v === null ? '' : v;
+    },
     lxChoice(o, raw) {                         // a <select>'s text back into the choice's own value (a number stays one)
       const c = (o.choices || []).find((x) => String(x.value) === String(raw));
       return c ? c.value : raw;

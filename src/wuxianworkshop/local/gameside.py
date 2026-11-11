@@ -292,6 +292,19 @@ def install(folder, names, addons, eid, interface=None, listed=None):
     return dict(addons=out, restart=restart)
 
 
+def marked(addons, eid):
+    """the names of the folders in AddOns that carry this extension's mark, sorted ([]: none, or no such folder): what
+    it installed there, whatever its manifest names now"""
+    if addons is None or not isinstance(eid, str):
+        return []
+    try:
+        names = sorted(p.name for p in Path(addons).iterdir())
+    except OSError:
+        return []
+    return [n for n in names if not n.startswith(".") and not _folder_problem(n)
+            and isinstance(_held(Path(addons) / n, eid), dict)]
+
+
 def remove(names, addons, eid):
     """the extension's addon folders taken out of AddOns, a version of each kept in the history first:
     [dict(folder, removed, kept, why)] in the names' order. Only a folder with this extension's mark goes; why says

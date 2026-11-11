@@ -5,7 +5,8 @@ reactions an app declares itself."""
 import asyncio
 import unittest
 
-from wuxianworkshop.local.reactions import MAX_APP_REACTIONS, MAX_REACTIONS, MAX_RUNNING, ReactionError, Reactions
+from wuxianworkshop.local.reactions import (MAX_APP_REACTIONS, MAX_PER_MINUTE, MAX_REACTIONS, MAX_RUNNING,
+                                            ReactionError, Reactions)
 
 KINDS = {"voice.play": "point", "voice.say": "point", "voice.prepare": "keep", "sense.bags": "see",
          "chat.send": "say", "tune.cvar.set": "do"}
@@ -328,6 +329,34 @@ class Loops(unittest.IsolatedAsyncioTestCase):
         await self.r.drain()
         self.assertEqual(self.calls, ["reaction:r1", "reaction:r1"])
         self.assertEqual(self.r.list()[0]["fired"], 2)
+
+    async def test_so_many_calls_a_minute(self):
+        """no cooldown, and what it hears comes without end: MAX_PER_MINUTE calls within a minute, then nothing until
+        the minute is over; its error says so, and the log once"""
+        self.gate.set()                                  # (each call is done at once)
+        await self.r.set({"hear": "game:combat", "call": "voice.play", "cooldown": 0})
+        await self.r.set({"hear": "game:aura", "call": "voice.say", "cooldown": 0})
+        for _ in range(MAX_PER_MINUTE + 30):
+            self.f.clock.t += 0.1
+            await self.r.item(combat())
+            await self.r.drain()
+        row = self.r.list()[0]
+        self.assertEqual((len(self.calls), row["fired"], row["failed"]), (MAX_PER_MINUTE, MAX_PER_MINUTE, 0))
+        self.assertTrue(row["error"].startswith(f"too often: it called {MAX_PER_MINUTE} times within a minute"), row)
+        self.assertEqual(set(row), set(self.r.list()[1]))                # (what it counts with is not in its row)
+        self.assertNotIn("calls", row)
+        self.assertEqual(len([n for n in self.f.notes if "reaction r1: too often:" in n]), 1, self.f.notes)
+        self.assertIsNone(self.r.list()[1]["error"])                     # the other one is not held back
+        self.f.clock.t += 60 - (MAX_PER_MINUTE + 30) * 0.1 + 0.1 - 0.2   # 0.1 s before the minute is over: still nothing
+        await self.r.item(combat())
+        await self.r.drain()
+        self.assertEqual(len(self.calls), MAX_PER_MINUTE)
+        self.f.clock.t += 0.2                                            # over: it calls again, the error is gone
+        await self.r.item(combat())
+        await self.r.drain()
+        row = self.r.list()[0]
+        self.assertEqual((len(self.calls), row["fired"], row["error"]), (MAX_PER_MINUTE + 1, MAX_PER_MINUTE + 1, None))
+        self.assertEqual(len([n for n in self.f.notes if "too often:" in n]), 1)
 
     async def test_at_most_16_calls_at_once(self):
         for _ in range(MAX_RUNNING + 2):
