@@ -746,7 +746,8 @@ class Host:
 
     def add(self, path, replace=False, seen=None):
         """registers an extension by its folder or its manifest (an absolute path): its row (the one there when the
-        folder is registered already, whatever its manifest says now). ApiError bad_manifest (with problems: an id
+        folder is registered already, whatever its manifest says now, with already True: this call registered
+        nothing, so whoever asked did not make it theirs). ApiError bad_manifest (with problems: an id
         one of WuxianKit's extensions has is one, taken_ids), extension_exists (another folder has its id). Started
         at once when its manifest says start "workshop". A package (a .zip that is no folder) is installed instead
         (add_package): its row with package {file, replaced}; replace: the player said it takes the place of the
@@ -766,7 +767,7 @@ class Host:
         with self.lock:
             same = next((e for e in self.load()["extensions"] if os.path.normcase(e["path"]) == key), None)
             if same is not None:
-                return self.row(same)
+                return dict(self.row(same), already=True)
         m, problems = M.check_manifest(folder, taken=self.taken_ids())
         if m is None:
             raise ApiError(400, "bad_manifest", str(M.ManifestError(problems)), problems=problems)
@@ -778,7 +779,8 @@ class Host:
     def add_package(self, zip_path, replace=False, seen=None):
         """installs a package (pack.py) into the extensions' home folder: read, unpacked beside its place
         (home.incoming) and its manifest checked there, then moved to <home>/<id>. Its row, with package {file: the
-        zip, replaced: where the folder it replaced is kept now (.removed), or None}.
+        zip, replaced: where the folder it replaced is kept now (.removed), or None}, and already True when one of
+        its id was here before (as add says it).
 
         No extension of its id yet: a new entry. One of its id in the home folder: nothing of it is touched unless
         `replace` is true. Without it the answer is needs_replace (409) with old and new (the two summaries,
@@ -841,7 +843,8 @@ class Host:
             except OSError:
                 pass
         self.forget_addons(eid)
-        return dict(self.get(eid), package=dict(file=str(zip_path), replaced=kept))
+        return dict(self.get(eid), package=dict(file=str(zip_path), replaced=kept),
+                    **(dict(already=True) if old is not None else {}))
 
     def needs_replace(self, eid, zip_path, new):
         """(add_package) the answer to a package whose id is here already and that nobody said replaces it: an

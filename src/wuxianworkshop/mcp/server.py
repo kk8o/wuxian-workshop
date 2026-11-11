@@ -713,9 +713,11 @@ def build_server(backend, name="wuxian"):
         not valid fails with its problems (a package: bad_package); an id another extension has is refused. Answers
         its row, a package's with package {file, replaced}. With approval_note, the player has to allow it before it
         runs: always after a package, new or replaced, whatever the player's setting. Its game addons are installed
-        when the player approves it."""
+        when the player approves it. already true: one of that id was registered before this call, so it is not
+        yours (extension_set: its options stay the player's)."""
         answer = await call(backend.extension_add(path, True) if replace is True else backend.extension_add(path))
-        presence.registered(answer.get("id") if isinstance(answer, dict) else None)
+        if isinstance(answer, dict) and answer.get("already") is not True:     # (what was there is not this session's)
+            presence.registered(answer.get("id"))
         return await noted(answer)
 
     @mcp.tool(annotations=WRITES)

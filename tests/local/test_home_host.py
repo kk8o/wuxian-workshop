@@ -248,7 +248,8 @@ class Discovery(HomeCase):
         for eid in ("fx", "seen"):
             row = self.host.get(eid)
             self.assertEqual((row["error"], row["command"] is not None), (None, True), row)
-        self.assertEqual(self.host.add(str(folder))["id"], "fx")                 # registered already: its row
+        again = self.host.add(str(folder))                                       # registered already: its row
+        self.assertEqual((again["id"], again["already"]), ("fx", True))
         self.assertFalse(self.look())
         self.assertEqual(self.ids(), ["fx", "seen"])
         res = self.host.check("fx")

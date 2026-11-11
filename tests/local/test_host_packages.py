@@ -100,7 +100,7 @@ class Installing(Case):
     def test_the_package_that_was_compared(self):
         """replace names the package the player compared (seen: new.package.sha256 of needs_replace): another file at
         that path by now is refused, and nothing is touched"""
-        self.host.add(str(self.package()))
+        self.assertNotIn("already", self.host.add(str(self.package())))             # a new one: whoever added it
         before = self.host.get("fx")["fingerprint"]
         newer = self.package(version="0.2.0")
         e = self.err(409, "needs_replace", self.host.add, str(newer))
@@ -119,7 +119,7 @@ class Installing(Case):
         e = self.err(409, "needs_replace", self.host.add, str(newer))               # compared as it is now
         self.assertEqual((e.extra["new"]["version"], e.extra["new"]["package"]["sha256"]), ("0.3.0", K._sha256(newer)))
         row = self.host.add(str(newer), replace=True, seen=e.extra["new"]["package"]["sha256"])
-        self.assertEqual((row["version"], row["approval"]), ("0.3.0", "needed"))
+        self.assertEqual((row["version"], row["approval"], row["already"]), ("0.3.0", "needed", True))
         self.assertNotEqual(row["fingerprint"], before)          # another package: another thing to say yes to
         self.assertEqual(self.host.summary("fx")["fingerprint"], row["fingerprint"])
 

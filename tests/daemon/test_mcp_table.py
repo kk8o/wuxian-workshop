@@ -504,6 +504,8 @@ class Service:
         return {"revision": len(self.rows), "extensions": list(self.rows.values())}
 
     async def extension_add(self, path):
+        if Path(path).name in self.rows:                                           # registered already: nothing new
+            return dict(self.rows[Path(path).name], already=True)
         added = self.rows[Path(path).name] = row(Path(path).name, approval="needed")
         return added
 
@@ -578,6 +580,8 @@ class Options(unittest.TestCase):
                 await one.call_tool("extension_remove", {"id": "mine"})
                 await two.call_tool("extension_add", {"path": "C:/ext/mine"})      # another of that id: not one's
                 out["after"] = await one.call_tool("extension_set", {"id": "mine", "options": {"volume": 2}})
+                out["again"] = await one.call_tool("extension_add", {"path": "C:/ext/players"})    # there already:
+                out["taken"] = await one.call_tool("extension_set", {"id": "players", "options": {"volume": 3}})
         asyncio.run(go())
         return service, out
 
@@ -592,6 +596,8 @@ class Options(unittest.TestCase):
         self.assertFalse(out["off"].is_error)                                      # on and off: anyone
         self.assertTrue(out["both"].is_error)                                      # options with it: not
         self.assertTrue(out["after"].is_error)
+        self.assertEqual((out["again"].is_error, out["again"].structured_content["already"]), (False, True))
+        self.assertIn("not_allowed: the options of players", text_of(out["taken"]))   # adding it did not make it one's
         self.assertEqual(service.sets, [("mine", None, {"volume": 1}), ("theirs", None, {"volume": 1}),
                                         ("players", False, None)])
 
@@ -1026,11 +1032,14 @@ class OverHttp(unittest.TestCase):
                                   client_info=Implementation(name="agent", version="1"), cache=None) as c:
                     tools = {t.name: t for t in (await c.list_tools()).tools}
                     added = await c.call_tool("extension_add", {"path": str(mine)})
-                    return tools, added, [await c.call_tool("extension_set", args) for args in (
+                    again = await c.call_tool("extension_add", {"path": str(theirs)})      # the player's, added again
+                    return tools, added, again, [await c.call_tool("extension_set", args) for args in (
                         {"id": "theirs", "options": {"volume": 70}}, {"id": "mine", "options": {"volume": 70}},
                         {"id": "theirs", "enabled": False})]
 
-        tools, added, (refused, own, off) = asyncio.run(go())
+        tools, added, again, (refused, own, off) = asyncio.run(go())
+        self.assertNotIn("already", added.structured_content)
+        self.assertEqual((again.structured_content["id"], again.structured_content["already"]), ("theirs", True))
         self.assertFalse(tools["extension_check"].annotations.read_only_hint)
         self.assertEqual(added.structured_content["id"], "mine")
         self.assertTrue(refused.is_error)
