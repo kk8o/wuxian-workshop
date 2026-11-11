@@ -17,6 +17,7 @@ Lua 查状态，对照这个客户端自己的 API 手册找到原因、改好�
 | --- | --- | --- |
 | 无限工坊 App | `src/wuxianworkshop/` | 本机服务（HTTP + MCP，只监听 127.0.0.1）、桌面窗口与托盘、命令行 `wuxian`、安装与自检 |
 | 开发组件 | `addon/` | 游戏里的两个普通插件：`!WuxianWorkshop` 收集所有插件的 Lua 报错，`WoWBridge` 与 App 通信、执行 Agent 送来的代码 |
+| 扩展 | `src/wuxianworkshop/local/`、`sdk/python/` | 扩展的登记、检查、批准与扩展包，本机扩展的进程与反射；Python SDK |
 | 你的 AI Agent | 你自己的 | 通过 MCP 调用 App：检查代码、热加载、在游戏里试、读日志与截图、查 API 手册 |
 
 App 和游戏之间的通道：
@@ -38,6 +39,21 @@ App 和游戏之间的通道：
 - **API 手册**：这个客户端自己的函数、事件、枚举与结构，加上规矩（taint、机密值、受保护函数）。
 - **游戏更新不影响开发组件**：按客户端当前的 Interface 号安装，游戏大版本更新后自动跟上。
 
+## 扩展
+
+说出一个想法，Agent 先查证能不能做，再在运行中的游戏里做成原型（0.9.13 起）。扩展是一个文件夹加一份清单
+`wuxian-extension.json`，按在哪里运行分三种，用同一套工具新建（`new_extension`）、载入（`extension_load`）和调试：
+
+- **游戏内**：带游戏插件（`addons/`），能力经扩展框架 [WuxianKit](https://github.com/kk8o/wuxian-kit) 交给 Agent。
+- **本机**：游戏里做不到的事（声音、读写文件、联网、本地模型）写成这台电脑上的一个进程，用 `sdk/python/` 的 Python SDK。
+- **游戏 · 本机**：两边各一半。
+
+扩展可以带应用（交给 AI 的一段会话，`wuxian listen <应用>` 接上），也可以设反射：听到某条消息直接调一个能力，不用叫醒 AI。
+「打包分享」生成扩展包（zip），对方在 App 的「扩展」页导入。导入的扩展包和新登记的本机扩展，运行前要玩家看过摘要（往游戏里装什么、
+在这台电脑上运行什么、Agent 读到什么）再批准，Agent 不能替玩家批准。
+
+案例、扩展包与下载：**https://wuxianwow.com/workshop/extensions**
+
 ## 从源码运行
 
 需要 Windows 10 / 11（64 位）、Python 3.14、WebView2 运行时，以及《魔兽世界：无限》客户端。
@@ -57,8 +73,10 @@ py -3.14 -m venv .venv
 
 ```
 src/wuxianworkshop/   App：core（帧格式、定位、解码、字体信箱）、transport（抓屏、链路协议）、agent（命令、检查、历史、探针）、
-                      daemon（本机服务）、mcp、cli、installer（安装与自检）、ui（窗口）
+                      daemon（本机服务）、mcp、cli、installer（安装与自检）、ui（窗口）、
+                      local（扩展：登记、检查、批准、扩展包、本机进程、反射）
 addon/                游戏里的开发组件：!WuxianWorkshop、WoWBridge
+sdk/python/           Python SDK（wuxiankit.py）：游戏外的程序听应用、调能力，写本机扩展
 tests/                单元测试；tests/support 有合成屏幕和用 Lua 5.1 模拟的 WoW 客户端
 scripts/              打包、发布、图标与数据包工具
 notes/                各版本的更新说明
@@ -89,4 +107,6 @@ notes/                各版本的更新说明
 Warcraft addons for the Chinese 1.60 "无限" client by itself: it checks the code before the game, hot-loads it into the
 running game, tries it and reads back the errors (with stacks), prints and screenshots. The program and the addon talk
 through a frame code drawn on the screen and a font mailbox — no memory reading, no injection, no synthetic input.
+From 0.9.13 the agent can also turn an idea into an extension: a folder with a manifest that runs in the game, on this
+PC (a process, with the Python SDK in `sdk/python/`) or both, shared as a pack the player approves before it runs.
 Windows only, MIT licensed. Website: https://wuxianwow.com/workshop
