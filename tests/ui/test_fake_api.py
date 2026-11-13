@@ -125,7 +125,7 @@ class Endpoints(unittest.TestCase):
 
     def test_settings(self):
         s = self.client.get("/api/settings", headers=AUTH).json()
-        self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "autostart", "language", "font_scale",
+        self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "language", "font_scale",
                                   "onboarded", "extension_approval"})
         self.assertEqual(s["extension_approval"], "ask")         # a local extension's command waits for the player
         self.assertIs(s["onboarded"], False)                     # the 开始 page opens first

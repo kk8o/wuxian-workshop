@@ -2774,7 +2774,7 @@ class Service:
         return data if isinstance(data, dict) else {}
 
     async def settings(self, update=None):
-        """GET: the settings; POST: change some (mode, capture, game_dir, autostart, language, font_scale: the page's size
+        """GET: the settings; POST: change some (mode, capture, game_dir, language, font_scale: the page's size
         in per cent, onboarded: the 开始 page's steps were done or put off, extension_approval: "ask" or "auto", who
         approves a local extension's command) and keep them. A change of
         mode also installs what that mode needs (developer: WoWBridge and its mailbox; player: removes them); the
@@ -2810,9 +2810,10 @@ class Service:
                 self.game_dir = update["game_dir"] or None
             if "extension_approval" in update:
                 self.extension_approval = update["extension_approval"]
-            for key in ("autostart", "language", "font_scale", "onboarded"):
+            for key in ("language", "font_scale", "onboarded"):
                 if key in update:
                     stored[key] = update[key]
+            stored.pop("autostart", None)                # 0.9.13 and before kept a 开机自启 that started nothing
             if "language" in update:                     # what the program says from now on (i18n.py)
                 i18n.set_language(update["language"])
             stored.update(mode=self.mode, capture=self.worker.capture_wanted, game_dir=self.game_dir,
@@ -2827,7 +2828,6 @@ class Service:
                 await self.reconcile_local_apps()
         answer = dict(mode=self.mode, capture=self.worker.capture_wanted, capture_in_use=self.worker.capture,
                       game_dir=self.game_dir, extension_approval=self.extension_approval,
-                      autostart=bool(stored.get("autostart", False)),
                       language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)),
                       font_scale=stored["font_scale"] if stored.get("font_scale") in FONT_SCALES else 100)
         if update and self.mode != mode_before:

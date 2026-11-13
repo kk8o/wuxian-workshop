@@ -495,8 +495,8 @@ class LiveDaemon(unittest.TestCase):
         self.assertIn("restart_required", res)
         status, res = self.call("GET", "/api/settings")
         self.assertEqual((status, res["mode"], res["capture"]), (200, "developer", "gdi"))
-        status, res = self.call("POST", "/api/settings", {"capture": "wgc", "autostart": True})
-        self.assertEqual((status, res["capture"], res["autostart"]), (200, "wgc", True))
+        status, res = self.call("POST", "/api/settings", {"capture": "wgc", "autostart": True})   # an old page's
+        self.assertEqual((status, res["capture"], "autostart" in res), (200, "wgc", False))     # 开机自启: gone
         self.assertEqual(json.loads((self.home / "state" / "settings.json").read_text(encoding="utf-8"))["capture"], "wgc")
         status, res = self.call("POST", "/api/settings", {"capture": "gdi"})
         self.assertEqual(res["capture"], "gdi")

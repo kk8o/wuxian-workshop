@@ -5,7 +5,7 @@
      GET  /api/session                 -> {token, port, url, mcp_url, version}: taken once at load, then every request
                                           carries Authorization: Bearer <token>
      GET  /api/status                  -> daemon / game / link / watch / reload_pending / mcp_url (status and connect pages)
-     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, autostart, language, font_scale,
+     GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, language, font_scale,
                                           extension_approval}; the app is the development environment only: a "player"
                                           mode left in old settings is switched back to "developer" once (migrateMode).
                                           extension_approval: "ask" (the default: a local extension's command waits for
@@ -282,9 +282,9 @@ function appState() {
     token: null,
     status: null, statusAt: 0, daemonStarted: null,
     session_: null,
-    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', autostart: false, language: 'auto', font_scale: 100,
+    settings: { mode: 'developer', capture: 'wgc', capture_in_use: null, game_dir: '', language: 'auto', font_scale: 100,
                 extension_approval: 'ask' },
-    form: { capture: 'wgc', game_dir: '', autostart: false, language: 'auto', font_scale: '100', extension_approval: 'ask' },
+    form: { capture: 'wgc', game_dir: '', language: 'auto', font_scale: '100', extension_approval: 'ask' },
     settingsNote: '', settingsLoaded: false,
     logRev: 0, logTotal: 0, errCount: 0, lastId: 0,   // the kept entries are in `book`: these change once per batch
     kinds: Object.fromEntries(KINDS.map(k => [k, true])),
@@ -2881,7 +2881,7 @@ function appState() {
       this.settings = Object.assign({}, this.settings, s, { game_dir: s.game_dir || '' });
       this.settings.extension_approval = this.settings.extension_approval === 'auto' ? 'auto' : 'ask';   // unknown: ask
       this.form = { capture: this.settings.capture, game_dir: this.settings.game_dir,
-                    autostart: !!this.settings.autostart, language: this.settings.language || 'auto',
+                    language: this.settings.language || 'auto',
                     font_scale: String(this.settings.font_scale || 100),
                     extension_approval: this.settings.extension_approval };
       if (this.settings.extension_approval !== asked && this.lx.list !== null) this.loadLocal(true);   // the rows' 批准 follows

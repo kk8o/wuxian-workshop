@@ -297,8 +297,6 @@ const EN = {
   '首次运行前询问': 'Ask before the first run',
   '自动批准': 'Approve automatically',
   '供开发扩展时使用：新扩展不经确认即可运行命令。': 'For developing extensions: a new extension runs its command without confirmation.',
-  '开机自启': 'Start with Windows',
-  '只写当前用户的 Run 键，不需要管理员': 'Only the current user\'s Run key; no administrator needed',
   '语言': 'Language',
   '自动（跟随系统）': 'Automatic (the system\'s)',
   '字体大小': 'Font size',

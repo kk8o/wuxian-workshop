@@ -195,9 +195,6 @@ textarea.input { resize: vertical; min-height: 72px; }
 .row > .input:not(.small):not(.tiny):not(.first-name) { flex: 1; width: auto; }
 .form .field { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; margin: 10px 0; }
 .form .field > span { color: var(--muted); }
-.switch { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; cursor: pointer; }
-.switch input { margin-top: 3px; }
-.switch small { display: block; color: var(--muted); }
 progress { accent-color: var(--gold); width: 180px; height: 8px; }
 .tabs { flex: none; display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .tab { font: inherit; font-size: 12.5px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 8px 10px 7px;

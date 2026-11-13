@@ -202,7 +202,7 @@ class Fake:
         self.next_id = 1
         self.last_job = 1700000
         self.subscribers = set()
-        self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR, "autostart": False,
+        self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR,
                          "language": "auto", "font_scale": 100, "onboarded": False,
                          "extension_approval": self.extension_approval}   # the daemon's shape (daemon/service.py settings())
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
@@ -1515,7 +1515,7 @@ class Fake:
                 "addons_dir": GAME_DIR + r"\Interface\AddOns", "available": True}
 
     def update_settings(self, changes):
-        """POST /api/settings as the daemon takes it: mode, capture, game_dir, autostart, language, font_scale,
+        """POST /api/settings as the daemon takes it: mode, capture, game_dir, language, font_scale,
         extension_approval (unknown keys ignored)"""
         if "capture" in changes and changes["capture"] not in ("gdi", "wgc"):
             raise ValueError('capture: "gdi" or "wgc"')
@@ -1537,8 +1537,6 @@ class Fake:
             if isinstance(scale, bool) or scale not in (90, 100, 110, 125, 150):
                 raise ValueError("font_scale: 90, 100, 110, 125 or 150")
             self.settings["font_scale"] = scale
-        if "autostart" in changes:
-            self.settings["autostart"] = bool(changes["autostart"])
         if "onboarded" in changes:
             self.settings["onboarded"] = bool(changes["onboarded"])
         if "extension_approval" in changes:
