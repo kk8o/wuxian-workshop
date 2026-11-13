@@ -892,6 +892,56 @@ class StdioReconnect(unittest.TestCase):
         self.assertEqual((e.exception.code, calls), ("daemon_unreachable", []))
 
 
+class StdioLazyStart(unittest.TestCase):
+    """an agent starts `wuxian mcp` with every session: the daemon (and the App in the tray) starts with the first tool
+    that needs it, not with the session; passive calls (the watch of WuxianKit's tools, the reports) never start it"""
+
+    def test_main_serves_without_starting_the_daemon(self):
+        from wuxianworkshop.mcp import server
+        served, starts = [], []
+
+        def connect(start=True, **kw):
+            starts.append(start)
+            raise ConnectionError("the daemon is not running")
+        with mock.patch("wuxianworkshop.cli.client.connect", connect), \
+                mock.patch.object(server, "build_server", lambda backend: served.append(backend) or mock.MagicMock()), \
+                mock.patch.object(server, "Reporter") as reporter:
+            self.assertEqual(server.main([]), 0)
+            self.assertEqual(server.main(["--no-start"]), 2)
+        self.assertEqual((starts, len(served)), ([False, False], 1))
+        self.assertIsInstance(served[0].client, server.Absent)
+        reporter.return_value.start.assert_called_once()
+
+    def test_the_first_tool_starts_it_and_passive_calls_do_not(self):
+        import asyncio
+        from wuxianworkshop.mcp import kit
+        from wuxianworkshop.mcp.server import Absent, HttpBackend
+        starts = []
+
+        class Fresh:
+            def status(self):
+                return {"daemon": "up"}
+
+            def addon_events(self, *args):
+                return {"next": 1, "events": []}
+
+        def reconnect(start=True):
+            starts.append(start)
+            if not start:
+                raise ConnectionError("the daemon is not running")
+            return Fresh()
+        backend = HttpBackend(Absent(), reconnect=reconnect)
+
+        async def passive():
+            kit.PASSIVE.set(True)
+            return await backend.addon_events("WuxianKit", "kit.*", -1, 100, 0)
+        with self.assertRaises(ApiError):
+            asyncio.run(passive())
+        self.assertEqual((starts, type(backend.client)), ([False], Absent))
+        self.assertEqual(asyncio.run(backend.status()), {"daemon": "up"})
+        self.assertEqual((starts, type(backend.client)), ([False, True], Fresh))
+
+
 class McpConfig(unittest.TestCase):
     def test_claude_and_cursor_are_json(self):
         info = dict(port=1234, token="tok", mcp_url="http://127.0.0.1:1234/mcp")

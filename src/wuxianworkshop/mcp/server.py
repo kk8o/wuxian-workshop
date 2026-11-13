@@ -8,7 +8,8 @@ extension_remove, extension_load, extension_stop, extension_set, extension_check
 extension_pack, extension_summary, extension_install, and reactions, reaction_set, reaction_clear). The daemon mounts it at /mcp
 (Streamable HTTP) over the
 Service itself; `wuxian mcp` (main) serves it on stdio for hosts that start the server themselves, over HttpBackend,
-which calls the running daemon through cli.client (and starts it when it is not running). On stdio, stdout carries the
+which calls the running daemon through cli.client (and starts it when a tool needs it and none runs: an agent that
+only opens its session leaves the App closed). On stdio, stdout carries the
 protocol: logging goes to stderr and, with WUXIAN_LOG (or --log), to that file.
 """
 import argparse
@@ -56,6 +57,20 @@ Addon work: edit the files, `load` (it checks first: fix every error in its `che
 Any idea to verify (an addon, an AI app, other addons' data): call `guide` first.
 
 WuxianKit (wk_* tools; none listed = not installed: the user adds it on the App's Extensions (扩展) page): call `wk_docs` first. Send and Change tools return a proposal: tell the player, then call `wk_wait` with its id. It runs when the player clicks 执行 (Run), or at once if they pre-approved its category: propose only what the player asked for. Change the player's settings, keys, macros or addons only with wk_ tools, never with `run`."""
+
+
+class Absent:
+    """the client of `wuxian mcp` while no daemon has answered yet. An agent starts its MCP servers with every session,
+    also when it is not going to use this one: no daemon (and no App in the tray) is started for that. Every request
+    fails as a gone daemon's would, so HttpBackend looks again, starting one unless the call is passive, and Reporter
+    skips its report"""
+    base = token = None
+
+    def __getattr__(self, name):
+        def gone(*args, **kwargs):
+            from ..cli.client import DaemonGone
+            raise DaemonGone("the daemon is not running yet")
+        return gone
 
 
 class HttpBackend:
@@ -970,11 +985,14 @@ def main(argv=None):
     logger = logging.getLogger("wuxian.mcp")
     from ..cli.client import connect                   # stdout stays clean: connect() reports through the logger
     try:
-        client = connect(start=not args.no_start, log=logger.info)
+        client = connect(start=False, log=logger.info)
+        logger.info(f"serving the tools on stdio for the daemon at {client.base}")
     except ConnectionError as e:
-        logger.error(str(e))
-        return 2
-    logger.info(f"serving the tools on stdio for the daemon at {client.base}")
+        if args.no_start:
+            logger.error(str(e))
+            return 2
+        client = Absent()                              # started by the first tool that needs it
+        logger.info("serving the tools on stdio; the daemon is not running and starts with the first tool that needs it")
     backend = HttpBackend(client, reconnect=lambda start=True: connect(start=start and not args.no_start, log=logger.info))
     mcp = build_server(backend)
     Reporter(backend, mcp).start()                    # the App's 扩展 page shows who serves which tools
