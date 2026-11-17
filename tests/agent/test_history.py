@@ -96,6 +96,18 @@ class History(unittest.TestCase):
         self.assertEqual((self.folder / "extra" / "deep" / "More.lua").read_text(), "m = 1\n")
         self.assertFalse((self.folder / "ui" / "Window.lua").exists())
 
+    def test_restore_over_a_name_that_differs_only_in_case(self):
+        """core.lua then, Core.lua now: on NTFS one file. The restore leaves core.lua, with the version's text"""
+        (self.folder / "Core.lua").unlink()
+        self.write("core.lua", "local a = 1\n")
+        self.save()
+        (self.folder / "core.lua").unlink()
+        self.write("Core.lua", "local a = 2\n")
+        res = H.restore(self.addons, "Foo", 1)
+        self.assertEqual((res["written"], res["removed"]), (["core.lua"], ["Core.lua"]))
+        self.assertEqual([p.name for p in self.folder.iterdir() if p.suffix == ".lua"], ["core.lua"])
+        self.assertEqual((self.folder / "core.lua").read_text(), "local a = 1\n")
+
     def test_restore_brings_back_a_deleted_addon_and_a_read_only_file(self):
         self.save()
         self.write("Core.lua", "changed\n")

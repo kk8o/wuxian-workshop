@@ -563,6 +563,24 @@ class ProbeAnswers(unittest.TestCase):
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class LinkNeverStarted(unittest.TestCase):
+    def test_test_messages_without_a_link_say_so(self):
+        """autoLink off: the link never started (no message ids yet). /wb send, burst, long, stream and the panel's
+        test buttons say the link is off instead of raising"""
+        s = Session(self, db=b"{ settings = { autoLink = false } }")
+        try:
+            s.login()
+            s.run(2)
+            for text in ("send hello", "burst 3", "long 600", "stream 2"):
+                s.slash(text)
+            s.run(1)
+            self.assertEqual(s.chat().count("the link is off"), 4, s.chat())
+            self.assertEqual(len(s.lua.globals()[b"__errors"]), 0)
+        finally:
+            s.close()
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
 class EarlyAndSlots(unittest.TestCase):
     def test_errors_before_wowbridge_loads(self):
         """!WuxianWorkshop loads first: errors, prints and warnings of addons loading before WoWBridge reach the companion;
@@ -781,7 +799,7 @@ class ProtocolV08(unittest.TestCase):
         try:
             g = s.lua.globals()
             s.slash("set forwardDebug off")
-            self.assertIn("forwardDebug = off (kept for this character)", s.chat())
+            self.assertIn("forwardDebug = off (kept for all characters of this account)", s.chat())
             g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:1: quiet")
             g[b"print"](b"quiet too")
             s.run(6)

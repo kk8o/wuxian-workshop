@@ -472,10 +472,8 @@ def restore(addons, addon, vid):
             before, now = None, {}
             folder.mkdir(parents=True)
         written, removed = [], []
-        for path, (sha, _, _) in sorted(target["files"].items()):
-            if now.get(path, [None])[0] != sha:
-                _write_file(_inside(folder, path), _get(home, sha))
-                written.append(path)
+        # the files it does not have go first: on NTFS a name that differs only in case (Core.lua now, core.lua then) is
+        # the same file, and removing it after writing the version's would remove what was just written
         for path in sorted(now):
             if path not in target["files"]:
                 p = _inside(folder, path)
@@ -491,6 +489,10 @@ def restore(addons, addon, vid):
                     except OSError:
                         break
                     d = d.parent
+        for path, (sha, _, _) in sorted(target["files"].items()):
+            if now.get(path, [None])[0] != sha:
+                _write_file(_inside(folder, path), _get(home, sha))
+                written.append(path)
         return dict(addon=addon, restored=target["id"], saved=before["id"] if before else None,
                     saved_new=bool(before and before["new"]), written=written, removed=removed,
                     skipped=[s["path"] for s in target.get("skipped", [])])

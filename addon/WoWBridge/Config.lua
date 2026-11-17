@@ -1,5 +1,5 @@
 -- WoWBridge defaults. forwardDebug, hotLoad and autoLink are switched in game with /wb set <key> on|off, parent and snap
--- with /wb parent and /wb snap; what is set that way is kept per character in WoWBridgeDB.settings and overrides this file.
+-- with /wb parent and /wb snap; what is set that way is kept for the account (every character) in WoWBridgeDB.settings and overrides this file.
 WoWBridge_Config = {
 	autoLink = true,       -- connect to the companion after entering the world (HELLO frame, then heartbeats)
 	forwardDebug = true,   -- send Lua errors (every addon's), print() output, Lua warnings and blocked actions to the

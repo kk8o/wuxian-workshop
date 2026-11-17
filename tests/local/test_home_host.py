@@ -335,7 +335,17 @@ class Removal(HomeCase):
         self.host.approve("fx")
         self.host.call_sync("fx.echo", {"text": "a"})
         pid = self.host.get("fx")["pid"]
-        res = self.host.remove("fx")                                             # stopped, moved, forgotten
+        tidied = []
+        tidy = HOME.tidy_removed
+
+        def tidy_off_the_lock(root):                                            # old trees go after the lock is let go
+            tidied.append((str(root), self.host.lock.acquire(timeout=5)))
+            self.host.lock.release()
+            tidy(root)
+        with mock.patch.object(HOME, "tidy_removed", tidy_off_the_lock):
+            res = self.host.remove("fx")                                         # stopped, moved, forgotten
+            self.assertTrue(until(lambda: tidied, 10))
+        self.assertEqual(tidied, [(str(self.home), True)])
         kept = res.pop("kept")
         self.assertEqual(res, dict(removed=True, id="fx", path=str(folder), addons=[]))
         self.assertTrue(gone(pid))

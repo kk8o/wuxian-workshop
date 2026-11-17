@@ -251,11 +251,42 @@ def _swap(target, staging, backup):
     shutil.rmtree(backup, ignore_errors=True)
 
 
+class NotKept(CatalogError):
+    """the folder holds what its kept version would not (a .git, a big file): replacing or removing it is refused"""
+
+
+def _unkept(target, most=5):
+    """what of the folder its kept versions leave out (history.scan: folders starting with a dot, files over
+    history.MAX_FILE), up to `most` of them as paths relative to it"""
+    out = []
+    for root, dirs, files in os.walk(target):
+        rel = Path(root).relative_to(target)
+        for d in [d for d in dirs if d.startswith(".")]:
+            out.append((rel / d).as_posix() + "/")
+            dirs.remove(d)
+        for f in files:
+            try:
+                if os.path.getsize(os.path.join(root, f)) > history.MAX_FILE:
+                    out.append((rel / f).as_posix())
+            except OSError:
+                pass
+        if len(out) >= most:
+            break
+    return out[:most]
+
+
 def _keep(addons, folder, reason, note):
+    """a version of the folder kept before it is replaced or removed; NotKept when that version would not hold all of
+    it (a developer's checkout with its .git, a big file, too many files): the folder is left as it is"""
+    target = Path(addons) / folder
+    left_out = _unkept(target)
+    if left_out:
+        raise NotKept(f"{folder} holds what its kept version would not ({', '.join(left_out)}): left as it is; "
+                      f"move those out, or replace the folder yourself")
     try:
         return history.save(addons, folder, reason, note).get("id")
-    except history.HistoryError:                          # too big to keep, say: it goes on without
-        return None
+    except history.HistoryError as e:
+        raise NotKept(f"{folder} could not be kept first ({e}): left as it is") from None
 
 
 def install(addons, entry, raw, interface=None):

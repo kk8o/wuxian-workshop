@@ -194,6 +194,26 @@ class InstallAndRemove(unittest.TestCase):
         self.assertEqual(X.installed(self.addons, "Demo"), (True, "1.0.2"))
         self.assertFalse(X.remove(self.addons, {"id": "x", "folder": "Gone", "version": "1"})["removed"])
 
+    def test_a_checkout_with_its_git_is_left_as_it_is(self):
+        """a developer's checkout of a catalog addon (its .git, a big file): its kept version would not hold them, so
+        neither an update nor a remove touches the folder"""
+        X.install(self.addons, self.entry("1.0.0"), make_zip())
+        git = self.addons / "Demo" / ".git" / "HEAD"
+        git.parent.mkdir()
+        git.write_text("ref: refs/heads/main\n")
+        with self.assertRaisesRegex(X.NotKept, r"\.git/"):
+            X.install(self.addons, self.entry("1.0.1"), make_zip(version="1.0.1"))
+        with self.assertRaises(X.NotKept):
+            X.remove(self.addons, self.entry("1.0.0"))
+        self.assertEqual((X.installed(self.addons, "Demo"), git.exists()), ((True, "1.0.0"), True))
+        self.assertFalse([p for p in self.addons.iterdir() if p.name.startswith(".")])
+        git.unlink()
+        git.parent.rmdir()
+        with mock.patch.object(history, "MAX_FILE", 4):
+            with self.assertRaisesRegex(X.NotKept, "Demo.toc"):
+                X.remove(self.addons, self.entry("1.0.0"))
+        self.assertTrue(X.remove(self.addons, self.entry("1.0.0"))["removed"])
+
 
 if __name__ == "__main__":
     unittest.main()

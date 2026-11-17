@@ -7,7 +7,7 @@
 --        界面 (the minimap button, the language);
 --   诊断 (diagnostics): the link's numbers, the link tests, dropping what waits to go up, and the diagnostics in a box to
 --        copy (for a bug report).
--- It opens on 概览, or on the tab it showed last since the last reload. Everything it changes is kept for this character
+-- It opens on 概览, or on the tab it showed last since the last reload. Everything it changes is kept for the account (every character)
 -- in WoWBridgeDB.settings, the same as the /wb commands do; the words are Locale.lua's and change with the language.
 local _, ns = ...
 local L, S = ns.L, ns.Skin

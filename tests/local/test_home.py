@@ -105,8 +105,12 @@ class HomeTests(unittest.TestCase):
         self.assertEqual(ours, sorted([f"old-202601{day:02d}-000000" for day in range(7, 26)] + [to.name]))
         self.assertTrue((removed / "notes" / "main.py").is_file())
         self.assertTrue((removed / "readme.txt").is_file())
+        H.trash(self.ext("gx"), self.root, "gx", tidy=False)                # left to tidy_removed: one more for now
+        self.assertEqual(len([n for n in self.removed() if H.STAMPED.search(n)]), H.KEPT + 1)
+        H.tidy_removed(self.root)
+        self.assertEqual(len([n for n in self.removed() if H.STAMPED.search(n)]), H.KEPT)
         H.prune(removed, keep=2)
-        self.assertEqual([n for n in self.removed() if H.STAMPED.search(n)], [to.name, "old-20260125-000000"])
+        self.assertEqual([n for n in self.removed() if H.STAMPED.search(n)][0], to.name)
         H.prune(self.root / "none")                        # no such folder: nothing
 
     def test_a_folder_that_cannot_be_moved(self):

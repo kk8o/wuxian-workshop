@@ -96,10 +96,11 @@ def prune(removed, keep=KEPT):
                 pass
 
 
-def trash(folder, root, eid):
+def trash(folder, root, eid, tidy=True):
     """moves an extension's folder to root/.removed/<eid>-<YYYYMMDD-HHMMSS>[-n] and gives that path; after that only
-    the newest KEPT folders stay there. OSError when it cannot be moved (a program holds one of its files): the folder
-    is where it was, whole"""
+    the newest KEPT folders stay there (tidy; a caller that holds a lock over the move passes False and calls
+    tidy_removed(root) once it has let go: deleting old trees of thousands of files took seconds). OSError when it
+    cannot be moved (a program holds one of its files): the folder is where it was, whole"""
     folder, removed = Path(folder), Path(root) / REMOVED
     removed.mkdir(parents=True, exist_ok=True)
     to = stamped(removed, eid)
@@ -113,8 +114,14 @@ def trash(folder, root, eid):
             if wait is None:
                 raise
             time.sleep(wait)
-    prune(removed)
+    if tidy:
+        prune(removed)
     return to
+
+
+def tidy_removed(root):
+    """only the newest KEPT folders of root/.removed stay (trash(..., tidy=False) leaves that to this)"""
+    prune(Path(root) / REMOVED)
 
 
 def incoming(root, eid):

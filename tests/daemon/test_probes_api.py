@@ -56,6 +56,30 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.assertIn("trace: 1.02 s, 4 events of 2 kinds, 1 kept (BAG_UPDATE, NOT_AN_EVENT)",
                       [e["text"] for e in self.svc.journal.since(0, 100, None)[0]])
 
+    async def test_a_trace_given_up_is_stopped_in_the_game(self):
+        """the client went away during the wait, or the action of a try with events failed: the game is told to stop
+        catching events (else it went on, every event an addon may register, until a reload)"""
+        task = asyncio.create_task(self.svc.trace(5))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(["RegisterEvent" in c for c in self.sent], [True, False])
+        self.assertIn("UnregisterAllEvents", self.sent[1])
+        self.sent.clear()
+        run = self.svc.run
+
+        async def failing(code, timeout_ms=10000, addon=None, chunk="=run"):
+            if chunk == "=run":
+                raise ApiError(504, "timeout", "no answer")
+            return await run(code, timeout_ms, addon, chunk)
+        self.svc.run = failing
+        with self.assertRaises(ApiError):
+            await self.svc.try_("DoIt()", seconds=1, events="BAG_UPDATE")
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("UnregisterAllEvents", self.sent[1])
+        self.assertFalse(self.svc.tracing.locked())
+
     async def test_one_trace_at_a_time_and_bad_requests(self):
         first = asyncio.create_task(self.svc.trace(1))
         await asyncio.sleep(0.05)

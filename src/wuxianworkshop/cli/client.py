@@ -27,12 +27,18 @@ LOAD_WAIT = 330     # seconds extension_load / extension_check may take: a start
 PACK_WAIT = 180     # seconds a package may take: packing a folder, unpacking one (64 MB, 8000 files), a game addon
 AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
                     # (service.PIECE_WAIT), and a piece may wait out its timeout before that
+LOAD_MOST = 600     # seconds a load may take in the daemon however small its timeout_ms (service.MAX_TIMEOUT_MS: a big
+                    # addon gets 5 s + 1 s per 2.5 KB), and its check and kept version before that
 WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
                     # gives up by itself when nothing more comes)
 
 
 class DaemonGone(ConnectionError):
     """the connection was refused: no daemon listens there (any more), so the request did nothing"""
+
+
+class DaemonSlow(ConnectionError):
+    """the daemon took the request but did not answer in time: it may still be doing it (not a daemon that is gone)"""
 
 
 class DaemonClient:
@@ -62,6 +68,9 @@ class DaemonClient:
                 raise ApiError(e.code, "http_error", f"{e.code} {e.reason}: {payload[:200]!r}") from None
         except (urllib.error.URLError, OSError) as e:
             reason = getattr(e, "reason", e)
+            if isinstance(reason, TimeoutError):
+                raise DaemonSlow(f"the daemon at {self.base} did not answer {method} {path} within "
+                                 f"{timeout or self.timeout:.0f} s: it may still be at it (`wuxian logs`)") from None
             kind = DaemonGone if isinstance(reason, ConnectionRefusedError) else ConnectionError
             raise kind(f"cannot reach the daemon at {self.base}: {reason}") from None
         if raw:
@@ -89,8 +98,9 @@ class DaemonClient:
         return self.post("/api/run", code=code, timeout_ms=timeout_ms, addon=addon, timeout=timeout_ms / 1000 + 10)
 
     def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):
+        # the daemon gives a big addon the time it takes (up to LOAD_MOST), whatever timeout_ms says: wait as long
         return self.post("/api/load", target=target, mode=mode, reset=reset, timeout_ms=timeout_ms, check=check,
-                         timeout=timeout_ms / 1000 + 10)
+                         timeout=max(timeout_ms / 1000, LOAD_MOST) + 60)
 
     def try_(self, code=None, slash=None, seconds=2, addon=None, snap=False, frame=None, events=None, timeout_ms=10000,
              snap_format=None):

@@ -49,6 +49,8 @@ SIZE = (1200, 760)
 MIN_SIZE = (960, 600)                                   # the layout: navigation, a list and its detail side by side
 EXIT_NO_WEBVIEW2 = 3
 WATCH_EVERY = 2.0                                # seconds between looks at an attached daemon
+WATCH_MISSES = 3                                 # looks in a row it does not answer before it is taken to have stopped
+ENDING = ("WindowsShutDown", "TaskManagerClosing")  # closes of the window that are not the user's ✕ (CloseReason)
 WINNER_WAIT = 10.0                               # seconds a start that lost the mutex waits for the winner to answer
 WINNER_EVERY = 0.25                              # seconds between looks at it
 WINDOW_NAME = r"Local\WuxianWorkshopWindow"      # + the port: this program's window on a daemon that has none
@@ -492,6 +494,7 @@ class Shell:
         self.window = None
         self.tray = None
         self.quitting = False
+        self.backend_gone = False                    # the attached daemon stopped by itself: nothing to stop at the end
 
     def run(self):
         import webview
@@ -567,12 +570,20 @@ class Shell:
             log.exception("show the error page")
         return False
 
-    def watch_backend(self, every=WATCH_EVERY):
-        """an attached daemon (another process) that stops, from its API or `wuxian quit`, closes this window too"""
+    def watch_backend(self, every=WATCH_EVERY, misses=WATCH_MISSES):
+        """an attached daemon (another process) that stops, from its API or `wuxian quit`, closes this window too. One
+        look it does not answer within 2 s is not enough (a daemon busy loading or holding the GIL stays a while): only
+        `misses` in a row; and the window that closes then leaves the daemon alone (shutdown does not ask it to quit),
+        so one that was only slow goes on"""
+        missed = 0
         while not self.quitting:
             time.sleep(every)
-            if not self.quitting and not self.backend.alive():
+            if self.quitting:
+                return
+            missed = 0 if self.backend.alive() else missed + 1
+            if missed >= misses:
                 log.info("the daemon this window shows has stopped")
+                self.backend_gone = True
                 self.quit()
                 return
 
@@ -584,6 +595,7 @@ class Shell:
         except Exception as e:                                  # an older Windows keeps the light one
             log.debug("no dark title bar: %s", e)
         self.unhook_requests()
+        self.let_windows_end(getattr(self.window, "native", None))
         if isinstance(self.backend, Starting):
             self.backend.start()                                # .NET is loaded: the daemon starts while WebView2 does
 
@@ -610,6 +622,26 @@ class Shell:
             control.CoreWebView2InitializationCompleted += unhook
         except Exception as e:
             log.debug("request handlers stay: %s", e)
+
+    def let_windows_end(self, form):
+        """closing the window hides it (on_closing), but not when Windows ends the session or Task Manager ends the
+        program: a close cancelled then held up sign-out and shutdown ("this app is preventing shutdown"). pywebview's
+        own FormClosing handler runs first and cancels; this one, added after it, lets those closes through as a quit"""
+        if form is None:
+            return
+
+        def closing(sender, args):
+            try:
+                if str(args.CloseReason) in ENDING:
+                    log.info("windows closes the window (%s): quitting", args.CloseReason)
+                    self.quitting = True
+                    args.Cancel = False
+            except Exception:
+                log.exception("closing")
+        try:
+            form.FormClosing += closing
+        except Exception as e:
+            log.debug("a session's end stays held up: %s", e)
 
     def on_closing(self):
         """closing the window hides it; only the quit flag lets it close (and then this must return True, or destroy()
@@ -700,7 +732,8 @@ class Shell:
             self.tray.stop()                         # the daemon still starting may take seconds: the icon goes now
         if self.backend is not None:
             try:
-                self.backend.stop()
+                if not self.backend_gone:
+                    self.backend.stop()
             except Exception:
                 log.exception("backend stop")
             if isinstance(self.backend, AttachedBackend):    # its window's mutex goes with the window

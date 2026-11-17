@@ -1834,8 +1834,17 @@ def attach(mcp, backend, store=None, wait=300, changes=None):
     own_resources, own_read = mcp.list_resources, mcp.read_resource
     own_prompts, own_prompt = mcp.list_prompts, mcp.get_prompt
 
+    async def passively(what, ask, default):
+        """a list the host asks for on its own (every session, at once): WuxianKit's part from a daemon that runs, never
+        one started for it (kit.PASSIVE); the refreshes it starts inherit that"""
+        token = PASSIVE.set(True)
+        try:
+            return await optional(what, ask(), default)
+        finally:
+            PASSIVE.reset(token)
+
     async def list_tools():
-        return await own_tools() + await optional("tools", kit.list(), [])
+        return await own_tools() + await passively("tools", kit.list, [])
 
     async def call_tool(name, arguments, context=None):
         if name.startswith(PREFIX):
@@ -1843,7 +1852,7 @@ def attach(mcp, backend, store=None, wait=300, changes=None):
         return await own_call(name, arguments, context)
 
     async def list_resources():
-        return await own_resources() + await optional("resources", kit.resources(), [])
+        return await own_resources() + await passively("resources", kit.resources, [])
 
     async def read_resource(uri, context=None):
         if str(uri) == URI or str(uri).startswith(URI + "/"):
@@ -1854,7 +1863,7 @@ def attach(mcp, backend, store=None, wait=300, changes=None):
         return await own_read(uri, context)
 
     async def list_prompts():
-        return await own_prompts() + await optional("prompts", kit.prompts(), [])
+        return await own_prompts() + await passively("prompts", kit.prompts, [])
 
     async def get_prompt(name, arguments=None, context=None):
         found = await optional("prompt", kit.prompt(name, arguments), None)

@@ -217,7 +217,7 @@ function K.Job(name, addon, flag, ok, ms, values, failure)
 		local line
 		if name == "=call" then                     -- a data call: an addon's exposed function (addon is "Addon.name")
 			line = ok and L.CON_CALLED:format(addon, ms, got) or L.CON_CALL_FAILED:format(addon, FirstLine(failure))
-		elseif name == "=reply" then                -- the answer to an addon's request
+		elseif name == "=respond" then              -- the answer to an addon's request (Agent.lua CHUNK.reply)
 			line = ok and L.CON_REPLIED:format(ms, got) or L.CON_REPLY_FAILED:format(FirstLine(failure))
 		else
 			line = ok and L.CON_RAN:format(ms, got) or L.CON_RUN_FAILED:format(FirstLine(failure))

@@ -204,10 +204,14 @@ class RunningDaemon(unittest.TestCase):
     def test_window_closes_when_the_attached_daemon_stops(self):
         app = shell.Shell(StandInBackend(), shell.parse_args([]))
         app.window = StandInWindow()
-        app.backend.alive = lambda: False
-        app.watch_backend(every=0.01)
+        looks = iter([False, False, True, False, False, False])   # a slow answer between misses starts the count again
+        app.backend.alive = lambda: next(looks)
+        app.watch_backend(every=0.01, misses=3)
         self.assertTrue(app.quitting)
         self.assertEqual(app.window.calls, ["destroy"])
+        self.assertEqual(next(looks, "all looked"), "all looked")
+        app.shutdown()
+        self.assertFalse(app.backend.stopped)                     # gone by itself: not asked to quit (it may be slow)
 
 
 class LostTheRace(unittest.TestCase):
@@ -526,6 +530,35 @@ class ClosingAndQuitting(unittest.TestCase):
             self.app.on_closing()
             self.app.show()
         self.assertEqual(window.calls, [("Visible", False), "hide", ("Visible", True), "show", "restore", ("Visible", True)])
+
+    def test_windows_ending_the_session_lets_the_window_close(self):
+        """pywebview's handler cancels every close (on_closing hides); a close by Windows' shutdown or Task Manager
+        is let through, the user's ✕ is not"""
+        class Form:
+            def __init__(self):
+                self.handlers = []
+
+            @property
+            def FormClosing(self):
+                return self
+
+            @FormClosing.setter
+            def FormClosing(self, value):
+                pass
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+        form = Form()
+        self.app.let_windows_end(form)
+        user = types.SimpleNamespace(CloseReason="UserClosing", Cancel=True)
+        form.handlers[0](form, user)
+        self.assertEqual((user.Cancel, self.app.quitting), (True, False))
+        ending = types.SimpleNamespace(CloseReason="WindowsShutDown", Cancel=True)
+        form.handlers[0](form, ending)
+        self.assertEqual((ending.Cancel, self.app.quitting), (False, True))
+        self.assertIs(self.app.on_closing(), True)
 
     def test_shutdown_stops_backend(self):
         self.app.shutdown()

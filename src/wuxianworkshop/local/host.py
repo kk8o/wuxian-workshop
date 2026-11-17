@@ -888,7 +888,7 @@ class Host:
             kept = None
             if old is not None and os.path.lexists(old["path"]):
                 try:
-                    kept = str(H.trash(old["path"], self.home, eid))
+                    kept = str(H.trash(old["path"], self.home, eid, tidy=False))
                 except FileNotFoundError:              # it went meanwhile: nothing to keep
                     kept = None
                 except OSError as ex:
@@ -920,7 +920,14 @@ class Host:
                 data = self.load()
                 self.entry(eid, data)["package"] = dict(package)
                 self.save(data)
+        if kept is not None:
+            self.tidy_removed()
         return kept
+
+    def tidy_removed(self):
+        """the old folders of the home's .removed go, off the lock and the request (trash(..., tidy=False)): deleting
+        a tree of thousands of files takes seconds, and discover() and every other call that takes the lock waited"""
+        threading.Thread(target=H.tidy_removed, args=(self.home,), name="wuxian-tidy-removed", daemon=True).start()
 
     # --- the summary (summary.py)
 
@@ -1092,7 +1099,7 @@ class Host:
         with self.lock:                                # (held over the move: discover() sees both or neither)
             if home and os.path.lexists(e["path"]):
                 try:
-                    kept = str(H.trash(e["path"], self.home, e["id"]))
+                    kept = str(H.trash(e["path"], self.home, e["id"], tidy=False))
                 except FileNotFoundError:              # it went meanwhile: nothing to keep
                     kept = None
                 except OSError as ex:
@@ -1102,6 +1109,8 @@ class Host:
                                    f"that folder, a process of it that has not ended). Close that and remove it "
                                    f"again; it is still registered", path=e["path"]) from None
             held = self.drop(e)
+        if kept is not None:
+            self.tidy_removed()
         if held is not None:
             self.forgotten(e, held, "" if kept is None else f"; its folder is kept as {kept}")
         out = dict(removed=True, id=e["id"], path=e["path"], kept=kept, addons=self.take_addons(e["id"], names))

@@ -85,12 +85,14 @@ class HttpBackend:
         self.client, self.reconnect = client, reconnect
 
     async def _call(self, name, *args):
-        from ..cli.client import DaemonGone
+        from ..cli.client import DaemonGone, DaemonSlow
         for attempt in range(2):
             try:
                 return await asyncio.to_thread(getattr(self.client, name), *args)
             except DaemonGone as e:
                 failure = ApiError(503, "daemon_unreachable", str(e))
+            except DaemonSlow as e:                        # it runs, it was only slow: not to be started again
+                raise ApiError(504, "daemon_timeout", str(e)) from None
             except ConnectionError as e:
                 raise ApiError(503, "daemon_unreachable", str(e)) from None
             except ApiError as e:

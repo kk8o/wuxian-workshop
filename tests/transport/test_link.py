@@ -313,6 +313,35 @@ class Companion(unittest.TestCase):
             self.c.tick()
         self.assertTrue(got[-1][1].startswith("mailbox full: all 4096 slots of this game process are used"), got)
 
+    def test_load_names_the_addon_as_it_is_on_disk_and_through_a_junction(self):
+        """load foo (Foo on disk): the addon is Foo (WoWBridgeNS[name] is case-sensitive); an addon folder that is a
+        junction to a checkout elsewhere: its files are that addon, by the AddOns path or the checkout's"""
+        foo = self.addons / "Foo"
+        foo.mkdir()
+        (foo / "Foo.toc").write_text("## Title: Foo\nCore.lua\n", encoding="utf-8")
+        (foo / "Core.lua").write_text("-- core\n")
+        heads = lambda: [d.split(b"\n", 1)[0].decode().split(" ", 3) for k, d in self.c.outbox if k == MB.CODE]
+        self.c.command("load foo")
+        self.assertEqual([(h[2], h[3].split(" ")[0]) for h in heads()], [("Foo", "@Interface/AddOns/Foo/Core.lua")])
+        if os.name != "nt":
+            return
+        import _winapi
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        checkout = Path(elsewhere.name) / "bar-repo"
+        checkout.mkdir()
+        (checkout / "Bar.toc").write_text("## Title: Bar\nCore.lua\n", encoding="utf-8")
+        (checkout / "Core.lua").write_text("-- bar\n")
+        _winapi.CreateJunction(str(checkout), str(self.addons / "Bar"))
+        try:
+            for spec in ("Bar", str(self.addons / "Bar" / "Core.lua"), str(checkout / "Core.lua")):
+                self.c.outbox.clear()
+                self.c.command(f"load {spec}")
+                self.assertEqual([(h[2], h[3].split(" ")[0]) for h in heads()],
+                                 [("Bar", "@Interface/AddOns/Bar/Core.lua")], spec)
+        finally:
+            os.rmdir(self.addons / "Bar")                                 # the junction, not the checkout
+
     def test_load_addon_and_watch(self):
         """load <addon>: its Lua in .toc order, XML <Script> / <Include> followed; WoWBridge's own refused;
         watch: a saved file is loaded again once its time stamp held for a check"""

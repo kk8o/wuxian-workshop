@@ -42,7 +42,7 @@ from ..local import summary as local_summary
 from ..local.host import Host as LocalHost, call_error
 from ..local.reactions import ReactionError, Reactions
 from ..agent import history, lint, probes
-from ..agent.commands import toc_files
+from ..agent.commands import addon_folder, toc_files
 from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
 from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
@@ -406,12 +406,8 @@ class Service:
     # --- kept versions (agent/history.py) --------------------------------------------------------------------------
 
     def addon_of(self, path):
-        """the addon folder (directly in AddOns) a file or folder is in, or None"""
-        try:
-            rel = Path(path).resolve().relative_to(Path(self.worker.addons).resolve())
-        except (TypeError, ValueError, OSError):
-            return None
-        return rel.parts[0] if rel.parts else None
+        """the addon folder (directly in AddOns) a file or folder is in, as it is named on disk, or None"""
+        return addon_folder(self.worker.addons, path)[0]
 
     def keep(self, addon, reason, note=""):
         """a version of the addon kept (any thread): its summary, or None when it could not be (journaled; the load
@@ -853,14 +849,27 @@ class Service:
         if self.tracing.locked():
             raise ApiError(409, "busy", "a trace is already running")
         async with self.tracing:
-            begun = await self.probe(start, 30000)
-            await asyncio.sleep(seconds)
-            data = await self.probe(probes.trace_stop(), 60000)
+            try:
+                begun = await self.probe(start, 30000)
+                await asyncio.sleep(seconds)
+                data = await self.probe(probes.trace_stop(), 60000)
+            except BaseException:
+                await self.end_trace()
+                raise
         result = probes.trace_result(data, events)
         result.update(registered=begun.get("tracing"), unknown=begun.get("unknown") or [])
         self.journal.add("INFO", f"trace: {result['seconds']} s, {sum(c['count'] for c in result['counts'])} events of "
                                  f"{len(result['counts'])} kinds, {result['kept']} kept" + (f" ({events})" if events else ""))
         return result
+
+    async def end_trace(self):
+        """a trace that started in the game is stopped when what it was for failed or was given up (the run timed out,
+        the link went, the client went away): else the game went on catching every event it registered (an unfiltered
+        trace: all an addon may) until a reload. Its own failure is not the one to report"""
+        try:
+            await asyncio.shield(self.probe(probes.trace_stop(), 15000))
+        except BaseException as e:
+            self.journal.add("INFO", f"the trace could not be stopped ({type(e).__name__}): a /reload ends it")
 
     async def inspect(self, target=None, mouse=False, depth=1, snap=False, snap_format=None):
         """frames described (probes.py): the one a Lua expression gives, or the ones under the mouse; with snap, a
@@ -1100,11 +1109,15 @@ class Service:
             if self.tracing.locked():
                 raise ApiError(409, "busy", "a trace is already running")
             async with self.tracing:
-                begun = await self.probe(start, 30000)
-                t0 = time.time()
-                action = await self.run(lua, timeout_ms, addon)
-                await asyncio.sleep(seconds)
-                data = await self.probe(probes.trace_stop(), 60000)       # also the end marker
+                try:
+                    begun = await self.probe(start, 30000)
+                    t0 = time.time()
+                    action = await self.run(lua, timeout_ms, addon)
+                    await asyncio.sleep(seconds)
+                    data = await self.probe(probes.trace_stop(), 60000)   # also the end marker
+                except BaseException:
+                    await self.end_trace()
+                    raise
             traced = probes.trace_result(data, events)
             traced.update(registered=begun.get("tracing"), unknown=begun.get("unknown") or [])
             complete = await self.caught_up()
@@ -1280,6 +1293,8 @@ class Service:
             work = (extensions.remove, addons, entry)
         try:
             result = await asyncio.to_thread(*work)
+        except extensions.NotKept as e:
+            raise ApiError(409, "folder_not_kept", str(e)) from None
         except extensions.CatalogError as e:
             raise ApiError(422, "bad_package", str(e)) from None
         except OSError as e:
@@ -2464,7 +2479,7 @@ class Service:
             toc = next((t for t in [path / f"{path.name}.toc"] + sorted(path.glob("*.toc")) if t.is_file()), None)
             if toc is None:
                 raise ApiError(400, "no_toc", f"load {target}: no .toc in that folder")
-            files, addon = toc_files(toc)[0], path.name
+            files, addon = toc_files(toc)[0], addon_folder(addons, path)[0] or path.name
         return path, files, addon, sum(f.stat().st_size for f in files if f.is_file())
 
     async def load(self, target, mode=None, reset=True, timeout_ms=30000, check=True):

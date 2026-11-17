@@ -49,7 +49,7 @@ local function Print(msg)
 end
 ns.Print = Print
 
--- a setting: what /wb set or /wb parent / snap / mode kept for this character, else Config.lua
+-- a setting: what /wb set or /wb parent / snap / mode kept for the account, else Config.lua
 function ns.Setting(key)
 	local v = cfg[key]
 	if v == nil then v = (WoWBridge_Config or {})[key] end
@@ -167,24 +167,35 @@ end
 -- Messages to the companion go through the link (Link.lua), acknowledged through the font mailbox
 ---------------------------------------------------------------------------
 
+-- the test messages need a link that runs: one never started (autoLink off) has no ids yet, a stopped one sends nothing
+local function Linked()
+	if ns.Link.State() ~= "off" then return true end
+	Print(L.LINK_IS_OFF)
+	return false
+end
+
 function WB.Send(text)
 	if not text or text == "" then
 		Print(L.USAGE_SEND)
 		return
 	end
+	if not Linked() then return end
 	Print(L.QUEUED:format(ns.Link.Send(text), ns.StateName(ns.Link.State())))
 end
 
 function WB.Burst(n)
+	if not Linked() then return end
 	Print(L.BURST:format(ns.Link.Burst(n)))
 end
 
 function WB.Long(n)
+	if not Linked() then return end
 	local id, parts = ns.Link.Long(n)
 	Print(L.LONG:format(id, parts))
 end
 
 function WB.Stream(seconds)
+	if not Linked() then return end
 	Print(L.STREAM:format(ns.Link.Stream(seconds)))
 end
 
@@ -192,7 +203,7 @@ function WB.LinkStatus()
 	Print(ns.Link.Status())
 end
 
--- the link on or off, kept for this character (autoLink): off stops it and hides the frame
+-- the link on or off, kept for the account (autoLink): off stops it and hides the frame
 function WB.SetLink(on)
 	ns.Set("autoLink", on)
 	if on and entered and ns.Link.State() == "off" then
@@ -237,7 +248,7 @@ function WB.ResetPosition()
 	Print(L.RESET)
 end
 
--- "auto", "zhCN" or "enUS", kept for this character
+-- "auto", "zhCN" or "enUS", kept for the account
 function WB.SetLanguage(setting)
 	ns.Set("lang", setting ~= "auto" and setting or nil)
 	ns.SetLanguage(setting)
@@ -264,7 +275,7 @@ local function Init()
 	ns.session = session
 end
 
--- a setting kept for this character in WoWBridgeDB.settings (nil: back to Config.lua's)
+-- a setting kept for the account in WoWBridgeDB.settings (nil: back to Config.lua's)
 local function Set(key, value)
 	cfg[key] = value
 	db.settings[key] = value

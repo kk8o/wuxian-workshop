@@ -73,13 +73,25 @@ def log(*a):
 
 
 def new_lines(path, pos):
-    """lines appended to a text file since byte pos: (lines, new pos)"""
-    if not path.exists() or path.stat().st_size <= pos:
+    """whole lines appended to a text file since byte pos: (lines, new pos). A line still being written (no newline
+    yet) waits for the next look, from where it starts; a file made shorter (emptied, written anew) is read from its
+    start"""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [], pos
+    if size < pos:
+        pos = 0
+    if size == pos:
         return [], pos
     with path.open("rb") as fh:
         fh.seek(pos)
         new = fh.read()
-    return [line.strip() for line in new.decode("utf-8", "replace").splitlines() if line.strip()], pos + len(new)
+    end = new.rfind(b"\n") + 1
+    if end == 0:
+        return [], pos
+    text = new[:end].decode("utf-8", "replace")
+    return [line.strip() for line in text.splitlines() if line.strip()], pos + end
 
 
 def exe_version(path):

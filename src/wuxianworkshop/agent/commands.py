@@ -22,6 +22,7 @@ the count, and the addon (Agent.lua, Inflate.lua) unpacks and checks the joined 
 come out at about a third: fewer mailbox slots, and less of the game's time measuring glyphs.
 """
 import json
+import os
 import re
 import zlib
 from pathlib import Path
@@ -58,6 +59,39 @@ def _makes_frames(xml):
     except OSError:
         return False
     return FRAMES.search(re.sub(r"<!--.*?-->", "", text, flags=re.S)) is not None
+
+
+def addon_folder(addons, path):
+    """(the addon folder directly in AddOns a file or folder is in, as its name is on disk; the path from AddOns as
+    a/b/c) or (None, None). Not by resolve(): an addon folder that is a junction or link to a checkout elsewhere is
+    still that addon, whether the path came through AddOns or points into the checkout; and the name is the folder's
+    own spelling, not the one typed (WoWBridgeNS[name] is case-sensitive in the game)"""
+    if addons is None or path is None:
+        return None, None
+    base, here = os.path.abspath(addons), os.path.abspath(path)
+    try:
+        with os.scandir(base) as it:
+            entries = list(it)
+    except OSError:
+        return None, None
+    rel = None
+    if os.path.normcase(here).startswith(os.path.normcase(base) + os.sep):
+        rel = os.path.relpath(here, base).split(os.sep)
+    else:                                                 # the checkout an AddOns folder links to
+        try:
+            real = Path(here).resolve()
+            for e in entries:
+                if e.is_junction() or e.is_symlink():
+                    target = Path(e.path).resolve()
+                    if real == target or target in real.parents:
+                        rel = [e.name, *real.relative_to(target).parts]
+                        break
+        except OSError:
+            return None, None
+    if not rel or rel[0] in ("", os.pardir):
+        return None, None
+    rel[0] = next((e.name for e in entries if e.name.casefold() == rel[0].casefold()), rel[0])
+    return rel[0], "/".join(rel)
 
 
 def toc_files(toc):
@@ -199,7 +233,7 @@ class AgentCommands:
         if frames:
             self._tell("RUN", f"{verb} {path.name}: frames and templates in {', '.join(f.name for f in frames)} are XML "
                               f"and are not made again; only the Lua runs")
-        return files, path.name
+        return files, addon_folder(self.addons, path)[0] or path.name
 
     def load(self, spec, reset=True):
         """load <file | addon folder | addon name>: Lua for the addon to run as that file (errors name it). A file of an
@@ -226,11 +260,10 @@ class AgentCommands:
         except OSError as e:
             self._tell("RUN", f"load {path}: {e}")
             return None
-        try:
-            rel = path.resolve().relative_to(self.addons.resolve())
-            return self.code(data, "@Interface/AddOns/" + rel.as_posix(), addon or rel.parts[0], reset or False)
-        except ValueError:
-            return self.code(data, "@" + path.as_posix(), addon or "-", reset or False)
+        folder, rel = addon_folder(self.addons, path)
+        if folder is not None:
+            return self.code(data, "@Interface/AddOns/" + rel, addon or folder, reset or False)
+        return self.code(data, "@" + path.as_posix(), addon or "-", reset or False)
 
     def watch(self, spec):
         """watch <file | addon folder | addon name>: load a file again whenever it is saved (checked every 0.5 s,

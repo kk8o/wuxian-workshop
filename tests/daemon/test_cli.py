@@ -845,6 +845,30 @@ class BackgroundStart(unittest.TestCase):
         with self.assertRaises(client.DaemonGone):
             c.status()
 
+    def test_a_daemon_that_does_not_answer_in_time_is_slow_not_gone(self):
+        """it took the request and is still at it: the MCP tool says daemon_timeout, not daemon_unreachable (which
+        reads as a daemon to start again); a load waits as long as the daemon may give a big addon"""
+        import asyncio
+        import socket
+        from wuxianworkshop.cli import client
+        from wuxianworkshop.mcp.server import HttpBackend
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)                                                   # takes the connection, never answers
+        self.addCleanup(server.close)
+        c = client.DaemonClient({"port": server.getsockname()[1], "token": "x"}, timeout=0.3)
+        with self.assertRaises(client.DaemonSlow):
+            c.status()
+        starts = []
+        backend = HttpBackend(c, reconnect=lambda start=True: starts.append(start))
+        with self.assertRaises(ApiError) as caught:
+            asyncio.run(backend.status())
+        self.assertEqual((caught.exception.status, caught.exception.code, starts), (504, "daemon_timeout", []))
+        posted = []
+        with mock.patch.object(client.DaemonClient, "post", lambda self, path, timeout=None, **body: posted.append(timeout)):
+            c.load("BigAddon", timeout_ms=30000)
+        self.assertGreaterEqual(posted[0], client.LOAD_MOST)
+
 
 class StdioReconnect(unittest.TestCase):
     """`wuxian mcp` keeps serving when the daemon restarts on a new port with a new token"""
@@ -940,6 +964,27 @@ class StdioLazyStart(unittest.TestCase):
         self.assertEqual((starts, type(backend.client)), ([False], Absent))
         self.assertEqual(asyncio.run(backend.status()), {"daemon": "up"})
         self.assertEqual((starts, type(backend.client)), ([False, True], Fresh))
+
+    def test_the_host_listing_tools_does_not_start_it(self):
+        """the host asks for the tools, resources and prompts as the session opens: WuxianKit's part of them comes from a
+        daemon that runs, or not at all, and the refreshes those lists started stay passive too"""
+        import asyncio
+        from wuxianworkshop.mcp.server import Absent, HttpBackend, build_server
+        starts = []
+
+        def reconnect(start=True):
+            starts.append(start)
+            raise ConnectionError("the daemon is not running")
+        mcp = build_server(HttpBackend(Absent(), reconnect=reconnect))
+
+        async def session():
+            tools = await mcp.list_tools()
+            await mcp.list_resources()
+            await mcp.list_prompts()
+            await asyncio.sleep(0.3)                          # the refreshes the lists started
+            return tools
+        self.assertTrue(asyncio.run(session()))
+        self.assertNotIn(True, starts)
 
 
 class McpConfig(unittest.TestCase):

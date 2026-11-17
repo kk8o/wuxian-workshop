@@ -207,5 +207,23 @@ class WindowLooks(unittest.TestCase):
         self.assertEqual(len(calls), 3)
 
 
+
+class FileCommands(unittest.TestCase):
+    def test_new_lines_waits_for_a_whole_line_and_starts_over_on_a_shorter_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "command.txt"
+            self.assertEqual(C.new_lines(path, 0), ([], 0))                       # not there yet
+            path.write_bytes(b"run print(1)\nrun pri")                             # the second still being written
+            lines, pos = C.new_lines(path, 0)
+            self.assertEqual((lines, pos), (["run print(1)"], 13))
+            with path.open("ab") as fh:
+                fh.write("nt('二')\r\n".encode("utf-8"))
+            lines, pos = C.new_lines(path, pos)
+            self.assertEqual(lines, ["run print('二')"])
+            self.assertEqual(C.new_lines(path, pos), ([], pos))
+            path.write_bytes(b"load Foo\n")                                       # written anew, shorter
+            self.assertEqual(C.new_lines(path, pos), (["load Foo"], 9))
+
+
 if __name__ == "__main__":
     unittest.main()
