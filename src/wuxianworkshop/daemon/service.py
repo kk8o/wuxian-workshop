@@ -565,11 +565,11 @@ class Service:
             return None
 
     def set_pace(self, app, activity):
-        """the reactions told an app's activity now (quiet, normal, lively: their pace), with a Reactions that takes
-        it"""
+        """the reactions told an app's activity now (quiet, normal, lively: their pace; None or another value: not
+        known, forgotten), with a Reactions that takes it"""
         tell = getattr(self.reactor, "set_pace", None)
-        if tell is not None and isinstance(app, str) and isinstance(activity, str):
-            tell(app, activity)
+        if tell is not None and isinstance(app, str):
+            tell(app, activity if isinstance(activity, str) else None)
 
     def fail_pending(self, text):
         """(any thread) whoever waits for a job's result hears link_down with text now"""
@@ -1726,8 +1726,8 @@ class Service:
             elif not data["on"]:
                 self.reactions_open = False
         elif topic == "kit.option" and isinstance(data, dict) and isinstance(data.get("app"), str) \
-                and data.get("name") == "activity" and isinstance(data.get("value"), str):
-            self.soon(self.app_paced(data["app"], data["value"]))
+                and data.get("name") == "activity":
+            self.soon(self.app_paced(data["app"], data.get("value")))
 
     async def declare(self, eid, decl):
         """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away); ABSENT when the
@@ -1867,8 +1867,7 @@ class Service:
                 continue
             if row.get("link") == "live" or await self.app_link(app) == "live":
                 live.add(app)
-            if isinstance(row.get("pace"), str):
-                self.set_pace(app, row["pace"])
+            self.set_pace(app, row.get("pace"))       # None (a kit before pace): not known, forgotten
         self.holders_are(live)
 
     async def app_paced(self, app, activity):
@@ -1901,8 +1900,6 @@ class Service:
                     await self.reactor.app_stopped(app)
                     return
                 self.hold(app, link == "live" or await self.app_link(app) == "live")
-                if isinstance(pace, str):
-                    self.set_pace(app, pace)
                 specs = [s for s in await asyncio.to_thread(self.local.app_reactions, app) or [] if isinstance(s, dict)]
                 for cap in {s.get("call") for s in specs}:
                     found = await asyncio.to_thread(self.local.capability, cap)
@@ -1913,6 +1910,7 @@ class Service:
                         except ApiError:      # it cannot start: the reaction is not taken, and said below
                             pass
                 problems = await self.reactor.app_started(app, specs)
+                self.set_pace(app, pace)      # after app_started (a start forgets the last run's); None: not known
                 for line in problems if specs else []:
                     self.journal.add("INFO", f"local extensions: {line}")
         except Exception as e:                # a bug: said, and the daemon goes on

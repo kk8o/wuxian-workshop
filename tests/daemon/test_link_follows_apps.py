@@ -100,9 +100,11 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.told[-1], (True, link.IDLE))
         self.assertEqual(await self.held(), ["companion"])
         self.assertEqual(self.paces, [("companion", "normal")])
+        self.paces.clear()
         self.emit("kit.app", {"app": "guild", "on": True})                   # standby: it holds nothing
         await self.settle()
         self.assertEqual(await self.held(), ["companion"])
+        self.assertEqual(self.paces, [("guild", None)])                      # no pace: not known
         self.emit("kit.app", {"app": "companion", "on": False, "why": "stopped"})
         await self.settle()
         self.assertEqual(self.told[-1], (False, link.IDLE))
@@ -117,7 +119,7 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         self.emit("kit.app", {"app": "companion", "on": True})              # a kit 0.6.0: no link in its event
         await self.settle()
         self.assertEqual(await self.held(), ["companion"])
-        self.assertEqual(self.paces, [])                                     # no pace: nothing said
+        self.assertEqual(self.paces, [("companion", None)])                  # a kit 0.6.0: no pace, not known
 
     async def test_a_host_before_app_link(self):
         del self.svc.local.app_link
@@ -147,8 +149,31 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         self.emit("kit.option", {"app": "companion", "name": "activity", "value": "lively"})
         self.emit("kit.option", {"app": "companion", "name": "volume", "value": 3})       # not the activity
         self.emit("kit.option", {"extension": "voice", "name": "activity", "value": "quiet"})   # an extension's
+        self.emit("kit.option", {"app": "companion", "name": "activity", "value": None})        # reset
         await self.settle()
-        self.assertEqual(self.paces, [("companion", "lively")])
+        self.assertEqual(self.paces, [("companion", "lively"), ("companion", None)])
+
+    async def test_the_pace_comes_after_the_start(self):
+        """a stop and a start in a row: app_stopped (which forgets the pace) and app_started come first, the start's
+        pace after them"""
+        order = []
+        stopped, started = self.svc.reactor.app_stopped, self.svc.reactor.app_started
+
+        async def app_stopped(app):
+            order.append(("stopped", app))
+            return await stopped(app)
+
+        async def app_started(app, specs):
+            order.append(("started", app))
+            return await started(app, specs)
+        self.svc.reactor.app_stopped, self.svc.reactor.app_started = app_stopped, app_started
+        self.svc.reactor.set_pace = lambda app, activity: order.append(("pace", app, activity))
+        self.emit("kit.app", {"app": "companion", "on": False, "why": "replaced"})
+        self.emit("kit.app", {"app": "companion", "on": True, "link": "live", "pace": "quiet"})
+        self.emit("kit.option", {"app": "companion", "name": "activity", "value": "lively"})
+        await self.settle()
+        self.assertEqual(order, [("stopped", "companion"), ("started", "companion"), ("pace", "companion", "quiet"),
+                                 ("pace", "companion", "lively")])
 
     async def test_a_reactor_before_set_pace(self):
         del self.svc.reactor.set_pace
@@ -161,6 +186,7 @@ class Holders(unittest.IsolatedAsyncioTestCase):
     async def test_kit_apps_rebuilds_them(self):
         self.emit("kit.app", {"app": "stale", "on": True, "link": "live"})  # one whose stop was missed
         await self.settle()
+        self.paces.clear()
         self.live.add("local_one")
         rows = [{"id": "companion", "title": "语音搭子", "on": True, "link": "live", "pace": "quiet"},
                 {"id": "local_one", "title": "本机的", "on": True},
@@ -168,7 +194,7 @@ class Holders(unittest.IsolatedAsyncioTestCase):
                 {"id": "guild", "title": "公会聊天", "on": True, "pace": "normal"}]
         await self.svc.holders_from(rows)
         self.assertEqual(await self.held(), ["companion", "local_one"])
-        self.assertEqual(self.paces, [("companion", "quiet"), ("guild", "normal")])
+        self.assertEqual(self.paces, [("companion", "quiet"), ("local_one", None), ("guild", "normal")])
         status = (await self.svc.status())["link"]
         self.assertEqual(status["held_titles"], {"companion": "语音搭子", "local_one": "本机的"})
         await self.svc.holders_from([{"id": "companion", "on": False}])     # it stopped meanwhile
