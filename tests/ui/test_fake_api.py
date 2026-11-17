@@ -126,8 +126,16 @@ class Endpoints(unittest.TestCase):
     def test_settings(self):
         s = self.client.get("/api/settings", headers=AUTH).json()
         self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "language", "font_scale",
-                                  "onboarded", "extension_approval"})
+                                  "onboarded", "extension_approval", "link_mode"})
         self.assertEqual(s["extension_approval"], "ask")         # a local extension's command waits for the player
+        self.assertEqual(s["link_mode"], "auto")                 # 跟随应用
+        link = self.client.get("/api/status", headers=AUTH).json()["link"]
+        self.assertEqual(link["mode"], "auto")
+        self.assertEqual(set(link["held_titles"]), set(link["held_by"]))
+        self.assertEqual(self.client.post("/api/settings", json={"link_mode": "demand"}, headers=AUTH).json()["link_mode"],
+                         "demand")
+        self.assertEqual(self.client.get("/api/status", headers=AUTH).json()["link"]["held_by"], [])
+        self.assertEqual(self.client.post("/api/settings", json={"link_mode": "x"}, headers=AUTH).status_code, 400)
         self.assertIs(s["onboarded"], False)                     # the 开始 page opens first
         self.assertIs(self.client.post("/api/settings", json={"onboarded": True}, headers=AUTH).json()["onboarded"], True)
         r = self.client.post("/api/settings", json={"mode": "player", "capture": "gdi"}, headers=AUTH).json()

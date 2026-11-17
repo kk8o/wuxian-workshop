@@ -64,7 +64,11 @@ FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's 
 # (once for each command, in the App), "auto" the workshop by itself (for developing extensions)
 EXTENSION_APPROVALS = ("ask", "auto")
 TRY_HOLD = 5                              # seconds past try's window the addon keeps the session (its end marker)
-LINK_MODES = ("demand", "always")         # the settings' link_mode: a session while things pass, or always
+# the settings' link_mode: "auto" a session always while an app that wants it runs (its link "live"), else one while
+# things pass; "always" a session always; "demand" one while things pass, whatever runs. 0.9.14 kept "demand" as its
+# default: one without link_mode_v (LINK_MODE_V, written with the player's choice) is read as "auto"
+LINK_MODES = ("auto", "always", "demand")
+LINK_MODE_V = 2
 MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
@@ -180,7 +184,11 @@ class Service:
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.describing = {}         # (UI session, addon, brief) -> the addon_api answer on its way: callers share it
         self.pours = {}              # key -> the Pouring of a long answer whose segments come (pour)
-        self.link_mode = "demand"        # the settings' link_mode in use
+        self.link_mode = "auto"          # the settings' link_mode in use
+        self.holding = threading.Lock()  # the holders and what the loop was told of them
+        self.holders = set()             # the apps that run and want the link live (link_mode auto: a session always)
+        self.app_titles = {}             # app -> its title as kit.apps or a local declaration said it (status)
+        self.link_always = None          # what the loop was last told: a session always
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -218,6 +226,7 @@ class Service:
             if hasattr(self.worker, "link_settings"):    # the companion loop (tests may give a stand-in)
                 self.worker.on_open_failed = self.open_failed
                 self.worker.on_bye = self.link_bye
+                self.worker.on_game_gone = self.game_gone
                 self.link_settings_from(self.stored_settings())
 
     # --- the worker thread -----------------------------------------------------------------------------------------
@@ -486,14 +495,81 @@ class Service:
 
     # --- the operations --------------------------------------------------------------------------------------------
 
+    @staticmethod
+    def link_mode_of(stored):
+        """the link_mode the settings kept: "auto" when none, or 0.9.14's default "demand" (no link_mode_v: not the
+        player's choice)"""
+        mode = stored.get("link_mode")
+        if mode not in LINK_MODES or mode == "demand" and stored.get("link_mode_v") != LINK_MODE_V:
+            return "auto"
+        return mode
+
     def link_settings_from(self, stored):
         """the link's setting kept (link_mode) to the loop: a session always, or one while things pass (the addon ends
-        it link.IDLE s after what passes is done)"""
-        mode = stored.get("link_mode") if stored.get("link_mode") in LINK_MODES else "demand"
-        if hasattr(self.worker, "link_settings"):
-            self.worker.link_settings(mode == "always", IDLE)
-        self.link_mode = mode
-        return mode
+        it link.IDLE s after what passes is done); auto: always while an app holds the link (hold)"""
+        with self.holding:
+            self.link_mode = self.link_mode_of(stored)
+            self.apply_link(force=True)
+        return self.link_mode
+
+    def apply_link(self, force=False):
+        """(under self.holding) the loop told whether a session is to be there always: link_mode always, or auto with
+        an app that holds the link; only when that changed (force: anyway)"""
+        always = self.link_mode == "always" or self.link_mode == "auto" and bool(self.holders)
+        if (force or always != self.link_always) and hasattr(self.worker, "link_settings"):
+            self.worker.link_settings(always, IDLE)
+        if self.link_always is not None and always != self.link_always:
+            self.journal.add("INFO", "link: a session always, kept by the app " + ", ".join(sorted(self.holders))
+                             if always and self.link_mode == "auto" else
+                             "link: a session always" if always else "link: a session while things pass")
+        self.link_always = always
+
+    def hold(self, app, live):
+        """(any thread) an app that runs and wants the link live (its link "live", or a local extension's manifest says
+        so) holds it; one that stopped or does not want it lets go"""
+        with self.holding:
+            if live == (app in self.holders):
+                return
+            if live:
+                self.holders.add(app)
+            else:
+                self.holders.discard(app)
+            self.apply_link()
+
+    def holders_are(self, apps):
+        """(any thread) the apps that hold the link now, all of them (kit.apps read again; none: the game exited)"""
+        with self.holding:
+            if set(apps) == self.holders:
+                return
+            self.holders = set(apps)
+            self.apply_link()
+
+    def held_by(self):
+        """the apps that keep the link a session always now (link_mode auto), sorted; [] in the other modes"""
+        with self.holding:
+            return sorted(self.holders) if self.link_mode == "auto" else []
+
+    def game_gone(self):
+        """(worker thread) the game process exited, or another one runs now: no app of it holds the link"""
+        self.holders_are(())
+
+    async def app_link(self, app):
+        """"live" when a local extension's manifest declares the app so (Host.app_link), else None (also with a host
+        before it)"""
+        ask = getattr(self.local, "app_link", None)
+        if ask is None:
+            return None
+        try:
+            return await asyncio.to_thread(ask, app)
+        except Exception:                     # the host could not say: as if it said nothing
+            return None
+
+    def set_pace(self, app, activity):
+        """the reactions told an app's activity now (quiet, normal, lively: their pace), with a Reactions that takes
+        it"""
+        tell = getattr(self.reactor, "set_pace", None)
+        if tell is not None and isinstance(app, str) and isinstance(activity, str):
+            tell(app, activity)
 
     def fail_pending(self, text):
         """(any thread) whoever waits for a job's result hears link_down with text now"""
@@ -578,6 +654,8 @@ class Service:
             watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
             reload_pending = comp.reload_pending()
         link["mode"] = self.link_mode
+        link["held_by"] = self.held_by()          # auto: the apps that keep the session always, and their titles
+        link["held_titles"] = {app: self.app_titles.get(app) or app for app in link["held_by"]}
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
                                 mode=self.mode, extension_approval=self.extension_approval,
@@ -1630,8 +1708,9 @@ class Service:
     def kit_event(self, topic, data):
         """(any thread) WuxianKit's events for the local side: kit.ready (a login or a reload: the extensions' apps
         are reconciled, the reactions' temporary app opened again), app.reactions (what that app heard: each item to
-        the reactions), kit.app (an app started: the reactions its manifest declares are set; stopped: the reactions
-        it owns go)"""
+        the reactions), kit.app (an app started: the reactions its manifest declares are set, it holds the link when
+        it wants it live, its activity goes to the reactions; stopped: the reactions it owns go, it lets go of the
+        link), kit.option (an app's activity changed: to the reactions)"""
         if topic == "kit.ready":
             self.reactions_open = False
             self.soon(self.reconcile_local_apps(ready=True))
@@ -1643,9 +1722,12 @@ class Service:
         elif topic == "kit.app" and isinstance(data, dict) and isinstance(data.get("app"), str) \
                 and isinstance(data.get("on"), bool):
             if data["app"] != REACTIONS_APP:
-                self.soon(self.app_runs(data["app"], data["on"]))
+                self.soon(self.app_runs(data["app"], data["on"], link=data.get("link"), pace=data.get("pace")))
             elif not data["on"]:
                 self.reactions_open = False
+        elif topic == "kit.option" and isinstance(data, dict) and isinstance(data.get("app"), str) \
+                and data.get("name") == "activity" and isinstance(data.get("value"), str):
+            self.soon(self.app_paced(data["app"], data["value"]))
 
     async def declare(self, eid, decl):
         """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away); ABSENT when the
@@ -1726,8 +1808,11 @@ class Service:
                     rows = await self.kit_read("kit.apps")
                 except ApiError:              # the game went away, or a WuxianKit before its apps
                     rows = None
-                rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)] \
-                    if isinstance(rows, list) else []
+                if isinstance(rows, list):
+                    rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)]
+                    await self.holders_from(rows, want)
+                else:
+                    rows = []
                 for row in rows:
                     if not isinstance(row.get("local"), dict) or row["id"] in want:
                         continue
@@ -1761,9 +1846,37 @@ class Service:
                             self.app_memory[app] = (ours, theirs)
                 for row in rows:              # the apps' own reactions: there while the app runs
                     if row["id"] in want and (row.get("on") is True or ready and row.get("on") is False):
-                        await self.app_runs(row["id"], row["on"])
+                        await self.app_runs(row["id"], row["on"], link=row.get("link"), pace=row.get("pace"))
         except Exception as e:                # a bug: said, and the daemon goes on
             self.journal.add("INFO", f"local extensions: reconciling their apps failed: {e!r}")
+
+    async def holders_from(self, rows, want=None):
+        """kit.apps read (after a kit.ready, the link back, the extensions changed): the apps that hold the link made
+        what it says, all of them (those that run, with link "live" or a local manifest that says so); the activity of
+        the ones that run goes to the reactions; the titles are kept for status. want: the local declarations
+        (app -> (extension, declaration)), whose titles stand in for a row without one"""
+        live = set()
+        for row in rows:
+            app = row["id"]
+            title = row.get("title")
+            if not isinstance(title, str) or not title:
+                title = ((want or {}).get(app, (None, {}))[1] or {}).get("title")
+            if isinstance(title, str) and title:
+                self.app_titles[app] = title
+            if row.get("on") is not True:
+                continue
+            if row.get("link") == "live" or await self.app_link(app) == "live":
+                live.add(app)
+            if isinstance(row.get("pace"), str):
+                self.set_pace(app, row["pace"])
+        self.holders_are(live)
+
+    async def app_paced(self, app, activity):
+        """an app's activity changed (kit.option activity): the reactions told, in turn with its kit.app events"""
+        if self.reacting is None:
+            self.reacting = asyncio.Lock()
+        async with self.reacting:
+            self.set_pace(app, activity)
 
     async def extension_running(self, eid, why):
         """the Proc of a local extension once it runs (Host.ensure). The caller may go while it starts: the start goes
@@ -1772,18 +1885,24 @@ class Service:
         inner.add_done_callback(_seen)
         return await asyncio.shield(inner)
 
-    async def app_runs(self, app, on):
+    async def app_runs(self, app, on, link=None, pace=None):
         """an app started or stopped (its kit.app event, reconcile_local_apps): while it runs the reactions its
         extension's manifest declares for it are set (Host.app_reactions; local/reactions.py app_started), owner the
-        app; when it stops they go, with what an agent set with it as owner. An extension whose capability a reaction
-        calls and that never described itself is started first"""
+        app, they hear its activity (pace), and it holds the link when it wants it live (link "live", or its local
+        manifest says so: Host.app_link); when it stops they go, with what an agent set with it as owner, and it lets
+        go of the link. An extension whose capability a reaction calls and that never described itself is started
+        first"""
         if self.reacting is None:
             self.reacting = asyncio.Lock()
         try:
             async with self.reacting:
                 if not on:
+                    self.hold(app, False)
                     await self.reactor.app_stopped(app)
                     return
+                self.hold(app, link == "live" or await self.app_link(app) == "live")
+                if isinstance(pace, str):
+                    self.set_pace(app, pace)
                 specs = [s for s in await asyncio.to_thread(self.local.app_reactions, app) or [] if isinstance(s, dict)]
                 for cap in {s.get("call") for s in specs}:
                     found = await asyncio.to_thread(self.local.capability, cap)
@@ -2919,7 +3038,7 @@ class Service:
             if "game_dir" in update and update["game_dir"] is not None and not isinstance(update["game_dir"], str):
                 raise ApiError(400, "bad_request", "game_dir: the client folder, or null")
             if "link_mode" in update and update["link_mode"] not in LINK_MODES:
-                raise ApiError(400, "bad_request", 'link_mode: "demand" or "always"')
+                raise ApiError(400, "bad_request", 'link_mode: "auto", "always" or "demand"')
             if "capture" in update:
                 self.worker.capture_wanted = update["capture"]
             if "mode" in update:
@@ -2932,6 +3051,8 @@ class Service:
             for key in ("language", "font_scale", "onboarded", "link_mode"):
                 if key in update:
                     stored[key] = update[key]
+            if "link_mode" in update:
+                stored["link_mode_v"] = LINK_MODE_V      # the player's choice: a "demand" now is one
             stored.pop("idle_minutes", None)             # 0.9.14 test builds: a session ends when what passes is done
             stored.pop("autostart", None)                # 0.9.13 and before kept a 开机自启 that started nothing
             if "language" in update:                     # what the program says from now on (i18n.py)

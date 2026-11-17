@@ -574,10 +574,21 @@ function appState() {
       if (s.game.minimized) return t('游戏窗口最小化了：还原窗口后自动恢复。');
       return t('看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。');
     },
+    get linkKept() {                           // a session always: 常开, or 跟随应用 with an app that keeps it
+      const k = this.status && this.status.link;
+      return !!k && (k.mode === 'always' || (k.mode === 'auto' && (k.held_by || []).length > 0));
+    },
+    get linkHolders() {                        // the titles of the apps that keep the session (跟随应用), else ''
+      const k = this.status && this.status.link;
+      if (!k || k.mode !== 'auto') return '';
+      const titles = k.held_titles || {};
+      return (k.held_by || []).map(id => titles[id] || id).join(t('、'));
+    },
     get linkHint() {                           // one line under 在线: what can be done now
       if (!this.linkOnline) return '';
       const k = this.status.link;
-      if (k.in_session && k.mode !== 'always') return t('正在传：传完几秒后自动收起，帧码随之隐藏。');
+      if (this.linkHolders) return t('常开 · 由 {app} 保持', { app: this.linkHolders });
+      if (k.in_session && !this.linkKept) return t('正在传：传完几秒后自动收起，帧码随之隐藏。');
       return t('Agent 现在可以自己写插件、在游戏里试，读报错和截图来调试；你也可以在开发台里自己试。');
     },
     async linkAct(action) {                    // 连上 (an empty request: a session) / 收起 (the session over), now
@@ -2905,7 +2916,7 @@ function appState() {
                     language: this.settings.language || 'auto',
                     font_scale: String(this.settings.font_scale || 100),
                     extension_approval: this.settings.extension_approval,
-                    link_mode: this.settings.link_mode === 'always' ? 'always' : 'demand' };
+                    link_mode: ['always', 'demand'].includes(this.settings.link_mode) ? this.settings.link_mode : 'auto' };
       if (this.settings.extension_approval !== asked && this.lx.list !== null) this.loadLocal(true);   // the rows' 批准 follows
       this.applyLang(this.settings.language);
       this.applyScale(this.settings.font_scale);

@@ -203,7 +203,7 @@ class Fake:
         self.last_job = 1700000
         self.subscribers = set()
         self.settings = {"mode": mode, "capture": "wgc", "capture_in_use": "wgc", "game_dir": GAME_DIR,
-                         "language": "auto", "font_scale": 100, "onboarded": False,
+                         "language": "auto", "font_scale": 100, "onboarded": False, "link_mode": "auto",
                          "extension_approval": self.extension_approval}   # the daemon's shape (daemon/service.py settings())
         # the agents' page (agents.py's shape): Claude Code points at an older copy, Codex, Trae CN and WorkBuddy are not
         # connected, no Cursor and no international Trae
@@ -286,7 +286,11 @@ class Fake:
             "link": {"state": self.link_state, "session": self.session if online else None,
                      "slot_next": 4096 - self.slots_left + 1, "slots_left": self.slots_left, "hb": 15,
                      "capture": self.settings["capture_in_use"], "ping_p50": round(self.ping, 3) if online else None,
-                     "last_frame": self.last_frame if online else None, "addon_version": __version__ if online else None},
+                     "last_frame": self.last_frame if online else None, "addon_version": __version__ if online else None,
+                     # 跟随应用: the voice companion runs and keeps the session while the link is up
+                     "mode": self.settings["link_mode"], "in_session": online,
+                     "held_by": ["companion"] if online and self.settings["link_mode"] == "auto" else [],
+                     "held_titles": {"companion": "语音搭子"} if online and self.settings["link_mode"] == "auto" else {}},
             "watch": list(self.watch),
             "reload_pending": self.reload_pending,
             "mcp_url": url + "mcp" if url else None,
@@ -1516,7 +1520,9 @@ class Fake:
 
     def update_settings(self, changes):
         """POST /api/settings as the daemon takes it: mode, capture, game_dir, language, font_scale,
-        extension_approval (unknown keys ignored)"""
+        extension_approval, link_mode (unknown keys ignored)"""
+        if "link_mode" in changes and changes["link_mode"] not in ("auto", "always", "demand"):
+            raise ValueError('link_mode: "auto", "always" or "demand"')
         if "capture" in changes and changes["capture"] not in ("gdi", "wgc"):
             raise ValueError('capture: "gdi" or "wgc"')
         if "extension_approval" in changes and changes["extension_approval"] not in ("ask", "auto"):
@@ -1541,6 +1547,8 @@ class Fake:
             self.settings["onboarded"] = bool(changes["onboarded"])
         if "extension_approval" in changes:
             self.settings["extension_approval"] = changes["extension_approval"]
+        if "link_mode" in changes:
+            self.settings["link_mode"] = changes["link_mode"]
         self.mode = self.settings["mode"]
         was, self.extension_approval = self.extension_approval, self.settings["extension_approval"]
         self.entry("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in changes.items()))

@@ -344,7 +344,7 @@ class Daemon(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_and_the_app_buttons(self):
         st = (await self.svc.status())["link"]
-        self.assertEqual((st["state"], st["standby"], st["opening"], st["mode"]), ("standby", True, False, "demand"))
+        self.assertEqual((st["state"], st["standby"], st["opening"], st["mode"]), ("standby", True, False, "auto"))
         self.assertNotIn("idle_minutes", st)
         res = await self.svc.link_action("open")
         self.assertEqual((res["ok"], res["state"]), (True, "standby"))   # no game here: still opening

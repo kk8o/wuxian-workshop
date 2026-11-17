@@ -162,6 +162,7 @@ class CompanionLoop:
         self.on_up = None                            # the daemon's: (session) once it can be told things (again)
         self.on_open_failed = None                   # the daemon's: (text) when the game did not answer an opening
         self.on_bye = None                           # the daemon's: (why) when the player ended the session
+        self.on_game_gone = None                     # the daemon's: () when the game process exited or another runs
         self.always, self.idle = False, IDLE         # the daemon's settings: a session always; the addon's idle time
         self.bell_file = state_dir() / "doorbell.json"
         self.bell = self._load_bell()                # the frame's place in client pixels (x, y) for the doorbell, or None
@@ -460,6 +461,7 @@ class CompanionLoop:
             comp.standby = stands_by(self.addons)      # what the game loaded at its start (an install comes before it)
             comp.new_process(f"P{win.pid}-{int(start)}", age=time.time() - start if start else None)
             self.pid = (win.pid, int(start))           # only once that worked: a failure is tried again next round
+            self._game_gone()                          # what ran in the last process (its apps) does not run here
             self.geom = None
             self._window_changed()
         now = time.time()
@@ -595,6 +597,11 @@ class CompanionLoop:
             self.comp.game_gone()
         except OSError as e:
             self.log(f"the game has exited; its mailbox slots could not be emptied: {e}")
+        self._game_gone()
+
+    def _game_gone(self):
+        if self.on_game_gone is not None:
+            self.on_game_gone()
 
     def _file_commands(self, win):
         """lines appended to state/say.txt and state/command.txt"""

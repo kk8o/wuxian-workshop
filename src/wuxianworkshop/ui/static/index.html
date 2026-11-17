@@ -249,7 +249,7 @@
             </div>
             <div class="ov-acts" x-t>
               <button x-t class="btn primary" x-show="status && val(status, 'link.state') === 'standby'" @click="linkAct('open')" title="现在就连上，不等 AI 调用"><svg class="ico"><use href="#i-bolt"/></svg>连上</button>
-              <button x-t class="btn" x-show="linkOnline && val(status, 'link.in_session') && val(status, 'link.mode') !== 'always'" @click="linkAct('rest')" title="收起会话：帧码隐藏，有东西要传时自动连上">收起</button>
+              <button x-t class="btn" x-show="linkOnline && val(status, 'link.in_session') && !linkKept" @click="linkAct('rest')" title="收起会话：帧码隐藏，有东西要传时自动连上">收起</button>
               <button class="btn primary" x-show="status && !linkReady" @click="go('doctor')"><svg class="ico"><use href="#i-shield"/></svg>自检与修复</button>
               <button class="btn" :class="{primary: linkOnline}" @click="go('dev')"><svg class="ico"><use href="#i-console"/></svg>打开开发台</button>
               <button class="btn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found)"><svg class="ico"><use href="#i-camera"/></svg>截一张图</button>
@@ -1719,10 +1719,12 @@
               <label class="field">
                 <span>链路</span>
                 <select class="input" name="link_mode" x-model="form.link_mode">
-                  <option value="demand">按需：有东西要传时才连上，传完就收起</option>
-                  <option value="always">常开：游戏进入世界就一直连着（常用语音搭子这类来回对话的扩展时选它）</option>
+                  <option value="auto">跟随应用（默认）</option>
+                  <option value="always">常开</option>
+                  <option value="demand">按需</option>
                 </select>
               </label>
+              <p class="muted small">跟随应用：语音搭子这类要即时反应的应用运行时一直连着，其余时间传完就收。</p>
               <p class="muted small">按需连接要游戏里的 WoWBridge 0.9.14 或更新；更早的版本一直连着。</p>
               <label class="field">
                 <span>游戏目录</span>

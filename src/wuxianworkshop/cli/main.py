@@ -92,7 +92,8 @@ lines on stdout:
   TIMEOUT              --max seconds are over (NEXT <item id> comes before it): run it again
 
 It exits with code 0 after END and TIMEOUT and, with --once, after the first batch (an app WuxianKit does not know:
-END stopped, code 1). While it waits it is the app's heartbeat (kit.app.status every max(30, lease / 3) seconds).
+END stopped, code 1). While it waits it is the app's heartbeat (kit.app.status every max(30, lease / 3) seconds;
+while the link stands by with no session, only once lease - max(90, lease / 3) seconds have passed since the last one).
 
 The game away (not running, minimized, the link down) or the daemon gone: it waits and tries again every 5 seconds,
 says so once on stderr, and prints nothing on stdout; only --max ends that (TIMEOUT). Once the game answers again it
@@ -691,6 +692,8 @@ class Listening:
         self.at = None                      # where the daemon's journal is read from (its own ids)
         self.joined = self.opened = self.woke = False
         self.every = self.beat = None       # the heartbeat: every so many seconds, the next one
+        self.slack = None                   # seconds a heartbeat may wait while the link stands by (spare)
+        self.beaten = None                  # when the last heartbeat went
         self.retry = 0.0                    # when what failed is tried again
         self.held = []                      # wakes that wait for the cursor or behind a catch-up that failed, in order
         self.said, self.wide = None, False
@@ -744,8 +747,25 @@ class Listening:
             self.end(status.get("why") if isinstance(status, dict) else None)
         lease = status.get("lease")
         self.every = max(30.0, lease / 3) if is_number(lease) and lease > 0 else None
-        self.beat = clock() + self.every if self.every else None
+        self.slack = lease - max(90.0, lease / 3) if self.every else None
+        self.beaten = clock()
+        self.beat = self.beaten + self.every if self.every else None
         return status
+
+    def spare(self, now):
+        """whether the heartbeat due now waits: the link stands by (no session: a heartbeat would open one for itself
+        alone) and the lease still has room, until lease - max(90, lease / 3) s after the last one (then beat moves
+        there). The daemon's status says how the link is; one that cannot be read: the beat goes as it is due"""
+        if self.slack is None or self.beaten is None or now - self.beaten >= self.slack:
+            return False
+        try:
+            state = ((self.client.status() or {}).get("link") or {}).get("state")
+        except Exception:                   # the daemon gone, slow, or a stand-in without status: beat as before
+            return False
+        if state != "standby":
+            return False
+        self.beat = self.beaten + self.slack
+        return True
 
     def join(self):
         """read the status (the first time: OPEN); the cursor is its `sent` (`next` without one) when --since gave
@@ -860,7 +880,7 @@ class Listening:
             if self.at is None:               # the journal from now on, taken before the status: no wake after it is lost
                 self.at = self.ask(-1, 0)["next"]
             if now >= self.retry:
-                if not self.joined or (self.beat is not None and now >= self.beat):
+                if not self.joined or (self.beat is not None and now >= self.beat and not self.spare(now)):
                     self.join()
                 if self.joined and self.missed:
                     self.missed = not self.catch_up()

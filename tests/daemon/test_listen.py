@@ -465,5 +465,63 @@ class Away(unittest.TestCase):
         self.assertEqual(([(w["data"]["reason"], ids(w)) for w in wakes(out)], out[-1]), ([("catchup", [41])], "NEXT 41"))
 
 
+class Linked(Daemon):
+    """a daemon whose status says how the link is: states [(from s, state)], the last that has begun; None: the
+    status cannot be read"""
+
+    def __init__(self, game, states, **kw):
+        super().__init__(game, **kw)
+        self.states, self.looked = states, []
+
+    def status(self):
+        self.looked.append(round(self.game.now - 1000.0, 3))
+        state = [st for at, st in self.states if 1000.0 + at <= self.game.now][-1]
+        if state is None:
+            raise ApiError(503, "stopping", "the daemon is shutting down")
+        return {"link": {"state": state}}
+
+
+class Heartbeat(unittest.TestCase):
+    """the heartbeat while the link stands by waits until lease - max(90, lease / 3) s after the last one (a beat would
+    open a session for itself alone); online, or the status not read: every max(30, lease / 3) s as ever"""
+
+    def beats(self, states, lease=600):
+        game = Game(heard=[40], lease=lease)
+        daemon = Linked(game, states)
+        code, out, _ = listen(daemon, "--once")                                     # --once: 1500 s
+        self.assertEqual((code, out[1:]), (0, ["NEXT 40", "TIMEOUT"]))
+        return [at for _, _, at in game.calls], daemon.looked
+
+    def test_standing_by(self):
+        beats, looked = self.beats([(0, "standby")])
+        self.assertEqual(beats, [0.0, 400.0, 800.0, 1200.0])                        # 600 - 200
+        self.assertEqual(looked, [200.0, 600.0, 1000.0, 1400.0])                    # each due beat asks first
+
+    def test_online(self):
+        beats, _ = self.beats([(0, "online")])
+        self.assertEqual(beats, [0.0] + [200.0 * n for n in range(1, 8)])
+
+    def test_the_link_comes_up(self):
+        beats, _ = self.beats([(0, "standby"), (500, "online")])
+        self.assertEqual(beats, [0.0, 400.0, 600.0, 800.0, 1000.0, 1200.0, 1400.0])
+
+    def test_offline_beats_as_ever(self):
+        beats, _ = self.beats([(0, "offline")])                                     # its failure is said as ever
+        self.assertEqual(beats, [0.0] + [200.0 * n for n in range(1, 8)])
+
+    def test_a_status_that_cannot_be_read(self):
+        beats, _ = self.beats([(0, None)])
+        self.assertEqual(beats, [0.0] + [200.0 * n for n in range(1, 8)])
+
+    def test_a_short_lease_has_no_room(self):
+        beats, looked = self.beats([(0, "standby")], lease=90)                      # 90 - 90: every 30 s
+        self.assertEqual(beats, [30.0 * n for n in range(50)])
+        self.assertEqual(looked, [])
+
+    def test_no_lease_no_heartbeat(self):
+        beats, looked = self.beats([(0, "standby")], lease=0)
+        self.assertEqual((beats, looked), ([0.0], []))
+
+
 if __name__ == "__main__":
     unittest.main()
