@@ -44,6 +44,9 @@ stand-in for players without 无限工坊, so the addon works for everyone):
 - `WB:Emit(topic, data)`: an event the agent reads with `events`. Use it in place of `print` when you debug.
 - `WB:Expose(name, fn, doc)`: a function the agent calls with `call {"addon": "MyAddon", "name": "...", "args": {}}`.
 - `WB:Request`: a question to the agent: an event with a `request` id, answered with `respond`.
+- `WB:OnPour(name, fn)` (0.9.15): when the answer of an exposed `name` is long enough to pour, `fn(info)` as it starts
+  and as each segment is in (`done`, `total`, `bytes`, `seconds`, `answer`; `done == total`: all in). Check `WB.OnPour`
+  first: an older WoWBridge has none.
 
 `addon_api {"addon": "MyAddon"}` lists what an addon offers. The `.toc` says `## OptionalDeps: WoWBridge`.
 

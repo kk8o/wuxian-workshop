@@ -8,6 +8,16 @@
 --                                  the agent answers with `respond`; callback(reply) then, or callback(nil, "timeout") when
 --                                  no answer came in `timeout` seconds (default 60), or callback(nil, "dropped") when it
 --                                  could not go (the link busy); returns the request id
+--   handle:OnPour(name, fn)        (0.9.15) how far the answer of `name` (one the addon exposed) is on its way up, when
+--                                  it is long enough to pour (Agent.lua): fn(info) once as the pour starts (done 0) and
+--                                  once for every segment acknowledged; info = { done, total (the segments of this pour;
+--                                  of the ones sent again, for a pour of a few), bytes (handed to the link so far),
+--                                  seconds (since it started), answer (bytes of the whole rest, past its first piece) };
+--                                  done == total: all of it is in. Never called for an answer that fits in one piece,
+--                                  nor when the link goes down and the pour stops (an addon judges a stall by how long
+--                                  no news came). One fn a name: registering again replaces it, nil removes it; an fn
+--                                  that raises goes to the error handler and the pour goes on. An older WoWBridge has
+--                                  no OnPour: check handle.OnPour first
 -- An event's data is written to WoWBridge.EVENT_DEPTH levels of tables (8; a table past them goes as the text "<table>"),
 -- a call's answer to one more (its result is one level in). An addon that sizes what it sends reads the number
 -- (WuxianKit does: a wake carries its items' data five levels down); a WoWBridge before 0.9.13 wrote 6 and said none.
@@ -35,7 +45,8 @@ local Json = ns.Json
 
 local RATE, BURST, MAX, KEEP, QUEUE, QUEUE_BYTES, NAME_MAX = 10, 20, 8000, 20, 40, 6000, 64
 
-local addons = {}     -- addon -> { exposed = { name -> { fn, doc } }, order = { names }, topics = { topic -> n }, tokens, at, dropped }
+local addons = {}     -- addon -> { exposed = { name -> { fn, doc } }, order = { names }, topics = { topic -> n },
+                      -- pours = { name -> fn (OnPour) }, tokens, at, dropped }
 local waiting = {}    -- events from before the link was online, oldest first: { text, entry, request, deadline }
 local pending = {}    -- request id -> { addon, topic, callback }, until answered or timed out
 local asked = 0       -- requests made in this UI session (the ids: "<WoWBridge session>.<n>")
@@ -43,7 +54,7 @@ local asked = 0       -- requests made in this UI session (the ids: "<WoWBridge 
 local function Entry(addon)
 	local e = addons[addon]
 	if not e then
-		e = { exposed = {}, order = {}, topics = {}, tokens = BURST, at = GetTime(), dropped = 0 }
+		e = { exposed = {}, order = {}, topics = {}, pours = {}, tokens = BURST, at = GetTime(), dropped = 0 }
 		addons[addon] = e
 	end
 	return e
@@ -171,7 +182,16 @@ local function Expose(self, name, fn, doc)
 	return true
 end
 
-local Handle = { Emit = Emit, Expose = Expose, Request = Request }
+local function OnPour(self, name, fn)
+	if type(name) ~= "string" or #name > NAME_MAX or not name:match("^[%w_.:%-]+$") then
+		error(("OnPour(name, fn): the name is letters, digits and _ . : - (at most %d)"):format(NAME_MAX), 2)
+	end
+	if fn ~= nil and type(fn) ~= "function" then error("OnPour(name, fn): fn is a function, or nil to stop", 2) end
+	Entry(self.addon).pours[name] = fn
+	return true
+end
+
+local Handle = { Emit = Emit, Expose = Expose, Request = Request, OnPour = OnPour }
 Handle.__index = Handle
 
 -- the handle of an addon (its name: the first ... of its files)
@@ -249,6 +269,12 @@ function WB.Describe(addon, brief)
 end
 
 C_Timer.NewTicker(1, Flush)      -- what waited goes once the link is online
+
+-- the fn an addon gave OnPour for one of its names, or nil (Agent.lua asks as a pour of that name's answer goes on)
+function ns.PourWatcher(addon, name)
+	local e = addons[addon]
+	return e and e.pours[name] or nil
+end
 
 -- events waiting for the link to be online (Link.lua: they ring the doorbell)
 function ns.EventsWaiting() return #waiting end
