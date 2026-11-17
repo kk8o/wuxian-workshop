@@ -550,6 +550,7 @@ function appState() {
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'missing') return t('等待安装');
       const st = this.status.link.state || (this.status.game.found ? 'waiting' : 'offline');
       if (st === 'standby') return t('就绪 · 待命');
+      if (st === 'offline' && this.status.link.hidden) return t('游戏已最小化');
       if (st === 'online' && this.status.link.in_session) return t('就绪 · 正在传');
       return t(LINK_TEXT[st] || st);
     },
@@ -2765,7 +2766,8 @@ function appState() {
       return cs.length ? cs.every(c => c.ok === true) : this.linkOnline;
     },
     get startSteps() {
-      return [['game', this.stepGame], ['install', this.stepInstall], ['enter', this.linkReady],
+      return [['game', this.stepGame], ['install', this.stepInstall],
+              ['enter', this.linkOnline || (this.linkReady && !!this.status.link.addon_version)],
               ['agent', !!(this.agents.list && this.agents.list.some(h => h.state === 'ok'))], ['first', this.start.first.loaded]];
     },
     get startDone() { return this.startSteps.filter(s => s[1]).length; },

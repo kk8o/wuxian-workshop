@@ -568,6 +568,7 @@ class Service:
             link.update(state=comp.link_state() if standby else "online" if comp.link_up else "offline",
                         standby=standby, opening=standby and comp.opening is not None,
                         in_session=standby and bool(comp.session),
+                        hidden=standby and getattr(comp, "hidden", False) is True,   # why it is offline
                         rested=dict(at=round(comp.rested[0], 3), why=comp.rested[1]) if standby and comp.rested else None)
             link.update(session=comp.current, slot_next=comp.slot,
                         slots_left=(MB.POOL - comp.slot + 1) if comp.slot is not None else None, hb=s.hb if s else None,
@@ -2493,6 +2494,9 @@ class Service:
                                                 f"used), nothing reaches the game until it is fully restarted (a /reload "
                                                 f"does not help)")
         if not self.takes_requests(comp, getattr(comp, "link_up", True)):
+            if getattr(comp, "hidden", False) is True:
+                raise ApiError(409, "link_down", f"{what}: the game window is minimized: nothing reaches it until the "
+                                                 f"player brings it back")
             raise ApiError(409, "link_down", f"{what}: no frames come from the game (not running, minimized, at the "
                                              f"character screen or on a loading screen); try again once `status` says "
                                              f"the link is online")

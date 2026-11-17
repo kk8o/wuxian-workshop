@@ -320,7 +320,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
 		if not entered then
 			entered = true
 			C_Timer.NewTicker(1, Tick)
-			ns.Link.Start(db, Print, cfg.autoLink ~= false)   -- connected: the link says so in the chat
+			ns.Link.Start(db, Print, cfg.autoLink ~= false, arg1 == true)   -- (arg1: isInitialLogin)
 			if cfg.autoLink ~= false then
 				C_Timer.After(WAIT_SAY, function()
 					if ns.Link.State() == "hello" and ns.Link.SlotsLeft() > 0 then Print(L.WAITING_CHAT) end   -- 0: UI.lua says why

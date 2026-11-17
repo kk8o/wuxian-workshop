@@ -119,7 +119,8 @@ local function Send(self, topic, data, request, timeout)
 	if online and #waiting == 0 then
 		ns.Link.Send(Out(item), "event")
 	else                                                    -- behind the ones still waiting, in order
-		if #waiting >= KEEP then Evict() end
+		if #waiting >= ((ns.Link.CanStandBy and ns.Link.CanStandBy()) and QUEUE or KEEP) then Evict() end   -- (standing
+		                                                    -- by: they ring, and go in a second or two)
 		waiting[#waiting + 1] = item
 		Flush()
 	end
@@ -227,9 +228,10 @@ local function Describe(name, e, brief)
 	return { addon = name, exposed = exposed, topics = e.topics, requests = waiting_for }
 end
 
--- whether 无限工坊 is linked now (the link online): for an addon that tells the player (WuxianKit's window), so it
--- never reads WoWBridge's insides
+-- whether 无限工坊 is linked now: the link online, or (0.9.14) standing by with the app there, which opens a session for
+-- whatever passes; for an addon that tells the player (WuxianKit's window), so it never reads WoWBridge's insides
 function WB.Online()
+	if ns.Link.Reachable then return ns.Link.Reachable() == true end
 	return Online()
 end
 

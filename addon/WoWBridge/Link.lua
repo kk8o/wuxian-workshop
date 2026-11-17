@@ -60,7 +60,8 @@
 --   why=off) and the app's "rest <ms>" (its 收起: why=rest).
 -- The app also says "here <ms> <app>" (it runs: at its start and every few minutes) and "bye <ms>" (it quits: no
 -- doorbell until it is back). The addon stands by only after an app said "here" or stamped a packet (db.appNew): an
--- older app does neither, and the addon shows its HELLO as ever. Off, the mailbox is still read (no backlog builds up
+-- older app does neither, and the addon shows its HELLO as ever; and entering the world in a new game process with no app
+-- heard within LOGIN_QUIET s (an app started after the addon read the mailbox, or an older one) shows it LOGIN_SHOW s. Off, the mailbox is still read (no backlog builds up
 -- meanwhile) and only "here" and "bye" are heard. A session kept across /reload (db.link) shows its HELLO at once, as
 -- ever; a new app ("here" with another <app>) reads the frames of one going on and takes it over.
 local _, ns = ...
@@ -96,6 +97,13 @@ local RING_AGAIN, RING_MAX = 60, 600             -- seconds before the doorbell 
 local FLAT_AFTER = 4                             -- seconds of HELLO unanswered after which an addon that never heard an
                                                  -- app that stands by draws every other HELLO in mode 1 (apps before 0.9.9)
 local LEAVE_SHOW = 0.8                           -- seconds the BYE frame stays up before the frame goes
+local LOGIN_QUIET, LOGIN_SHOW = 20, 10           -- entering the world in a new game process, standing by: no app heard
+                                                 -- within LOGIN_QUIET s (it says "here" first thing in a game process it
+                                                 -- sees), the HELLO shows LOGIN_SHOW s: an app that started after the
+                                                 -- addon read the mailbox's stamp, or an older one, learns where it reads.
+                                                 -- The doorbell waits for it (no app there: 10 s of frame, not 30)
+local REACH = 660                                -- s an app that stands by counts as there after its last packet (it says
+                                                 -- "here" every 600 s while there is no session: link.py PRESENCE_EVERY)
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
@@ -129,6 +137,9 @@ local lastBusy               -- when something last passed in this session (a re
 local holdUntil = 0          -- the app listens until then ("hold <s>"): the session does not end idle before
 local ringAfter, ringBackoff = 0, RING_AGAIN      -- the doorbell rings again from then on; the wait after the next giveup
 local held                   -- the frame is unlocked (L.Hold): a session, that does not end idle
+local heardApp               -- an app that stands by said "here" or stamped a packet since this UI loaded
+local loginCheck             -- when to show the HELLO if no app was heard by then (LOGIN_QUIET)
+local helloLimit             -- seconds this HELLO shows unanswered before standing by again (nil: HELLO_GIVEUP)
 local queue = {}             -- messages not acknowledged yet (see Send)
 local Squeeze                -- a block of a long message into its squeeze (defined with Shape)
 local Pouring                -- the next segments of the pours into the queue (defined with L.Pour)
@@ -301,8 +312,9 @@ end
 
 -- a session: HELLO at once, then as ever. kept: the app's stamped packet opened it (the app reads the screen from its
 -- write on, and waits for what it asked across a /reload too); a doorbell's is kept once the app answers
-local function Open(kept)
+local function Open(kept, limit)
 	state, helloSince, helloJob, lastControl, leaving = "hello", GetTime(), ns.Agent.LastJob(), nil, nil
+	helloLimit = limit
 	lastBusy = GetTime()
 	if kept then db.link = "session" end
 	for _, m in ipairs(queue) do m.again = 0 end    -- what waited goes up within rto
@@ -522,6 +534,7 @@ local function Say(pkt)
 		if (cmd == "here" or cmd == "at" or cmd == "wake") and not db.appNew then
 			Print(ns.L.MET_APP)                         -- the first app that rings and stands by: said once
 		end
+		if cmd == "here" or cmd == "at" or cmd == "wake" then heardApp = true end
 		if cmd == "here" then                           -- (another app, started anew, takes a session going on over:
 			db.appNew, appAway = true, nil              -- it reads the frames and welcomes them)
 			if b ~= "" then db.appId = b end
@@ -559,6 +572,7 @@ end
 local function OnPacket(pkt)
 	local now = GetTime()
 	lastPacket = now
+	db.heardAt = time()                              -- (kept across /reload: L.Reachable)
 	stats.packets = stats.packets + 1
 	ringAfter, ringBackoff = 0, RING_AGAIN           -- an app reads the mailbox: the doorbell may ring at once
 	local opened = Say(pkt)
@@ -624,13 +638,18 @@ function L.Tick()
 			offlineSaid = true
 		end
 		ns.Console.Add("LINK", ns.L.CON_LINK_DOWN)
-	elseif state == "hello" and db.appNew and now - math.max(helloSince or 0, lastPacket or 0) > HELLO_GIVEUP then
+	elseif state == "hello" and db.appNew and now - math.max(helloSince or 0, lastPacket or 0) > (helloLimit or HELLO_GIVEUP) then
 		StandBy()                            -- nobody answers: stand by rather than show HELLO; ring again later
 		ringAfter, ringBackoff = now + ringBackoff, math.min(ringBackoff * 2, RING_MAX)
 	elseif state == "online" and db.appNew and P.idle > 0 and Quiet(now) then
 		Leave("standby", "idle")
-	elseif state == "standby" and db.appNew and not appAway and now >= ringAfter and (held or Wanted()) then
-		Open(false)                          -- the doorbell
+	elseif state == "standby" and db.appNew and not appAway and now >= ringAfter
+			and (held or (Wanted() and (heardApp or not loginCheck))) then
+		Open(false)                          -- the doorbell (after a login, not before LOGIN_QUIET unless an app was heard)
+	end
+	if loginCheck and now >= loginCheck then
+		loginCheck = nil
+		if state == "standby" and not heardApp then Open(false, LOGIN_SHOW) end
 	end
 	ns.Debug.Tick(now)
 	ns.UI.CheckSlots()
@@ -885,6 +904,14 @@ function L.State() return state end
 -- the app said "bye" since it last said "here" (the panel, the minimap)
 function L.AppAway() return appAway == true end
 
+-- whether the app can reach the addon now (WoWBridge.Online, for addons that tell the player): a session on, or standing
+-- by (also opening or ending one) with an app that stands by, heard within REACH s and not gone ("bye")
+function L.Reachable()
+	if state == "online" then return true end
+	if not (db and db.appNew) or appAway or state == "off" then return false end
+	return time() - (db.heardAt or 0) < REACH
+end
+
 -- whether an app that wakes the addon was heard (db.appNew): /wb on stands by then, else shows HELLO
 function L.CanStandBy() return db ~= nil and db.appNew == true end
 
@@ -957,8 +984,9 @@ local tickers = {}
 local mailEvery = 0.05         -- s between looks at the mailbox (0.25 before 0.9.14; L.MailEvery)
 
 -- on: false starts the link off (autoLink off: the mailbox read, nothing heard but "here" and "bye"). Stands by when an
--- app that wakes the addon was heard and no session was going on before the /reload; else HELLO, as ever
-function L.Start(savedDb, print, on)
+-- app that wakes the addon was heard and no session was going on before the /reload; else HELLO, as ever. initial: the
+-- first entering of the world in this game process (PLAYER_ENTERING_WORLD's isInitialLogin): LOGIN_QUIET
+function L.Start(savedDb, print, on, initial)
 	db, Print = savedDb, print
 	if #tickers > 0 then return end     -- already running
 	nextId = db.nextData or 1
@@ -967,6 +995,7 @@ function L.Start(savedDb, print, on)
 		state = "off"
 	elseif db.appNew and db.link ~= "session" then
 		state = "standby"
+		loginCheck = initial and GetTime() + LOGIN_QUIET or nil
 	else
 		state, helloSince = "hello", GetTime()
 	end

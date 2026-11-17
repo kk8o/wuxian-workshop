@@ -105,6 +105,9 @@ OPEN_WAIT = 12.0                # seconds after a stamped packet within which fr
 SESSION_LOST = 15.0             # seconds without frames after which a session is taken as over (its BYE not seen)
 REST_SETTLE = 3.0               # seconds after a rest in which the addon's frames are its last ones, not a doorbell
 PRESENCE_EVERY = 600.0          # seconds between "here" packets while there is no session
+OLD_PROCESS = 15.0              # seconds a game process ran before the app saw it, past which its addon may have read
+                                # proc.ttf (the login screen comes first: an app that saw the start writes it before)
+OLD_ROOM = 512                  # mailbox slots that must be left to go on after the last process's
 STANDBY_ACK = 2.0               # seconds within which a session that may end soon acknowledges (lazy: ack_lazy)
 IDLE = 3.0                      # seconds after the last thing passed that the addon ends a session (what passes is done)
 ALWAYS_AGAIN = 60.0             # seconds between openings while the settings want a session always and none comes
@@ -363,6 +366,7 @@ class Companion(AgentCommands):
         # standing by (STANDBY, 0.9.14): see the module docstring
         self.standby = False          # the addon stands by (the daemon says so: the installed WoWBridge's version)
         self.legacy = False           # ... but a HELLO said it does not (an older one still loaded): till the process ends
+        self.hidden = False           # the game window is minimized (the companion says so): nothing drawn, none opens
         self.session = False          # a session is on (frames seen and no BYE yet) or opening: the frames are read
         self.opening = None           # when a stamped packet opened one, until frames come or OPEN_WAIT runs out
         self.open_slot = None         # ... its slot
@@ -400,15 +404,26 @@ class Companion(AgentCommands):
         self.floor = 1                              # slots below were written by an earlier program in this process
         return len([r for r in stale if r[0] != MB.WELCOME])
 
-    def new_process(self, stamp):
+    def new_process(self, stamp, age=None):
         """a game process this companion has not seen: the slots it wrote before are free again. For an addon that
         stands by, a stamp proc.ttf already holds is the same process with this program started again: the slots stay as
-        they are and the writing goes on after the last one written (the addon read them all, or reads them first)"""
-        same = self.standby and MB.read_proc(self.addons) == stamp
+        they are and the writing goes on after the last one written (the addon read them all, or reads them first).
+        age: seconds the process ran before this program saw it. Past OLD_PROCESS its addon may have read proc.ttf
+        already, the last process's stamp, and waits after the slots of that one (standing by it shows nothing to say
+        where): proc.ttf is kept and the writing goes on after them, as the addon does (one that reads elsewhere, an
+        older app's process or another account's, says so in its login HELLO: floor 1, so the slots below are written
+        again for it)"""
+        proc = MB.read_proc(self.addons)
+        same = self.standby and proc == stamp
+        old = (self.standby and not same and proc is not None and age is not None and age > OLD_PROCESS
+               and MB.last_written(self.addons) < MB.POOL - OLD_ROOM)
         dropped = self._forget()
-        if same:
-            self.slot = self.floor = MB.last_written(self.addons) + 1
-            self.note(f"game process {stamp} goes on: writing from mailbox slot {self.slot}")
+        if same or old:
+            self.slot = MB.last_written(self.addons) + 1
+            self.floor = 1 if old else self.slot
+            self.note(f"game process {stamp} goes on: writing from mailbox slot {self.slot}" if same else
+                      f"game process {stamp} ran {age:.0f} s before this program saw it: proc.ttf kept ({proc}), "
+                      f"writing from mailbox slot {self.slot}, after the last process's")
             return
         n = MB.reset(self.addons)
         MB.write_proc(self.addons, stamp)
@@ -508,8 +523,9 @@ class Companion(AgentCommands):
         features = _int(f, "f") or 0
         if kind == "PONG" and s.version_text is None and f.get("v"):
             s.version_text = f["v"]                 # which addon, for status only (a session seen without its HELLO)
-        if kind == "HELLO" and self.standby and not self.legacy and features < STANDBY:
-            self.legacy, self.session, self.opening = True, True, None   # an older addon loaded: on as ever
+        if kind in ("HELLO", "PONG") and self.standby and not self.legacy and features < STANDBY:
+            # an older addon loaded: on as ever (a PONG too: a session seen without its HELLO, after a restart)
+            self.legacy, self.session, self.opening = True, True, None
             self.note(f"session {s.sid}: addon {f.get('v')} does not stand by: the link stays up (until the game restarts)")
         if kind == "BYE":
             self._bye(s, f.get("why") or "hide", k, now)
@@ -576,8 +592,9 @@ class Companion(AgentCommands):
         return self.standby and not self.legacy
 
     def can_open(self):
-        """whether records for the game open a session by themselves: the addon stands by, and the mailbox takes them"""
-        return self.standing_by() and self.slot is not None and not self.full
+        """whether records for the game open a session by themselves: the addon stands by, the window is not minimized
+        (nothing drawn: the request would run unseen, its result lost), and the mailbox takes them"""
+        return self.standing_by() and self.slot is not None and not self.full and not self.hidden
 
     def takes_requests(self):
         """whether a request reaches the game now: an addon that stands by takes it in a session going on or one it
@@ -598,6 +615,12 @@ class Companion(AgentCommands):
     def _hold(record):
         """whether a record is a "hold <s>" (it belongs to the request after it)"""
         return record[0] == MB.COMMAND and record[1].startswith(b"hold ")
+
+    @classmethod
+    def _stamps(cls, record):
+        """whether a packet with this record goes stamped while the addon may end the session: a request, or a hold
+        (its request may come in the next packet; the addon takes a hold only in a session)"""
+        return cls._request(record) or cls._hold(record)
 
     @staticmethod
     def _kind(record):
@@ -753,14 +776,18 @@ class Companion(AgentCommands):
                 self._session_over(now, f"no frames for {SESSION_LOST:.0f} s")
             return
         if any(self._request(r) for r in self.outbox):
-            self.open()
+            if self.hidden:                         # none opens: what waits fails now (it would run when one does)
+                self._open_failed(now, None, "the game window is minimized: nothing reaches it until the player brings "
+                                             "it back")
+            else:
+                self.open()
         elif self.always and self.can_open() and (self.always_tried is None or now - self.always_tried >= ALWAYS_AGAIN):
             self.always_tried = now
             self.open("the settings want a session always")
         elif self.slot is not None and (self.last_packet is None or now - self.last_packet >= PRESENCE_EVERY):
             self.present()
 
-    def _open_failed(self, now, why):
+    def _open_failed(self, now, why, text=None):
         """no frames after an opening: no session; what rode with it is not sent again (the addon drops it once the
         stamp is old), nor are the requests that waited behind it, and whoever waits on them hears so"""
         self.session, self.opening = False, None
@@ -768,8 +795,9 @@ class Companion(AgentCommands):
             self.written[self.open_slot] = [r for r in self.written[self.open_slot]
                                             if not self._request(r) and not self._hold(r)]
         self.outbox = [r for r in self.outbox if not self._request(r) and not self._hold(r)]
-        text = (f"the game did not answer ({why}): WoWBridge may be off (/wb on in the game), or the game is not in "
-                f"the world (the character screen, a loading screen, minimized)")
+        text = text or (f"the game did not answer ({why}): WoWBridge may be off (/wb on in the game), or the game is "
+                        f"not in the world (the character screen, a loading screen); what was sent may still run there "
+                        f"once it is")
         self.note(text)
         if self.on_open_failed is not None:
             try:
@@ -1186,14 +1214,14 @@ class Companion(AgentCommands):
                 records.append(rec)
                 size += 3 + len(rec[1])
                 said.append(msg)
-        stamp = self._stamp(now) if self.standing_by() and any(self._request(r) for r in self.outbox) else None
+        stamp = self._stamp(now) if self.standing_by() and any(self._stamps(r) for r in self.outbox) else None
         if stamp is not None:                       # a request while the addon may end the session: it opens the next
             size += 3 + len(stamp[1])
         start = len(records)
         while self.outbox and size + 3 + len(self.outbox[0][1]) <= MB.MAX_PACKET:
             size += 3 + len(self.outbox[0][1])
             records.append(self.outbox.pop(0))
-        if stamp is not None and any(self._request(r) for r in records[start:]):
+        if stamp is not None and any(self._stamps(r) for r in records[start:]):
             records.insert(start, stamp)
             self.stamped = (self.slot, now)
         if not records:

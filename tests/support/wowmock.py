@@ -543,12 +543,16 @@ class Session:
             if self.comp is not None and self.comp_running:
                 self.comp.tick()
 
-    def login(self):
+    initial = True        # the next login is this client's first (isInitialLogin); not after a /reload
+
+    def login(self, initial=None):
+        """the client's order: every ADDON_LOADED, then PLAYER_LOGIN and PLAYER_ENTERING_WORLD (its isInitialLogin: the
+        first login of this client, not after a /reload, unless `initial` says otherwise)"""
         fire = self.lua.globals()[b"__fire"]
         for name in self.loaded:
             fire(b"ADDON_LOADED", name.encode())
-        fire(b"PLAYER_LOGIN")                     # the client's order: every ADDON_LOADED, then these two
-        fire(b"PLAYER_ENTERING_WORLD")
+        fire(b"PLAYER_LOGIN")
+        fire(b"PLAYER_ENTERING_WORLD", self.initial if initial is None else initial)
 
     def reload(self, **kw):
         """/reload: a new Lua state with the saved variables, in the same client (fonts stay cached)"""
@@ -559,7 +563,9 @@ class Session:
         kw = dict(dict(early=self.early is not None or None, bridge=self.bridge), **kw)
         kw.setdefault("locale", self.locale)                 # the same client: the same language
         kw.setdefault("patch", self.patch)                   # ... and the same code
-        return Session(self.test, client=self.client, db=db, t0=self.now() + 5, comp=self.comp, tmp=self.tmp, saved=saved, **kw)
+        again = Session(self.test, client=self.client, db=db, t0=self.now() + 5, comp=self.comp, tmp=self.tmp, saved=saved, **kw)
+        again.initial = False
+        return again
 
     def slash(self, text, name="WOWBRIDGE"):
         self.lua.globals()[b"SlashCmdList"][name.encode()](text.encode())

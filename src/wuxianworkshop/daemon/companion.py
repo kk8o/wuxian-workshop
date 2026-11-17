@@ -458,11 +458,12 @@ class CompanionLoop:
         comp = self.comp
         if (win.pid, int(start)) != self.pid:          # the start time too: Windows may give a new process the same pid
             comp.standby = stands_by(self.addons)      # what the game loaded at its start (an install comes before it)
-            comp.new_process(f"P{win.pid}-{int(start)}")
+            comp.new_process(f"P{win.pid}-{int(start)}", age=time.time() - start if start else None)
             self.pid = (win.pid, int(start))           # only once that worked: a failure is tried again next round
             self.geom = None
             self._window_changed()
         now = time.time()
+        comp.hidden = bool(win.minimized)                   # (no session opens meanwhile: Companion.can_open)
         if win.minimized:                                   # nothing is drawn: no geometry to follow
             if self.minimized_since is None:
                 self.minimized_since = now

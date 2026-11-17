@@ -245,7 +245,7 @@ class StandBy(unittest.TestCase):
         s, comp = self.start()
         try:
             s.slash("off")
-            self.assertEqual(self.state(s), "off")
+            self.assertEqual(self.state(s), "off")               # standing by: no frame, so the app does not know
             runs = s.ns[b"Agent"][b"stats"][b"runs"]
             self.call(s, comp, "return 'never'", seconds=14)
             self.assertEqual(len(self.failed), 1, self.logs[-5:])
