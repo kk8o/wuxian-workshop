@@ -582,7 +582,10 @@ The app opens while the extension's process runs, so such an extension says `"st
 warning). Once `ext.run()` answered `initialize`, a thread for each such app opens it in the game
 (`kit.app.open`, with the declared `minutes`) while the game is online, listens, and hands the function the wakes
 one after another: first one with `reason` `"open"` each time it opened the app (no items; `status` is the app's
-status then), then WuxianKit's, with `"catchup"` for what came while nothing listened. What the function raises goes
+status then), then WuxianKit's, with `"catchup"` for what came while nothing listened. After each login or UI reload
+(`kit.ready`) that the app ran through comes one with `reason` `"ready"` (no items, the same `after` and `next`,
+`status` the app's status then): the addon's saved state is what it was at the last logout or reload, so tell it
+again what it should know. What the function raises goes
 to the log, and the next wake comes all the same. Where the wakes got (their `next`) is kept in
 `ext.data / "apps.json"`: the next start goes on from there. When the app ends: stopped by the player (`why`
 `player`, also when it was so as the extension started), it is opened again after the next login or UI reload; the
