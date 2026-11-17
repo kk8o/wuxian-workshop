@@ -269,7 +269,7 @@ const pill = (r) => { const s = st.lxState(r); return [s.key, s.cls, s.text]; };
     player: ['start_game', 'restart_game', 'enable_addon', 'turn_on'].map((a) => st.lxPlayer(gm('tips', 'off', { player: player(a) }))),
     where: [st.lxWhere(row('tips')), st.lxWhere(row('duo')), st.lxWhere(row('solo')), st.lxWhereTip(row('tips'))],
     approval: [st.lxApprovalTitle(row('edited')), st.lxApproveHint(row('asked'))],
-    stuck: [st.lxStuck(clash), st.lxApproveHint(clash), st.lxAddonState(addon('A', 'listed')), st.lxCannot('foreign'),
+    stuck: [st.lxStuck(clash), st.lxApproveHint(taken), st.lxAddonState(addon('A', 'listed')), st.lxCannot('foreign'),
             st.lxCannot('broken'), st.lxReason(short('workshop', '0.9.13', '0.9.12'))].concat(sumOf(stuckSum)),
     caps: st.lxCapsLine(row('fresh'), null),
     prompt: st.lxPrompt(row('tips')),
@@ -319,18 +319,18 @@ class GameOnly(unittest.TestCase):
         p = self.out["player"]
         self.assertEqual(p["approve"], "")                                # the card asks
         self.assertEqual(p["start_game"], "请启动游戏并进入世界")
-        self.assertEqual(p["restart_game"], "请重启游戏：新插件 WxTips 重启后才会载入")
+        self.assertEqual(p["restart_game"], "请重启游戏以载入新插件 WxTips")
         self.assertEqual(p["enable_addon"], "请在游戏的插件列表中启用 WxTips，然后重载界面")
         self.assertEqual(p["turn_on"], "请在游戏中输入 /wk，开启此扩展")
         self.assertEqual(p["something_new"], "the daemon says: something_new")   # a later daemon's: its own words
         none, nobody, waiting, restart = self.out["playerNone"]
         self.assertEqual((none, nobody, waiting), ("", "", ""))            # a program's game half only waits for the game
-        self.assertEqual(restart, "请重启游戏：新插件 WxDuo 重启后才会载入")
+        self.assertEqual(restart, "请重启游戏以载入新插件 WxDuo")
 
     def test_where_it_runs(self):
         rows = {r[0]: r[1:] for r in self.out["where"]}
-        self.assertEqual(rows["tips"], [True, "游戏", "只含游戏插件，在游戏中运行，没有本机程序"])
-        self.assertEqual(rows["duo"], [False, "游戏 · 本机", "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行"])
+        self.assertEqual(rows["tips"], [True, "游戏", "只含游戏插件，在游戏中运行，没有本机端"])
+        self.assertEqual(rows["duo"], [False, "游戏 · 本机", "包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行"])
         self.assertEqual(rows["solo"], [False, "本机", "在这台电脑上运行，不需要游戏"])
         self.assertEqual(rows["old"][:2], [False, "游戏 · 本机"])           # a row that does not say: by what it brings
 
@@ -354,9 +354,9 @@ class GameOnly(unittest.TestCase):
 
     def test_the_approval(self):
         asked, edited, duo = self.out["approval"]
-        self.assertEqual(asked, [True, "需要批准", "确认后，无限工坊将把此扩展的游戏插件安装到游戏。", True, "—"])
-        self.assertEqual(edited[:3], [True, "扩展内容已变更", "确认后，无限工坊将把此扩展的游戏插件安装到游戏。"])
-        self.assertEqual(duo[:3], [False, "需要批准", "确认后，无限工坊将在本机运行此命令。"])
+        self.assertEqual(asked, [True, "需要批准", "批准后，无限工坊将游戏插件安装到游戏。", True, "—"])
+        self.assertEqual(edited[:3], [True, "扩展内容已变更", "批准后，无限工坊将游戏插件安装到游戏。"])
+        self.assertEqual(duo[:3], [False, "需要批准", "批准后，无限工坊在本机运行此命令。"])
         self.assertEqual(self.out["approvalChanged"], "运行命令已变更")
         self.assertEqual(self.out["askedPill"], ["approval", "warn", "待批准"])
         self.assertEqual(self.out["askedPlayer"], "")
@@ -403,16 +403,17 @@ class GameOnly(unittest.TestCase):
     def test_an_addon_that_cannot_be_installed_is_said_before_the_yes(self):
         o = self.out["stuck"]
         self.assertEqual(o["pill"], ["game-absent", "bad", "与目录插件同名"])
-        self.assertEqual(o["line"], ["WuxianKit_EllesmereUI 与扩展目录中的插件同名", "WxTaken 游戏里已有同名插件", "B 文件缺失",
-                                     "", "", "", ""])
-        self.assertEqual(o["hint"], ["此扩展的游戏插件目前无法安装到游戏。",              # in the game only: not promised
-                                     "确认后，无限工坊将在本机运行此命令。"])              # with a program: the command still runs
+        self.assertEqual(o["line"], ["游戏插件无法安装：WuxianKit_EllesmereUI 与扩展目录中的插件同名",
+                                     "游戏插件无法安装：WxTaken 游戏中已有同名插件",    # a link or a file of the name: never replaced
+                                     "游戏插件无法安装：B 文件缺失", "", "", "", ""])
+        self.assertEqual(o["hint"], ["",                                                  # in the game only: not promised (the
+                                     "批准后，无限工坊在本机运行此命令。"])                # line says why); a program still runs
         self.assertEqual(o["act"], ["", "", "install", "WxAsked"])
-        self.assertEqual(o["addons"], [["与目录插件同名", "bad", "与扩展目录中的插件同名"], ["同名插件已存在", "bad", "游戏里已有同名插件"],
+        self.assertEqual(o["addons"], [["与目录插件同名", "bad", "与扩展目录中的插件同名"], ["同名插件已存在", "bad", "游戏中已有同名插件"],
                                        ["文件缺失", "bad", "文件缺失"]])
         self.assertEqual(o["later"], "—")
         self.assertEqual(o["sum"], ["WuxianKit_EllesmereUI 0.3.3 · 无法安装：与扩展目录中的插件同名",
-                                    "WxTaken · 需要插件：EllesmereUI · 无法安装：游戏里已有同名插件",
+                                    "WxTaken · 需要插件：EllesmereUI · 无法安装：游戏中已有同名插件",
                                     "WxBroken · 无法安装：文件缺失",
                                     "WxNew 0.1.0 · 尚未安装到游戏",
                                     "WxIn 0.1.0 · G:\\AddOns\\WxIn"])
@@ -429,7 +430,7 @@ class GameOnly(unittest.TestCase):
         self.assertEqual(said, "已批准 asked，游戏插件未安装")
 
     def test_the_yes_that_installed_them(self):
-        self.assertEqual(self.out["approveFine"], [None, "已批准 asked", True])     # a new addon: the game starts again
+        self.assertEqual(self.out["approveFine"], [None, "已批准 asked · 重启游戏后生效", True])   # installed.restart says so
         self.assertEqual(self.out["approvePlain"], [None, "已批准 solo"])
         self.assertEqual(self.out["approveOld"], [None, "已批准 solo"])
 
@@ -438,7 +439,7 @@ class GameOnly(unittest.TestCase):
         self.assertTrue(game.startswith("请先读 D:\\ext\\tips\\addons\\WxTips\\AGENT.md 和 guide {\"topic\": \"game-extension\"}。"
                                         "然后在扩展 tips 里实现："), game)
         self.assertIn("用 extension_wait 等我完成", game)
-        self.assertTrue(both.startswith("请先读 D:\\ext\\duo\\AGENT.md 和 guide {\"topic\": \"local-extension\"}。然后在本机扩展 duo 里实现："), both)
+        self.assertTrue(both.startswith("请先读 D:\\ext\\duo\\AGENT.md 和 guide {\"topic\": \"local-extension\"}。然后在扩展 duo 里实现："), both)
         self.assertIn("游戏插件在 addons\\WxDuo：", both)
         self.assertNotIn("游戏插件在", local)
 
@@ -478,8 +479,8 @@ class Page(unittest.TestCase):
         self.assertIn("x-text=\"lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')\"", card)
         self.assertIn('<dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)">'
                       '<code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>', card)
-        self.assertIn('<div class="lx-stuck" x-show="lxStuck(lxCur)" '
-                      'x-text="t(\'游戏插件无法安装：{why}\', { why: lxStuck(lxCur) })"></div>', card)
+        self.assertIn('<div :class="lxStuckOf(lxCur) && lxStuckOf(lxCur).bad ? \'lx-stuck\' : \'muted\'" x-show="lxStuck(lxCur)" '
+                      'x-text="lxStuck(lxCur)"></div>', card)
         self.assertIn("\n.lx-stuck {", self.css)
         # the game addons by name until the summary came, which says more of each
         self.assertIn('<dt x-show="lxGameOnly(lxCur) && !lxSumCur">游戏插件</dt>'
@@ -489,7 +490,8 @@ class Page(unittest.TestCase):
     def test_the_players_line(self):
         d = self.detail
         line = ('<div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)">\n'
-                '              <span class="grow" x-text="lxPlayer(lxCur)"></span>')    # (and 替换: test_local_replace)
+                '              <span class="grow" x-text="lxPlayer(lxCur)"></span>\n'
+                '            </div>')                                                 # (替换 has its own rows: test_local_replace)
         self.assertEqual(d.count(line), 1)
         self.assertLess(d.index('x-text="lx.note.text"') if 'x-text="lx.note.text"' in d else 0, d.index(line))
 
@@ -507,19 +509,19 @@ class Page(unittest.TestCase):
 
     def test_calls_exist(self):
         for name in ("lxReason", "lxGameOnly", "lxWhereOf", "lxWhereName", "lxWhereHint", "lxWhere", "lxWhereTip", "lxGameState", "lxPlayer",
-                     "lxCapsLine", "lxCapsHint", "lxApprovalTitle", "lxApproveHint", "lxCannot", "lxStuck"):
+                     "lxCapsLine", "lxCapsHint", "lxApprovalTitle", "lxApproveHint", "lxCannot", "lxStuck", "lxStuckOf"):
             self.assertRegex(self.js, r"(?m)^\s*%s\s*\(" % name, name)
         for name in ("lxLint", "lxSyntax"):
             self.assertRegex(self.js, r"(?m)^function %s\(" % name, name)
         self.assertIn("\n.lx-where-hint {", self.css)
 
     def test_the_words_have_their_english(self):
-        for word in ("待重启游戏", "插件未启用", "游戏中载入后可查看", "请启动游戏并进入世界", "请重启游戏：新插件 {addon} 重启后才会载入",
+        for word in ("待重启游戏", "插件未启用", "游戏中载入后可查看", "请启动游戏并进入世界", "请重启游戏以载入新插件 {addon}",
                      "请在游戏的插件列表中启用 {addon}，然后重载界面", "请在游戏中输入 /wk，开启此扩展", "批准", "扩展内容已变更",
-                     "确认后，无限工坊将把此扩展的游戏插件安装到游戏。", "Lua 有语法错误，未安装到游戏", "游戏中加载失败",
-                     "{name} 在游戏中加载失败", "只含游戏插件，在游戏中运行，没有本机程序", "游戏未连接", "游戏中未加载", "未启用", "已安装",
-                     "与目录插件同名", "与扩展目录中的插件同名", "游戏里已有同名插件", "{name} {why}", "无法安装：{why}",
-                     "游戏插件无法安装：{why}", "此扩展的游戏插件目前无法安装到游戏。", "已批准，游戏插件未安装：{why}",
+                     "批准后，无限工坊将游戏插件安装到游戏。", "Lua 有语法错误，未安装到游戏", "游戏中加载失败",
+                     "{name} 在游戏中加载失败", "只含游戏插件，在游戏中运行，没有本机端", "游戏未连接", "游戏中未加载", "未启用", "已安装",
+                     "与目录插件同名", "与扩展目录中的插件同名", "游戏中已有同名插件", "{name} {why}", "无法安装：{why}",
+                     "游戏插件无法安装：{why}", "已批准，游戏插件未安装：{why}",
                      "已批准 {name}，游戏插件未安装", "需要无限工坊 {v} 以上，当前版本 {has}"):
             self.assertRegex(self.i18n, r"\n\s*'%s':" % re.escape(word), word)
 

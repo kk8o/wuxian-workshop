@@ -6,15 +6,15 @@
 <meta name="color-scheme" content="dark">
 <title>无限工坊</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
-<link rel="stylesheet" href="app.css?v=11">
+<link rel="stylesheet" href="app.css?v=12">
 <!-- Vendored libraries, no CDN (public CDNs are unreliable in mainland China): htmx 2.0.11 (0BSD) and Alpine.js 3.17.4 (MIT),
      both taken from the npm tarballs on registry.npmmirror.com with the sha512 checked against the registry metadata
      (see wuxianworkshop/ui/__init__.py). app.js registers the Alpine component and the htmx json extension, so it loads
      first; the two libraries are deferred.
      The layout is a desktop program's: a tool bar, the navigation on the left, the page filling
      the rest (its lists scroll inside it, the window never does), a status bar. -->
-<script src="i18n.js?v=11"></script>
-<script src="app.js?v=11"></script>
+<script src="i18n.js?v=12"></script>
+<script src="app.js?v=12"></script>
 <script src="htmx.min.js" defer></script>
 <script src="alpine.min.js" defer></script>
 </head>
@@ -689,7 +689,8 @@
          没装进游戏的写「未安装」）；已添加（游戏插件文件夹里别的插件提供的扩展与本机扩展，按名称排；本机扩展的游戏插件在游戏里运行的
          扩展与它合成一行，行上写在哪里运行：游戏 / 本机 / 游戏 · 本机）。游戏没开时，游戏插件文件夹里的也读得出来。「添加」与扩展文件夹的
          按钮在页面顶栏。底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、
-         更新内容，或会话表。本机扩展另有「扩展摘要」：详情、批准、同名替换、打包后看到的是同一份。扩展的版本跟程序的分开 -->
+         更新内容，或会话表。本机扩展另有「扩展摘要」：详情、批准、替换扩展包、打包后看到的是同一份。扩展的版本跟程序的分开。
+         扩展框架比这个工坊要的旧（status.kit.outdated）时，页面顶上一条提示带更新入口。按钮禁用时旁边写原因（lxWait、extWait） -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
@@ -705,7 +706,15 @@
           </div>
         </span>
         <button class="btn" x-show="lx.home" :title="t('扩展文件夹') + t('：') + lx.home" @click="lxOpenHome()"><svg class="ico"><use href="#i-folder"/></svg>扩展文件夹</button>
-        <button class="btn" @click="loadExtensions(true); loadAccess(true); loadLocal()" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="ext.busy === 'list' || access.busy ? t('读取中…') : t('刷新')"></span></button>
+        <button class="btn" @click="loadExtensions(true); loadAccess(true); loadLocal()" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="extRefreshText"></span></button>
+      </div>
+      <!-- 扩展框架过旧：这个工坊在它更新之前不向它声明应用；更新入口就是扩展框架那一项的「更新」 -->
+      <div class="xp-note xp-top" role="status" x-show="kitOutdated">
+        <b x-text="kitOutdatedLine"></b>
+        <span class="muted grow" x-text="kitOutdated && kitOutdated.has ? t('当前 {has}', { has: kitOutdated.has }) : ''"></span>
+        <span class="lx-wait" x-show="kitUpdatePkg && extWait(kitUpdatePkg)" x-text="kitUpdatePkg ? extWait(kitUpdatePkg) : ''"></span>
+        <button class="btn small primary" x-show="kitUpdatePkg" :disabled="ext.busy !== '' || !!(kitUpdatePkg && (kitUpdatePkg.missing || []).length)" @click="extAct(kitUpdatePkg, 'install')"
+                x-text="kitUpdatePkg && ext.busy === kitUpdatePkg.id ? t('更新中…') : t('更新到 {v}', { v: kitUpdatePkg ? kitUpdatePkg.version : '' })"></button>
       </div>
       <div class="pagebody fill master-detail xp">
         <div class="master">
@@ -765,7 +774,7 @@
                 </li>
               </template>
             </ul>
-            <div class="loader" role="status" x-show="lx.list === null && !lx.error"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取本机扩展…</div>
+            <div class="loader" role="status" x-show="lx.list === null && !lx.error"><svg class="inf" x-flow="1600 160 -160"><use href="#inf-line"/></svg>读取已添加的扩展…</div>
             <p class="small bad-text pad" x-show="lx.error" x-text="lx.error"></p>
             <p class="small bad-text pad selectable" x-show="lx.problem" x-text="t('登记表异常：') + lx.problem"></p>
             <div class="lx-empty" x-show="lx.list && !xpInstalled.length && !lx.error">
@@ -788,7 +797,7 @@
           <div class="xp-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
           <div class="xp-note" x-show="ext.note">
             <span class="grow" x-text="ext.note"></span>
-            <button class="btn small" x-show="ext.reload && linkReady" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
+            <button class="btn small" x-show="ext.reload && linkReady" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false" x-text="reload.busy ? t('进行中…') : t('重载界面')"></button>
           </div>
 
           <!-- 扩展框架、一个内置扩展或其他插件在游戏中提供的扩展 -->
@@ -800,6 +809,7 @@
               </div>
               <template x-if="xpSel.pkg">
                 <div x-t class="xp-acts">
+                  <span class="lx-wait" role="status" x-show="extWait(xpSel.pkg)" x-text="extWait(xpSel.pkg)"></span>
                   <button class="btn primary" x-show="xpSel.pkg.state === 'available'" :disabled="ext.busy !== '' || (xpSel.pkg.missing || []).length > 0" @click="extAct(xpSel.pkg, 'install')" x-text="ext.busy === xpSel.pkg.id ? t('安装中…') : t('安装')"></button>
                   <button class="btn primary" x-show="xpSel.pkg.state === 'update' || xpSel.pkg.state === 'installed'" :disabled="ext.busy !== '' || (xpSel.pkg.missing || []).length > 0" @click="extAct(xpSel.pkg, 'install')" x-text="ext.busy === xpSel.pkg.id ? t('更新中…') : t('更新到 {v}', { v: xpSel.pkg.version })"></button>
                   <button class="btn" x-show="xpSel.pkg.homepage" @click="openOut(xpSel.pkg.homepage)"><svg class="ico"><use href="#i-globe"/></svg>介绍</button>
@@ -808,7 +818,7 @@
               </template>
             </div>
             <div class="xp-confirm" x-show="xpSel.pkg && ext.confirm === xpSel.pkg.id">
-              <span class="grow">卸载将删除插件文件夹，并先保留一份历史版本。</span>
+              <span class="grow">卸载将删除插件文件夹，原版本存入历史。</span>
               <button class="btn confirm small" :disabled="ext.busy !== ''" @click="extAct(xpSel.pkg, 'remove')">确认卸载</button>
               <button class="btn small" @click="ext.confirm = ''">取消</button>
             </div>
@@ -854,7 +864,8 @@
             </div>
           </div>
 
-          <!-- 本机扩展：状态、启用、载入 / 停止 / 检查（标题右边），概况（含检查结果）、设置（按选项规格生成）、能力、日志 -->
+          <!-- 本机扩展：状态、启用、载入 / 停止 / 检查（标题右边），概况（含检查结果）、设置（按选项规格生成）、能力、日志。
+               同一时间只跑一个动作（lx.busy），别的按钮这时禁用：按钮左边一行说是谁在做什么（lxHeadWhy） -->
           <div class="detail-inner" x-show="xpSel.kind === 'local'">
             <div class="detail-head">
               <div class="grow">
@@ -862,6 +873,7 @@
                 <div class="muted small mono" x-text="lxLine(lxCur)"></div>
               </div>
               <div class="xp-acts">
+                <span class="lx-wait" role="status" :class="{ idle: lx.busy === '' }" x-show="lxHeadWhy(lxCur)" x-text="lxHeadWhy(lxCur)"></span>
                 <label class="check-inline"><input type="checkbox" :checked="lxCur.enabled" :disabled="lx.busy !== ''" @change="lxEnable(lxCur, $event.target.checked)"> 启用</label>
                 <button class="btn primary" :disabled="lx.busy !== '' || !lxCur.enabled || lxBlocked(lxCur)" @click="lxAct(lxCur, 'load')"
                         x-text="lxBusy(lxCur, 'load') ? t('载入中…') : lxRunning(lxCur) ? t('重新载入') : t('载入')"></button>
@@ -888,7 +900,9 @@
             </div>
             <!-- 批准：玩家确认后，工坊才运行这条命令；命令变了再确认一次。清单有误、算不出命令时只留下面的错误条。
                  卡片里是扩展摘要和一句话说明批准意味着什么；拿不准的可以先复制给 Agent 审阅。摘要读到、且就是这一行的
-                 （两边的 fingerprint 相同）才能点批准；批准带上它，扩展在这之后变了就不算数 -->
+                 （两边的 fingerprint 相同）才能点批准；批准带上它，扩展在这之后变了就不算数。按钮点不了时，它下面一行
+                 写原因（lxApproveWhy：别的动作在跑、摘要在读、没读到、已经变了），读不到或变了的带「重试 / 重新读取」。
+                 摘要的 replaces（批准后会替换的游戏插件）是卡片里的一行 -->
             <div class="lx-approve" x-show="lxNeeds(lxCur) && lxCanApprove(lxCur)">
               <div class="lx-approve-head">
                 <div class="grow">
@@ -899,6 +913,11 @@
                 <button class="btn primary" :disabled="lx.busy !== '' || !lxApproveReady(lxCur)" @click="lxApprove(lxCur)"
                         x-text="lxBusy(lxCur, 'approve') ? t('进行中…') : lxGameOnly(lxCur) ? t('批准') : t('批准运行')"></button>
               </div>
+              <div class="lx-sum-state" role="status" x-show="lxApproveWhy(lxCur)">
+                <span x-text="lxApproveWhy(lxCur)"></span>
+                <button class="btn small" x-show="lxSumRetry(lxCur)" :disabled="lx.loading" @click="lxSumAgain(lxCur)"
+                        x-text="lx.loading ? t('读取中…') : lxSumState(lxCur) === 'error' ? t('重试') : t('重新读取')"></button>
+              </div>
               <dl class="kv">
                 <dt x-show="!lxGameOnly(lxCur)">命令</dt><dd x-show="!lxGameOnly(lxCur)"><code class="lx-cmd selectable" x-text="lxCommand(lxCur)"></code></dd>
                 <dt x-show="lxGameOnly(lxCur) && !lxSumCur">游戏插件</dt><dd x-show="lxGameOnly(lxCur) && !lxSumCur" class="mono selectable" x-text="(lxCur.addons || []).map((a) => a.folder).join('  ')"></dd>
@@ -906,12 +925,7 @@
                 <template x-for="(row, i) in lxSumRows(lxSumCur, true)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
               </dl>
               <div class="muted" x-show="lxWillInstall(lxCur) && !lxGameOnly(lxCur)" x-text="t('同时安装游戏插件：{names}', { names: lxWillInstall(lxCur) })"></div>
-              <div class="lx-stuck" x-show="lxStuck(lxCur)" x-text="t('游戏插件无法安装：{why}', { why: lxStuck(lxCur) })"></div>
-              <div class="lx-sum-state" x-show="lxSumState(lxCur)" role="status">
-                <span x-text="lxSumNote(lxCur)"></span>
-                <button class="btn small" x-show="lxSumState(lxCur) !== 'loading'" :disabled="lx.loading" @click="lxSumAgain(lxCur)"
-                        x-text="lxSumState(lxCur) === 'error' ? t('重试') : t('重新读取')"></button>
-              </div>
+              <div :class="lxStuckOf(lxCur) && lxStuckOf(lxCur).bad ? 'lx-stuck' : 'muted'" x-show="lxStuck(lxCur)" x-text="lxStuck(lxCur)"></div>
               <p class="lx-risk" x-text="lxRiskLine(lxCur)"></p>
             </div>
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>
@@ -919,17 +933,19 @@
             <div class="xp-note" :class="{ bad: lx.note && lx.note.bad }" x-show="lx.note" x-text="lx.note && lx.note.text"></div>
             <div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)">
               <span class="grow" x-text="lxPlayer(lxCur)"></span>
-              <button class="btn small" x-show="lxCur.player && lxCur.player.action === 'replace_addon' && lxSwapOf(lxCur) && !lxSwapLine(lxCur)"
-                      :disabled="lx.busy !== ''" @click="lxSwap(lxCur, lxSwapOf(lxCur))"
-                      x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('替换')"></button>
             </div>
-            <!-- 替换一个不是这个扩展带的同名插件：先确认；原来的那份存进历史，在开发台可以找回 -->
-            <div class="xp-confirm" x-show="lxSwapLine(lxCur)">
-              <span class="grow" x-text="lxSwapLine(lxCur)"></span>
-              <button class="btn confirm small" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, (lxCur.addons || []).find((a) => lx.swap === lxCur.id + ':' + a.folder), true)"
-                      x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('确认替换')"></button>
-              <button class="btn small" @click="lx.swap = ''">取消</button>
-            </div>
+            <!-- 替换游戏插件，只在这里：游戏的 AddOns 里同名的文件夹不是这个扩展装的，一个插件一行。同一个插件（手动装的）
+                 一点就换，这一行写明原版本存入历史；不是同一个插件的先确认。请求只带玩家看到的那个文件夹和它的版本 -->
+            <template x-for="a in lxSwaps(lxCur)" :key="lxCur.id + ':' + a.folder">
+              <div x-t class="xp-note lx-swap" :class="{ bad: lxSwapAsked(lxCur, a) }">
+                <span class="grow" x-text="lxSwapAsked(lxCur, a) ? lxSwapLine(a) : lxSwapText(a)"></span>
+                <span class="lx-wait" x-show="lxWait(lxCur) && !lxBusy(lxCur, 'replace')" x-text="lxWait(lxCur)"></span>
+                <button class="btn small" x-show="!lxSwapAsked(lxCur, a)" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, a)"
+                        x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('替换')"></button>
+                <button class="btn confirm small" x-show="lxSwapAsked(lxCur, a)" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, a, true)">确认替换</button>
+                <button class="btn small" x-show="lxSwapAsked(lxCur, a)" @click="lx.swap = ''">取消</button>
+              </div>
+            </template>
             <div class="xp-note" x-show="lx.packed && lx.packed.id === lxCur.id">
               <span>已打包</span>
               <span class="mono selectable grow" x-text="lx.packed ? lx.packed.file : ''"></span>
@@ -970,10 +986,11 @@
                   <dt x-show="(lxCur.addons || []).length">游戏插件</dt>
                   <dd x-show="(lxCur.addons || []).length" class="lx-game">
                     <template x-for="a in (lxCur.addons || [])" :key="a.folder">
-                      <span class="lx-addon"><span class="mono selectable" x-text="a.folder"></span><span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span><button class="btn tiny" x-show="lxSwappable(a) && !lxUnapproved(lxCur)" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, a)" x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('替换')"></button></span>
+                      <span class="lx-addon"><span class="mono selectable" x-text="a.folder"></span><span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span></span>
                     </template>
                     <button class="btn tiny" x-show="lxGameAct(lxCur) && !lxUnapproved(lxCur)" :disabled="lx.busy !== ''" @click="lxInstall(lxCur)"
                             x-text="lxBusy(lxCur, 'install') ? t('进行中…') : lxGameAct(lxCur) === 'update' ? t('更新') : t('安装')"></button>
+                    <span class="lx-wait" x-show="lxGameAct(lxCur) && !lxUnapproved(lxCur) && lxWait(lxCur) && !lxBusy(lxCur, 'install')" x-text="lxWait(lxCur)"></span>
                     <span class="pill tiny warn" x-show="lxRestart(lxCur)" x-text="t('重启游戏后生效')"></span>
                   </dd>
                   <dt x-show="!lxGameOnly(lxCur)">启动方式</dt><dd x-show="!lxGameOnly(lxCur)" x-text="lxStart(lxCur)"></dd>
@@ -989,7 +1006,7 @@
                   <dd x-show="lxCur.origin === 'linked'"><button class="btn tiny" @click="lxCopyPrompt(lxCur)">复制给 Agent 的第一句话</button></dd>
                 </dl>
                 <div x-show="lxSumRows(lxSumCur).length && !(lxNeeds(lxCur) && lxCanApprove(lxCur))">
-                  <h3 class="xp-h">扩展摘要<span class="muted">批准、替换与分享时显示相同内容</span></h3>
+                  <h3 class="xp-h">扩展摘要<span class="muted">批准、替换扩展包与分享时显示相同内容</span></h3>
                   <dl class="kv">
                     <template x-for="(row, i) in lxSumRows(lxSumCur)" :key="i"><div class="lx-sum-row"><dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>
                   </dl>
@@ -1023,6 +1040,7 @@
                 </div>
               </div>
               <div x-show="xpTab === 'opts'">
+                <p class="lx-wait" role="status" x-show="lxWait(lxCur)" x-text="lxWait(lxCur)"></p>
                 <form class="form lx-opts" @submit.prevent>
                   <template x-for="o in (lxCur.options || [])" :key="lxCur.id + ':' + o.name">
                     <div class="field">
@@ -1049,7 +1067,7 @@
                     </div>
                   </template>
                 </form>
-                <p class="small muted xp-small">改动即时保存；扩展运行中会立刻收到新设置。</p>
+                <p class="small muted xp-small">改动即时保存；本机端运行时立即生效。</p>
               </div>
               <div x-show="xpTab === 'caps'">
                 <h3 class="xp-h" x-show="xpSel.mod && !lxGameOnly(lxCur)">本机<span class="muted">在这台电脑上运行，不需要游戏</span></h3>
@@ -1201,7 +1219,7 @@
                     <button class="btn tiny" :disabled="!lxn.task.trim()" @click="copy(lxPrompt(lxn.result, lxn.task), t('给 Agent 的第一句话'))">复制给 Agent</button></li>
                   <li>用编辑器打开它：<button class="btn tiny" @click="lxOpen(lxn.result.path)">打开文件夹</button></li>
                   <li x-show="lxn.result.needs">首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。</li>
-                  <li x-show="lxn.result.where === 'game'">载入时安装到游戏；新插件在游戏重启后由游戏载入。</li>
+                  <li x-show="lxn.result.where === 'game'">载入时安装到游戏；新插件重启游戏后生效。</li>
                 </ol>
                 <div class="row end">
                   <div class="spacer"></div>
@@ -1227,7 +1245,7 @@
           </div>
         </div>
       </div>
-      <!-- 导入的扩展包与已添加的同名：先给新旧对比，确认了才替换；取消则原样不动 -->
+      <!-- 导入的扩展包与已添加的同名（替换扩展包，不是替换游戏插件）：先给新旧对比，确认了才替换；取消则原样不动 -->
       <div class="modal-back" x-show="lxr.open" x-transition.opacity @keydown.escape.window="lxr.open = false" @click.self="lxr.open = false">
         <div class="modal">
           <div class="modal-head"><span x-text="lxReplaceTitle()"></span><button x-t class="x" @click="lxr.open = false" title="关闭（Esc）">✕</button></div>
@@ -1249,7 +1267,7 @@
             <p class="small bad-text selectable lx-why" x-show="lxr.error" x-text="lxr.error"></p>
             <div class="row end">
               <button class="btn" @click="lxr.open = false">取消</button>
-              <button class="btn primary" :disabled="lxr.busy" @click="lxReplace()" x-text="lxr.busy ? t('进行中…') : t('替换')"></button>
+              <button class="btn primary" :disabled="lxr.busy" @click="lxReplace()" x-text="lxr.busy ? t('进行中…') : t('替换扩展包')"></button>
             </div>
           </div>
         </div>
@@ -1731,19 +1749,18 @@
               <label class="field">
                 <span>链路</span>
                 <select class="input" name="link_mode" x-model="form.link_mode">
-                  <option value="auto">跟随应用（默认）</option>
+                  <option value="auto">自动</option>
                   <option value="always">常开</option>
-                  <option value="demand">按需</option>
                 </select>
               </label>
-              <p class="muted small">跟随应用：语音搭子这类要即时反应的应用运行时一直连着，其余时间传完就收。</p>
-              <p class="muted small">按需连接要游戏里的 WoWBridge 0.9.14 或更新；更早的版本一直连着。</p>
+              <p class="muted small">自动：有需要即时反应的应用运行时保持连接，其余时候传完就收。</p>
+              <p class="muted small">常开：进入游戏世界后一直连接。</p>
               <label class="field">
                 <span>游戏目录</span>
                 <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _forever_">
               </label>
               <label class="field">
-                <span>本机扩展批准</span>
+                <span>扩展批准</span>
                 <select class="input" name="extension_approval" x-model="form.extension_approval">
                   <option value="ask">首次运行前询问</option>
                   <option value="auto">自动批准</option>

@@ -151,11 +151,11 @@ async function api(path, opts) {
     Object.assign(r, { state: 'running', pid: 7, started: T0 });
     return Object.assign({ row: copyOf(r), check: { ok: true, problems: [], capabilities: [] } }, more);
   }
-  if (action === 'approve') {
+  if (action === 'approve') {                  // its game addons go in with the yes: installed says what became of them
     const r = row(body.id);
     r.approval = 'ok';
-    r.addons.forEach((a) => { a.state = 'current'; });
-    return copyOf(r);
+    const installed = r.addons.length ? Object.assign({ ok: true }, put(r)) : null;
+    return Object.assign(copyOf(r), { installed });
   }
   throw new Error('unexpected ' + path);
 }
@@ -212,7 +212,7 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
   out.gameActCurrent = st.lxGameAct({ id: 'x', addons: [game('A', 'current')] });
   out.gameActBroken = st.lxGameAct({ id: 'x', addons: [game('A', 'broken'), game('B', 'missing')] });
 
-  // 安装: new ones need the game restarted; 更新 alone does not
+  // 安装: the answer's restart says whether the game has to start again (new ones; 更新 alone does not)
   let r = cur(st, 'herald');
   calls.length = 0;
   await st.lxInstall(r);
@@ -526,10 +526,10 @@ const cur = (st, id) => { st.xpSelect('l:' + id); return st.lxCur; };
 
 
 SUM_ROWS = [
-    {"id": "from", "k": "来源", "v": "Tim（自述，未经验证） · https://example.com/herald"},
+    {"id": "from", "k": "来源", "v": "Tim · https://example.com/herald · 自述，未经验证"},
     {"id": "game", "k": "游戏插件", "v": "WuxianHerald 1.0.0 · 需要插件：WuxianKit、LibHerald（未安装） · 尚未安装到游戏"},
     {"id": "game", "k": "游戏插件", "v": "WuxianHeraldSkin 1.0.0 · D:\\Game\\Interface\\AddOns\\WuxianHeraldSkin"},
-    {"id": "run", "k": "本机程序", "v": "python main.py --name \"my herald\" · 随无限工坊启动"},
+    {"id": "run", "k": "本机端", "v": "python main.py --name \"my herald\" · 随无限工坊启动"},
     {"id": "vars", "k": "环境变量", "v": "读取 HERALD_KEY、HOME · 设置 HERALD_MODE"},
     {"id": "exe", "k": "可执行文件", "v": "bin/a.exe、bin/b.exe、bin/c.dll、bin/d.bat、bin/e.cmd、bin/f.ps1 等 7 个"},
     {"id": "agent", "k": "Agent 读取",
@@ -559,8 +559,8 @@ class Manage(unittest.TestCase):
 
     def test_what_it_requires(self):
         self.assertEqual(self.out["unmet"], [
-            ["relay", "需要无限工坊 0.9.14 以上；需要 WuxianKit 0.7 以上", True, "unmet", "版本不足", "bad"],
-            ["kitty", "需要 WuxianKit 0.7 以上", False, "stopped", "未运行", "off"],
+            ["relay", "需要无限工坊 0.9.14 以上；需要扩展框架 0.7 以上", True, "unmet", "版本不足", "bad"],
+            ["kitty", "需要扩展框架 0.7 以上", False, "stopped", "未运行", "off"],
             ["plain", "", False, "stopped", "未运行", "off"]])
 
     def test_the_game_addons(self):
@@ -579,7 +579,7 @@ class Manage(unittest.TestCase):
         o = self.out["install"]
         self.assertEqual(o["posts"], [["/api/local/install", {"id": "herald"}]])
         self.assertTrue(o["reread"])
-        self.assertEqual((o["said"], o["restart"], o["states"], o["act"]), ("游戏插件已安装", True, ["current", "current"], ""))
+        self.assertEqual((o["said"], o["restart"], o["states"], o["act"]), ("游戏插件已安装 · 重启游戏后生效", True, ["current", "current"], ""))
         self.assertEqual((o["note"], o["busy"]), (None, ""))
         self.assertEqual(self.out["update"], {"said": "游戏插件已更新", "restart": False})
         self.assertTrue(self.out["restartKept"])
@@ -587,13 +587,13 @@ class Manage(unittest.TestCase):
     def test_install_waits_for_the_approval(self):
         o = self.out["installAsk"]
         self.assertEqual((o["ask"], o["needs"], o["said"], o["note"]), ("greeter", True, "迎宾 需要批准", None))
-        self.assertEqual(self.out["approved"], {"restart": True, "states": ["current"], "said": "已批准 迎宾"})
+        self.assertEqual(self.out["approved"], {"restart": True, "states": ["current"], "said": "已批准 迎宾 · 重启游戏后生效"})
 
     def test_install_failed(self):
         self.assertEqual(self.out["installFailed"], {"bad": True, "text": "安装失败：未找到游戏目录"})
 
     def test_a_load_installs_them(self):
-        self.assertEqual(self.out["loaded"], {"restart": True, "said": "已载入 传令"})
+        self.assertEqual(self.out["loaded"], {"restart": True, "said": "已载入 传令 · 重启游戏后生效"})
         self.assertFalse(self.out["loadedPlain"])
 
     def test_pack(self):
@@ -654,7 +654,7 @@ class Manage(unittest.TestCase):
         self.assertEqual(o["asked"], [["file", "zip"]])
         self.assertEqual(o["posts"], [["/api/local/add", {"path": "D:\\Downloads\\scout-1.0.0.zip"}]])
         self.assertEqual((o["sel"], o["origin"], o["said"]), ("l:scout", "扩展文件夹", "已导入 scout"))
-        self.assertEqual(self.out["addPackageAgain"], "已更新 scout")
+        self.assertEqual(self.out["addPackageAgain"], "已替换扩展包 scout")
 
     def test_the_same_id_is_asked_first(self):
         o = self.out["replaceAsk"]
@@ -664,7 +664,7 @@ class Manage(unittest.TestCase):
         d = o["dialog"]
         self.assertEqual((d["open"], d["kind"], d["path"], d["old"], d["changes"], d["same"], d["busy"], d["error"]),
                          (True, "zip", zip_, None, None, None, False, ""))
-        self.assertEqual((d["new"]["id"], d["new"]["from"], o["title"], o["changes"]), ("scout", "package", "替换 scout？", []))
+        self.assertEqual((d["new"]["id"], d["new"]["from"], o["title"], o["changes"]), ("scout", "package", "替换扩展包 scout？", []))
         o = self.out["replaced"]                                    # 替换: the same path once more, with replace
         self.assertEqual(o["posts"], [["/api/local/add", {"path": zip_, "replace": True, "sha256": "cd" * 32}]])
         self.assertEqual(o["dialog"], {"open": False, "kind": "zip", "path": "", "old": None, "new": None, "changes": None,
@@ -674,7 +674,7 @@ class Manage(unittest.TestCase):
 
     def test_a_replace_says_what_changes(self):
         o = self.out["replaceHerald"]
-        self.assertEqual((o["title"], o["same"], o["old"]), ("替换 传令？", False, "0.2.0"))
+        self.assertEqual((o["title"], o["same"], o["old"]), ("替换扩展包 传令？", False, "0.2.0"))
         self.assertEqual(o["changes"], [
             {"k": "版本", "v": "0.2.0 → 0.3.0"}, {"k": "主页", "v": "无 → https://example.com/herald"},
             {"k": "运行位置", "v": "本机 → 游戏 · 本机"}, {"k": "启动方式", "v": "首次调用时启动 → 随无限工坊启动"},
@@ -691,10 +691,10 @@ class Manage(unittest.TestCase):
         o = self.out["replaceRefused"]
         self.assertEqual((o["open"], o["busy"], o["error"]), (True, False, "文件夹被占用，请关闭占用它的程序后重试"))
         self.assertEqual((o["path"], o["old"]["version"], o["new"]["version"]), ("D:\\Downloads\\herald-0.3.0.zip", "0.2.0", "0.3.0"))
-        self.assertEqual(self.out["replaceRetried"], [False, "", "已更新 herald", "0.1.0"])
+        self.assertEqual(self.out["replaceRetried"], [False, "", "已替换扩展包 herald", "0.1.0"])
 
     def test_the_summary(self):
-        risk = "程序在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。"
+        risk = "本机端在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。"
         self.assertEqual(self.out["sumBefore"], [None, [], risk])   # not here yet: by what the row says
         o = self.out["sum"]
         self.assertEqual(o["rows"], SUM_ROWS)
@@ -707,7 +707,7 @@ class Manage(unittest.TestCase):
 
     def test_the_summary_of_one_in_the_game_only(self):
         o = self.out["sumGame"]
-        game = "游戏插件在游戏内运行，受游戏对插件的限制，不能访问这台电脑上的文件。"
+        game = "游戏插件在游戏中运行，受游戏对插件的限制，不能访问这台电脑上的文件。"
         self.assertEqual(o["rows"], [{"id": "from", "k": "来源", "v": "未注明作者"},
                                      {"id": "game", "k": "游戏插件", "v": "WuxianGreeter 1.0.0 · 尚未安装到游戏"},
                                      {"id": "files", "k": "文件", "v": "3 个文件 · 1 KB"}])
@@ -731,11 +731,11 @@ class Manage(unittest.TestCase):
         self.assertFalse(re.search(r"[\u4e00-\u9fff]", json.dumps(o, ensure_ascii=False)))
         self.assertEqual([r["k"] for r in o["rows"]], ["Source", "Game addons", "Game addons", "Local program", "Environment",
                                                        "Executables", "Agents read", "Files"])
-        self.assertEqual(o["rows"][0]["v"], "Tim (self-declared, not verified) · https://example.com/herald")
+        self.assertEqual(o["rows"][0]["v"], "Tim · https://example.com/herald · self-declared, not verified")
         self.assertEqual(o["changes"][0], {"k": "Version", "v": "0.2.0 → 0.3.0"})
         self.assertEqual(o["changes"][-3:], [{"k": "Game addons", "v": "added WuxianHeraldSkin · removed WuxianOld"},
                                              {"k": "Size", "v": "1 KB → 20 KB"}, {"k": "later", "v": "a → b"}])
-        self.assertEqual(o["title"], "Replace herald?")
+        self.assertEqual(o["title"], "Replace the package of herald?")
         self.assertIn('guide {"topic": "review"}', o["review"])
         self.assertEqual(self.out["addPackageRefused"], {"open": True, "kind": "zip", "path": "D:\\Downloads\\bad-1.0.0.zip",
                                                          "busy": False, "error": "扩展包无效：no extension.json in it"})
@@ -761,7 +761,7 @@ class Manage(unittest.TestCase):
         self.assertTrue(r["path"])
         self.assertTrue(c["prompt"].startswith("请先读 " + r["path"] + "\\AGENT.md 和 guide {\"topic\": \"local-extension\"}。"),
                         c["prompt"])
-        self.assertIn("在本机扩展 my_tool 里实现：（在这里写你想要的功能）", c["prompt"])
+        self.assertIn("在扩展 my_tool 里实现：（在这里写你想要的功能）", c["prompt"])
         self.assertIn("wk_my_tool_", c["prompt"])
         self.assertIn("游戏插件在 addons\\MyTool：", c["prompt"])
         self.assertEqual(c["detailPrompt"], c["prompt"])        # 更多 · 复制给 Agent 的第一句话 says the same of its row
@@ -793,8 +793,8 @@ class Manage(unittest.TestCase):
         c = self.out["idea"]["carried"]
         self.assertEqual(c["posts"], [["/api/local/new", {"id": "carry"}]])
         self.assertEqual((c["mode"], c["idea"], c["task"]), ("manual", "", "读出密语。"))
-        self.assertIn("在本机扩展 carry 里实现：读出密语。改完用 wuxian 的 extension_load 载入", c["prompt"])     # one full stop
-        self.assertIn("在本机扩展 carry 里实现：（在这里写你想要的功能）。改完用", c["bare"])
+        self.assertIn("在扩展 carry 里实现：读出密语。改完用 wuxian 的 extension_load 载入", c["prompt"])     # one full stop
+        self.assertIn("在扩展 carry 里实现：（在这里写你想要的功能）。改完用", c["bare"])
         self.assertEqual(self.out["idea"]["again"], ["manual", "", None])
 
     def test_whether_an_agent_is_connected(self):
@@ -816,9 +816,9 @@ class Manage(unittest.TestCase):
             self.assertNotIn(word, g["prompt"])
         self.assertEqual(g["detailPrompt"], g["prompt"])
         self.assertEqual((g["where"], g["pill"], g["after"]), ("游戏", "未安装", "local"))
-        self.assertEqual(self.out["whereHints"], ["只含游戏插件，在游戏中运行，没有本机程序",
+        self.assertEqual(self.out["whereHints"], ["只含游戏插件，在游戏中运行，没有本机端",
                                                   "在这台电脑上运行，不需要游戏",
-                                                  "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行"])
+                                                  "包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行"])
 
     def test_the_menus(self):
         self.assertEqual(self.out["menus"], ["add", "more", "more", ""])
@@ -928,7 +928,7 @@ class Page(unittest.TestCase):
         d = self.detail
         block = d[d.index('<div x-show="lxSumRows(lxSumCur).length && !(lxNeeds(lxCur) && lxCanApprove(lxCur))">'):]
         block = block[:block.index("</div>\r\n" if "\r\n" in block else "</div>\n", block.index("</dl>"))]
-        self.assertIn('<h3 class="xp-h">扩展摘要<span class="muted">批准、替换与分享时显示相同内容</span></h3>', block)
+        self.assertIn('<h3 class="xp-h">扩展摘要<span class="muted">批准、替换扩展包与分享时显示相同内容</span></h3>', block)
         self.assertIn('<template x-for="(row, i) in lxSumRows(lxSumCur)" :key="i"><div class="lx-sum-row">'
                       '<dt x-text="row.k"></dt><dd class="selectable" x-text="row.v"></dd></div></template>', block)
         self.assertNotIn("x-html", block)
@@ -1012,7 +1012,7 @@ class Page(unittest.TestCase):
         self.assertIn('<p class="small muted lx-where-hint" x-text="lxWhereHint(lxn.where)"></p>', d)
         self.assertIn('<label class="field" x-show="lxn.where !== \'local\'"><span>游戏插件</span>'
                       '<input x-t class="input mono" x-model="lxn.addon" placeholder="插件文件夹名，留空则按标识生成"></label>', d)
-        self.assertIn('<li x-show="lxn.result.where === \'game\'">载入时安装到游戏；新插件在游戏重启后由游戏载入。</li>', d)
+        self.assertIn('<li x-show="lxn.result.where === \'game\'">载入时安装到游戏；新插件重启游戏后生效。</li>', d)
         self.assertIn(':disabled="lxn.busy || !lxn.id.trim()"', d)
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxn.error" x-text="lxn.error"></p>', d)
         self.assertIn('<p class="mono selectable lx-path" x-text="lxp.path"></p>', d)
@@ -1035,7 +1035,7 @@ class Page(unittest.TestCase):
         self.assertIn('<p class="small bad-text selectable lx-why" x-show="lxr.error" x-text="lxr.error"></p>', r)
         self.assertIn('<button class="btn" @click="lxr.open = false">取消</button>', r)
         self.assertIn('<button class="btn primary" :disabled="lxr.busy" @click="lxReplace()" '
-                      'x-text="lxr.busy ? t(\'进行中…\') : t(\'替换\')"></button>', r)
+                      'x-text="lxr.busy ? t(\'进行中…\') : t(\'替换扩展包\')"></button>', r)
         self.assertLess(r.index("lxr.open = false\">取消"), r.index("lxReplace()"))
         self.assertNotIn("x-html", r)
         self.assertIn("lxr: { open: false,", self.js)
@@ -1076,19 +1076,19 @@ class Page(unittest.TestCase):
                      "（在这里写你想要的功能）",
                      "首次运行前需要批准：关闭此窗口后，在详情中点「批准运行」。", "链接", "主页", "游戏插件",
                      "有更新", "同名插件已存在", "游戏目录未知", "重启游戏后生效", "同时安装游戏插件：{names}",
-                     "需要无限工坊 {v} 以上", "需要 WuxianKit {v} 以上", "版本不足", "更多", "打包分享", "移除", "确认移除",
-                     "扩展摘要", "批准、替换与分享时显示相同内容", "复制给 Agent 审阅", "给 Agent 的审阅请求", "对方导入时将看到：",
+                     "需要无限工坊 {v} 以上", "需要扩展框架 {v} 以上", "版本不足", "更多", "打包分享", "移除", "确认移除",
+                     "扩展摘要", "批准、替换扩展包与分享时显示相同内容", "复制给 Agent 审阅", "给 Agent 的审阅请求", "对方导入时将看到：",
                      "把此文件发给对方；对方在「添加 → 导入扩展包」中选择它即可导入，批准后生效。", "未打包：{names}",
-                     "替换 {name}？", "与已添加的版本相同。", "现有扩展的清单无法读取，无法比较。", "摘要各项无变化，文件内容可能不同。",
+                     "替换扩展包 {name}？", "替换扩展包", "已替换扩展包 {name}", "与已添加的版本相同。", "现有扩展的清单无法读取，无法比较。", "摘要各项无变化，文件内容可能不同。",
                      "变更", "新扩展包", "替换后需重新批准；现有版本移入回收区。", "替换",
-                     "游戏插件在游戏内运行，受游戏对插件的限制，不能访问这台电脑上的文件。",
-                     "程序在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。",
+                     "游戏插件在游戏中运行，受游戏对插件的限制，不能访问这台电脑上的文件。",
+                     "本机端在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。",
                      "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",
                      "标识已被占用，请先移除同名扩展", "文件夹被占用，请关闭占用它的程序后重试", "未找到游戏目录",
-                     "游戏里已有同名插件，未覆盖", "没有游戏插件", "扩展包过大", "扩展包无效", "游戏插件无效", "清单有误",
+                     "游戏中已有同名插件，未替换", "没有游戏插件", "扩展包过大", "扩展包无效", "游戏插件无效", "清单有误",
                      "目标文件夹已有其他内容", "游戏插件被占用，请退出游戏后重试", "游戏插件写入失败",
-                     "运行位置", "游戏 · 本机", "只含游戏插件，在游戏中运行，没有本机程序", "插件文件夹名，留空则按标识生成",
-                     "载入时安装到游戏；新插件在游戏重启后由游戏载入。"):
+                     "运行位置", "游戏 · 本机", "只含游戏插件，在游戏中运行，没有本机端", "插件文件夹名，留空则按标识生成",
+                     "载入时安装到游戏；新插件重启游戏后生效。"):
             self.assertIn("\n  '%s': '" % word, self.i18n, word)
         self.assertNotIn("new_extension 新建", self.i18n)
         self.assertNotIn("\n  '打包': '", self.i18n)

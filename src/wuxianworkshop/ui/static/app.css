@@ -522,6 +522,12 @@ pre.diff .hunk { color: var(--sky); }
 .xp-note { flex: none; display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; padding: 8px 12px; border-radius: 6px;
   font-size: 12.5px; border: 1px solid var(--gold-d); background: var(--gold-soft); color: var(--fg); }
 .xp-note.bad { border-color: rgba(242, 139, 130, .45); background: var(--bad-soft); }
+.xp-note.xp-top { margin-bottom: 10px; }   /* over the list and the detail: the framework is too old for this workshop */
+.xp-note.xp-top b { font-weight: 600; color: var(--gold-l); }
+/* beside buttons that are off: why (an action that runs, here or of another extension; idle: a reason that stays) */
+.lx-wait { flex: none; font-size: 12px; color: var(--gold-l); }
+.lx-wait.idle { color: var(--muted); }
+p.lx-wait { margin: 0 0 10px; }
 .xp-tag { display: inline-flex; flex: none; align-items: center; height: 18px; padding: 0 8px; border-radius: 999px;
   font-size: 11px; font-weight: 400; letter-spacing: .02em; white-space: nowrap; color: var(--muted); background: var(--panel2);
   border: 1px solid var(--line); }
@@ -564,7 +570,7 @@ pre.diff .hunk { color: var(--sky); }
 /* the summary: its rows are cloned into a dl.kv, the wrapper stays out of the grid */
 .lx-sum-row { display: contents; }
 .lx-stuck { color: var(--bad); }
-.lx-sum-state { display: flex; align-items: center; gap: 10px; color: var(--gold-l); }
+.lx-sum-state { display: flex; align-items: center; justify-content: flex-end; gap: 10px; color: var(--gold-l); }   /* under 批准 */
 .lx-risk { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); line-height: 1.6; color: var(--fg); }
 .lx-packed { flex: none; display: grid; gap: 8px; margin: 6px 16px 0; padding: 10px 12px; border-radius: 6px; font-size: 12.5px;
   background: var(--field); border: 1px solid var(--line); }
