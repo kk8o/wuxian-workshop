@@ -350,7 +350,8 @@ end
 -- g: the answer a probe keeps (_G.WuxianWorkshopAnswers[key], agent/probes.py), else a data call's (key: its job). Its
 -- RUN result's one value is "<m> <bytes of the rest>". While its segments go the answer is kept ANSWER_KEPT seconds
 -- from the last one handed to the link or acknowledged, never cut off halfway; once every one is acknowledged,
--- ANSWER_AGAIN more. A reload takes it, as it takes every answer.
+-- ANSWER_AGAIN more. A reload takes it, as it takes every answer. A data call's answer keeps whose it is (the addon and
+-- the name it exposed): that name's OnPour (API.lua, 0.9.15) hears as its pour starts and as each segment is in.
 local PIECE, ANSWER_MOST, WHOLE_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 16 * 1024 * 1024, 300, 60
 local SEGMENT = 32 * 1024
 local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece", pour = "=pour" }
@@ -427,6 +428,15 @@ local function Pour(req)
 	local ok, line = false, nil
 	if n > 0 and ns.Console then ok, line = pcall(ns.Console.Add, "LINK", ns.L.CON_POURING:format(0, n)) end
 	if not ok then line = nil end
+	-- the exposed function's OnPour (API.lua), asked each time (registered again: the new fn; nil: no more), told while
+	-- this pour is the answer's latest; an fn that raises goes to the error handler, the pour goes on
+	local rest = #a.s - a.cuts[1]
+	local function Tell()
+		local fn = a.name and a.pour == p and ns.PourWatcher and ns.PourWatcher(a.addon, a.name)
+		if not fn then return end
+		local fine, err = pcall(fn, { done = done, total = n, bytes = bytes, seconds = GetTime() - t0, answer = rest })
+		if not fine then geterrorhandler()(err) end
+	end
 	function p.Next()
 		local i = list[at]
 		if not i then return nil end
@@ -438,18 +448,23 @@ local function Pour(req)
 	end
 	function p.Acked()
 		a.out, a.at = math.max(0, a.out - 1), GetTime()
+		local before = done
 		done = math.min(n, done + 1)
 		if line then
 			pcall(ns.Console.Update, line, done < n and ns.L.CON_POURING:format(done, n)
 				or ns.L.CON_POURED:format(n, bytes / 1024, GetTime() - t0))
 		end
+		if done > before then Tell() end
 		if a.out == 0 and a.pour == p and not list[at] then       -- every segment of the last pour is in: a while more
 			a.at = GetTime() - ANSWER_KEPT + ANSWER_AGAIN
 			C_Timer.After(ANSWER_AGAIN + 1, function() Sweep(store) end)
 		end
 	end
-	if list[1] then ns.Link.Pour(p) end
-	return ("%d %d"):format(m, #a.s - a.cuts[1])
+	if list[1] then
+		Tell()                                         -- it starts: done 0
+		ns.Link.Pour(p)
+	end
+	return ("%d %d"):format(m, rest)
 end
 
 -- (the answer's text, or nil + why not) for a data call
@@ -496,6 +511,9 @@ local function RunCall(id, job)
 		if #cuts > 1 then
 			Sweep(answers)                              -- the ones left by a daemon that never asked
 			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
+			if job.verb == "call" then                  -- whose answer it is: the addon's OnPour hears how its pour goes
+				answers[id].addon, answers[id].name = tostring(req.a), tostring(req.n)
+			end
 		end
 		text = "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
 	end
