@@ -311,12 +311,14 @@ class Driver(Base):
         self.write_json(self.fake.port)
         self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
 
-    def test_a_refusal_waits_for_kit_ready_or_a_minute(self):
-        self.fake.app_blocked = "「公会」扩展关着"
+    def test_a_refusal_waits_for_kit_ready_or_longer_each_time(self):
+        self.fake.app_blocked = "「公会」扩展关着"     # also an app the workshop declares a moment after the process started
         self.driver()
-        self.assertTrue(until(lambda: len(self.fake.call_times("kit.app.open")) >= 3))
+        self.assertTrue(until(lambda: len(self.fake.call_times("kit.app.open")) >= 6))
         times = self.fake.call_times("kit.app.open")
-        self.assertTrue(all(b - a >= wk.APP_REFUSED for a, b in zip(times, times[1:])), times)
+        waits = [min(wk.APP_REFUSED, wk.APP_RETRY * 2 ** i) for i in range(5)]       # 5, 10, 20, 40, 60
+        self.assertEqual(waits[-1], wk.APP_REFUSED)
+        self.assertTrue(all(w <= b - a < w + 1 for w, a, b in zip(waits, times, times[1:])), times)
         self.assertIn("not_started", self.err.getvalue())
         self.assertEqual(self.got, [])
         tries = self.opens()

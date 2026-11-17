@@ -700,7 +700,9 @@ APP_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")  # an app id as a manifest write
 APPS_FILE = "apps.json"                  # in ext.data: {app: {"next": item id}}, where each driven app got
 APP_RETRY = 5.0                          # seconds before the game or the daemon is asked again while away
 APP_REOPEN = 5.0                         # seconds before an app that ended (expired, left, ...) is opened again
-APP_REFUSED = 60.0                       # seconds before an app WuxianKit would not open is tried again (or kit.ready)
+APP_REFUSED = 60.0                       # most seconds before an app WuxianKit would not open is tried again (or kit.ready):
+                                         # APP_RETRY, then twice as long each time, so one the workshop declares a moment
+                                         # after this process started opens within seconds
 
 # What a declaration may be and how a call's arguments are checked: the text 无限工坊 checks them with, copied from
 # its src/wuxianworkshop/local/validate.py by scripts/sync_sdk_validate.py (a test compares the two). Change it there,
@@ -1798,6 +1800,7 @@ class AppDriver:
         self.stream: Optional[AppStream] = None
         self.opened = 0                                   # how many times it opened the app
         self.checked = False                              # the app's status was read once, before the first open
+        self.refused = 0                                  # WuxianKit's refusals since it last opened
         self.thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -1842,7 +1845,8 @@ class AppDriver:
 
     def open(self) -> Optional[dict]:
         """kit.app.open with the declared minutes: its status; None when it did not open (it waited meanwhile: the game
-        or the daemon away, APP_RETRY s; WuxianKit refused, until kit.ready or APP_REFUSED s). Before the first, the
+        or the daemon away, APP_RETRY s; WuxianKit refused, until kit.ready or the next wait: APP_RETRY s doubled
+        with each refusal, at most APP_REFUSED). Before the first, the
         app's status: one the player stopped (why player) waits for kit.ready, as after the player's stop"""
         self.state = "opening"
         mark = self.mark()
@@ -1867,15 +1871,18 @@ class AppDriver:
         except WuxianError as e:
             if e.code in ("not_started", "call_failed"):
                 self.state = "waiting"
+                wait = min(APP_REFUSED, APP_RETRY * 2 ** self.refused)
+                self.refused += 1
                 self.say(f"WuxianKit did not open it ({e.code}: {e.reason}); tried again after the next login or UI "
-                         f"reload, or in {APP_REFUSED:g} s")
-                self.wait_ready(APP_REFUSED, mark)
+                         f"reload, or in {wait:g} s")
+                self.wait_ready(wait, mark)
             else:
                 self.state = "waiting"
                 self.say(f"waiting for the game ({e.code}: {e.reason})")
                 self.pause(APP_RETRY)
             return None
         self.opened += 1
+        self.refused = 0
         self.say("open")
         return status if isinstance(status, dict) else {}
 
