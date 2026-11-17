@@ -44,7 +44,7 @@ What needs the coding agent now? Sort the pieces:
 |---|---|
 | Tools an agent calls when asked | needs a brain, any: every conversation with this server has them |
 | "When X happens, do Y", always the same | a reaction: `reaction_set`, or the app's own in the manifest. No model |
-| A button the player presses | an app's control bound to a capability. No model |
+| A button the player presses | an app's control bound to a capability, with its `args`. No model |
 | Judging, wording, deciding | a brain: this conversation, another agent with the app's skill, or a program with the SDK |
 
 So first declare the app (`wk_docs {"skill": "kit-app"}`), which makes it startable from its card by any AI

@@ -213,7 +213,7 @@ background. `wuxian listen` only joins an app that runs: it never opens one, and
 the app does not run, so the skill opens the app first. An app is the finished product built on parts; an extension
 that is only a part declares no app.
 
-Two things in an app's declaration are the workshop's own and never reach the game:
+Three things in an app's declaration are the workshop's own and never reach the game:
 
 ```json
 {
@@ -226,10 +226,13 @@ Two things in an app's declaration are the workshop's own and never reach the ga
     "title": "语音搭子",
     "prompt": "companion",
     "hear": ["game:combat", "game:loot"],
-    "controls": ["stop", {"cmd": "mute", "call": "mute"}, {"cmd": "again", "label": "再说一遍", "call": "again"}],
+    "link": "live",
+    "controls": ["stop", {"cmd": "mute", "call": "mute", "args": {"on": true}},
+                 {"cmd": "unmute", "call": "mute", "args": {"on": false}},
+                 {"cmd": "again", "label": "再说一遍", "call": "again"}],
     "reactions": [
       {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite", "rareelite"]},
-       "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 30},
+       "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 30, "pace": ["normal", "lively"]},
       {"hear": "voice:said", "call": "voice.count", "item": "line", "note": "counts what was said"}
     ]
   }]
@@ -241,14 +244,23 @@ Two things in an app's declaration are the workshop's own and never reach the ga
   `game:combat.start`, `chat:guild`, or a local source, `voice:said`), `when` (dotted paths into the item, each must
   hold; a list: any of its values), `call` (a whole capability id: this extension's, another's or the game's; `see`,
   `keep` or `point`), `args`, `item` (an argument name: the whole item goes in it), `cooldown` (seconds, default 10),
-  `note`. The workshop sets them when the app starts to run and clears them when it stops; the agent no longer sets
-  them one by one. Reactions the agent adds with `reaction_set` work as before.
-- A control bound to a capability: `{"cmd", "label"?, "call"}`. `call` is the name of a capability of this extension
-  (without the id), `see`, `keep` or `point`. When the player gives that control (a button on the app's card, `/wk
-  <app> <cmd>`), the workshop calls it by itself, with `{}` as its arguments and the caller `{by: "player", app}`,
-  before the wake that carries the control goes on; the control is still an item of that wake (`{source: "control",
-  cmd}`), so the agent knows. WuxianKit's own controls (`mute unmute less more test pause resume stop`) keep their
-  own labels: bind them the same way, without `label`.
+  `pace`, `note`. The workshop sets them when the app starts to run and clears them when it stops; the agent no
+  longer sets them one by one. Reactions the agent adds with `reaction_set` work as before.
+- `pace` on a reaction: `"quiet"`, `"normal"`, `"lively"` or a list of them, the app's activity (the player's 少说 /
+  多说) it fires in. While the app's activity is another, what it hears calls nothing and spends no cooldown; while
+  the workshop does not know the activity (an older WuxianKit does not tell it), it fires as without `pace`. A
+  reaction the agent sets with `reaction_set` may have `pace` too, with an `owner` (the app whose activity counts).
+- `link`: `"live"` keeps the link to the game open while the app runs, so reactions and quick replies do not wait for
+  it to open; `"standby"` (the default, or leave it out) opens it when there is something to send. Only an app that
+  must react within a second or two (a voice companion) needs `live`. The player's setting 链路 (link) decides last:
+  跟随应用 (follow the apps, the default) does this, 常开 (always) and 按需 (on demand) do not ask the apps.
+- A control bound to a capability: `{"cmd", "label"?, "call", "args"?}`. `call` is the name of a capability of this
+  extension (without the id), `see`, `keep` or `point`; `args` is an object (at most 2,048 bytes as JSON), the
+  arguments it gets, `{}` when left out, so one capability can serve two controls (`mute` and `unmute` above). When
+  the player gives that control (a button on the app's card, `/wk <app> <cmd>`), the workshop calls it by itself,
+  with `args` and the caller `{by: "player", app}`, before the wake that carries the control goes on; the control is
+  still an item of that wake (`{source: "control", cmd}`), so the agent knows. WuxianKit's own controls (`mute unmute
+  less more test pause resume stop`) keep their own labels: bind them the same way, without `label`.
 
 ## Adding to apps: wake notes and skill supplements (补充应用：唤醒附注与技能补充)
 

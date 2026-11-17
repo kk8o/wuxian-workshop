@@ -3,7 +3,8 @@ r"""What the enabled local extensions add to apps, read from their manifests for
     declarations(host)            [(extension id, what kit.app.declare gets)] of their own apps
     adds(host, app)               what they add to an app that may be another's: its wake notes and skill supplements
     app_reactions(host, app)      the reactions of the app's own declaration (installed while the app runs)
-    control_call(host, app, cmd)  the capability a control of the app is bound to
+    app_link(host, app)           "live" when the app's declaration keeps the link to the game open while it runs
+    control_call(host, app, cmd)  the capability a control of the app is bound to, and its arguments
     row(manifest)                 the adds of one manifest for the rows of the API
     roster(host)                  the extensions with a local part, as WuxianKit's window is told of them
 
@@ -15,9 +16,9 @@ described itself anew). Every answer is a copy.
 
 An extension whose command the player has not allowed (registry.approval is not "ok"; where the setting lets the
 workshop allow commands by itself, host.auto(), it does so at the first start) adds nothing: no declaration, no wake,
-no skill supplement, no reaction, no bound control. All of it comes when the player allows it (the registry is saved
-then, so the table is built anew). Neither does one that needs a newer workshop than this one (its manifest's
-requires.workshop; Host.unmet_error): nothing of it runs here.
+no skill supplement, no reaction, no bound control, no live link. All of it comes when the player allows it (the
+registry is saved then, so the table is built anew). Neither does one that needs a newer workshop than this one (its
+manifest's requires.workshop; Host.unmet_error): nothing of it runs here.
 
 Standard library only.
 """
@@ -45,13 +46,22 @@ def app_reactions(host, app):
     return copy.deepcopy(table(host)["reactions"].get(app, []))
 
 
+def app_link(host, app):
+    """"live" when an enabled extension's manifest declares app with "link": "live" (the daemon keeps the link to the
+    game open while it runs); None otherwise ("standby", not given, or an app no enabled extension declares)"""
+    if not isinstance(app, str) or not app:
+        return None
+    return table(host)["links"].get(app)
+
+
 def control_call(host, app, cmd):
-    """{"ext": id, "call": "<id>.<capability>"} when the enabled extension that declares app bound its control cmd to
-    a capability of its own (apps[].controls[] {cmd, label, call}); None otherwise"""
+    """{"ext": id, "call": "<id>.<capability>", "args": {...}} when the enabled extension that declares app bound its
+    control cmd to a capability of its own (apps[].controls[] {cmd, label, call, args}; args {} when it gives none);
+    None otherwise. A copy each time"""
     if not isinstance(app, str) or not isinstance(cmd, str):
         return None
     found = table(host)["controls"].get((app, cmd))
-    return dict(found) if found else None
+    return copy.deepcopy(found) if found else None
 
 
 def row(manifest):
@@ -64,14 +74,14 @@ def row(manifest):
 def declarations(host):
     """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
     with (local {id, title}: its card in the game names the extension). Without what is the workshop's alone: the
-    reactions, and the call of a control"""
+    reactions, the link, and the call and args of a control"""
     return copy.deepcopy(table(host)["declarations"])
 
 
 def declaration(app, eid, title):
     """an app of a manifest as kit.app.declare gets it. A control with a call goes as WuxianKit writes controls: its
     own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}"""
-    out = {k: v for k, v in app.items() if k != "reactions"}
+    out = {k: v for k, v in app.items() if k not in ("reactions", "link")}      # WuxianKit 0.6.0 knows neither
     if isinstance(out.get("controls"), list):
         out["controls"] = [c if isinstance(c, str) else c["cmd"] if c["cmd"] in M.CORE_CONTROLS
                            else {"cmd": c["cmd"], "label": c.get("label")} for c in out["controls"]]
@@ -145,9 +155,10 @@ def wake_ok(wake, eid, described):
 
 
 def table(host):
-    """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "controls": {(app, cmd):
-    {ext, call}}} of the enabled extensions, kept while auto() and the stamps of the registry and of the enabled
-    extensions' manifests stay (save() drops it at once). Not to be changed: the callers copy what they give out"""
+    """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "links": {app: "live"},
+    "controls": {(app, cmd): {ext, call, args}}} of the enabled extensions, kept while auto() and the stamps of the
+    registry and of the enabled extensions' manifests stay (save() drops it at once). Not to be changed: the callers
+    copy what they give out"""
     with host.lock:
         cache, auto = host.adds_cache, bool(host.auto())
         if cache is not None and cache[2] == auto and all(stamp(path) == was for path, was in cache[0]):
@@ -155,7 +166,7 @@ def table(host):
         stamps = [(host.registry, stamp(host.registry))]
         stamps += [(path, stamp(path)) for path in (M.locate(e["path"])[1] for e in host.load()["extensions"]
                                                         if e["enabled"])]
-        built = {"declarations": [], "adds": {}, "reactions": {}, "controls": {}}
+        built = {"declarations": [], "adds": {}, "reactions": {}, "links": {}, "controls": {}}
         for e, m in enabled_manifests(host):
             eid, title = e["id"], m.get("title") or e["id"]
             for app, a in m["adds"].items():
@@ -165,9 +176,12 @@ def table(host):
                 built["declarations"].append((eid, declaration(a, eid, title)))
                 if a["reactions"]:
                     built["reactions"].setdefault(a["app"], []).extend(dict(r, ext=eid) for r in a["reactions"])
+                if a.get("link") == "live":
+                    built["links"][a["app"]] = "live"
                 for c in a.get("controls") or []:
                     if isinstance(c, dict) and c.get("call"):
-                        built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}"))
+                        built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}",
+                                                                               args=copy.deepcopy(c.get("args") or {})))
         for items in built["adds"].values():
             items.sort(key=lambda a: a["ext"])
         host.adds_cache = (stamps, built, auto)

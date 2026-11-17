@@ -471,6 +471,91 @@ class Declared(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.ids(), ["companion.1", "companion.2"])
 
 
+class Pace(unittest.IsolatedAsyncioTestCase):
+    """a reaction's pace: only while its owner's activity is one of them; not known: it calls"""
+
+    async def asyncSetUp(self):
+        self.f = Fake()
+
+    async def bad(self, spec, *words):
+        with self.assertRaises(ReactionError) as e:
+            await self.f.r.set(spec)
+        for w in words:
+            self.assertIn(w, str(e.exception))
+
+    async def test_checked(self):
+        ok = {"hear": "game:combat", "call": "voice.play", "owner": "companion"}
+        row = await self.f.r.set(dict(ok, pace="lively"))
+        self.assertEqual(row["pace"], ["lively"])
+        row = await self.f.r.set(dict(ok, pace=["lively", "quiet", "lively"]))
+        self.assertEqual(row["pace"], ["quiet", "lively"])
+        self.assertIsNone((await self.f.r.set(ok))["pace"])
+        self.assertEqual([r["pace"] for r in self.f.r.list()], [["lively"], ["quiet", "lively"], None])
+        await self.bad({"hear": "game:combat", "call": "voice.play", "pace": "normal"}, "owner")
+        for value in ("loud", [], ["normal", "x"], {"normal": 1}, 1, True, ["normal", None]):
+            await self.bad(dict(ok, pace=value), "pace", "quiet")
+
+    async def test_only_in_its_activities(self):
+        await self.f.r.set({"hear": "game:combat", "call": "voice.play", "owner": "companion", "cooldown": 0,
+                            "pace": ["normal", "lively"]})
+        await self.f.r.set({"hear": "game:combat", "call": "sense.bags", "owner": "companion", "cooldown": 0})
+
+        async def heard():
+            self.f.calls.clear()
+            await self.f.r.item(combat())
+            await self.f.r.drain()
+            return sorted(c[0] for c in self.f.calls)
+        self.assertEqual(await heard(), ["sense.bags", "voice.play"])       # not known yet: it calls
+        self.f.r.set_pace("companion", "quiet")
+        self.assertEqual(self.f.r.paces(), {"companion": "quiet"})
+        self.assertEqual(await heard(), ["sense.bags"])
+        self.f.r.set_pace("companion", "lively")
+        self.assertEqual(await heard(), ["sense.bags", "voice.play"])
+        self.f.r.set_pace("guild", "quiet")                                 # another app's: nothing to do with it
+        self.assertEqual(await heard(), ["sense.bags", "voice.play"])
+        self.f.r.set_pace("companion", "quiet")
+        self.f.r.set_pace("companion", "loud")                              # no activity: forgotten, it calls
+        self.assertEqual(await heard(), ["sense.bags", "voice.play"])
+        self.f.r.set_pace("companion", "quiet")
+        self.f.r.set_pace("companion", None)
+        self.assertEqual(await heard(), ["sense.bags", "voice.play"])
+        for app in (None, "", 3):                                           # no app: nothing kept
+            self.f.r.set_pace(app, "quiet")
+        self.assertEqual(self.f.r.paces(), {"guild": "quiet"})
+
+    async def test_spends_no_cooldown(self):
+        await self.f.r.set({"hear": "game:combat", "call": "voice.play", "owner": "companion", "cooldown": 30,
+                            "pace": "lively"})
+        self.f.r.set_pace("companion", "normal")
+        await self.f.r.item(combat())
+        await self.f.r.drain()
+        self.assertEqual((self.f.calls, self.f.r.list()[0]["fired"], self.f.r.list()[0]["last"]), ([], 0, None))
+        self.f.r.set_pace("companion", "lively")
+        await self.f.r.item(combat())                                       # at once: no cooldown was spent
+        await self.f.r.drain()
+        self.assertEqual(len(self.f.calls), 1)
+
+    async def test_declared_and_forgotten_when_the_app_stops(self):
+        specs = [{"hear": "game:combat", "call": "voice.play", "cooldown": 0, "pace": ["normal", "lively"]},
+                 {"hear": "game:combat", "call": "sense.bags", "cooldown": 0}]
+        self.assertEqual(await self.f.r.app_started("companion", specs), [])
+        self.assertEqual([r["pace"] for r in self.f.r.list()], [["normal", "lively"], None])
+        self.f.r.set_pace("companion", "quiet")
+        await self.f.r.item(combat())
+        await self.f.r.drain()
+        self.assertEqual([c[0] for c in self.f.calls], ["sense.bags"])
+        await self.f.r.app_stopped("companion")
+        self.assertEqual(self.f.r.paces(), {})
+        self.assertEqual(await self.f.r.app_started("companion", specs), [])    # runs again: not known, it calls
+        self.f.calls.clear()
+        await self.f.r.item(combat())
+        await self.f.r.drain()
+        self.assertEqual(sorted(c[0] for c in self.f.calls), ["sense.bags", "voice.play"])
+        problems = await self.f.r.app_started("guild", [{"hear": "game:combat", "call": "voice.play", "pace": "x"}])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("pace", problems[0])
+
+
 class Owners(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.f = Fake()

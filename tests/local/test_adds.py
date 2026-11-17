@@ -102,13 +102,13 @@ class AddsTests(unittest.TestCase):
             ("fa", {"app": "fa_one", "title": "一", "controls": ["stop"], "local": {"id": "fa", "title": "测试 fa"}})])
         self.assertEqual(self.host.app_reactions("companion"), [
             {"ext": "fx", "hear": "game:combat.start", "when": {"data.unit.classification": ["elite"]},
-             "call": "fx.emit", "args": {"text": "elite"}, "item": None, "cooldown": 30, "note": None},
+             "call": "fx.emit", "args": {"text": "elite"}, "item": None, "cooldown": 30, "pace": None, "note": None},
             {"ext": "fx", "hear": "fx:said", "when": None, "call": "sense.bags", "args": None, "item": "event",
-             "cooldown": 10, "note": "what was said"}])
+             "cooldown": 10, "pace": None, "note": "what was said"}])
         self.assertEqual((self.host.app_reactions("fx_two"), self.host.app_reactions("guild"),
                           self.host.app_reactions(None)), ([], [], []))
-        self.assertEqual(self.host.control_call("companion", "mute"), {"ext": "fx", "call": "fx.emit"})
-        self.assertEqual(self.host.control_call("companion", "again"), {"ext": "fx", "call": "fx.echo"})
+        self.assertEqual(self.host.control_call("companion", "mute"), {"ext": "fx", "call": "fx.emit", "args": {}})
+        self.assertEqual(self.host.control_call("companion", "again"), {"ext": "fx", "call": "fx.echo", "args": {}})
         self.assertEqual([self.host.control_call(*x) for x in (("companion", "skip"), ("companion", "stop"),
                                                                ("fa_one", "stop"), ("guild", "mute"), (None, "mute"),
                                                                ("companion", None))], [None] * 6)
@@ -129,6 +129,30 @@ class AddsTests(unittest.TestCase):
         self.assertEqual([eid for eid, _ in self.host.declarations()], ["fa"])
         self.assertEqual((self.host.app_reactions("companion"), self.host.control_call("companion", "mute"),
                           self.host.adds("companion")), ([], None, []))
+
+    def test_link_pace_and_control_args(self):
+        """link "live" stays with the workshop (Host.app_link) and does not reach kit.app.declare; a reaction's pace
+        goes with it to app_reactions; a control's args go with its call (Host.control_call), not to the game"""
+        app = dict(APP, link="live", controls=["stop", {"cmd": "mute", "call": "emit", "args": {"on": True}},
+                                                {"cmd": "again", "label": "再说", "call": "echo", "args": {"n": [1]}}],
+                   reactions=[dict(APP["reactions"][0], pace=["lively", "normal"])])
+        self.add("fx", apps=[app, {"app": "fx_two", "link": "standby"}, {"app": "fx_three"}])
+        (_, declared), (_, two), (_, three) = self.host.declarations()
+        self.assertNotIn("link", declared)
+        self.assertNotIn("link", two)
+        self.assertNotIn("reactions", declared)
+        self.assertEqual(declared["controls"], ["stop", "mute", {"cmd": "again", "label": "再说"}])
+        self.assertEqual([self.host.app_link(x) for x in ("companion", "fx_two", "fx_three", "guild", None, "")],
+                         ["live", None, None, None, None, None])
+        self.assertEqual(self.host.app_reactions("companion")[0]["pace"], ["normal", "lively"])
+        self.assertEqual(self.host.control_call("companion", "mute"), {"ext": "fx", "call": "fx.emit",
+                                                                       "args": {"on": True}})
+        bound = self.host.control_call("companion", "again")
+        self.assertEqual(bound, {"ext": "fx", "call": "fx.echo", "args": {"n": [1]}})
+        bound["args"]["n"].append(2)                                    # a copy, nested too
+        self.assertEqual(self.host.control_call("companion", "again")["args"], {"n": [1]})
+        self.host.set("fx", enabled=False)                              # one switch
+        self.assertEqual((self.host.app_link("companion"), self.host.control_call("companion", "mute")), (None, None))
 
     def test_the_table_is_kept(self):
         """adds() is called for every wake: no manifest is read again until the registry or an enabled extension's
@@ -179,7 +203,8 @@ class AddsTests(unittest.TestCase):
             self.host.adds_cache = None
             self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
             self.assertEqual((len(self.host.adds("guild")), len(self.host.app_reactions("companion")),
-                              self.host.control_call("companion", "mute")), (1, 2, {"ext": "fx", "call": "fx.emit"}))
+                              self.host.control_call("companion", "mute")),
+                             (1, 2, {"ext": "fx", "call": "fx.emit", "args": {}}))
 
     def test_needs_a_newer_workshop(self):
         """an extension that needs a newer workshop than this one (requires.workshop) does not start, so it adds
@@ -201,7 +226,7 @@ class AddsTests(unittest.TestCase):
         self.assertEqual([eid for eid, _ in self.host.declarations()], ["fx", "fa"])
         self.assertEqual([a["ext"] for a in self.host.adds("guild")], ["fa", "fx"])
         self.assertEqual((len(self.host.app_reactions("companion")), self.host.control_call("companion", "mute")),
-                         (2, {"ext": "fx", "call": "fx.emit"}))
+                         (2, {"ext": "fx", "call": "fx.emit", "args": {}}))
 
     def test_the_fourth_batchs_names_are_gone(self):
         self.add("fx", adds={"guild": {"wake": "echo", "skill": "AGENT.md"}})
