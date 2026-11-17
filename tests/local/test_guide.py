@@ -60,8 +60,11 @@ class Guide(unittest.TestCase):
         m, _ = M.check_manifest(self.root / "voice")
         app = m["apps"][0]
         self.assertEqual([r["call"] for r in app["reactions"]], ["voice.say", "voice.count"])
-        self.assertEqual([c if isinstance(c, str) else (c["cmd"], c.get("call")) for c in app["controls"]],
-                         ["stop", ("mute", "mute"), ("again", "again")])
+        self.assertEqual([c if isinstance(c, str) else (c["cmd"], c.get("call"), c.get("args"))
+                          for c in app["controls"]],
+                         ["stop", ("mute", "mute", {"on": True}), ("unmute", "mute", {"on": False}),
+                          ("again", "again", None)])
+        self.assertEqual((app["link"], app["reactions"][0]["pace"]), ("live", ["normal", "lively"]))
         m, _ = M.check_manifest(self.root / "facts")
         skill = (self.root / "facts" / "skills" / "guild-chat.md").resolve()
         self.assertEqual(m["adds"], {"guild": {"wake": {"call": "facts.lookup", "timeout": 3.0}, "skill": str(skill)}})
@@ -69,7 +72,7 @@ class Guide(unittest.TestCase):
     def test_what_it_explains(self):
         for word in ("needs_approval", "not_allowed", "批准运行", "`pass`", "`adds`", "`reactions`", "reaction_set",
                      "wk_kit_app_open", "wuxian listen", "deadline_ms", "`cancel", "`ping", "`loop`", '"player"',
-                     '"workshop"', "extension_set", "forgotten"):
+                     '"workshop"', "extension_set", "forgotten", "`link`", "`pace`", "2,048 bytes"):
             self.assertIn(word, self.text)
         for word in ("annotate", "extends", "`driver`", "`launch`"):         # what the fifth batch took away
             self.assertNotIn(word, self.text)

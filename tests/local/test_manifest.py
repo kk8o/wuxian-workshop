@@ -333,9 +333,9 @@ class Adds(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual(m["apps"][0]["reactions"], [
             {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"]}, "call": "voice.say",
-             "args": {"pool": "elite"}, "item": None, "cooldown": 30, "note": None},
+             "args": {"pool": "elite"}, "item": None, "cooldown": 30, "pace": None, "note": None},
             {"hear": "facts:found", "when": None, "call": "facts.note", "args": None, "item": "event", "cooldown": 10,
-             "note": "what it is for"}])
+             "pace": None, "note": "what it is for"}])
         self.assertEqual(self.app()[0]["apps"][0]["reactions"], [])
         self.assertNotIn("controls", self.app()[0]["apps"][0])
 
@@ -344,8 +344,9 @@ class Adds(unittest.TestCase):
         import asyncio
         from wuxianworkshop.local import reactions as R
         specs = [{"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"], "kind": "combat.start"},
-                  "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 0},
-                 {"hear": "chat:guild", "call": "facts.note", "item": "event", "note": "why"}]
+                  "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 0, "pace": "lively"},
+                 {"hear": "chat:guild", "call": "facts.note", "item": "event", "note": "why",
+                  "pace": ["lively", "quiet", "lively"]}]
         m, _ = self.app(reactions=specs)
 
         async def kind_of(cap):
@@ -378,12 +379,67 @@ class Adds(unittest.TestCase):
             ([dict(ok, cooldown=-1)], "reactions[0]"),
             ([dict(ok, cooldown=True)], "reactions[0]"),
             ([dict(ok, note="x" * 201)], "reactions[0]"),
+            ([dict(ok, pace="loud")], "reactions[0]"),
+            ([dict(ok, pace=[])], "reactions[0]"),
+            ([dict(ok, pace=["normal", "chatty"])], "reactions[0]"),
+            ([dict(ok, pace={"normal": True})], "reactions[0]"),
+            ([dict(ok, pace=True)], "reactions[0]"),
         ]
         for value, where in cases:
             m, problems = self.app(reactions=value)
             self.assertIsNone(m, value)
             self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].{where}"], value)
             self.assertTrue(all(p["hint"] for p in problems), value)
+
+    def test_reactions_pace(self):
+        """pace: one activity or a list, kept as a list in quiet, normal, lively order; the app owns them: no owner"""
+        ok = {"hear": "game:combat.start", "call": "voice.say"}
+        m, problems = self.app(reactions=[dict(ok, pace="normal"), dict(ok, pace=["lively", "normal"]), ok])
+        self.assertEqual(problems, [])
+        self.assertEqual([r["pace"] for r in m["apps"][0]["reactions"]], [["normal"], ["normal", "lively"], None])
+
+    def test_link(self):
+        """link: "live" or "standby" kept on the app (the workshop's: adds.py leaves it out of the declaration), none
+        when not given; anything else is an error"""
+        for value in ("live", "standby"):
+            m, problems = self.app(link=value)
+            self.assertEqual(problems, [])
+            self.assertEqual(m["apps"][0]["link"], value)
+        for given in ({}, {"link": None}):
+            m, problems = self.app(**given)
+            self.assertEqual(problems, [])
+            self.assertNotIn("link", m["apps"][0])
+        for value in ("always", "Live", True, 1, ["live"]):
+            m, problems = self.app(link=value)
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].link"], value)
+            self.assertTrue(problems[0]["hint"])
+
+    def test_control_args(self):
+        """args: an object of at most 2048 bytes of JSON that goes with call; WuxianKit's own words take them too"""
+        m, problems = self.app(controls=[{"cmd": "mute", "call": "mute", "args": {"on": True}},
+                                         {"cmd": "unmute", "call": "mute", "args": {"on": False}},
+                                         {"cmd": "again", "label": "再说", "call": "again", "args": {}},
+                                         {"cmd": "skip", "label": "跳过", "call": "skip",
+                                          "args": {"text": "字" * 600}}])         # 1,800 bytes: within
+        self.assertEqual(problems, [])
+        self.assertEqual(m["apps"][0]["controls"], [{"cmd": "mute", "call": "mute", "args": {"on": True}},
+                                                    {"cmd": "unmute", "call": "mute", "args": {"on": False}},
+                                                    {"cmd": "again", "label": "再说", "call": "again", "args": {}},
+                                                    {"cmd": "skip", "label": "跳过", "call": "skip",
+                                                     "args": {"text": "字" * 600}}])
+        m, problems = self.app(controls=[{"cmd": "mute", "label": "静音", "call": "mute", "args": {"on": True}}])
+        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: apps[0].controls[0].label"])
+        self.assertEqual(m["apps"][0]["controls"], [{"cmd": "mute", "call": "mute", "args": {"on": True}}])
+        m, problems = self.app(controls=[{"cmd": "again", "label": "再说", "args": {"n": 1}}])     # no call: said
+        self.assertEqual(where_of(problems, "warning"), [f"{M.MANIFEST}: apps[0].controls[0].args"])
+        self.assertEqual(m["apps"][0]["controls"], [{"cmd": "again", "label": "再说"}])
+        for value in (["on"], "on", 1, True, {"text": "字" * 700}, {"t": "x" * 2041}):     # 2,049 bytes: one too many
+            m, problems = self.app(controls=[{"cmd": "mute", "call": "mute", "args": value}])
+            self.assertIsNone(m, value)
+            self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].controls[0].args"], value)
+        m, problems = self.app(controls=[{"cmd": "mute", "call": "mute", "args": {"t": "x" * 2040}}])   # 2,048 bytes
+        self.assertEqual(problems, [])
 
     def test_controls(self):
         m, problems = self.app(controls=["stop", {"cmd": "mute", "call": "mute"},

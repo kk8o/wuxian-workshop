@@ -49,9 +49,10 @@ If all three check out, the verdict is already 能做: the rest is assembly.
 
 ## 4. Make it an app, when the chain works
 
-Add `apps` to the manifest: the declaration (`hear`, `pace`, `controls`, `prompt`) and its skill in
-`skills/<prompt>.md`. `wk_docs {"skill": "kit-app"}` has the fields; design them with the player. The player then
-starts it from its card with 交给 AI, in any conversation, without you rebuilding anything.
+Add `apps` to the manifest: the declaration (`hear`, `pace`, `controls`, `prompt`; `link: "live"` only when it must
+react within a second or two) and its skill in `skills/<prompt>.md`. `wk_docs {"skill": "kit-app"}` has the fields;
+design them with the player. The player then starts it from its card with 交给 AI, in any conversation, without you
+rebuilding anything.
 
 If an app that does the hearing and replying exists already (`wk_kit_apps`: 公会聊天 is one), do not make a second:
 give it your knowledge instead: `guide {"topic": "enrich-app"}`.

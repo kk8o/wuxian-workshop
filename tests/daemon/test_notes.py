@@ -319,6 +319,25 @@ class NotesAlone(unittest.TestCase):
         self.assertEqual(event["d"]["items"], pressed("skip"))           # the agent still sees what was pressed
         self.assertNotIn("notes", event["d"])
 
+    def test_a_bound_controls_args(self):
+        """the binding's args are the call's arguments, a copy each time; none (or none that is an object): {}"""
+        seen = []
+
+        async def mute(args):
+            seen.append(dict(args))
+            args["on"] = "changed"                                       # the callee's: the binding keeps its own
+        on = {"ext": "voice", "call": "voice.mute", "args": {"on": True}}
+        self.bound.update({("guild", "mute"): on, ("guild", "unmute"): {"ext": "voice", "call": "voice.mute",
+                                                                          "args": {"on": False}},
+                           ("guild", "odd"): {"ext": "voice", "call": "voice.mute", "args": ["on"]}})
+        self.answers["voice.mute"] = mute
+        self.assertTrue(self.notes.hold(wake_text("guild", 1, items=pressed("mute") + pressed("unmute")
+                                                  + pressed("odd") + pressed("mute"))))
+        self.got(1)
+        self.assertEqual([(c[0], c[3]) for c in self.calls], [("voice.mute", {"by": "player", "app": "guild"})] * 4)
+        self.assertEqual(seen, [{"on": True}, {"on": False}, {}, {"on": True}])
+        self.assertEqual(on["args"], {"on": True})
+
     def test_a_bound_control_and_notes(self):
         order = []
 
@@ -541,7 +560,8 @@ class NotesDaemon(unittest.TestCase):
     def test_what_a_manifest_adds(self):
         """the seam whole, nothing patched: a manifest's adds (the wake of another's app) and its own app's bound
         control reach the lanes through the real host (local/adds.py)"""
-        app = {"app": "tunes", "title": "点歌", "controls": ["stop", {"cmd": "skip", "label": "下一首", "call": "echo"}]}
+        app = {"app": "tunes", "title": "点歌", "controls": ["stop", {"cmd": "skip", "label": "下一首", "call": "echo",
+                                                                  "args": {"text": "next"}}]}
         folder = make_extension(self.root / "ext" / "fm", "fm", adds={"hall": {"wake": {"call": "echo", "timeout": 10}}},
                                 apps=[app])
         self.ok("POST", "/api/local/add", {"path": str(folder)})
@@ -557,7 +577,7 @@ class NotesDaemon(unittest.TestCase):
         noted, bound = call.call_args_list
         self.assertEqual((noted.args[1], noted.args[3], noted.kwargs),
                          ("echo", {"by": "workshop", "app": "hall", "chain": ["wake:hall"]}, {"deadline_ms": 10000}))
-        self.assertEqual(bound.args[1:], ("echo", {}, {"by": "player", "app": "tunes"}))
+        self.assertEqual(bound.args[1:], ("echo", {"text": "next"}, {"by": "player", "app": "tunes"}))   # its args
 
 
 if __name__ == "__main__":

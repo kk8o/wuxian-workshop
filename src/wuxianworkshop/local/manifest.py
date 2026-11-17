@@ -8,9 +8,10 @@ words are for the agent that writes the extension.
      "run": ["python", "-m", "voice"], "python": "tts/.venv/Scripts/python.exe", "env": {"K": "V"}, "pass": ["HF_HOME"],
      "start": "use" | "workshop", "docs": "AGENT.md", "skills": "skills",
      "adds": {"guild": {"wake": "lookup", "skill": "skills/guild-chat.md"}},
-     "apps": [{"app": "companion", "title": "语音搭子", "prompt": "companion",
-               "controls": ["stop", {"cmd": "mute", "label": "静音", "call": "mute"}],
-               "reactions": [{"hear": "game:combat.start", "call": "voice.say", "args": {"pool": "elite"}}]}]}
+     "apps": [{"app": "companion", "title": "语音搭子", "prompt": "companion", "link": "live",
+               "controls": ["stop", {"cmd": "mute", "call": "mute", "args": {"on": true}}],
+               "reactions": [{"hear": "game:combat.start", "call": "voice.say", "args": {"pool": "elite"},
+                              "pace": ["normal", "lively"]}]}]}
 
 id:^[a-z][a-z0-9_]{0,23}$, not a WuxianKit extension's (chat game route sense guide data tune gate codex guides, and
 the ids the installed WuxianKit lists: taken) and not local, wb or wk. title: at most 48 bytes. author: a short text;
@@ -37,10 +38,13 @@ extension's folder that is appended to the skill the app's prompt names. That wa
 once it described itself (adds_problems).
 
 apps: kit.app.open's fields without temp, driver and launch; the daemon declares them (kit.app.declare) after every
-kit.ready. Two fields are the workshop's and do not reach WuxianKit: reactions (at most APP_REACTIONS_MOST; a reaction's
-fields without id and owner: the workshop sets them while the app runs and clears them when it stops; call is a whole
-capability id, this extension's, another's or the game's) and, in a control {cmd, label}, call: the name of a capability
-of this extension's own that the workshop calls ({} as its arguments) when the player gives that control.
+kit.ready. Three fields are the workshop's and do not reach WuxianKit: reactions (at most APP_REACTIONS_MOST; a
+reaction's fields without id and owner: the workshop sets them while the app runs and clears them when it stops; call
+is a whole capability id, this extension's, another's or the game's; pace, the app's activities it calls in); link
+(LINKS: "live", the link to the game is kept open while the app runs, for reactions and quick replies; "standby", the
+default, opened when there is something to send: Host.app_link); and, in a control {cmd, label}, call and args: the
+name of a capability of this extension's own that the workshop calls when the player gives that control, with args (an
+object, at most CONTROL_ARGS_MAX bytes of JSON; {} when none) as its arguments.
 
 The description (initialize's answer): {protocol: 1, capabilities: [cap], sources: [src], options: [opt]};
 cap = {name, kind: see | keep | point, title, doc, args: {name: spec}, timeout?: seconds (default 30, at most 600)}; a
@@ -79,10 +83,12 @@ ADDS_FIELDS = ("wake", "skill")
 WAKE_FIELDS = ("call", "timeout")
 WAKE_TIMEOUT, WAKE_TIMEOUT_MOST = 3.0, 10.0
 APP_REACTIONS_MOST = 16
-REACTION_FIELDS = ("hear", "when", "call", "args", "item", "cooldown", "note")
+REACTION_FIELDS = R.DECLARED                        # hear when call args item cooldown pace note
+LINKS = ("live", "standby")                         # an app's link: kept open while it runs, or opened when needed
 CONTROLS_MOST = 12                     # as WuxianKit takes them: its own words and the app's {cmd, label} together
 CORE_CONTROLS = ("mute", "unmute", "less", "more", "test", "pause", "resume", "stop")   # WuxianKit's own controls
-CONTROL_FIELDS = ("cmd", "label", "call")
+CONTROL_FIELDS = ("cmd", "label", "call", "args")
+CONTROL_ARGS_MAX = 2048                # bytes of a control's args as compact JSON
 CONTROL_CMD = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
 PASS_MOST = 16
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_()]{0,63}\Z")
@@ -181,8 +187,8 @@ def check_manifest(path, taken=()):
     [the ids its addons' .toc files give WuxianKit] for one in the game; author and homepage a text or None, requires {workshop?, kit?},
     addons [names] (maybe none), pack {exclude: [patterns]}; docs and skills absolute paths or None, python an absolute path or None, pass [names], adds {app: {wake: {call: "<id>.<name>",
     timeout} | None, skill: absolute path | None}}, every app with reactions [{hear, when, call, args, item, cooldown,
-    note}] (maybe none) and its controls as written (strings, or {cmd, label?, call?} with call a capability's name
-    without the id)"""
+    pace, note}] (maybe none), its link "live" | "standby" when it gives one, and its controls as written (strings, or
+    {cmd, label?, call?, args?} with call a capability's name without the id)"""
     folder, file = locate(path)
     where = MANIFEST
     out = []
@@ -545,8 +551,9 @@ def check_pass(names, where, out):
 
 
 def check_apps(apps, where, out):
-    """the manifest's apps: kit.app.declare's fields ({app, title, ...}) with the workshop's two, reactions (checked,
-    [] when none) and the controls' call; the bad ones are problems"""
+    """the manifest's apps: kit.app.declare's fields ({app, title, ...}) with the workshop's three, reactions
+    (checked, [] when none), link (left out when not given) and the controls' call and args; the bad ones are
+    problems"""
     if apps is None:
         return []
     if not isinstance(apps, list):
@@ -582,6 +589,13 @@ def check_apps(apps, where, out):
             out.append(problem("error", f"{at}.hear", "hear is a list of entries <source>:<what>",
                                '["game:combat", "route:*"]'))
             continue
+        link = a.get("link")
+        if link is not None and link not in LINKS:
+            out.append(problem("error", f"{at}.link", f"{link!r} is not a link",
+                               "\"live\": 无限工坊 keeps the link to the game open while the app runs (reactions, "
+                               "quick replies); \"standby\" (the default, or leave it out): opened when there is "
+                               "something to send"))
+            continue
         before = len(errors_in(out))
         reactions = check_reactions(a.get("reactions"), f"{at}.reactions", out)
         controls = check_controls(a.get("controls"), f"{at}.controls", out)
@@ -589,6 +603,8 @@ def check_apps(apps, where, out):
             continue
         seen.add(aid)
         app = dict(a, app=aid, title=title, reactions=reactions)
+        if link is None:
+            app.pop("link", None)
         if controls is not None:
             app["controls"] = controls
         kept.append(app)
@@ -596,8 +612,9 @@ def check_apps(apps, where, out):
 
 
 def check_reactions(reactions, where, out):
-    """an app's reactions as the daemon sets them ([{hear, when, call, args, item, cooldown, note}]); a bad one is an
-    error. Whether call is a capability there is, and of a kind a reaction may call, is found when it is set"""
+    """an app's reactions as the daemon sets them ([{hear, when, call, args, item, cooldown, pace, note}]); a bad one
+    is an error (pace needs no owner here: the app owns its reactions). Whether call is a capability there is, and of
+    a kind a reaction may call, is found when it is set"""
     if reactions is None:
         return []
     example = '[{"hear": "game:combat.start", "call": "<id>.say", "args": {"pool": "combat"}, "cooldown": 30}]'
@@ -669,6 +686,10 @@ def reaction_of(spec):
         return None, (f"cooldown is seconds between two calls of this reaction, 0 to {R.MAX_COOLDOWN} (default "
                       f"{R.DEFAULT_COOLDOWN}; 0: every item that matches calls)")
     out["cooldown"] = cooldown
+    try:
+        out["pace"] = R.Reactions._check_pace(spec.get("pace"))
+    except R.ReactionError as e:
+        return None, str(e)
     note = spec.get("note")
     if note is not None and (not isinstance(note, str) or len(note) > R.MAX_NOTE):
         return None, f"note is a line of text (at most {R.MAX_NOTE} characters) saying what the reaction is for"
@@ -678,11 +699,12 @@ def reaction_of(spec):
 
 def check_controls(controls, where, out):
     """an app's controls as written (None: it gives none): WuxianKit's own words as strings, the app's own as {cmd,
-    label}; either may be an object with call, the name of a capability of this extension. WuxianKit checks the words
-    and labels when the app is declared; here only what the workshop reads"""
+    label}; either may be an object with call, the name of a capability of this extension, and args, its arguments (an
+    object). WuxianKit checks the words and labels when the app is declared; here only what the workshop reads"""
     if controls is None:
         return None
-    example = '["stop", {"cmd": "mute", "call": "mute"}, {"cmd": "again", "label": "再说一遍", "call": "again"}]'
+    example = ('["stop", {"cmd": "mute", "call": "mute", "args": {"on": true}}, '
+               '{"cmd": "again", "label": "再说一遍", "call": "again"}]')
     if not isinstance(controls, list) or len(controls) > CONTROLS_MOST:
         out.append(problem("error", where, f"controls is a list of at most {CONTROLS_MOST}", example))
         return None
@@ -725,8 +747,25 @@ def check_controls(controls, where, out):
                                        "calls it when the player gives the control"))
                     continue
                 entry["call"] = call
+            args = c.get("args")
+            if args is not None:
+                if not isinstance(args, dict):
+                    out.append(problem("error", f"{at}.args", "args is an object: the arguments call gets",
+                                       "such as {\"on\": true}; leave it out for none ({})"))
+                    continue
+                size = len(json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                if size > CONTROL_ARGS_MAX:
+                    out.append(problem("error", f"{at}.args", f"args are {size:,} bytes of JSON, at most "
+                                                              f"{CONTROL_ARGS_MAX:,}",
+                                       "keep big things in the extension and pass a name"))
+                    continue
+                if call is None:
+                    out.append(problem("warning", f"{at}.args", "args go with call: without it nothing is called",
+                                       "give call, the capability that gets them, or leave args out"))
+                else:
+                    entry["args"] = copy.deepcopy(args)
         else:
-            out.append(problem("error", at, "a control is a word or an object {cmd, label, call}", example))
+            out.append(problem("error", at, "a control is a word or an object {cmd, label, call, args}", example))
             continue
         if cmd in seen:
             out.append(problem("error", at, f"the control {cmd} is there twice", "one entry per control"))

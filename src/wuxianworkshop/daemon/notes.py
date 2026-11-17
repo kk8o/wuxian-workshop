@@ -15,11 +15,13 @@ The breaker: an extension that failed (or timed out) TRIP times in a row for one
 PAUSE seconds (its note is {"error", "reason": "paused"}); then one call is let through: its success ends it, its
 failure pauses it again.
 Controls: a control entry of a wake ({source: "control", cmd}) whose command the app's extension bound to a capability
-(the manifest's controls[].call: Host.control_call) has that capability called first (args {}, caller {"by": "player",
-"app"}), in this lane, then the wake goes on (the entry stays in it: the agent sees what the player pressed).
+(the manifest's controls[].call: Host.control_call) has that capability called first (with the manifest's
+controls[].args, {} when it gives none; caller {"by": "player", "app"}), in this lane, then the wake goes on (the entry
+stays in it: the agent sees what the player pressed).
 A note never costs a wake: a failure is a note's error, and when the daemon stops what is still held goes in, in order.
 """
 import asyncio
+import copy
 import json
 import threading
 import time
@@ -99,8 +101,9 @@ class Notes:
     """the lanes. adds(app) -> [{ext, wake: {call, timeout} | None, ...}] (any thread: Host.adds); call(cap, args,
     timeout_ms, caller) -> {result} or ApiError (a coroutine: Service.local_call; cancelling it tells the extension);
     deliver(text) journals an event and tells who hears WuxianKit's events; soon(coro) puts a coroutine on the server's
-    loop (None when there is none); control(app, cmd) -> {ext, call} or None (any thread: Host.control_call); state(ext)
-    -> the extension's state (starting, running, ...; any thread); note(text) an INFO line; now() seconds, monotonic"""
+    loop (None when there is none); control(app, cmd) -> {ext, call, args?} or None (any thread: Host.control_call);
+    state(ext) -> the extension's state (starting, running, ...; any thread); note(text) an INFO line; now() seconds,
+    monotonic"""
 
     def __init__(self, adds, call, deliver, soon, control=None, state=None, note=None, now=time.monotonic):
         self.adds, self.call, self.deliver, self.soon = adds, call, deliver, soon
@@ -179,7 +182,8 @@ class Notes:
         return out
 
     def controls_of(self, app, data):
-        """the wake's control entries whose command is bound to a capability: [{cmd, ext, call}], in the items' order"""
+        """the wake's control entries whose command is bound to a capability: [{cmd, ext, call, args}] (args {} when
+        the binding gives none, or none that is an object), in the items' order"""
         if self.control is None or not isinstance(data.get("items"), list):
             return []
         out = []
@@ -192,7 +196,9 @@ class Notes:
                 self.note(f"app {app}: what its control {entry['cmd']} is bound to could not be read: {e!r}")
                 continue
             if isinstance(bound, dict) and isinstance(bound.get("call"), str) and bound["call"]:
-                out.append(dict(cmd=entry["cmd"], ext=bound.get("ext"), call=bound["call"]))
+                args = bound.get("args")
+                out.append(dict(cmd=entry["cmd"], ext=bound.get("ext"), call=bound["call"],
+                                args=copy.deepcopy(args) if isinstance(args, dict) else {}))
         return out
 
     def resolve(self, app, data):
@@ -267,7 +273,7 @@ class Notes:
         item["controlled"] = True
         for c in item["controls"] or []:
             try:
-                await self.call(c["call"], {}, None, {"by": "player", "app": app})
+                await self.call(c["call"], copy.deepcopy(c.get("args") or {}), None, {"by": "player", "app": app})
             except ApiError as e:
                 self.note(f"app {app}: its control {c['cmd']} ({c['call']}) failed: {e.code}: {first_line(e)}")
             except Exception as e:

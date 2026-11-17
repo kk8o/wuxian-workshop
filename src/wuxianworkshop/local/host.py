@@ -649,6 +649,9 @@ class Host:
     def app_reactions(self, app):
         return A.app_reactions(self, app)
 
+    def app_link(self, app):
+        return A.app_link(self, app)
+
     def control_call(self, app, cmd):
         return A.control_call(self, app, cmd)
 
