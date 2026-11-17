@@ -4,9 +4,13 @@
 
      GET  /api/session                 -> {token, port, url, mcp_url, version}: taken once at load, then every request
                                           carries Authorization: Bearer <token>
-     GET  /api/status                  -> daemon / game / link / watch / reload_pending / mcp_url (status and connect pages)
+     GET  /api/status                  -> daemon / game / link / watch / reload_pending / mcp_url (status and connect pages);
+                                          link.mode auto | always, link.held_by [{id, title}] (the apps that keep the
+                                          session while the mode is auto); kit.outdated {needs, has} while the game's
+                                          WuxianKit is too old for this workshop (the 扩展 page says so at its top)
      GET  /api/settings, POST          -> {mode, capture, capture_in_use, game_dir, language, font_scale,
-                                          extension_approval}; the app is the development environment only: a "player"
+                                          extension_approval, link_mode: auto | always}; the app is the development
+                                          environment only: a "player"
                                           mode left in old settings is switched back to "developer" once (migrateMode).
                                           extension_approval: "ask" (the default: a local extension's command waits for
                                           the player's 批准运行 before its first run) or "auto" (the workshop allows it by
@@ -70,9 +74,14 @@
                                           package {file, replaced}), /new {id, title?, where?, addon?} -> the row or {row, files,
                                           guide}, /remove {id} -> {removed, id, path, kept, addons:[{folder, removed,
                                           kept}]}, /pack {id} -> {id, version, file, size, files, sha256, skipped},
-                                          /install {id} -> {id, addons:[{folder, state: current | installed, was, version,
-                                          kept}], restart, hint} (its game addons; /load answers addons and restart too
-                                          when it installed some first)
+                                          /install {id, replace?: [{folder, there}]} -> {id, addons:[{folder, state:
+                                          current | installed, was, version, kept}], restart, hint} (its game addons;
+                                          replace: the folders in AddOns of another's that the player saw and said to
+                                          replace, each at the version seen; /load answers addons and restart too when
+                                          it installed some first, /approve's installed has restart as well; restart
+                                          true: 重启游戏后生效). GET /api/local/summary?id= -> the extension's summary
+                                          (local/summary.py) with fingerprint and replaces [{folder, there, same, newer}]:
+                                          the game addons a 批准 replaces
      POST /api/check {target, live}    -> {addon, files, ok, errors, warnings, notes:[{file, line, code, message, hint}],
                                           unresolved, libraries, live:{checked} | {error}}: what would fail in the game
      GET  /api/history?addon=[&id=&against=]  -> an addon's kept versions {addon, versions:[{id, time, reason, note,
@@ -187,6 +196,14 @@ const LOAD_LOGS = 1000;                        // the backlog asked for at load 
 const LOG_IDLE_MS = 250;                       // queued entries land on this timer while the window is hidden (no frames)
 const RECONNECT_MS = 2000;
 const LX_LIMIT = 200;                          // 本机扩展's log: the lines asked for at a time
+const LX_DOING = {                             // one action of the 本机 part runs at a time (lx.busy): what the buttons
+  load: '正在载入', stop: '正在停止', check: '正在检查', pack: '正在打包', remove: '正在移除', approve: '正在批准',   // wait for,
+  install: '正在安装游戏插件', replace: '正在替换游戏插件',   // said beside them
+};
+const LX_DOING_BY = {                          // … and when it is another extension's: by its name
+  load: '{name} 正在载入', stop: '{name} 正在停止', check: '{name} 正在检查', pack: '{name} 正在打包', remove: '{name} 正在移除',
+  approve: '{name} 正在批准', install: '{name} 正在安装游戏插件', replace: '{name} 正在替换游戏插件',
+};
 const LX_KEEP = 500;                           // … and kept, the newest
 const LX_PAGES = 20;                           // the requests of one catch-up at most (the rest comes with the next second)
 const LX_LIVE = ['starting', 'running', 'hung', 'stopping'];   // a local extension's states with a process
@@ -222,7 +239,7 @@ const CLI_HELP = [                             // `wuxian` and what each command
   ['wuxian doctor', '自检'],
   ['wuxian addons', '已装插件（版本、Interface、启用、报错数）'],
   ['wuxian errors [插件]', '平台插件收集到的报错（截至上次登出或重载）'],
-  ['wuxian ext list|add|load|stop|check|logs', '本机扩展：列出、登记、载入、停止、检查、看日志'],
+  ['wuxian ext list|add|load|stop|check|logs', '扩展：列出、登记、载入、停止、检查、看日志'],
   ['wuxian check <插件|文件>', '送进游戏前检查：语法、客户端没有的库和 API、拼错的名字、误写的全局变量、缺少的参数、机密值误用'],
   ['wuxian history [插件] [编号]', '插件的历史版本；带编号是那一版和现在的差异'],
   ['wuxian checkpoint <插件> [说明]', '给插件存一份'],
@@ -301,7 +318,9 @@ function appState() {
     hist: { open: null, data: null, busy: false, note: '', diff: null, diffKey: '', diffBusy: false, confirm: '',
             working: '', result: null },
     chk: { open: null, busy: false, data: null, error: '' },
-    ext: { list: null, catalog: null, dir: null, detected: [], busy: '', note: '', error: '', missing: false, confirm: '', reload: false },
+    ext: { list: null, catalog: null, dir: null, detected: [], busy: '', doing: '', note: '', error: '', missing: false, confirm: '', reload: false },
+                                               // busy: 'list' (the catalog is read) or the package's id that doing
+                                               // (install | remove) is done to
     access: { data: null, busy: false, error: '' },   // 扩展: WuxianKit's extensions and wk_ tools, the agents using them
     xp: { sel: 'kit', tab: 'info' },          // 扩展: the row the detail shows (see xpSel), and its tab
     showToken: false,
@@ -321,7 +340,9 @@ function appState() {
                                                // extensions' folder; menu: the one open (add | more); drop: the id whose
                                                // 移除 waits for 确认; swap: id + ':' + folder whose 替换 waits for 确认 (a
                                                // folder in AddOns that is not the same addon); packed: the last package {id, file, folder, line};
-                                               // game: by id, true once game addons went in that need the game restarted
+                                               // game: by id, true once an answer said restart (重启游戏后生效), until the
+                                               // game is another process (applyStatus); busy: id + ':' + action, the one
+                                               // action that runs (lxWait says it beside the buttons it turns off)
     lxr: { open: false, kind: 'zip', path: '', old: null, new: null, changes: null, same: null, busy: false, error: '' },
                                                // 扩展 · 本机 · 添加: its id is here already: the two summaries, asked first
     lxa: { open: false, kind: 'folder', path: '', busy: false, error: '' },   // 扩展 · 本机 · 添加: the path typed (no shell
@@ -342,6 +363,7 @@ function appState() {
     timers: false, linked: false, desktop: false,
     toast: '', toastTimer: null,
     daemonError: '',
+    gamePid: null,                             // the game's process as last seen: another one has loaded what was installed
     now: Date.now(),
 
     async init() {
@@ -530,6 +552,10 @@ function appState() {
         this.connectEvents();
       }
       this.daemonStarted = s.daemon.started || this.daemonStarted;
+      if (s.game.pid && s.game.pid !== this.gamePid) {   // the game started (again): nothing waits for a restart any more
+        if (Object.keys(this.lx.game).length) this.lx.game = {};
+        this.gamePid = s.game.pid;
+      }
       this.status = s;
       this.statusAt = Date.now() / 1000;
       if (s.daemon.mode === 'player') this.migrateMode();
@@ -575,15 +601,27 @@ function appState() {
       if (s.game.minimized) return t('游戏窗口最小化了：还原窗口后自动恢复。');
       return t('看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。');
     },
-    get linkKept() {                           // a session always: 常开, or 跟随应用 with an app that keeps it
+    get linkKept() {                           // a session always: 常开, or 自动 with an app that keeps it
       const k = this.status && this.status.link;
       return !!k && (k.mode === 'always' || (k.mode === 'auto' && (k.held_by || []).length > 0));
     },
-    get linkHolders() {                        // the titles of the apps that keep the session (跟随应用), else ''
-      const k = this.status && this.status.link;
+    get linkHolders() {                        // the titles of the apps that keep the session (自动; link.held_by is
+      const k = this.status && this.status.link;   // [{id, title}]), else ''
       if (!k || k.mode !== 'auto') return '';
-      const titles = k.held_titles || {};
-      return (k.held_by || []).map(id => titles[id] || id).join(t('、'));
+      return (k.held_by || []).map((h) => (h && (h.title || h.id)) || '').filter(Boolean).join(t('、'));
+    },
+    get kitOutdated() {                        // status.kit.outdated {needs, has}: the game's WuxianKit is too old for this
+      const k = this.status && this.status.kit;   // workshop (it declares no apps there until the framework is updated)
+      const o = k && k.outdated;
+      return o && typeof o === 'object' && o.needs ? { needs: String(o.needs), has: o.has ? String(o.has) : '' } : null;
+    },
+    get kitOutdatedLine() {
+      const o = this.kitOutdated;
+      return o ? t('扩展框架需要更新到 {needs}', { needs: o.needs }) : '';
+    },
+    get kitUpdatePkg() {                       // the catalog's WuxianKit while 更新 can install it, else null
+      const p = this.xpPkg;
+      return p && ['available', 'update', 'installed'].includes(p.state) ? p : null;
     },
     get linkHint() {                           // one line under 在线: what can be done now
       if (!this.linkOnline) return '';
@@ -864,7 +902,7 @@ function appState() {
       const rows = (this.lx.list || []).map((r) => {
         const mods = this.lxGameMods(r);
         mods.forEach((m) => joined.add(m.id));
-        const game = mods.length ? this.xpJoin(mods) : null, st = this.lxState(r);
+        const game = mods.length ? this.xpJoin(mods) : null, st = this.lxState(r, true);
         return { key: 'l:' + r.id, title: this.lxTitle(r), aside: r.id, where: this.lxWhere(r), tip: this.lxWhereTip(r),
           version: r.version || '',
           linked: r.origin === 'linked' ? this.lxOrigin(r) : '', linkedTip: this.lxOriginTip(r), author: r.author || '',
@@ -891,8 +929,8 @@ function appState() {
     },
     lxWhereName(w) { return w === 'game' ? t('游戏') : w === 'both' ? t('游戏') + ' · ' + t('本机') : t('本机'); },
     lxWhereHint(w) {                           // one line on a 运行位置 (the tag's tooltip, the hint of 新建扩展)
-      return w === 'game' ? t('只含游戏插件，在游戏中运行，没有本机程序')
-        : w === 'both' ? t('包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行') : t('在这台电脑上运行，不需要游戏');
+      return w === 'game' ? t('只含游戏插件，在游戏中运行，没有本机端')
+        : w === 'both' ? t('包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行') : t('在这台电脑上运行，不需要游戏');
     },
     lxWhere(r) { return this.lxWhereName(this.lxWhereOf(r)); },   // where it runs: 游戏, 本机, or 游戏 · 本机
     lxWhereTip(r) { return this.lxWhereHint(this.lxWhereOf(r)); },   // the tooltip of lxWhere
@@ -918,6 +956,7 @@ function appState() {
       const p = this.xpPkg, d = this.access.data, k = this.xpRunning;
       if (p && p.state === 'needs_app') return { text: t('需更新无限工坊'), cls: 'bad' };
       if (p && !p.there) return { text: t('未安装'), cls: 'off' };
+      if (this.kitOutdated) return { text: t('需更新'), cls: 'bad' };
       if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
       if (this.access.error) return { text: t('读取失败'), cls: 'bad' };
       if (k && k.newer) return { text: t('需更新无限工坊'), cls: 'warn' };
@@ -929,10 +968,11 @@ function appState() {
     get xpKitState() {                         // the framework in the game, its 状态: { cls, text }
       const p = this.xpPkg, d = this.access.data, k = this.xpRunning;
       if (this.access.error) return { cls: 'bad', text: this.access.error };
+      if (this.kitOutdated) return { cls: 'bad', text: this.kitOutdatedLine };
       if (!d) return { cls: '', text: t('读取运行状态…') };
       if (k && k.newer) return { cls: 'warn', text: t('游戏中的扩展框架版本较新，Agent 仅能使用 wk_docs：请更新无限工坊') };
       if (k) return k.source === 'game' ? { cls: 'ok', text: t('运行中') } : { cls: '', text: t('游戏未连接 · 显示上次读取的结果') };
-      if (d.kit_state === 'stopped') return { cls: 'warn', text: t('已安装，未运行：首次安装需完整重启游戏；已停用的请在插件列表中启用') };
+      if (d.kit_state === 'stopped') return { cls: 'warn', text: t('已安装，未运行：首次安装后需重启游戏；已停用的请在插件列表中启用') };
       if (d.kit_state === 'unknown') return { cls: '', text: t('游戏未连接') };
       return p && !p.there ? { cls: '', text: t('未安装') } : { cls: '', text: t('游戏中未加载') };
     },
@@ -1021,7 +1061,7 @@ function appState() {
       const sel = this.xpSel, p = sel.pkg;
       if (!p) return { text: (sel.mod && sel.mod.version) || (sel.det ? sel.det.version : this.xpKitVersion) || '—', pill: '', cls: '' };
       const pill = { update: t('可更新到 {v}', { v: p.version }), current: t('已是最新'), installed: t('已安装'),
-        newer: t('本机版本较新'), needs_app: t('需要无限工坊 {v} 或更高版本', { v: p.min_app }) }[p.state] || '';
+        newer: t('已安装的版本较新'), needs_app: t('需要无限工坊 {v} 以上', { v: p.min_app }) }[p.state] || '';
       return { text: this.xpVersion(p), pill, cls: this.extPill(p) };   // not installed: the catalog's (状态 says so)
     },
     get xpExtLine() {                          // the framework's 扩展
@@ -1033,7 +1073,7 @@ function appState() {
       const sel = this.xpSel;
       if (!sel.count) return (sel.kind === 'custom' ? !sel.mod : sel.kind === 'sys' && !sel.tools) ? t('在游戏中加载后可查看') : '—';
       const known = sel.kind === 'kit' ? !!this.xpRunning : !!(sel.mod && sel.mod.tools);
-      return t('{n} 个', { n: sel.count }) + (known && sel.confirm ? ' · ' + t('其中 {n} 个需玩家在游戏里确认', { n: sel.confirm }) : '')
+      return t('{n} 个', { n: sel.count }) + (known && sel.confirm ? ' · ' + t('其中 {n} 个需玩家在游戏中确认', { n: sel.confirm }) : '')
         + (known ? '' : ' · ' + t('在游戏中运行后可查看明细'));
     },
     get xpSkills() {
@@ -1082,13 +1122,13 @@ function appState() {
         unlisted: t('未取工具') }[s.state] || s.state;
     },
     accessTip(s) {
-      if (s.state === 'stale') return t('这个 MCP 进程跑的是旧代码。在 Agent 里重启会话（终端版 Claude Code 可用 /mcp 重连）后会换成新进程。');
-      if (s.state === 'behind' && this.access.data && !this.access.data.kit) return t('游戏里已没有运行扩展框架，它的 wk_ 工具已失效；支持列表变化通知的 Agent 会自动刷新，否则重启会话。');
-      if (s.state === 'behind') return t('它的工具来自另一版扩展清单；支持列表变化通知的 Agent 会自动刷新，否则重启会话。');
-      if (s.state === 'no_kit') return t('游戏里有扩展框架，但这个 Agent 拿到的工具里没有 wk_ 工具：等它刷新，或重启会话。');
-      if (s.state === 'unlisted') return t('这个 Agent 会话还没向无限工坊要过工具列表。');
-      if (!this.access.data || !this.access.data.kit) return t('游戏里没有运行扩展框架，这个 Agent 也没有 wk_ 工具。');
-      return t('工具与游戏里的扩展框架一致。');
+      if (s.state === 'stale') return t('此 MCP 进程运行的是旧代码。在 Agent 中重启会话后启用新进程；终端版 Claude Code 可用 /mcp 重连。');
+      if (s.state === 'behind' && this.access.data && !this.access.data.kit) return t('游戏中已不再运行扩展框架，wk_ 工具已失效。支持列表变化通知的 Agent 会自动刷新，否则请重启会话。');
+      if (s.state === 'behind') return t('工具来自另一版扩展清单。支持列表变化通知的 Agent 会自动刷新，否则请重启会话。');
+      if (s.state === 'no_kit') return t('游戏中有扩展框架，但此 Agent 的工具中没有 wk_ 工具：等待刷新，或重启会话。');
+      if (s.state === 'unlisted') return t('此 Agent 会话尚未向无限工坊请求工具列表。');
+      if (!this.access.data || !this.access.data.kit) return t('游戏中未运行扩展框架，此 Agent 没有 wk_ 工具。');
+      return t('工具与游戏中的扩展框架一致。');
     },
     accessPill(s) {
       return { current: 'ok', behind: 'warn', no_kit: 'warn', stale: 'warn', unlisted: 'off' }[s.state] || '';
@@ -1114,10 +1154,29 @@ function appState() {
       if (!c) return '';
       return t('无限工坊扩展目录') + (c.updated ? ' · ' + t('更新于 {d}', { d: String(c.updated).slice(0, 10) }) : '');
     },
+    extWait(p) {                               // beside a package's buttons (p null: the page bar's): why they are off
+      const b = this.ext.busy;                 // just now ('' when none is): the catalog is read, a package (this one or
+      if (b === 'list') return t('正在读取扩展目录');   // another, by its name) is installed or removed, or it needs addons
+      if (b) {                                 // that are not installed
+        const remove = this.ext.doing === 'remove';
+        if (p && p.id === b) return remove ? t('正在卸载') : t('正在安装');
+        const x = (this.ext.list || []).find((a) => a.id === b);
+        const name = x ? this.loc(x.title) || x.folder : b;
+        return remove ? t('{name} 正在卸载', { name }) : t('{name} 正在安装', { name });
+      }
+      const missing = (p && p.missing) || [];
+      return missing.length ? t('需要先安装 {names}', { names: missing.join(t('、')) }) : '';
+    },
+    get extRefreshText() {                     // the page bar's 刷新: what it waits for while it is off
+      if (this.ext.busy === 'list' || this.access.busy) return t('读取中…');
+      return this.ext.busy ? t('进行中…') : t('刷新');
+    },
     async extAct(a, action) {
       if (action === 'remove' && this.ext.confirm !== a.id) { this.ext.confirm = a.id; return; }
+      if (this.ext.busy) return;
       this.ext.confirm = '';
       this.ext.busy = a.id;
+      this.ext.doing = action === 'remove' ? 'remove' : 'install';
       this.ext.note = '';
       this.ext.reload = false;
       const name = this.loc(a.title) || a.folder;
@@ -1128,7 +1187,7 @@ function appState() {
           this.ext.note = r.removed ? t('已卸载 {name}，重载界面后生效。', { name }) : t('{name} 未安装。', { name });
           this.ext.reload = !!r.removed;
         } else if (r.restart) {
-          this.ext.note = t('已安装 {name} {v}，完整重启游戏后生效。', { name, v: r.version });
+          this.ext.note = t('已安装 {name} {v}，重启游戏后生效。', { name, v: r.version });
         } else {
           this.ext.note = t('已更新 {name} 到 {v}，重载界面后生效。', { name, v: r.version });
           this.ext.reload = true;
@@ -1442,7 +1501,7 @@ function appState() {
           this.lx.error = '';
         } while (this.lx.again);
       } catch (e) {
-        if (!quiet || this.lx.list === null) this.lx.error = t('读取本机扩展失败：') + errText(e);
+        if (!quiet || this.lx.list === null) this.lx.error = t('读取扩展失败：') + errText(e);
         if (this.lx.list === null) this.lx.list = [];
       } finally {
         this.lx.loading = false;
@@ -1468,8 +1527,8 @@ function appState() {
       if (!sel) return;
       const was = old.find((r) => r.id === sel.id);
       this.lxSeen(sel, was);
-      if (was && (was.fingerprint || null) !== (sel.fingerprint || null)) this.lxSum(sel.id);   // it is something else now
-    },
+      if (this.lxSumMissing(sel) || (was && (was.fingerprint || null) !== (sel.fingerprint || null))) this.lxSum(sel.id);
+    },                                         // it is something else now, or it was selected before its row came
     lxRow(row) {                               // one row the daemon answered (an action's) into the list
       if (!row || !row.id) return;
       const list = this.lx.list || [];
@@ -1477,8 +1536,11 @@ function appState() {
       this.lx.list = old ? list.map((r) => (r.id === row.id ? row : r)) : list.concat([row]);
       if (!this.selLx || this.selLx.id !== row.id) return;
       this.lxSeen(row, old);
-      if (old && (old.fingerprint || null) !== (row.fingerprint || null)) this.lxSum(row.id);
+      if (this.lxSumMissing(row) || (old && (old.fingerprint || null) !== (row.fingerprint || null))) this.lxSum(row.id);
     },
+    lxSumMissing(r) {                          // the shown row has no summary and none is being read: one selected by a
+      return !this.lx.sum || this.lx.sum.id !== r.id;   // link before the rows came (no row then, so nothing was read),
+    },                                         // which left 批准 off for good
     lxSeen(row, old) {                         // the shown extension's row anew: a new run's log starts afresh
       if (this.lout.id !== row.id) return;
       if ((row.started || null) !== this.lout.run && (!old || row.started !== old.started)) {
@@ -1511,7 +1573,9 @@ function appState() {
       this.lxSum(id);
     },
     async lxSum(id) {                          // 扩展摘要: GET /api/local/summary?id= ; lx.sum {id, n, state, data}: state
-      if (!id) return;                         // 'loading', 'ok' or 'error' (the detail does without; 批准 waits for it)
+      if (!id || this.lxCur.id !== id) return; // 'loading', 'ok' or 'error' (the detail does without; 批准 waits for it).
+                                               // Of the one shown only: another's (an action of it that ended after the
+                                               // selection moved) would take the shown one's place and leave 批准 off
       const n = (this.lx.sumN = (this.lx.sumN || 0) + 1);
       const had = this.lx.sum && this.lx.sum.id === id ? this.lx.sum.data : null;
       this.lx.sum = { id, n, state: 'loading', data: had };
@@ -1540,8 +1604,11 @@ function appState() {
       return s.data && s.data.fingerprint && s.data.fingerprint === r.fingerprint ? '' : 'stale';
     },
     lxSumNote(r) {
-      return t({ loading: '正在读取扩展摘要…', error: '扩展摘要读取失败，暂不能批准。',
-                 stale: '扩展内容已变化，重新读取后再批准。' }[this.lxSumState(r)] || '');
+      return t({ loading: '正在读取摘要', error: '摘要读取失败，暂不能批准',
+                 stale: '扩展内容已变化，重新读取后再批准' }[this.lxSumState(r)] || '');
+    },
+    lxSumRetry(r) {                            // 重试 / 重新读取 beside that line: the summary failed or is of before
+      return !this.lx.busy && ['error', 'stale'].includes(this.lxSumState(r));
     },
     async lxSumAgain(r) {                      // 重试 / 重新读取: the rows, then the summary
       if (!r || !r.id) return;
@@ -1556,22 +1623,22 @@ function appState() {
         const v = parts.filter(Boolean).join(' · ');
         if (v) rows.push({ id, k, v });
       };
-      put('from', t('来源'), [s.author ? t('{name}（自述，未经验证）', { name: s.author }) : t('未注明作者'), s.homepage || '']);
+      put('from', t('来源'), [s.author || t('未注明作者'), s.homepage || '', s.author || s.homepage ? t('自述，未经验证') : '']);
       const p = s.package;
       if (p && typeof p === 'object') put('package', t('扩展包'), [p.file || '', p.sha256 ? 'SHA-256 ' + p.sha256 : '']);
       for (const g of list(s.game)) {
         if (typeof g !== 'object') continue;
         const needs = list(g.needs).map((n) => (n.installed === false ? t('{name}（未安装）', { name: n.addon }) : n.addon));
         put('game', t('游戏插件'), [(g.folder || '') + (g.version ? ' ' + g.version : ''),
-          needs.length ? t('需要插件：{names}', { names: needs.join(sep) }) : '',
-          g.cannot === 'foreign' ? this.lxForeignLine(g, g.version) : g.cannot ? t('无法安装：{why}', { why: this.lxCannot(g.cannot) })
-            : g.path || t('尚未安装到游戏')]);
+          needs.length ? t('需要插件：{names}', { names: needs.join(sep) }) : '', this.lxGameNote(g)]);
       }
+      const swaps = brief ? list(s.replaces).filter((x) => typeof x === 'object' && x.folder) : [];   // what the yes replaces
+      if (swaps.length) put('replaces', t('替换游戏插件'), [swaps.map((x) => this.lxThere(x)).join(sep), t('批准后替换，原版本存入历史')]);
       const l = s.local;
       if (l && typeof l === 'object') {
         const start = l.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动');
         if (brief) put('run', t('启动方式'), [start]);
-        else put('run', t('本机程序'), [lxQuote(list(l.run)), start, l.python ? t('解释器 {path}', { path: l.python }) : '']);
+        else put('run', t('本机端'), [lxQuote(list(l.run)), start, l.python ? t('解释器 {path}', { path: l.python }) : '']);
         put('vars', t('环境变量'), [list(l.pass).length ? t('读取 {names}', { names: list(l.pass).join(sep) }) : '',
           list(l.env).length ? t('设置 {names}', { names: list(l.env).join(sep) }) : '']);
       }
@@ -1587,8 +1654,8 @@ function appState() {
     lxRiskLine(r) {                            // at 批准, one sentence: what running it means (by the summary once it came)
       const s = this.lx.sum && r && this.lx.sum.id === r.id ? this.lx.sum.data : null;
       return (s ? s.risk === 'local' : !this.lxGameOnly(r))
-        ? t('程序在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。')
-        : t('游戏插件在游戏内运行，受游戏对插件的限制，不能访问这台电脑上的文件。');
+        ? t('本机端在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。')
+        : t('游戏插件在游戏中运行，受游戏对插件的限制，不能访问这台电脑上的文件。');
     },
     lxReviewPrompt(r) {                        // 复制给 Agent 审阅: an Agent reads it before the player says yes
       if (!r || !r.id) return '';
@@ -1610,7 +1677,7 @@ function appState() {
     lxLine(r) { return r.id + (r.version ? ' · ' + r.version : ''); },
     lxRunning(r) { return !!r && LX_LIVE.includes(r.state); },   // it has a process
     lxStoppable(r) { return this.lxRunning(r) || (!!r && r.state === 'backoff'); },   // … or the workshop will start one
-    lxState(r) {                               // {key, cls (ok / warn / bad / ''), text}
+    lxState(r, short) {                        // {key, cls (ok / warn / bad / ''), text}; short: for the list's tag
       if (!r || !r.state) return { key: '', cls: '', text: '' };
       if (r.state === 'off' || r.enabled === false) return { key: 'off', cls: '', text: t('已停用') };
       if (r.state === 'running') return { key: 'running', cls: 'ok', text: t('运行中') };
@@ -1623,15 +1690,15 @@ function appState() {
       if (this.lxBlocked(r)) return { key: 'unmet', cls: 'bad', text: t('版本不足') };
       if (r.error) return { key: 'invalid', cls: 'bad', text: t('清单有误') };
       if (this.lxUnapproved(r)) return { key: 'approval', cls: 'warn', text: t('待批准') };
-      if (r.state === 'game') return this.lxGameState(r);
+      if (r.state === 'game') return this.lxGameState(r, short);
       return { key: 'stopped', cls: '', text: t('未运行') };
     },
-    lxGameState(r) {                           // a row in the game only (state game): how the game has it (game.state)
+    lxGameState(r, short) {                    // a row in the game only (state game): how the game has it (game.state)
       const s = (r.game && r.game.state) || 'unknown';
       if (s === 'absent') {                    // its addons are not all in the game as they are here: the first that is not
         const a = (r.addons || []).find((x) => x && x.state !== 'current');
         const pill = a ? this.lxAddonPill(a) : 'warn';
-        return { key: 'game-absent', cls: pill === 'off' ? '' : pill, text: a ? this.lxAddonState(a) : t('未安装') };
+        return { key: 'game-absent', cls: pill === 'off' ? '' : pill, text: a ? this.lxAddonState(a, short) : t('未安装') };
       }
       const cls = { unknown: 'warn', restart: 'warn', missing: 'warn', disabled: 'warn', installed: 'ok', on: 'ok' }[s] || '';
       return { key: 'game-' + s, cls,
@@ -1650,17 +1717,10 @@ function appState() {
       const addon = (((r.addons || [])[0] || {}).folder) || '';
       switch (p.action) {
         case 'start_game': return t('请启动游戏并进入世界');
-        case 'restart_game': return t('请重启游戏：新插件 {addon} 重启后才会载入', { addon });
+        case 'restart_game': return t('请重启游戏以载入新插件 {addon}', { addon });
         case 'enable_addon': return t('请在游戏的插件列表中启用 {addon}，然后重载界面', { addon });
         case 'turn_on': return t('请在游戏中输入 /wk，开启此扩展');
-        case 'replace_addon': {
-          const a = this.lxSwapOf(r);
-          if (!a) return p.text || '';
-          const name = this.lxThere(a);
-          if (!a.same) return t('游戏里已有同名插件 {name}，替换后生效', { name });
-          return a.version ? t('游戏里已有手动安装的 {name}，替换为扩展带的 {version} 后生效', { name, version: a.version })
-            : t('游戏里已有手动安装的 {name}，替换为扩展带的版本后生效', { name });
-        }
+        case 'replace_addon': return this.lxSwaps(r).length ? '' : p.text || '';   // 替换游戏插件 has its own rows
         default: return p.text || '';
       }
     },
@@ -1689,8 +1749,8 @@ function appState() {
       return r && r.approval === 'changed' ? (this.lxGameOnly(r) ? t('扩展内容已变更') : t('运行命令已变更')) : t('需要批准');
     },
     lxApproveHint(r) {                         // what the yes allows: a command here, or (in the game only) its addons there
-      if (!this.lxGameOnly(r)) return t('确认后，无限工坊将在本机运行此命令。');   // (not promised when they cannot go in)
-      return this.lxStuck(r) ? t('此扩展的游戏插件目前无法安装到游戏。') : t('确认后，无限工坊将把此扩展的游戏插件安装到游戏。');
+      if (!this.lxGameOnly(r)) return t('批准后，无限工坊在本机运行此命令。');   // (not promised when one cannot go in: the
+      return this.lxStuck(r) ? '' : t('批准后，无限工坊将游戏插件安装到游戏。');   // card's line says which)
     },
     lxCommand(r) {                             // the command as one line: an argument with a blank or a quote in quotes
       const c = r && r.command;
@@ -1699,21 +1759,25 @@ function appState() {
     },
     lxCanApprove(r) { return !!r && !(r.error && !Array.isArray(r.command)); },   // not a manifest without a command
     lxApproveReady(r) { return this.lxCanApprove(r) && !!r.id && this.lxSumState(r) === ''; },   // … and its summary is here
+    lxApproveWhy(r) {                          // beside 批准: why it is off ('' when it can be clicked, or says 进行中…):
+      const b = this.lxBusyOf();               // another action runs, or the summary the yes answers to is not on the page
+      if (b) return r && r.id === b.id && b.action === 'approve' ? '' : this.lxWait(r);
+      return this.lxSumNote(r);
+    },
     async lxApprove(r) {                       // 批准运行: POST /api/local/approve with the fingerprint of what the page
       if (!this.lxApproveReady(r)) return;     // shows (a yes to anything else is refused), the row it answers taken in
-      const fresh = ((r && r.addons) || []).filter((a) => a && a.state === 'missing').map((a) => a.folder);
       const d = await this.lxPost(r, 'approve', { fingerprint: this.lx.sum.data.fingerprint }, t('批准失败：'));
       if (!d) return;
-      const now = (lxRowOf(d) || {}).addons || [];   // its game addons go in with the yes: a new one needs the game restarted
-      if (now.some((a) => a && a.state === 'current' && fresh.includes(a.folder))) this.lxGameSet(r.id, true);
-      const ins = d.installed;                 // what became of its game addons: not in the game is said, and stays
-      if (ins && ins.ok === false) {           // on the page (the tag alone looks like before the yes)
-        const why = this.lxStuck(lxRowOf(d) || r) || lxWhy({ data: { error: ins } });
+      const ins = d.installed;                 // what became of its game addons ({ok, addons, restart, hint} | {ok: false,
+      if (ins && ins.ok === false) {           // code, message, ...} | null): not in the game is said, and stays on the
+        const stuck = this.lxStuckOf(lxRowOf(d) || r);   // page (the tag alone looks like before the yes)
+        const why = stuck && stuck.bad ? stuck.why : lxWhy({ data: { error: ins } });
         this.lx.note = { bad: true, text: t('已批准，游戏插件未安装：{why}', { why }) };
         this.say(t('已批准 {name}，游戏插件未安装', { name: this.lxTitle(r) }));
         return;
       }
-      this.say(t('已批准 {name}', { name: this.lxTitle(r) }));
+      if (ins && ins.restart === true) this.lxGameSet(r.id, true);
+      this.say(this.lxDone(t('已批准 {name}', { name: this.lxTitle(r) }), ins));
     },
     lxStart(r) { return r.start === 'workshop' ? t('随无限工坊启动') : t('首次调用时启动'); },
     lxCode(c) { return exitCode(c); },
@@ -1735,9 +1799,30 @@ function appState() {
       const list = this.lx.list || [];
       if (!list.length) return '';
       const n = list.filter((r) => r.state === 'running').length;
-      return t('{n} 个本机扩展', { n: list.length }) + (n ? ' · ' + t('{n} 个运行中', { n }) : '');
+      return t('已添加 {n} 个', { n: list.length }) + (n ? ' · ' + t('本机端运行中 {n} 个', { n }) : '');
     },
     lxBusy(r, action) { return !!r && this.lx.busy === r.id + ':' + action; },
+    lxBusyOf() {                               // the action that runs: { id, action } | null
+      const b = this.lx.busy, i = b ? b.lastIndexOf(':') : -1;
+      return i > 0 ? { id: b.slice(0, i), action: b.slice(i + 1) } : null;
+    },
+    lxWait(r) {                                // why the buttons of r's detail are off just now, as a line ('' when
+      const b = this.lxBusyOf();               // they are not): its own action, or another extension's by its name (a
+      if (!b || b.action === 'set') return ''; // setting is saved at once: nothing to read)
+      if (r && r.id === b.id) return t(LX_DOING[b.action] || '进行中…');
+      const other = (this.lx.list || []).find((x) => x.id === b.id);
+      return t(LX_DOING_BY[b.action] || '{name} 正在处理', { name: other ? this.lxTitle(other) : b.id });
+    },
+    lxHeadWhy(r) {                             // beside 启用 / 载入 / 停止 / 检查 / 打包分享: that, else why 载入 is off
+      const w = this.lxWait(r);
+      if (w || !r || !r.id) return w;
+      const u = (r.unmet || []).find((x) => x && x.what === 'workshop' && x.needs);
+      if (u) return t('需要无限工坊 {v} 以上', { v: u.needs });
+      return r.enabled ? '' : t('启用后可载入');
+    },
+    lxDone(text, d) {                          // an answer said: with 重启游戏后生效 when it says restart
+      return d && d.restart === true ? text + ' · ' + t('重启游戏后生效') : text;
+    },
     async lxPost(r, action, body, failed) {    // a POST of the 本机 part: the row it answers taken in, else the list read again
       if (!r || !r.id || this.lx.busy) return null;
       this.lx.busy = r.id + ':' + action;
@@ -1787,7 +1872,7 @@ function appState() {
         const bad = d.check && d.check.ok === false;
         if (bad || failed.length) this.xp.tab = 'info';
         this.say(bad ? t('{name} 检查未通过', { name }) : failed.length ? t('{name} 在游戏中加载失败', { name })
-          : t('已载入 {name}', { name }));
+          : this.lxDone(t('已载入 {name}', { name }), d));
         if (this.lout.id === r.id) this.lout.after = 2;
       } else if (action === 'stop') {
         if (await this.lxPost(r, 'stop', null, t('停止失败：'))) {
@@ -1863,7 +1948,7 @@ function appState() {
       if (r.where === 'game') {                // in the game only: its AGENT.md is the addon's, the game's tools read it
         return t('请先读 {path}\\addons\\{addon}\\AGENT.md 和 guide {"topic": "game-extension"}。然后在扩展 {id} 里实现：{what}。改完用 wuxian 的 extension_load 载入（会检查、安装到游戏并在运行中的游戏里加载），用 wk_{id}_ 开头的工具试用，出错时看 errors 和 logs。需要我操作时告诉我，再用 extension_wait 等我完成。', { path: r.path, addon, id: r.id, what });
       }
-      return t('请先读 {path}\\AGENT.md 和 guide {"topic": "local-extension"}。然后在本机扩展 {id} 里实现：{what}。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id, what })
+      return t('请先读 {path}\\AGENT.md 和 guide {"topic": "local-extension"}。然后在扩展 {id} 里实现：{what}。改完用 wuxian 的 extension_load 载入（会检查并运行测试），用 wk_{id}_ 开头的工具试用，出错时看 extension_logs。', { path: r.path, id: r.id, what })
         + (addon ? t('游戏插件在 addons\\{addon}：extension_load 会把它装进游戏，新插件完整重启游戏后才会出现，在那之前可以用 load 热加载。', { addon }) : '');
     },
     lxIdeaPrompt(idea) {                       // the first thing to tell the agent about an idea, before there is an extension:
@@ -1904,68 +1989,98 @@ function appState() {
       return ((r && r.unmet) || []).map((u) => {
         if (!u || !u.needs) return '';
         return u.what === 'workshop' ? t('需要无限工坊 {v} 以上', { v: u.needs })
-          : u.what === 'kit' ? t('需要 WuxianKit {v} 以上', { v: u.needs }) : '';
+          : u.what === 'kit' ? t('需要扩展框架 {v} 以上', { v: u.needs }) : '';
       }).filter(Boolean).join(t('；'));
     },
-    lxAddonState(a) {                          // a foreign folder that is the same addon: one installed by hand
-      if (a && a.state === 'foreign' && a.same) return a.there ? t('手动安装的 {v}', { v: a.there }) : t('手动安装的版本');
+    lxAddonState(a, short) {                   // a foreign folder that is the same addon: one installed by hand, kept
+      if (a && a.state === 'foreign' && a.same) {   // when it is newer (short: the list's tag)
+        if (a.newer) return short ? t('保留较新版本') : this.lxKept(a.there);
+        return a.there ? t('手动安装的 {v}', { v: a.there }) : t('手动安装的版本');
+      }
       return t({ missing: '未安装', current: '已安装', differs: '有更新', foreign: '同名插件已存在', unknown: '游戏目录未知',
                  broken: '文件缺失', listed: '与目录插件同名' }[a && a.state] || '—');
+    },
+    lxKept(there) {                            // the game's is the same addon and newer: it stays
+      return there ? t('保留游戏中的较新版本 {there}', { there }) : t('保留游戏中的较新版本');
     },
     lxAddonPill(a) {
       if (a && a.state === 'foreign' && a.same) return 'warn';
       return { current: 'ok', differs: 'warn', missing: 'warn', foreign: 'bad', broken: 'bad', listed: 'bad' }[a && a.state] || 'off';
     },
     lxThere(a) { return a ? [a.folder, a.there].filter(Boolean).join(' ') : ''; },   // the folder in AddOns and its version
-    lxForeignLine(g, version) {                // a folder of the addon's name in AddOns that is not the extension's, as
-      const name = this.lxThere(g);            // the 批准 card says it (g: a summary's game row, or an addon row)
-      if (g.same && g.newer) return t('游戏里的 {name} 比扩展带的新，保留不换', { name });
-      if (g.same && version) return t('游戏里已有手动安装的 {name}，批准后换成 {version}；原来的存进历史，可以找回', { name, version });
-      if (g.same) return t('游戏里已有手动安装的 {name}，批准后换成扩展带的版本；原来的存进历史，可以找回', { name });
-      return t('无法安装：{why}', { why: this.lxCannot('foreign') });
+    lxGameNote(g) {                            // a summary's game row: how its folder stands in the game's AddOns (one
+      if (g.cannot === 'foreign') {            // of its name that is not the extension's: with same, there, newer)
+        if (g.same && g.newer) return this.lxKept(g.there);
+        if (g.same) return g.there ? t('游戏中已有手动安装的 {there}', { there: g.there }) : t('游戏中已有手动安装的版本');
+        if (g.same === false) return t('游戏中已有同名插件，批准后可替换');   // a folder of another addon (not a link or a file)
+      }
+      return g.cannot ? t('无法安装：{why}', { why: this.lxCannot(g.cannot) }) : g.path || t('尚未安装到游戏');
     },
-    lxSwappable(a) {                           // an addon row whose folder in AddOns 替换 puts the extension's in place of:
-      return !!a && a.state === 'foreign' && a.same !== undefined && !a.newer;   // a folder (not a link), not newer
+    // 替换游戏插件: an addon of the extension whose folder in the game's AddOns is not the extension's (state foreign; same:
+    // it is the same addon, installed by hand; there: its version; newer: it is newer, and stays). Offered in one place, a
+    // row each over the tabs once the extension is allowed (lxSwaps): the same addon is replaced at a click (the row says
+    // 原版本存入历史), another after a 确认. The request names the folder and the version the player saw
+    lxSwappable(a) {                           // a folder (not a link or a file: those have no same), not newer
+      return !!a && a.state === 'foreign' && a.same !== undefined && !a.newer;
     },
-    lxSwapOf(r) { return ((r && r.addons) || []).find((a) => this.lxSwappable(a)) || null; },
-    lxSwapLine(r) {                            // the 确认 before replacing a folder that is not the same addon
-      const a = r && this.lx.swap ? ((r.addons || []).find((x) => x && this.lx.swap === r.id + ':' + x.folder)) : null;
-      if (!a) return '';
-      return t('游戏里的 {folder} 不是这个扩展带的插件（{there}）。替换后原来的存进历史，可以在开发台找回。替换？',
-               { folder: a.folder, there: a.there || t('未知版本') });
+    lxSwaps(r) { return !r || !r.id || this.lxNeeds(r) ? [] : (r.addons || []).filter((a) => this.lxSwappable(a)); },
+    lxSwapAsked(r, a) { return !!r && !!a && !!this.lx.swap && this.lx.swap === r.id + ':' + a.folder; },   // its 确认 shows
+    lxSwapText(a) {                            // the row's line …
+      const name = this.lxThere(a);
+      if (!a.same) return t('游戏中已有同名插件 {name}，替换后生效。', { name });
+      return a.version ? t('游戏中已有手动安装的 {name}。替换为 {version}，原版本存入历史。', { name, version: a.version })
+        : t('游戏中已有手动安装的 {name}。替换后原版本存入历史。', { name });
     },
-    async lxSwap(r, a, sure) {              // 替换: POST /api/local/install {id, replace}; one that is not the same
-      if (!r || !r.id || !a || this.lx.busy) return;   // addon asks first (lx.swap)
+    lxSwapLine(a) {                            // … and the 确认 before a folder that is not the same addon is replaced
+      return a.there ? t('替换游戏中的 {folder} {there}？原版本存入历史，可在开发台恢复。', { folder: a.folder, there: a.there })
+        : t('替换游戏中的 {folder}？原版本存入历史，可在开发台恢复。', { folder: a.folder });
+    },
+    async lxSwap(r, a, sure) {                 // 替换: POST /api/local/install {id, replace: [{folder, there}]}; one that
+      if (!r || !r.id || !a || this.lx.busy) return;   // is not the same addon asks first (lx.swap)
       const key = r.id + ':' + a.folder;
       if (!a.same && !sure) { this.lx.swap = key; return; }
       this.lx.swap = '';
       this.lx.busy = r.id + ':replace';
       this.lx.note = null;
+      const done = (d) => this.say(this.lxDone(t('已替换 {name}', { name: a.folder }), d));
       try {
-        const d = await this.api('/api/local/install', { body: { id: r.id, replace: a.same ? 'same' : true } });
+        const d = await this.api('/api/local/install',
+                                 { body: { id: r.id, replace: [{ folder: a.folder, there: a.there == null ? null : a.there }] } });
         this.lxGameDone(r, d);
         await this.loadLocal(true);
         this.lxSum(r.id);
-        this.say(t('已替换 {name}', { name: a.folder }));
+        done(d);
       } catch (e) {
-        if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
+        const err = (e && e.data && e.data.error) || {};
+        await this.loadLocal(true);
+        const now = (((this.lx.list || []).find((x) => x.id === r.id) || {}).addons || []).find((x) => x && x.folder === a.folder);
+        if (e && e.status === 403 && err.code === 'needs_approval') {
           this.lx.ask = r.id;
           this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
+        } else if (err.code === 'addon_exists' && err.folder && err.folder !== a.folder && now && now.state !== 'foreign') {
+          this.lxSum(r.id);                    // this one went in; it stopped at another folder, which has its own row
+          done(null);
         } else this.lx.note = { bad: true, text: t('替换失败：') + lxWhy(e) };
-        await this.loadLocal(true);
       } finally {
         this.lx.busy = '';
       }
     },
     lxCannot(c) {                              // why the workshop will not install a game addon (a summary's cannot, or
-      return t({ listed: '与扩展目录中的插件同名', foreign: '游戏里已有同名插件', broken: '文件缺失' }[c] || '—');   // its state)
+      return t({ listed: '与扩展目录中的插件同名', foreign: '游戏中已有同名插件', broken: '文件缺失' }[c] || '—');   // its state)
     },
-    lxStuck(r) {                               // the first of its game addons that cannot be installed as things are, as
-      const a = ((r && r.addons) || []).find((x) => x && ['listed', 'foreign', 'broken'].includes(x.state)   // a line ('');
-        && !(x.state === 'foreign' && x.same && !x.newer));   // the same addon installed by hand: the yes replaces it
-      if (a && a.state === 'foreign' && a.same) return this.lxForeignLine(a, a.version);
-      return a ? t('{name} {why}', { name: a.folder, why: this.lxCannot(a.state) }) : '';
+    lxStuckOf(r) {                             // the first of its game addons a yes does not put into the game as things
+      const a = ((r && r.addons) || []).find((x) => x && ['listed', 'foreign', 'broken'].includes(x.state)   // are, as a line
+        && !(x.state === 'foreign' && x.same && !x.newer));   // {text, bad} | null (the same addon installed by hand: the
+      if (!a) return null;                                     // yes replaces it); bad: it cannot go in at all (with why)
+      if (a.state === 'foreign' && a.same) {
+        return { bad: false, text: a.there ? t('{folder}：保留游戏中的较新版本 {there}', { folder: a.folder, there: a.there })
+          : t('{folder}：保留游戏中的较新版本', { folder: a.folder }) };
+      }
+      if (this.lxSwappable(a)) return { bad: false, text: t('游戏中已有同名插件 {name}，批准后可替换', { name: this.lxThere(a) }) };
+      const why = t('{name} {why}', { name: a.folder, why: this.lxCannot(a.state) });
+      return { bad: true, why, text: t('游戏插件无法安装：{why}', { why }) };
     },
+    lxStuck(r) { const s = this.lxStuckOf(r); return s ? s.text : ''; },
     lxGameAct(r) {                             // what the 游戏插件 button does: 'install' | 'update' | '' (nothing to do, or
       const states = ((r && r.addons) || []).map((a) => a && a.state);   // one of them cannot be installed: none is)
       if (!states.length || states.some((s) => ['foreign', 'broken', 'unknown', 'listed'].includes(s))) return '';
@@ -1975,12 +2090,11 @@ function appState() {
       if (!this.lxGameAct(r)) return '';       // there is nothing to install, or they cannot be)
       return r.addons.filter((a) => a && (a.state === 'missing' || a.state === 'differs')).map((a) => a.folder).join(t('、'));
     },
-    lxRestart(r) { return !!r && !!r.id && this.lx.game[r.id] === true; },   // 重启游戏后生效 (lx.game: by id, while the page lives)
-    lxGameSet(id, restart) { this.lx.game = Object.assign({}, this.lx.game, { [id]: !!restart }); },
-    lxGameDone(r, d) {                         // an answer that installed game addons: does the game have to start again
-      const done = ((d && d.addons) || []).filter((a) => a && a.state === 'installed');
-      if (done.length) this.lxGameSet(r.id, d.restart);
-      return done.length;
+    lxRestart(r) { return !!r && !!r.id && this.lx.game[r.id] === true; },   // 重启游戏后生效 (lx.game: by id, until the game
+    lxGameSet(id, restart) { this.lx.game = Object.assign({}, this.lx.game, { [id]: !!restart }); },   // starts again)
+    lxGameDone(r, d) {                         // an answer that installed game addons: its restart says whether the game
+      if (d && d.restart === true) this.lxGameSet(r.id, true);   // has to start again for them
+      return ((d && d.addons) || []).filter((a) => a && a.state === 'installed').length;
     },
     async lxInstall(r) {                       // 安装 / 更新: POST /api/local/install {id}
       if (!r || !r.id || this.lx.busy) return;
@@ -1992,7 +2106,7 @@ function appState() {
         this.lxGameDone(r, d);
         await this.loadLocal(true);
         this.lxSum(r.id);
-        this.say(update ? t('游戏插件已更新') : t('游戏插件已安装'));
+        this.say(this.lxDone(update ? t('游戏插件已更新') : t('游戏插件已安装'), d));
       } catch (e) {
         if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
           this.lx.ask = r.id;
@@ -2113,9 +2227,9 @@ function appState() {
       this.lxRow(row);
       this.xpSelect('l:' + row.id);
       const name = this.lxTitle(row);
-      this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已更新 {name}', { name }) : t('已导入 {name}', { name }));
+      this.say(!pkg ? t('已链接 {name}', { name }) : pkg.replaced ? t('已替换扩展包 {name}', { name }) : t('已导入 {name}', { name }));
     },
-    async lxReplace() {                        // 替换: the same POST with replace true (the one in place goes to the 回收区)
+    async lxReplace() {                        // 替换扩展包: the same POST with replace true (the one in place goes to the 回收区)
       const x = this.lxr;
       if (!x.path || x.busy) return;
       x.busy = true;
@@ -2132,7 +2246,7 @@ function appState() {
     },
     lxReplaceTitle() {
       const s = this.lxr.new || this.lxr.old;
-      return t('替换 {name}？', { name: s ? this.loc(s.title) || s.id || '' : '' });
+      return t('替换扩展包 {name}？', { name: s ? this.loc(s.title) || s.id || '' : '' });
     },
     lxChangeRows(changes) {                    // what the new one changes, as rows [{ k, v }]: a list's added and removed,
       const sep = t('、');                      // anything else old → new
@@ -2971,7 +3085,7 @@ function appState() {
                     language: this.settings.language || 'auto',
                     font_scale: String(this.settings.font_scale || 100),
                     extension_approval: this.settings.extension_approval,
-                    link_mode: ['always', 'demand'].includes(this.settings.link_mode) ? this.settings.link_mode : 'auto' };
+                    link_mode: this.settings.link_mode === 'always' ? 'always' : 'auto' };
       if (this.settings.extension_approval !== asked && this.lx.list !== null) this.loadLocal(true);   // the rows' 批准 follows
       this.applyLang(this.settings.language);
       this.applyScale(this.settings.font_scale);
@@ -3176,7 +3290,9 @@ function lxWhy(e) {
     case 'addon_failed': return t('游戏插件写入失败') + t('：') + (err.message || '');
     case 'requires_unmet': return t('版本不足');
     case 'no_game_folder': return t('未找到游戏目录');
-    case 'addon_exists': return err.same && err.newer ? t('游戏里的插件版本更新，保留不换') : t('游戏里已有同名插件，未覆盖');
+    case 'addon_exists':                         // the same addon and newer: it stays; else one the player did not say to replace
+      if (err.same && err.newer) return err.there ? t('保留游戏中的较新版本 {there}', { there: err.there }) : t('保留游戏中的较新版本');
+      return t('游戏中已有同名插件，未替换');
     case 'no_addons': return t('没有游戏插件');
     case 'package_too_big': return t('扩展包过大');
     case 'bad_manifest': return t('清单有误') + t('：') + (err.message || '');

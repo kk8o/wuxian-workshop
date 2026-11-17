@@ -292,8 +292,8 @@ class LocalPart(unittest.TestCase):
         o = self.out["load"]
         self.assertEqual(o["calls"], ["/api/local", "/api/local/manifest"])
         self.assertEqual(o["ids"], ["voice", "warm", "broke", "crash", "done", "idle", "off"])
-        self.assertEqual(o["summary"], "7 个本机扩展 · 1 个运行中")
-        self.assertTrue(o["bar"].endswith(" · 7 个本机扩展 · 1 个运行中"))
+        self.assertEqual(o["summary"], "已添加 7 个 · 本机端运行中 1 个")
+        self.assertTrue(o["bar"].endswith(" · 已添加 7 个 · 本机端运行中 1 个"))
         self.assertNotIn("programs", o["nav"])
         self.assertEqual(self.out["problem"], ["extensions.json cannot be read", ""])
 

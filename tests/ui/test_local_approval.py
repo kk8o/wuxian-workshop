@@ -6,7 +6,7 @@ since when and why; a row whose approval is needed or changed shows its command 
 the same, not an error; with approval ok nothing of it shows, nor for a row that says allowed (the setting
 extension_approval is "auto"). 批准 waits for the summary (GET /api/local/summary) and for it to be the row's (the
 same fingerprint): while it is read, when it failed or is of before there is a line and 重试 / 重新读取 instead; the
-POST carries that fingerprint, and 409 changed reads both again and says so. The setting is 本机扩展批准 on the 设置 page (首次运行前询问 / 自动批准): the form carries
+POST carries that fingerprint, and 409 changed reads both again and says so. The setting is 扩展批准 on the 设置 page (首次运行前询问 / 自动批准): the form carries
 it, "ask" unless the daemon says "auto", and the rows are read again when it changes."""
 import json
 import re
@@ -278,7 +278,7 @@ const paths = () => calls.map((c) => c[0]);
                   ask: [st.lxUnapproved(waits({ allowed: false })), st.lxState(waits({ allowed: false })).text],
                   old: st.lxUnapproved(waits()) };
 
-  // 设置 · 本机扩展批准: "ask" until the daemon says "auto"; the form follows, and the rows are read again on a change
+  // 设置 · 扩展批准: "ask" until the daemon says "auto"; the form follows, and the rows are read again on a change
   document.documentElement = { style: { setProperty() {} } };
   const reread = () => paths().filter((p) => p === '/api/local').length;
   const now = () => [st.settings.extension_approval, st.form.extension_approval];
@@ -325,7 +325,7 @@ class Approval(unittest.TestCase):
         o = self.out["live"]
         self.assertEqual(o["running"], ["voice", "ocr", "halt", "warm"])
         self.assertEqual(o["stoppable"], ["voice", "ocr", "halt", "sync", "warm"])       # 等待重试: 停止 calls the retry off
-        self.assertEqual(o["summary"], "17 个本机扩展 · 1 个运行中")
+        self.assertEqual(o["summary"], "已添加 17 个 · 本机端运行中 1 个")
         self.assertEqual(self.out["backoffTick"], 1)
 
     def test_since_and_why(self):
@@ -386,16 +386,16 @@ class Approval(unittest.TestCase):
 
     def test_approval_waits_for_the_summary(self):
         s = self.out["slow"]
-        self.assertEqual(s["reading"], ["loading", "正在读取扩展摘要…", False])
+        self.assertEqual(s["reading"], ["loading", "正在读取摘要", False])
         self.assertEqual(s["posted"], [])
-        self.assertEqual(s["unread"], ["error", "扩展摘要读取失败，暂不能批准。", False])
+        self.assertEqual(s["unread"], ["error", "摘要读取失败，暂不能批准", False])
         self.assertEqual(s["still"], [])
         self.assertEqual(s["again"], {"read": ["/api/local", "/api/local/summary?id=slow"], "state": "", "ready": True})
         self.assertEqual(s["approved"], [["/api/local/approve", {"id": "slow", "fingerprint": "f:slow:1"}], "ok"])
 
     def test_a_summary_of_before_is_not_approved(self):
         s = self.out["stale"]
-        self.assertEqual(s["state"], ["stale", "扩展内容已变化，重新读取后再批准。", False])
+        self.assertEqual(s["state"], ["stale", "扩展内容已变化，重新读取后再批准", False])
         self.assertEqual(s["posted"], [])
         self.assertEqual(s["again"], ["", True])
 
@@ -434,7 +434,7 @@ class Approval(unittest.TestCase):
 
 
 class Setting(unittest.TestCase):
-    """本机扩展批准 in index.html: a select of the 常规 form on the 设置 page, posted with it as extension_approval; the
+    """扩展批准 in index.html: a select of the 常规 form on the 设置 page, posted with it as extension_approval; the
     line under it shows with 自动批准 only; the words have their English"""
 
     def setUp(self):
@@ -446,7 +446,7 @@ class Setting(unittest.TestCase):
         self.i18n = (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")
 
     def test_the_select(self):
-        self.assertIn("<span>本机扩展批准</span>", self.form)
+        self.assertIn("<span>扩展批准</span>", self.form)
         start = self.form.index('<select class="input" name="extension_approval" x-model="form.extension_approval">')
         select = self.form[start:self.form.index("</select>", start)]
         self.assertEqual(re.findall(r'<option value="(\w+)">([^<]+)</option>', select),
@@ -460,7 +460,7 @@ class Setting(unittest.TestCase):
         self.assertNotIn("extension_approval: 'auto'", self.js)
 
     def test_the_english(self):
-        for zh, en in (("本机扩展批准", "Local extension approval"), ("首次运行前询问", "Ask before the first run"),
+        for zh, en in (("扩展批准", "Extension approval"), ("首次运行前询问", "Ask before the first run"),
                        ("自动批准", "Approve automatically"),
                        ("供开发扩展时使用：新扩展不经确认即可运行命令。",
                         "For developing extensions: a new extension runs its command without confirmation.")):
@@ -486,7 +486,7 @@ class Template(unittest.TestCase):
         self.assertIn('x-text="lxCur.path || \'—\'"', card)
         self.assertIn('@click="lxApprove(lxCur)"', card)
         self.assertIn("!lxApproveReady(lxCur)", card)                                    # … once its summary is here
-        self.assertIn('<div class="lx-sum-state" x-show="lxSumState(lxCur)" role="status">', card)
+        self.assertIn('<div class="lx-sum-state" role="status" x-show="lxApproveWhy(lxCur)">', card)   # under 批准: why it is off
         self.assertIn('@click="lxSumAgain(lxCur)"', card)
         self.assertIn("t('批准运行')", card)
 

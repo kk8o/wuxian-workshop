@@ -170,13 +170,13 @@ class Groups(unittest.TestCase):
 
     def test_the_detail_says_where_it_runs(self):
         self.assertEqual({k: self.out["herald"][k] for k in ("kind", "tag", "tip", "count", "tools", "mod")},
-                         {"kind": "local", "tag": "游戏 · 本机", "tip": "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行",
+                         {"kind": "local", "tag": "游戏 · 本机", "tip": "包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行",
                           "count": 1, "tools": ["wk_herald_show"], "mod": True})
         self.assertEqual({k: self.out["facts"][k] for k in ("kind", "tag", "tip", "count", "tools", "mod")},
                          {"kind": "local", "tag": "本机", "tip": "在这台电脑上运行，不需要游戏", "count": 0, "tools": [], "mod": False})
         tips = {r["key"]: r["tip"] for r in self.out["installed"]}
         self.assertEqual((tips["l:herald"], tips["l:facts"], tips["m:lone"]),
-                         ("包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行", "在这台电脑上运行，不需要游戏", "由游戏插件提供，在游戏中运行"))
+                         ("包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行", "在这台电脑上运行，不需要游戏", "由游戏插件提供，在游戏中运行"))
         self.assertEqual(self.out["layout"]["tip"], "由游戏插件提供，在游戏中运行")
 
     def test_builtin_says_who_brings_it(self):
@@ -251,7 +251,7 @@ class Template(unittest.TestCase):
         self.assertNotIn("lxCopyIdea", self.page)
         self.assertIn('<textarea x-t x-ref="lxidea" class="input lx-idea" rows="4" x-model="lxn.idea"', self.page)
         self.assertNotIn("安装扩展包", self.page)            # a package is imported: 安装 is for addons
-        self.assertNotIn("允许运行", self.page)              # the player approves (批准运行, 本机扩展批准)
+        self.assertNotIn("允许运行", self.page)              # the player approves (批准运行, 扩展批准)
 
     def test_the_caps_tab_lists_the_game_half(self):
         caps = self.page[self.page.index("<div x-show=\"xpTab === 'caps'\">"):self.page.index('<div class="toolbar lx-out-bar"')]
@@ -264,7 +264,7 @@ class Template(unittest.TestCase):
         for word in ("内置", "已添加", "由无限工坊提供", "本机", "游戏", "还没有扩展。说出想法，Agent 先查证能否实现，再在运行中的游戏里做出来。", "在这台电脑上运行，不需要游戏",
                      "由游戏插件经扩展框架提供", "{a} 个内置扩展 · {b} 个来自其他插件", "说出想法，Agent 先查证能否实现，再在运行中的游戏里做成扩展。扩展可在游戏内运行，也可接入本机程序与其他插件的数据。", "文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发",
                      "由扩展包导入或放进扩展文件夹；移除时移入回收区", "导入扩展包", "导入", "已导入 {name}", "批准运行", "已批准 {name}", "自动批准", "交给 Agent", "随扩展框架提供，在游戏中运行，不能单独移除", "其他插件在游戏中提供的扩展，以及添加到本机的扩展",
-                     "由无限工坊提供，在游戏中运行", "由游戏插件提供，在游戏中运行", "在这台电脑上运行，不需要游戏", "包含游戏插件与本机程序：游戏插件在游戏中运行，程序在这台电脑上运行",
+                     "由无限工坊提供，在游戏中运行", "由游戏插件提供，在游戏中运行", "在这台电脑上运行，不需要游戏", "包含游戏插件与本机端：游戏插件在游戏中运行，本机端在这台电脑上运行",
                      "需要插件", "缺少插件", "缺少需要的插件，游戏不会加载它", "游戏中未加载：新插件需完整重启游戏，已停用的请在插件列表中启用"):
             self.assertRegex(self.i18n, r"\n\s*'%s':" % re.escape(word), word)
         for word in ("扩展目录", "可安装到游戏", "无限工坊扩展目录中尚未安装到游戏的扩展"):        # the third group is gone
