@@ -241,7 +241,7 @@ Two things in an app's declaration are the workshop's own and never reach the ga
     "app": "companion",
     "title": "语音搭子",
     "prompt": "companion",
-    "hear": ["game:combat", "game:loot"],
+    "hear": ["game:combat", "game:growth"],
     "pace": true,
     "link": "live",
     "controls": ["stop", {"cmd": "mute", "call": "mute", "args": {"on": true}},
@@ -556,7 +556,7 @@ can be run by the extension itself instead of an agent. Declare it with `"driver
     "app": "ledger",
     "title": "账本",
     "driver": "local",
-    "hear": ["game:loot", "game:money"],
+    "hear": ["game:quest", "game:growth"],
     "controls": ["stop", {"cmd": "export", "label": "导出", "call": "export"}]
   }]
 }
