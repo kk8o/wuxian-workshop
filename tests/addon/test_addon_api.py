@@ -13,6 +13,7 @@ from unittest import mock
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from tests.support import pours
 from tests.support.wowmock import Session, lupa, toc_files
 from wuxianworkshop import scaffold
 from wuxianworkshop.core import mailbox as MB
@@ -81,6 +82,7 @@ class EndToEnd(unittest.TestCase):
                     return job, Service.run_result(parse_run(text))
             self.fail(f"no RUN result for data call {job}")
         self.svc.run, self.svc.caught_up, self.svc.data, self.svc.data_calls = run, caught_up, data, comp.data_calls
+        pours.wire(self, self.svc, comp, s)              # the rest of a long answer
         self.addCleanup(s.close)
         comp.new_process("P1-100")
         s.lua.execute(ADDON_FOO)                         # loaded with the UI, before the link is up: its event waits
@@ -231,7 +233,7 @@ class EndToEnd(unittest.TestCase):
 
     def test_calls_go_as_data(self):
         """WoWBridge 0.9.7 takes call / respond / addon_api as data (CALL records): no code goes, so they work with hot
-        loading off; big arguments go in parts, a long answer comes in pieces, a record read twice runs once"""
+        loading off; big arguments go in parts, a long answer's rest is poured, a record read twice runs once"""
         s, svc, comp = self.s, self.svc, self.comp
         self.assertTrue(comp.data_calls())
         code = comp.stats["records"]["CODE"]
@@ -243,9 +245,9 @@ class EndToEnd(unittest.TestCase):
         big = {"s": "長" * 3000, "list": list(range(50)), "deep": {"a": [True, False, 1.5, -2, 1e300, 2 ** 53]}}
         self.assertEqual(asyncio.run(svc.call_exposed("Foo", "echo", big))["result"], big)    # 9 KB each way
         long = asyncio.run(svc.call_exposed("Foo", "long", {"s": "无限", "n": 3000}))["result"]
-        self.assertEqual(long, "无限" * 3000)                                   # 18 KB: five pieces
+        self.assertEqual(long, "无限" * 3000)                                   # 18 KB: a piece and a segment
         self.assertEqual(comp.stats["records"]["CODE"], code)                   # none of it was code
-        self.assertGreater(comp.stats["records"]["CALL"], 6)
+        self.assertGreater(comp.stats["records"]["CALL"], 4)                    # the calls, and the pour
         s.slash("set hotLoad off")
         self.assertEqual(asyncio.run(svc.call_exposed("Foo", "double", {"n": 2, "s": ""}))["result"], {"n": 4, "s": ""})
         self.assertEqual(asyncio.run(svc.addon_api("Foo"))["exposed"][0], {"name": "double", "doc": "doubles n"})
@@ -321,9 +323,10 @@ class EndToEnd(unittest.TestCase):
         asyncio.run(look())
         self.assertEqual(asked[5:], ["describe", "kit.manifest"])         # the event said r2
 
-    def test_a_piece_asked_for_again(self):
-        """WoWBridge keeps a long answer for the daemon to ask for a piece again (the link lost it): a piece asked twice
-        counts once, and the answer stays a minute past its last piece, then goes with the next long answer's sweep"""
+    def test_a_long_answer_is_kept_for_its_pour(self):
+        """WoWBridge keeps a long answer for the daemon's pour, and for one asked again (the link lost a segment): it
+        stays a minute past its last segment, then goes with the next long answer's sweep. There is no other way to
+        the rest: the old data call "piece" is no data call"""
         s, comp = self.s, self.comp
         s.lua.execute(b'FooWB:Expose("long", function(a) return string.rep(a.s, a.n) end)')
 
@@ -336,20 +339,24 @@ class EndToEnd(unittest.TestCase):
                 if got:
                     return job, got[0]
             self.fail(f"no result for {verb}")
-        job, first = result("call", {"a": "Foo", "n": "long", "d": {"s": "无限", "n": 3000}})
+        segments = []
+        comp.on_pour = lambda sid, key, i, m, data: segments.append((key, i, m))
+        job, first = result("call", {"a": "Foo", "n": "long", "d": {"s": "无限", "n": 3000}, "m": 1 << 20})
         n = int(re.search(r'"1/(\d+)\n', first)[1])                 # the first piece: "1/<pieces>" and a line
         self.assertGreaterEqual(n, 4)
-        pieces = {i: result("piece", {"k": str(job), "i": i})[1] for i in (2, 2, 3)}       # 2 twice
-        self.assertTrue(all(" ok =piece " in t for t in pieces.values()))
-        for i in range(4, n + 1):
-            self.assertIn(" ok =piece ", result("piece", {"k": str(job), "i": i})[1])
-        self.assertIn(" ok =piece ", result("piece", {"k": str(job), "i": 2})[1])   # every piece went: still kept
+        self.assertIn('error =call: no data call "piece"', result("piece", {"k": str(job), "i": 2})[1])
+        self.assertIn(' ok =pour (', result("pour", {"k": str(job), "g": False})[1])
+        s.run(10)
+        self.assertEqual(segments, [(str(job), 1, 1)])               # 18 KB: all of the rest in one segment
+        self.assertIn(' ok =pour (', result("pour", {"k": str(job), "g": False, "only": [1]})[1])   # again: still kept
+        s.run(10)
+        self.assertEqual(segments, [(str(job), 1, 1)] * 2)
         s.run(61)
         result("call", {"a": "Foo", "n": "long", "d": {"s": "又", "n": 3000}})       # its sweep lets the old one go
-        self.assertIn("no longer kept", result("piece", {"k": str(job), "i": 2})[1])
+        self.assertIn("no longer kept", result("pour", {"k": str(job), "g": False})[1])
 
     def test_a_data_call_the_game_cannot_read(self):
-        """what WoWBridge says of a CALL record it cannot do: not JSON, an unknown verb, a piece no longer kept"""
+        """what WoWBridge says of a CALL record it cannot do: not JSON, an unknown verb, an answer no longer kept"""
         s, comp = self.s, self.comp
 
         def answer(body, verb="call"):
@@ -360,7 +367,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("error =call: its data is not JSON: no comma or } at byte", answer(b'{"a":"Foo" "n":1}'))
         self.assertIn("error =call: its data is not a JSON object", answer(b'"Foo"'))
         self.assertIn('error =call: no data call "open"', answer(b'{}', "open"))
-        self.assertIn("error =piece: the rest of this answer is no longer kept", answer(b'{"k":"1","i":2}', "piece"))
+        self.assertIn("error =pour: the rest of this answer is no longer kept", answer(b'{"k":"1","g":false}', "pour"))
 
     def test_json_decode(self):
         """WoWBridge's JSON reader (Json.lua): escapes, surrogate pairs, numbers, nesting, and where a text breaks"""
@@ -519,8 +526,8 @@ class McpTools(unittest.TestCase):
                 self.calls = []
 
             def __getattr__(self, name):
-                async def method(*args):
-                    self.calls.append((name, args))
+                async def method(*args, **kw):
+                    self.calls.append((name, args, kw) if kw else (name, args))
                     return {"ok": True}
                 return method
 
@@ -535,15 +542,32 @@ class McpTools(unittest.TestCase):
         asyncio.run(mcp.call_tool("addon_api", {}))
         asyncio.run(mcp.call_tool("respond", {"request": "12.3", "data": {"text": "x"}}))
         self.assertFalse(tools["respond"].annotations.read_only_hint)
+        self.assertEqual(sorted(tools["call"].input_schema["properties"]), ["addon", "args", "name", "timeout_ms"])
         watch = [("addon_events", ("WuxianKit", "kit.*", -1, 100, 300)),     # WuxianKit's watch, whenever it runs,
                  ("addon_events", ("local", "local.*", -1, 100, 300))]        # and the local extensions'
         self.assertEqual([c for c in backend.calls if c not in watch],
                          [("status", ()), ("addon_api", ("WuxianKit", True)),  # not running: no call of it, no wk_ tools
                           ("local_manifest", ()),                              # an answer of another shape: none
                           ("local_extensions", ()),                            # the registry's rows: the same
-                          ("call_exposed", ("Foo", "double", {"n": 2}, 10000)),
+                          ("call_exposed", ("Foo", "double", {"n": 2}, 10000), {"most": 256 * 1024}),   # the tool's
                           ("addon_events", ("Foo", None, 0, 100, 1)), ("addon_api", (None,)),
                           ("respond", ("12.3", {"text": "x"}, 10000))])
+
+    def test_the_call_tools_most_over_http(self):
+        """the `call` tool takes no most: its answer is 256 KB at most, which the stdio server says to the daemon; an
+        ask that names none (WuxianKit's tools) says none"""
+        from wuxianworkshop.mcp.server import CALL_MOST, HttpBackend
+        seen = []
+
+        class Client:
+            def call_exposed(self, *args):
+                seen.append(args)
+                return {"ok": True}
+        backend = HttpBackend(Client())
+        asyncio.run(backend.call_exposed("Foo", "double", {"n": 2}, 10000, most=CALL_MOST))
+        asyncio.run(backend.call_exposed("Foo", "double"))
+        self.assertEqual(seen, [("Foo", "double", {"n": 2}, 10000, False, 256 * 1024),
+                                ("Foo", "double", None, 10000, False)])
 
     def test_events_takes_a_list_of_topics(self):
         """the events tool's topic: a string or an array of strings (anyOf), a valid draft 2020-12 schema; the list

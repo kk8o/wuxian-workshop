@@ -5,13 +5,13 @@ expression, or the ones under the mouse; `api_scan` lists what the game has for 
 functions, its global functions, its Enum and Constants tables). Each is a Lua chunk sent with `run`; the game answers
 with JSON made by the small encoder J below (secret values come back as "<secret>"), parsed here.
 
-A RUN result brings back at most 4000 bytes of what the code returned (WoWBridge's Agent.lua cuts it there), so the
-answer comes in pieces (answer_chunk): the chunk keeps it in the game and returns the first piece and how many there are.
-A WoWBridge with link features 4 (0.9.13) then pours the rest (the data call "pour": segments of 32 KB, one after
-another, Agent.lua); from an older one piece_chunk brings each of the others, WINDOW of them asked for at a time, one
-more as one comes back. A piece ends between two UTF-8 characters, and the daemon takes it as it came: api.parse_run
-neither splits the "=probe" chunk's result at ", " nor reads notes into it. The same chunks bring the whole of what any
-code returned (answer_chunk(..., whole=True): `run` with whole, up to WHOLE_MOST bytes).
+A RUN result brings back at most 4000 bytes of what the code returned (WoWBridge's Agent.lua cuts it there), so a long
+answer comes in two steps (answer_chunk): the chunk keeps it in the game and returns the first piece and how many
+pieces of that size it makes. The WoWBridge (link features 4, 0.9.13 on) then pours the rest (the data call "pour":
+segments of 32 KB, one after another, Agent.lua); an older one cannot bring a long answer back (the daemon says so by
+the version of its HELLO: service.whole_text). A piece ends between two UTF-8 characters, and the daemon takes it as it
+came: api.parse_run neither splits the "=probe" chunk's result at ", " nor reads notes into it. The same chunk brings
+the whole of what any code returned (answer_chunk(..., whole=True): `run` with whole, up to WHOLE_MOST bytes).
 
 The chunks are plain Lua 5.1 with this client's API (RegisterAllEvents, GetMouseFoci, issecretvalue, GetPhysicalScreenSize:
 all in the API manual). Rectangles are in the game window's client pixels, from its top-left corner, as `snap` takes them.
@@ -195,10 +195,10 @@ end
 return '{"screen":' .. J({ physW, physH }) .. ',"frames":' .. J(frames, 2 + DEPTH * 3 + 4) .. '}'
 """
 
-# an answer's pieces: at most PIECE bytes each; asked for one by one (a WoWBridge that does not pour), WINDOW at a time,
-# one more as one comes back (their requests share mailbox packets, the link brings the pieces back one after another).
-# A probe's answer over MOST bytes is refused (it is for the agent to read), a whole run's over WHOLE_MOST
-PIECE, WINDOW, MOST, WHOLE_MOST = 3900, 8, 256 * 1024, 16 * 1024 * 1024
+# an answer's first piece is at most PIECE bytes (what a RUN result holds); the rest is poured. A probe's answer over
+# MOST bytes is refused (it is for the agent to read), a whole run's over WHOLE_MOST, which is also the most a call of
+# an exposed function brings back (service.call_exposed's `most`; Agent.lua MOST_MAX)
+PIECE, MOST, WHOLE_MOST = 3900, 256 * 1024, 16 * 1024 * 1024
 
 # after the chunk, run as a function (ANSWER: what it returned): the first piece, the others kept under KEY
 ANSWER_PIECES = r"""
@@ -227,23 +227,9 @@ if #cuts > 1 then
 	for k, a in pairs(kept) do
 		if GetTime() - a.at > 300 then kept[k] = nil end   -- left by a daemon that never asked for the rest
 	end
-	kept[KEY] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
+	kept[KEY] = { s = s, cuts = cuts, at = GetTime() }           -- for the pour of the rest (Agent.lua Pour)
 end
 return "1/" .. #cuts .. "\n" .. s:sub(1, cuts[1])
-"""
-
-PIECE_BODY = r"""
-local kept = _G.WuxianWorkshopAnswers
-local a = kept and kept[KEY]
-if not a then error("the rest of this answer is no longer kept in the game (the UI reloaded?)", 0) end
-a.served = a.served or {}
-if not a.served[I] then a.served[I], a.left = true, a.left - 1 end
-if a.left <= 0 then
-	a.at = math.min(a.at, GetTime() - 240)                     -- every piece went: a minute more, for one asked again
-else
-	a.at = GetTime()                                           -- else kept 5 minutes from the latest piece asked for
-end
-return I .. "/" .. #a.cuts .. "\n" .. a.s:sub(a.cuts[I - 1] + 1, a.cuts[I])
 """
 
 
@@ -528,28 +514,23 @@ def api_scan(part, names=None):
 
 
 def answer_chunk(chunk, key, whole=False):
-    """a probe chunk run so that its answer comes back in pieces: it returns the first piece after a line "1/<pieces>",
-    and keeps the answer in the game under `key` for piece_chunk (or a pour) when there are more (the chunk's lines keep
-    their numbers). whole: any code, its first value (tostring) up to WHOLE_MOST bytes; past that an error"""
+    """a probe chunk run so that a long answer comes back: it returns the first piece after a line "1/<pieces>", and
+    keeps the answer in the game under `key` for the pour of the rest when there is more (the chunk's lines keep their
+    numbers). whole: any code, its first value (tostring) up to WHOLE_MOST bytes; past that an error"""
     return ("local ANSWER = (function(...) " + chunk + "\nend)(...)\n"
             f"local KEY, PIECE, MOST, WHOLE = {lua_str(key)}, {PIECE}, {WHOLE_MOST if whole else MOST}, "
             f"{'true' if whole else 'false'}\n" + ANSWER_PIECES)
 
 
-def piece_chunk(key, i):
-    """the chunk that returns piece i (2 and up) of the answer kept under `key`, after a line "<i>/<pieces>" """
-    return f"local KEY, I = {lua_str(key)}, {int(i)}\n" + PIECE_BODY
-
-
-def piece(values, i):
-    """(how many pieces the answer has, the text of piece i) from what answer_chunk / piece_chunk returned; ValueError
-    when it is not that piece"""
+def first_piece(values):
+    """(how many pieces the answer has, the text of its first) from what answer_chunk, or a data call, returned;
+    ValueError when it is not that"""
     text = values[0] if values and isinstance(values[0], str) else ""
     head, sep, rest = text.partition("\n")
-    m = re.fullmatch(r"(\d+)/(\d+)", head)
-    if not sep or not m or int(m[1]) != i or i > int(m[2]):
-        raise ValueError(f"the game answered {str(values)[:200]}, not piece {i} of a probe's answer")
-    return int(m[2]), rest
+    m = re.fullmatch(r"1/(\d+)", head)
+    if not sep or not m or int(m[1]) < 1:
+        raise ValueError(f"the game answered {str(values)[:200]}, not the first piece of an answer")
+    return int(m[1]), rest
 
 
 def parse(values):

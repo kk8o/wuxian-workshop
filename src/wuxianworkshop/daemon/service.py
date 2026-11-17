@@ -25,9 +25,7 @@ extensions' notes, in the order they came with the app's kit.app events (daemon/
 import asyncio
 import fnmatch
 import inspect
-import itertools
 import json
-import math
 import os
 import re
 import secrets
@@ -70,9 +68,7 @@ TRY_HOLD = 5                              # seconds past try's window the addon 
 LINK_MODES = ("auto", "always", "demand")
 LINK_MODE_V = 2
 MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
-PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
-PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
-PIECE_KEPT = 280.0           # seconds after its first piece that the game still keeps an answer (it keeps 300)
+POUR_WAIT = 90.0             # seconds a pour waits for the link to come back (minimized, a loading screen)
 POUR_ASK = 20.0              # seconds with the link up and no new segment of a pour before the missing ones are asked
                              # for again (the link brings a lost frame again by itself within seconds: this is for a
                              # segment lost whole), then again after twice that ...
@@ -730,37 +726,30 @@ class Service:
 
     async def probe(self, code, timeout_ms, chunk="=probe"):
         """a probes.py chunk run in the game; its JSON answer, or the ApiError that says why there is none. The answer
-        comes in pieces (probes.answer_chunk): the first with the chunk (under that chunk name: "=call" shows in the game's
-        debug window, "=probe" does not), the rest as whole_text brings it"""
+        comes as probes.answer_chunk sends it: its first piece with the chunk (under that chunk name: "=call" shows in the
+        game's debug window, "=probe" does not), the rest as whole_text brings it"""
         key = secrets.token_hex(4)
         res = await self.run(probes.answer_chunk(code, key), timeout_ms=timeout_ms, chunk=chunk)
-        return self.answer_json(await self.whole_text(
-            res, lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"),
-            lambda: (key, True), timeout_ms, "probe", refresh=True))
+        return self.answer_json(await self.whole_text(res, key, True, timeout_ms, "probe"))
 
-    async def data_probe(self, verb, payload, timeout_ms, what, refresh=False):
-        """a data call (agent/commands.py data_call: what the agent asks of an addon's API, sent as data) answered in
-        pieces as a probe is; its JSON answer, or the ApiError that says why there is none. refresh: the game keeps the
-        answer from the latest piece asked for (WoWBridge 0.9.15 on; a whole call's answer may take that long)"""
+    async def data_probe(self, verb, payload, timeout_ms, what):
+        """a data call (agent/commands.py data_call: what the agent asks of an addon's API, sent as data) answered as a
+        probe is (its first piece, the rest poured); its JSON answer, or the ApiError that says why there is none"""
         job, res = await self.data(verb, payload, timeout_ms, what)
-        return self.answer_json(await self.whole_text(
-            res, lambda i: self.data_result("piece", {"k": str(job), "i": i}, timeout_ms, what),
-            lambda: (str(job), False), timeout_ms, what, refresh=refresh))
+        return self.answer_json(await self.whole_text(res, str(job), False, timeout_ms, what))
 
     async def run_whole(self, code, timeout_ms=10000, addon=None):
         """run, with the whole of what the code returned first (as tostring makes it, up to probes.WHOLE_MOST bytes)
         brought back however long it is: {ok, job, values: [the text], ms, chunk, bytes, note, cut: None, whole: True},
-        or run's error result. timeout_ms is for the run's own result; after it the rest comes as long as segments (or
-        pieces) keep coming (whole_text)"""
+        or run's error result. timeout_ms is for the run's own result; after it the rest comes as long as segments keep
+        coming (whole_text)"""
         if not isinstance(code, str) or not code.strip():
             raise ApiError(400, "bad_request", "code: a non-empty string of Lua")
         key = secrets.token_hex(4)
         res = await self.run(probes.answer_chunk(code, key, whole=True), timeout_ms, addon, "=run")
         if not res["ok"]:
             return res
-        text = await self.whole_text(
-            res, lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"),
-            lambda: (key, True), timeout_ms, "run", refresh=True)
+        text = await self.whole_text(res, key, True, timeout_ms, "run")
         return dict(res, values=[text], cut=None, whole=True)
 
     @staticmethod
@@ -771,20 +760,18 @@ class Service:
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 
-    async def whole_text(self, res, more, pour, timeout_ms, what, refresh=False):
-        """the whole text of an answer that comes in pieces: res is the call's own RUN result, piece 1 of n (the call
-        itself, never asked for again: a call may change something). The rest is poured (pour(): its key and whether a
-        probe keeps it) from a WoWBridge that pours (link features 4), else asked for piece by piece (more(i): piece i,
-        window). refresh: the game keeps the answer 5 minutes from the latest piece asked for (probes.PIECE_BODY), not
-        from the first"""
-        n, text = self.piece(res, 1)
+    async def whole_text(self, res, key, kept, timeout_ms, what):
+        """the whole text of an answer: res is the call's own RUN result, which brings its first piece (the call itself,
+        never asked for again: a call may change something); the rest, when there is more, is poured (pour(): key, and
+        kept: whether a probe keeps it). There is no other way: a WoWBridge that does not pour (before 0.9.13) cannot
+        bring a long answer back, an ApiError addon_outdated"""
+        n, text = self.first_piece(res)
         if n == 1:
             return text
-        session = self.ui_session()
-        if self.can_pour():
-            key, kept = pour()
-            return text + (await self.pour(key, kept, session, timeout_ms, what)).decode("utf-8", "replace")
-        return text + await self.window(n, more, session, refresh, what)
+        if not self.can_pour():
+            raise ApiError(409, "addon_outdated", f"{what}: its answer is longer than one piece, which the WoWBridge in "
+                                                  f"the game cannot bring back{self.bridge_note() or ' (it is too old)'}")
+        return text + (await self.pour(key, kept, self.ui_session(), timeout_ms, what)).decode("utf-8", "replace")
 
     def can_pour(self):
         """whether the addon in the game pours the rest of a long answer (link features POUR, WoWBridge 0.9.13 on)"""
@@ -793,6 +780,22 @@ class Service:
             return comp is not None and comp.pours()
         except AttributeError:
             return False
+
+    def bridge_behind(self):
+        """the version of the WoWBridge in the game ("0.9.14") when it is older than this program, by what its HELLO said
+        (the newer one's files are in place and take effect once the game restarts); else None, also while no HELLO
+        said one, or when either version is not dot-separated numbers (a development build: not judged)"""
+        comp = getattr(self.worker, "comp", None)
+        s = (getattr(comp, "sessions", None) or {}).get(getattr(comp, "current", None))
+        has = getattr(s, "version_text", None)
+        there, here = local_manifest.version_tuple(has), local_manifest.version_tuple(self.version)
+        return has if there and here and there < here else None
+
+    def bridge_note(self):
+        """what an error adds when the WoWBridge in the game is older than this program (bridge_behind), else """""
+        has = self.bridge_behind()
+        return (f" (the WoWBridge in the game is {has}, older than this 无限工坊 {self.version}: the new one takes effect "
+                f"once the game is restarted)") if has else ""
 
     def link_is_up(self):
         return getattr(getattr(self.worker, "comp", None), "link_up", False)
@@ -811,7 +814,7 @@ class Service:
         "pour" and the game sends every segment up (TYPE_POUR, transport/link.py on_pour), joined here in order; their
         bytes. The link brings a frame it lost again by itself; a segment that does not come all the same (lost whole)
         is asked for again (only) after POUR_ASK seconds with the link up and nothing new, once more after twice that.
-        With the link down (minimized, a loading screen) it waits for the link, PIECE_WAIT seconds at most, and goes on
+        With the link down (minimized, a loading screen) it waits for the link, POUR_WAIT seconds at most, and goes on
         when it is back; another UI session (a reload took the answer), or POUR_QUIET seconds with the link up and no new
         segment, is an error"""
         p = self.pours[key] = Pouring(session)       # before the call: a segment may come before its RUN result
@@ -823,10 +826,10 @@ class Service:
                     raise ApiError(502, "lua_error", f"the rest of this answer is no longer kept in the game (the UI "
                                                      f"reloaded: session {session} -> {self.ui_session()})")
                 if not self.link_is_up():
-                    if not await self.link_back(math.inf, session):
+                    if not await self.link_back(session):
                         if self.ui_session() != session:
                             continue
-                        raise ApiError(409, "link_down", f"{what}: no frames came from the game for {PIECE_WAIT:.0f} s "
+                        raise ApiError(409, "link_down", f"{what}: no frames came from the game for {POUR_WAIT:.0f} s "
                                                          f"with {len(p.got)} of {p.m or '?'} segments of its answer in")
                     p.last = _now()            # back: the game goes on with it, quiet counts from now
                 if due:
@@ -886,57 +889,9 @@ class Service:
         p.m, p.size = int(said[1]), int(said[2])
         return None
 
-    async def window(self, n, more, session, refresh, what):
-        """pieces 2..n of a long answer from a WoWBridge that does not pour, one call each (more(i)): WINDOW asked for at
-        a time, one more as one comes back; each one the link lost is asked for again (piece_again) while the game
-        keeps the answer (PIECE_KEPT from the first piece, or from the latest one with refresh)"""
-        kept = [time.monotonic() + PIECE_KEPT]
-        texts, waiting, numbers = {}, {}, iter(range(2, n + 1))
-        t0 = noted = time.monotonic()
-
-        def ask(i):
-            waiting[asyncio.ensure_future(self.piece_again(more, i, lambda: kept[0], session))] = i
-        for i in itertools.islice(numbers, probes.WINDOW):
-            ask(i)
-        try:
-            while waiting:
-                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    i = waiting.pop(task)
-                    texts[i] = self.piece(task.result(), i)[1]
-                    if refresh:
-                        kept[0] = time.monotonic() + PIECE_KEPT
-                    nxt = next(numbers, None)
-                    if nxt is not None:
-                        ask(nxt)
-                if time.monotonic() - noted >= POUR_NOTE:
-                    noted = time.monotonic()
-                    self.journal.add("INFO", f"{what}: piece {len(texts) + 1} of {n} of its answer in "
-                                             f"{noted - t0:.1f} s")
-        finally:
-            for task in waiting:
-                task.cancel()
-            if waiting:
-                await asyncio.gather(*waiting, return_exceptions=True)
-        return "".join(texts[i] for i in range(2, n + 1))
-
-    async def piece_again(self, more, i, until, session):
-        """more(i); when it times out or finds the link down (a minimized window, a loading screen), asked for again once
-        the link is back, PIECE_TRIES times in all, while the game still keeps the answer (until(): a monotonic time) in
-        the same UI session (a reload takes the answer with it). Another error is the answer's"""
-        for attempt in range(1, PIECE_TRIES + 1):
-            try:
-                return await more(i)
-            except ApiError as e:
-                if e.code not in ("timeout", "link_down") or attempt == PIECE_TRIES or not await self.link_back(until,
-                                                                                                                session):
-                    raise
-                self.journal.add("INFO", f"piece {i} of a long answer asked for again ({e.code})")
-
-    async def link_back(self, until, session):
-        """whether the link is up in UI session `session`, waiting for it PIECE_WAIT seconds at most and not past until
-        (a monotonic time, or what a callable says)"""
-        stop = min(until() if callable(until) else until, time.monotonic() + PIECE_WAIT)
+    async def link_back(self, session):
+        """whether the link is up in UI session `session`, waiting for it POUR_WAIT seconds at most"""
+        stop = time.monotonic() + POUR_WAIT
         while True:
             if self.ui_session() != session:
                 return False
@@ -947,12 +902,12 @@ class Service:
             await asyncio.sleep(0.25)
 
     @staticmethod
-    def piece(res, i):
-        """(how many pieces the answer has, the text of piece i) from a RUN result"""
+    def first_piece(res):
+        """(how many pieces the answer has, the text of its first) from the RUN result that brings it"""
         if not res.get("ok"):
             raise ApiError(502, "lua_error", f"{res.get('error')}\n{res.get('stack') or ''}".strip())
         try:
-            return probes.piece(res.get("values"), i)
+            return probes.first_piece(res.get("values"))
         except ValueError as e:
             raise ApiError(400, "probe_failed", str(e)) from None
 
@@ -1130,16 +1085,19 @@ class Service:
         comp = getattr(self.worker, "comp", None)          # the UI session: another one may run another WuxianKit
         return dict(events=events, next=next_id, truncated=truncated, session=getattr(comp, "current", None))
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, whole=False):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, most=None):
         """call a function an addon exposed with WoWBridge's Expose: args (JSON) go to it as a Lua table, its first
         return value comes back as `result`. A function that is not there, or that raised, is an ApiError call_failed
         with the message (and the stack). shared: an ask of WuxianKit's views (kitcache.SHARED; shared over HTTP), for
-        which what the daemon knows of WuxianKit answers kit.revision and kit.manifest (daemon/kitcache.py). whole: an
-        answer up to probes.WHOLE_MOST bytes instead of probes.MOST (the data call's "w"; WoWBridge 0.9.15 on, an older
-        one still refuses past MOST), with `whole: true` in what comes back; timeout_ms is then for the call's own
-        result, the rest comes for as long as it keeps coming (as run_whole's)"""
-        if whole is not True and whole is not False and whole is not None:
-            raise ApiError(400, "bad_request", "whole: true (an answer up to 16 MB) or false")
+        which what the daemon knows of WuxianKit answers kit.revision and kit.manifest (daemon/kitcache.py; not when
+        the ask names its own most). most: the bytes the answer (its JSON) may be, probes.WHOLE_MOST (16 MB) when not
+        given, which is also the most there is (the data call's "m": the game refuses a longer one and sends none of
+        it; a WoWBridge before 0.10.0 does not read it and stops at probes.MOST). timeout_ms is for the call's own
+        result, which brings the answer's first piece; the rest comes for as long as it keeps coming (pour)"""
+        if most is not None and (not isinstance(most, int) or isinstance(most, bool)
+                                 or not 1 <= most <= probes.WHOLE_MOST):
+            raise ApiError(400, "bad_request", f"most: the bytes the answer may be, 1..{probes.WHOLE_MOST} (16 MB, "
+                                               f"which it also is when not given)")
         if not isinstance(addon, str) or not self.ADDON_NAME.match(addon):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
         if not isinstance(name, str) or not self.CALL_NAME.match(name):
@@ -1149,35 +1107,30 @@ class Service:
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
         own = addon == KIT and name in OWN_READS and args is None and (SHARED.get() if shared is None else shared)
-        if own and not whole and name in ("kit.revision", "kit.manifest"):
+        if own and most is None and name in ("kit.revision", "kit.manifest"):
             return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code, own))
-        return await self.call_game(addon, name, args, timeout_ms, code, own, **({"whole": True} if whole else {}))
+        return await self.call_game(addon, name, args, timeout_ms, code, own, most or probes.WHOLE_MOST)
 
-    async def call_game(self, addon, name, args, timeout_ms, code, own=False, whole=False):
-        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7
-        (whole or not: probes.MOST at most). own: a read of WuxianKit's views, not the agent's call: the game neither
-        counts it nor lists it (q; 0.9.9). whole: "w", an answer up to probes.WHOLE_MOST bytes (0.9.15)"""
+    async def call_game(self, addon, name, args, timeout_ms, code, own=False, most=probes.WHOLE_MOST):
+        """call_exposed's call in the game: as data (CALL records; "m": most, the bytes its answer may be), or as the
+        chunk `code` for a WoWBridge before 0.9.7 (probes.MOST at most). own: a read of WuxianKit's views, not the
+        agent's call: the game neither counts it nor lists it (q; 0.9.9). A call that fails in a game whose WoWBridge
+        is older than this program says so (bridge_note: by the version of its HELLO; that one may know less, a
+        smaller `most` for one), whatever the failure was"""
         t0 = time.time()
         try:
             if self.data_calls():
-                req = {"a": addon, "n": name, "d": args, **({"q": True} if own else {}),
-                       **({"w": True} if whole else {})}
-                data = await self.data_probe("call", req, timeout_ms, "call", refresh=whole)
+                req = {"a": addon, "n": name, "d": args, **({"q": True} if own else {}), "m": most}
+                data = await self.data_probe("call", req, timeout_ms, "call")
             else:
                 data = await self.probe(code, timeout_ms, chunk="=call")
         except ApiError as e:
             if e.code != "probe_failed":
                 raise
             self.journal.add("INFO", f"call {addon}.{name}: failed: {e.message.splitlines()[0][:200]}", addon=addon)
-            message = e.message
-            if whole and f"more than the {probes.MOST // 1024} KB a" in message:
-                message += (f" (the WoWBridge in the game is older than 0.9.15: it brings back "
-                            f"{probes.MOST // 1024} KB at most, whole or not; update it, or have the function answer "
-                            f"in parts)")
-            raise ApiError(400, "call_failed", message) from None
+            raise ApiError(400, "call_failed", e.message + self.bridge_note()) from None
         self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
-        return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None,
-                    **({"whole": True} if whole else {}))
+        return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
 
     REQUEST_ID = REQUEST_ID
 

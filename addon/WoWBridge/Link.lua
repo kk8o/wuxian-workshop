@@ -36,7 +36,7 @@
 -- Codec.Squeeze); a short body is squeezed in Send, a longer one a block a Step (each about 1 ms), and the link tests
 -- go as they are, so that they still measure the link.
 -- Pours (FEATURES 4, 0.9.13): the rest of a long answer goes up whole, a segment a message (TYPE_POUR: "<key> <i>/<m>\n"
--- and the segment's bytes as they are; Agent.lua's data call "pour" cuts them), not a piece a call. L.Pour takes what
+-- and the segment's bytes as they are; Agent.lua's data call "pour" cuts them): the one way it goes. L.Pour takes what
 -- hands out the segments; a Step queues the next one while fewer than POUR_AHEAD of them wait to go up, so that one is
 -- squeezed while the one before it goes up and the queue never holds the whole answer. They are no RUN results: those
 -- still go first, and the segments go in the window in order as other messages do. With no mailbox packet for
@@ -475,7 +475,7 @@ local function Acked(m, now)
 	stats.acked, stats.sum = stats.acked + n, stats.sum + dt * n
 	if dt > stats.max then stats.max = dt end
 	if m.pour then                                -- a segment the companion has: its pour hears so (Agent.lua keeps the answer)
-		local ok, err = pcall(m.pour.Acked)
+		local ok, err = pcall(m.pour.Acked, m.segment)
 		if not ok then geterrorhandler()(err) end
 	end
 	if m.kind == "long" then
@@ -746,10 +746,10 @@ local function Batch(m)
 end
 
 -- queue a message of a kind (nil = user text, "debug", "run", "reload", "event" (API.lua), "pour" (a segment, with the
--- pour it belongs to), or a link test: "burst", "long", "stream", "test"); returns its id and its number of parts (0
--- while a long body is being squeezed). With pack on, a message joins the last one of its kind while that one has not
--- gone up and the two still fit one frame (they share the id then); segments never do
-function L.Send(text, kind, pour)
+-- pour it belongs to and its number there), or a link test: "burst", "long", "stream", "test"); returns its id and its
+-- number of parts (0 while a long body is being squeezed). With pack on, a message joins the last one of its kind while
+-- that one has not gone up and the two still fit one frame (they share the id then); segments never do
+function L.Send(text, kind, pour, segment)
 	local t = TYPE_OF[kind] or L.TYPE_TEXT
 	local last = queue[#queue]
 	if P.pack and not URGENT[kind] and not pour and last and last.kind == kind and not last.firstShown and #last.frags == 1
@@ -765,7 +765,7 @@ function L.Send(text, kind, pour)
 	nextId = nextId % 65535 + 1
 	db.nextData = nextId
 	local m = { id = id, type = t, items = { text }, kind = kind, urgent = URGENT[kind], ok = {}, passEnd = 0, resent = 0,
-		again = 0, pour = pour }
+		again = 0, pour = pour, segment = segment }
 	local body = char(t) .. text
 	if P.zip and t ~= L.TYPE_TEST and Frames(#body) > 1 then
 		m.squeeze = { body = body, at = 1, out = { char(L.TYPE_ZIP) } }
@@ -784,8 +784,8 @@ function L.Send(text, kind, pour)
 	return id, #m.frags
 end
 
--- a pour (Agent.lua): p.key, p.Next() (the next segment's text, nil once there is none) and p.Acked() (one of its
--- segments acknowledged). A pour of the same key asked again takes the place of the one going on
+-- a pour (Agent.lua): p.key, p.Next() (the next segment's text and its number, nil once there is none) and
+-- p.Acked(number) (that segment acknowledged). A pour of the same key asked again takes the place of the one going on
 function L.Pour(p)
 	for i = #pours, 1, -1 do
 		if pours[i].key == p.key then table.remove(pours, i) end
@@ -802,10 +802,10 @@ function Pouring(now)
 	end
 	while ahead < POUR_AHEAD and pours[1] do
 		local p = pours[1]
-		local ok, text = pcall(p.Next)
+		local ok, text, segment = pcall(p.Next)
 		if not ok then geterrorhandler()(text) end
 		if ok and text then
-			L.Send(text, "pour", p)
+			L.Send(text, "pour", p, segment)
 			ahead = ahead + 1
 		else
 			table.remove(pours, 1)                -- all of it queued (or broken): the next pour

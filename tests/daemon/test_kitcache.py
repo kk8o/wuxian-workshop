@@ -164,7 +164,7 @@ class Views(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
             return {"addon": addon, "exposed": [{"name": "kit.revision"}], "topics": {}}
 
-        async def call_game(addon, name, args, timeout_ms, code, own=False):
+        async def call_game(addon, name, args, timeout_ms, code, own=False, most=None):
             self.asked.append((name, addon))
             self.own.append(own)
             await asyncio.sleep(0.01)

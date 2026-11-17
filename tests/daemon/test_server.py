@@ -67,10 +67,9 @@ class FakeGame(CompanionLoop):
             self.comp.on_debug("RUN", f'{job} ok {name} ({len(body)} B, 0.3 ms): 1/1\n{{"tracing":1,"unknown":[]}}')
         elif b"SlashCmdList" in body:                                   # probes.slash_call(): the handler ran
             self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): shown")
-        elif b"local KEY, PIECE, MOST, WHOLE" in body:                  # a whole run (probes.answer_chunk): 2 pieces
-            self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): 1/2\n第一块, ")
-        elif body.startswith(b"local KEY, I = "):                       # its piece 2 (probes.piece_chunk)
-            self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): 2/2\n第二块 (the last)")
+        elif b"local KEY, PIECE, MOST, WHOLE" in body:                  # a whole run (probes.answer_chunk)
+            pieces = 2 if b"BIG" in body else 1
+            self.comp.on_debug("RUN", f"{job} ok {name} ({len(body)} B, 0.3 ms): 1/{pieces}\n第一块, (and all)")
         elif b"error(" in body:
             self.comp.on_debug("RUN", f"{job} error {name}: {name}:1: boom\n[string \"{name}\"]:1: in main chunk")
         else:
@@ -352,9 +351,14 @@ class LiveDaemon(unittest.TestCase):
         self.assertEqual(status, 400)
         status, _ = self.call("POST", "/api/run", None, headers={"Content-Type": "application/json"})
         self.assertEqual(status, 400)
-        status, res = self.call("POST", "/api/run", {"code": "return BIG", "whole": True})   # an addon that does not pour
+        status, res = self.call("POST", "/api/run", {"code": "return SMALL", "whole": True})
         self.assertEqual(status, 200)
-        self.assertEqual((res["ok"], res["whole"], res["cut"], res["values"]), (True, True, None, ["第一块, 第二块 (the last)"]))
+        self.assertEqual((res["ok"], res["whole"], res["cut"], res["values"]), (True, True, None, ["第一块, (and all)"]))
+        status, res = self.call("POST", "/api/run", {"code": "return BIG", "whole": True})   # an addon that does not pour
+        self.assertEqual((status, res["error"]["code"]), (409, "addon_outdated"))            # (0.7.0) has no way to
+        self.assertIn("run: its answer is longer than one piece", res["error"]["message"])   # bring back the rest
+        self.assertRegex(res["error"]["message"], r"\(the WoWBridge in the game is 0\.7\.0, older than this 无限工坊 "
+                                                  r"[\d.]+: the new one takes effect once the game is restarted\)$")
         status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": "yes"})
         self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
         status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": False})
@@ -482,27 +486,31 @@ class LiveDaemon(unittest.TestCase):
             DaemonClient({"port": 1, "token": "t"}).addon_events(topic=("one", "two"))
         self.assertEqual(sent, ["one", ["one", "two"]])
 
-    def test_a_whole_call(self):
-        """POST /api/call passes whole on to the service (a bad one is 400 bad_request); `wuxian call --whole` asks
-        with it; without it nothing changes"""
+    def test_a_call_and_its_most(self):
+        """POST /api/call passes most on to the service (a bad one is 400 bad_request, before the game is asked);
+        `wuxian call --most` asks with it; `whole` is no field any more: one sent is not read"""
         svc = self.handle.service
-        status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "whole": "yes"})
-        self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
+        for bad in ("yes", True, 0, 16 * 1024 * 1024 + 1):
+            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "most": bad})
+            self.assertEqual((status, res["error"]["code"]), (400, "bad_request"), bad)
+            self.assertTrue(res["error"]["message"].startswith("most: "))
         seen = []
 
-        async def call_exposed(addon, name, args=None, timeout_ms=10000, shared=None, whole=False):
-            seen.append((addon, name, args, timeout_ms, shared, whole))
-            return dict(addon=addon, name=name, ok=True, result="长" * 3, **({"whole": True} if whole else {}))
+        async def call_exposed(addon, name, args=None, timeout_ms=10000, shared=None, most=None):
+            seen.append((addon, name, args, timeout_ms, shared, most))
+            return dict(addon=addon, name=name, ok=True, result="长" * 3)
         with mock.patch.object(svc, "call_exposed", call_exposed):
-            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "whole": True,
+            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "most": 4096,
                                                           "timeout_ms": 3000})
-            self.assertEqual((status, res["result"], res["whole"]), (200, "长长长", True))
-            code, out, err = self.run_cli("call", "Foo", "big", "--whole")
+            self.assertEqual((status, res), (200, dict(addon="Foo", name="big", ok=True, result="长长长")))
+            code, out, err = self.run_cli("call", "Foo", "big", "--most", "1048576")
             self.assertEqual((code, json.loads(out), err), (0, "长长长", ""))
-            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big"})
+            code, out, err = self.run_cli("call", "Foo", "big")
+            self.assertEqual((code, json.loads(out), err), (0, "长长长", ""))
+            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "whole": True})
             self.assertEqual((status, "whole" in res), (200, False))
-        self.assertEqual(seen, [("Foo", "big", None, 3000, False, True), ("Foo", "big", None, 10000, False, True),
-                                ("Foo", "big", None, 10000, False, False)])
+        self.assertEqual(seen, [("Foo", "big", None, 3000, False, 4096), ("Foo", "big", None, 10000, False, 1048576),
+                                ("Foo", "big", None, 10000, False, None), ("Foo", "big", None, 10000, False, None)])
 
     def test_doctor_install_settings(self):
         status, res = self.call("GET", "/api/doctor")

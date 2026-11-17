@@ -1,11 +1,12 @@
 """Pours in trouble, end to end over the mock client as tests/addon/test_pour.py drives them: a segment lost whole is
 asked for again alone; the link down in the middle (the game minimized) holds the pour back until it is up again; an
-addon that does not pour (before 0.9.13) gets the rest piece by piece, eight at a time."""
+addon that does not pour (before 0.9.13) cannot bring a long answer back, and the error says its version."""
 import re
 import unittest
 
 from tests.addon.test_pour import Pour, text_of
-from wuxianworkshop.agent import probes
+from wuxianworkshop import __version__
+from wuxianworkshop.daemon.api import ApiError
 
 
 class Trouble(Pour):
@@ -53,33 +54,28 @@ class Trouble(Pour):
 
 
 class Older(Pour):
-    features = 3                          # WoWBridge 0.9.9 - 0.9.12: no pours
+    features, version = 3, "0.9.12"       # WoWBridge 0.9.9 - 0.9.12: no pours
 
-    def test_pieces_eight_at_a_time(self):
-        """an addon that does not pour gets the rest asked for piece by piece: eight at a time, one more as one comes
-        back (not a batch of eight after a batch of eight)"""
+    def test_a_long_answer_cannot_come_back(self):
+        """an addon that does not pour brings back what fits in one piece and no more (the piece-by-piece way is gone):
+        a longer answer is an error that says the version its HELLO gave, and that the new WoWBridge takes effect once
+        the game is restarted; of a run, a call and a probe alike"""
         self.assertFalse(self.comp.pours())
-        value = text_of(60_000, seed=13)
-        flight, most, when_ten = set(), [0], {}
-        run = self.svc.run
-
-        async def counted(code, timeout_ms=10000, addon=None, chunk="=run"):
-            m = re.match(r'local KEY, I = "\w+", (\d+)\n', code)
-            i = int(m[1]) if m else 1
-            flight.add(i)
-            most[0] = max(most[0], len(flight))
-            if i == 10:
-                when_ten["flight"] = set(flight)
-            try:
-                return await run(code, timeout_ms, addon, chunk)
-            finally:
-                flight.discard(i)
-        self.svc.run = counted
-        res = self.whole(value, step=0.05)
-        self.assertEqual(res["values"], [value])
-        self.assertEqual(most[0], probes.WINDOW)
-        self.assertTrue(when_ten["flight"] & set(range(2, 10)), when_ten)   # it started while earlier ones were out
-        self.assertEqual((self.segments, self.calls("pour")), ([], []))
+        self.s.lua.execute(b'FooWB = WoWBridge.Bind("Foo") FooWB:Expose("big", function() return BIG end)')
+        self.s.lua.globals()[b"BIG"] = text_of(60_000, seed=13).encode()
+        for what, coro in (("run", self.svc.run_whole("return BIG")), ("call", self.svc.call_exposed("Foo", "big")),
+                           ("probe", self.svc.probe("return BIG", 10000))):
+            with self.assertRaises(ApiError) as cm:
+                self.drive(coro)
+            self.assertEqual((cm.exception.status, cm.exception.code), (409, "addon_outdated"), what)
+            self.assertEqual(cm.exception.message,
+                             f"{what}: its answer is longer than one piece, which the WoWBridge in the game cannot bring "
+                             f"back (the WoWBridge in the game is 0.9.12, older than this 无限工坊 {__version__}: the new "
+                             f"one takes effect once the game is restarted)")
+        self.assertEqual((self.segments, self.calls("pour"), self.calls("piece")), ([], [], []))
+        self.s.lua.globals()[b"BIG"] = b"short"
+        self.assertEqual(self.drive(self.svc.run_whole("return BIG"))["values"], ["short"])
+        self.assertEqual(self.drive(self.svc.call_exposed("Foo", "big"))["result"], "short")
 
 
 if __name__ == "__main__":

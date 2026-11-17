@@ -69,38 +69,41 @@ class Parser(unittest.TestCase):
         self.assertEqual((code, o.getvalue()), (1, ""))
         self.assertIn("more than the 16384 KB", e.getvalue())
 
-    def test_a_call_whole(self):
-        """call --whole: asked for with whole, the client waiting as long as for a whole run; from a daemon before
-        0.9.15 (no whole in its answer) the result all the same, and a word on stderr"""
-        ns, _ = self.parse("call", "Foo", "big", "--whole", "--timeout-ms", "5000")
-        self.assertEqual((ns.whole, ns.timeout_ms), (True, 5000))
-        self.assertFalse(self.parse("call", "Foo", "big")[0].whole)
+    def test_a_call_and_its_most(self):
+        """call --most: the bytes the answer may be, said to the daemon only when given (it takes 16 MB when not);
+        there is no --whole; the client waits as long as for a whole run (the rest of a long answer comes for as long
+        as it keeps coming), unless most is 256 KB or less"""
+        ns, _ = self.parse("call", "Foo", "big", "--most", "4096", "--timeout-ms", "5000")
+        self.assertEqual((ns.most, ns.timeout_ms), (4096, 5000))
+        plain, _ = self.parse("call", "Foo", "big")
+        self.assertIsNone(plain.most)
+        old, rest = self.parse("call", "Foo", "big", "--whole")
+        self.assertEqual((rest, hasattr(old, "whole")), (["--whole"], False))    # not an option of call: main refuses it
         asked = []
 
         class Client:
-            def __init__(self, res):
-                self.res = res
-
-            def call_exposed(self, addon, name, args=None, timeout_ms=10000, whole=False):
-                asked.append((addon, name, args, timeout_ms, whole))
-                return self.res
-        for res, err in ((dict(result="长" * 3, whole=True), ""), (dict(result="长" * 3), "older than 0.9.15")):
+            def call_exposed(self, addon, name, args=None, timeout_ms=10000, **kw):
+                asked.append((addon, name, args, timeout_ms, kw))
+                return dict(addon=addon, name=name, ok=True, result="长" * 3)
+        for args in (ns, plain):
             o, e = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
-                code = cli.cmd_call(Client(res), ns)
-            self.assertEqual((code, json.loads(o.getvalue())), (0, "长长长"))
-            self.assertIn(err, e.getvalue())
-            self.assertEqual(e.getvalue() == "", err == "")
-        self.assertEqual(asked, [("Foo", "big", None, 5000, True)] * 2)
+                code = cli.cmd_call(Client(), args)
+            self.assertEqual((code, json.loads(o.getvalue()), e.getvalue()), (0, "长长长", ""))
+        self.assertEqual(asked, [("Foo", "big", None, 5000, {"most": 4096}), ("Foo", "big", None, 10000, {})])
         sent = []
         post = lambda self, path, timeout=None, **body: sent.append((path, timeout, body)) or {}   # noqa: E731
         with mock.patch.object(daemon_client.DaemonClient, "post", post):
-            daemon_client.DaemonClient({"port": 1, "token": "t"}).call_exposed("Foo", "big", None, 5000, whole=True)
+            daemon_client.DaemonClient({"port": 1, "token": "t"}).call_exposed("Foo", "big", None, 5000, most=1 << 20)
             daemon_client.DaemonClient({"port": 1, "token": "t"}).call_exposed("Foo", "big", None, 5000)
+            daemon_client.DaemonClient({"port": 1, "token": "t"}).call_exposed("Foo", "big", None, 5000, True, 256 * 1024)
         self.assertEqual(sent[0], ("/api/call", 5 + daemon_client.WHOLE_WAIT,
-                                   dict(addon="Foo", name="big", args=None, timeout_ms=5000, whole=True)))
-        self.assertEqual(sent[1], ("/api/call", 5 + 30 + daemon_client.AGAIN,
+                                   dict(addon="Foo", name="big", args=None, timeout_ms=5000, most=1 << 20)))
+        self.assertEqual(sent[1], ("/api/call", 5 + daemon_client.WHOLE_WAIT,
                                    dict(addon="Foo", name="big", args=None, timeout_ms=5000)))
+        self.assertEqual(sent[2], ("/api/call", 5 + 30 + daemon_client.AGAIN,     # 256 KB at most (the MCP tool's)
+                                   dict(addon="Foo", name="big", args=None, timeout_ms=5000, shared=True,
+                                        most=256 * 1024)))
 
     def test_the_log_tail_pages_to_the_end_with_the_kinds(self):
         """`wuxian logs` without --since: the last 50 of the kinds asked for, however long the journal is"""

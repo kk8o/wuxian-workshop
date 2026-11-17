@@ -1,13 +1,13 @@
 """trace and inspect in the Service (daemon/service.py) over a stand-in for `run`: the two runs of a trace with the wait
 between, one trace at a time, the restricted events refused before anything is sent, inspect's picture of the frame
-it found, a long answer brought back in pieces, and the errors the game's answer can carry."""
+it found, a long answer brought back (its first piece, the rest poured), and the errors the game's answer can
+carry."""
 import asyncio
 import json
 import re
 import unittest
 from types import SimpleNamespace
 
-from wuxianworkshop.agent import probes
 from wuxianworkshop.daemon.api import ApiError, parse_run
 from wuxianworkshop.daemon.journal import Journal
 from wuxianworkshop.daemon.service import Service
@@ -131,37 +131,35 @@ class Probes(unittest.IsolatedAsyncioTestCase):
             await self.svc.inspect("Nope")
         self.assertEqual((cm.exception.status, cm.exception.code), (502, "lua_error"))
 
-    async def test_a_long_answer_comes_in_pieces(self):
+    async def test_a_long_answer_comes_poured(self):
         """seen in the game: inspect WoWBridgeConsole, depth 2, answered 16821 bytes, and the RUN result stops at 4000
-        (the JSON broke at char 3940). Now the first run brings the first piece and how many there are, the others are
-        asked for probes.WINDOW at a time (an addon that does not pour), each its own RUN result; their ", " and " ("
-        are JSON text (api.parse_run)"""
+        (the JSON broke at char 3940). Now the run brings the first piece and how many pieces the answer makes; the
+        rest is poured: one data call, and its segments joined as they are (the first piece's ", " and " (" are JSON
+        text: api.parse_run)"""
         frames = [dict(name=f"Row{i}", type="FontString", text=f'第 {i} 行 → a, b (OnUnload ok), "x"\n') for i in range(120)]
         text = json.dumps(dict(screen=[1287, 965], frames=frames), ensure_ascii=False, separators=(",", ":"))
-        pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
-        keys, flight = [], dict(now=0, most=0)
+        first, rest = text[:1000], text[1000:].encode("utf-8")
+        segments = [rest[i:i + 3001] for i in range(0, len(rest), 3001)]      # cut anywhere, inside a character too
+        self.svc.worker.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: True)
+        asked = []
 
         async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             self.sent.append(code)
-            m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
-            if m:
-                keys.append(m[1])
-            else:
-                keys.append(re.search(r'local KEY, PIECE, MOST, WHOLE = "(\w+)"', code)[1])
-            i = int(m[2]) if m else 1
-            flight["now"] += 1
-            flight["most"] = max(flight["most"], flight["now"])
-            await asyncio.sleep(0.01)                           # the link brings them back one after another
-            flight["now"] -= 1
-            return Service.run_result(parse_run(f"{70 + i} ok {chunk} ({len(code)} B, 0.1 ms): "
-                                                f"{i}/{len(pieces)}\n{pieces[i - 1]}"))
-        self.svc.run = run
+            return Service.run_result(parse_run(f"71 ok {chunk} ({len(code)} B, 0.1 ms): "
+                                                f"1/{len(text) // 1000 + 1}\n{first}"))
+
+        async def data(verb, payload, timeout_ms, what):
+            asked.append((verb, payload))
+            for i, seg in enumerate(segments, 1):                 # the game: every segment, then the pour's result
+                self.svc.on_pour(5, payload["k"], i, len(segments), seg)
+            return 7, dict(ok=True, values=[f"{len(segments)} {len(rest)}"])
+        self.svc.run, self.svc.data = run, data
         res = await self.svc.inspect("WoWBridgeConsole", depth=2)
         self.assertEqual(res["frames"], frames)
-        self.assertEqual(len(self.sent), len(pieces))
-        self.assertEqual(len(set(keys)), 1)                       # the same answer, kept under one key
+        self.assertEqual(len(self.sent), 1)                       # the probe ran once
         self.assertIn("local ANSWER = (function(...) ", self.sent[0])
-        self.assertEqual(flight["most"], probes.WINDOW)         # asked for together: they share mailbox packets
+        key = re.search(r'local KEY, PIECE, MOST, WHOLE = "(\w+)"', self.sent[0])[1]
+        self.assertEqual(asked, [("pour", {"k": key, "g": True})])    # the answer the probe kept under its key
 
     async def test_where_the_answer_breaks(self):
         """a broken answer is said with its place: what is wrong, at which character of how many, the text around it"""
@@ -178,90 +176,21 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Expecting value at char 210 of 427: …" + "1" * 75 + ',"h":<<HERE>>-nan(ind),"s":"' + "x" * 65 + "…",
                       cm.exception.message)
 
-    async def test_a_piece_the_game_no_longer_keeps(self):
+    async def test_a_rest_the_game_no_longer_keeps(self):
+        self.svc.worker.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: True)
+
         async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
-            if code.startswith("local KEY, I = "):              # a /reload between the pieces
-                return dict(ok=False, error="the rest of this answer is no longer kept in the game (the UI reloaded?)",
-                            stack="")
             return dict(ok=True, values=['1/3\n{"screen":[1287,965],"frames":['])
-        self.svc.run = run
+
+        async def data(verb, payload, timeout_ms, what):        # a /reload between the first piece and the pour
+            return 7, dict(ok=False, error="the rest of this answer is no longer kept in the game (the UI reloaded?)",
+                           stack="")
+        self.svc.run, self.svc.data = run, data
         with self.assertRaises(ApiError) as cm:
             await self.svc.inspect("WoWBridgeConsole", depth=2)
         self.assertEqual((cm.exception.status, cm.exception.code), (502, "lua_error"))
         self.assertIn("no longer kept", cm.exception.message)
-
-
-class PiecesAgain(unittest.IsolatedAsyncioTestCase):
-    """a piece of a long answer the link lost is asked for again (Service.piece_again): after a timeout, or once the
-    link is back when it was down (a minimized window); never after another error, after a reload, or past PIECE_TRIES"""
-
-    def setUp(self):
-        self.svc = Service(lambda on_debug, log: Worker(), journal=Journal())
-        self.svc.worker.comp = self.comp = SimpleNamespace(link_up=True, current=5)
-        text = json.dumps(dict(screen=[1, 2], frames=[dict(name=f"Frame{i}") for i in range(300)]))
-        self.pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
-        self.asked, self.trouble = [], {}
-
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
-            m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
-            i = int(m[2]) if m else 1
-            self.asked.append(i)
-            what = self.trouble.get(i)
-            if what:
-                return what(i)
-            return dict(ok=True, values=[f"{i}/{len(self.pieces)}\n{self.pieces[i - 1]}"])
-        self.svc.run = run
-
-    def once(self, i, error, then=None):
-        def fail(_):
-            del self.trouble[i]
-            if then:
-                then()
-            raise error
-        self.trouble[i] = fail
-
-    def notes(self):
-        return [e["text"] for e in self.svc.journal.since(0, 100, None)[0] if "asked for again" in e["text"]]
-
-    async def test_a_timeout_and_the_link_down(self):
-        self.assertGreaterEqual(len(self.pieces), 5)
-        self.once(3, ApiError(504, "timeout", "no result for job 7 within 10000 ms"))
-
-        def minimized():
-            self.comp.link_up = False                       # back a moment later
-            asyncio.get_running_loop().call_later(0.4, setattr, self.comp, "link_up", True)
-        self.once(4, ApiError(409, "link_down", "run: no frames come from the game"), minimized)
-        t0 = asyncio.get_running_loop().time()
-        res = await self.svc.inspect("Somewhere", depth=2)
-        self.assertEqual(len(res["frames"]), 300)
-        self.assertGreaterEqual(asyncio.get_running_loop().time() - t0, 0.4)    # it waited for the link
-        self.assertEqual(sorted(self.asked), sorted([1, 2, 3, 3, 4, 4] + list(range(5, len(self.pieces) + 1))))
-        self.assertEqual(self.notes(), ["piece 3 of a long answer asked for again (timeout)",
-                                        "piece 4 of a long answer asked for again (link_down)"])
-
-    async def test_what_is_not_asked_for_again(self):
-        def gone(i):                                        # a reload took the answer: a Lua error, said at once
-            return dict(ok=False, error="the rest of this answer is no longer kept in the game (the UI reloaded?)",
-                        stack="")
-        self.trouble[2] = gone
-        with self.assertRaises(ApiError) as cm:
-            await self.svc.inspect("Somewhere", depth=2)
-        self.assertEqual(cm.exception.code, "lua_error")
-        self.assertEqual(self.asked.count(2), 1)
-        self.asked.clear()
-        self.trouble[2] = lambda i: (_ for _ in ()).throw(ApiError(504, "timeout", "no result"))   # never comes
-        with self.assertRaises(ApiError) as cm:
-            await self.svc.inspect("Somewhere", depth=2)
-        self.assertEqual((cm.exception.code, self.asked.count(2)), ("timeout", 3))      # PIECE_TRIES
-        self.asked.clear()
-
-        def reloaded():
-            self.comp.link_up, self.comp.current = False, 6  # another UI session: the answer went with the old one
-        self.once(2, ApiError(409, "link_down", "run: no frames come from the game"), reloaded)
-        with self.assertRaises(ApiError) as cm:
-            await self.svc.inspect("Somewhere", depth=2)
-        self.assertEqual((cm.exception.code, self.asked.count(2)), ("link_down", 1))
-        self.assertEqual(self.notes(), ["piece 2 of a long answer asked for again (timeout)"] * 2)
+        self.assertEqual(self.svc.pours, {})
 
 
 if __name__ == "__main__":
