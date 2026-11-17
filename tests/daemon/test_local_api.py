@@ -499,8 +499,13 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         title = json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8"))["title"]
         fx = {"id": "fx", "title": title, "version": "0.1.0", "author": "Ann", "notes": "Quick answers",
               "where": "local", "on": True, "adds": ["guild", "officers"]}
+        bare = lambda: [{k: v for k, v in r.items() if k != "options"} for r in self.kit.roster or ()]   # noqa: E731
+        self.assertTrue(until(lambda: bare() == [fx]), self.kit.roster)  # (described by a test before: with options)
+        self.assertEqual(self.kit.asked("kit.local.set")[-1], {"extensions": self.kit.roster})
+        self.ok("POST", "/api/local/load", {"id": "fx"})                # it described its options: told with them
+        fx["options"] = [{"name": "volume", "kind": "number", "title": "音量", "value": 50, "default": 50, "min": 0,
+                          "max": 100}]
         self.assertTrue(until(lambda: self.kit.roster == [fx]), self.kit.roster)
-        self.assertEqual(self.kit.asked("kit.local.set")[-1], {"extensions": [fx]})
         told = len(self.kit.asked("kit.local.set"))
         self.ok("POST", "/api/local/load", {"id": "fx"})                # nothing of the list changed: not told again
         time.sleep(0.3)
@@ -544,11 +549,17 @@ class LocalApi(LocalDaemon, unittest.TestCase):
             self.add(apps=[{"app": "companion", "title": "语音搭子", "prompt": "companion"}])
             self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
             self.assertEqual(len(self.kit.asked("kit.local.set")), 1)
+            self.ok("POST", "/api/local/load", {"id": "fx"})            # it described its options: another list
+            self.assertTrue(until(lambda: "options" in self.kit.asked("kit.local.set")[-1]["extensions"][0]),
+                            self.kit.calls)
+            told = len(self.kit.asked("kit.local.set"))
+            self.assertLessEqual(told, 2)
             self.ok("POST", "/api/local/load", {"id": "fx"})
             time.sleep(0.3)
-            self.assertEqual(len(self.kit.asked("kit.local.set")), 1)
+            self.assertEqual(len(self.kit.asked("kit.local.set")), told)
             self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
-            self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == 2), self.kit.calls)
+            self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == told + 1), self.kit.calls)
+            time.sleep(0.3)                                             # a tell still queued: the old kit's too
         texts = [e["text"] for e in list(self.svc.journal.entries) if e["id"] >= first]
         self.assertEqual([t for t in texts if "did not take their list" in t], [])
         self.assertIsNone(self.kit.roster)

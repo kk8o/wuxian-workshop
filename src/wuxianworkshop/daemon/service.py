@@ -1710,7 +1710,8 @@ class Service:
         are reconciled, the reactions' temporary app opened again), app.reactions (what that app heard: each item to
         the reactions), kit.app (an app started: the reactions its manifest declares are set, it holds the link when
         it wants it live, its activity goes to the reactions; stopped: the reactions it owns go, it lets go of the
-        link), kit.option (an app's activity changed: to the reactions)"""
+        link), kit.option (an app's activity changed: to the reactions), kit.local.option (the player changed a local
+        extension's option in the /wk window: local_option)"""
         if topic == "kit.ready":
             self.reactions_open = False
             self.soon(self.reconcile_local_apps(ready=True))
@@ -1728,6 +1729,8 @@ class Service:
         elif topic == "kit.option" and isinstance(data, dict) and isinstance(data.get("app"), str) \
                 and data.get("name") == "activity":
             self.soon(self.app_paced(data["app"], data.get("value")))
+        elif topic == "kit.local.option" and isinstance(data, dict):
+            self.soon(self.local_option(data))
 
     async def declare(self, eid, decl):
         """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away); ABSENT when the
@@ -1759,29 +1762,60 @@ class Service:
             return None
         return json.dumps(result["decl"], sort_keys=True, ensure_ascii=False)
 
-    async def tell_roster(self, ready=False):
+    async def tell_roster(self, ready=False, again=False):
         """WuxianKit told the extensions added to this computer that have a local part (kit.local.set, the whole list:
-        its /wk window lists them beside the game's own, as the App's 扩展 page does). It keeps the list until its UI
+        its /wk window lists them beside the game's own, as the App's 扩展 page does, each with its options and their
+        values: local/adds.py roster; the player changes the boolean, number and choice ones there, kit.local.option,
+        local_option). It keeps the list until its UI
         reloads, so: once in each UI session (ready: its kit.ready came, it has none), and again when the list is
-        another. A WuxianKit without kit.local.set (or one that refuses the list) is not asked again until then; the
-        game away: at the next round"""
-        if ready:
-            self.roster_told = None
-        session = self.ui_session()
-        roster = await asyncio.to_thread(self.local.roster)
-        told = (session, json.dumps(roster, sort_keys=True, ensure_ascii=False))
-        if self.roster_told == told:
-            return
+        another (again: now, whether or not). A WuxianKit without kit.local.set (or one that refuses the list) is not
+        asked again until then; the game away: at the next round. One at a time (roster_lock): a reconcile, a change
+        of the extensions and the player's option may come together"""
+        lock = self.__dict__.get("roster_lock")
+        if lock is None:
+            lock = self.roster_lock = asyncio.Lock()
+        async with lock:
+            if ready or again:
+                self.roster_told = None
+            session = self.ui_session()
+            roster = await asyncio.to_thread(self.local.roster)
+            told = (session, json.dumps(roster, sort_keys=True, ensure_ascii=False))
+            if self.roster_told == told:
+                return
+            try:
+                await self.call_exposed(KIT, "kit.local.set", {"extensions": roster}, 10000)
+            except ApiError as e:
+                if e.code != "call_failed":
+                    return                    # the game went away: at the next round
+                text = str(e.message or "")
+                if "kit.local.set" not in text and "has no WoWBridge handle" not in text:
+                    self.journal.add("INFO", "local extensions: WuxianKit did not take their list: "
+                                             + text.partition("\n")[0][:300])
+            self.roster_told = told
+
+    async def local_option(self, data):
+        """WuxianKit's kit.local.option {extension, name, value}: the player changed an option of a local extension in
+        the game's /wk window (only WuxianKit's core sends it; kit_event hears WuxianKit's events only). A boolean,
+        number or choice is checked and set as /api/local/set sets it (the extension, when it runs, is told all of
+        them); a text is changed in the App only, so it is refused. Either way WuxianKit is told the list again
+        (tell_roster, whether or not it changed): it shows the new value until then, and the value here after"""
+        eid, name = data.get("extension"), data.get("name")
         try:
-            await self.call_exposed(KIT, "kit.local.set", {"extensions": roster}, 10000)
+            await asyncio.to_thread(self.local.option_from_game, eid, name, data.get("value"))
         except ApiError as e:
-            if e.code != "call_failed":
-                return                        # the game went away: at the next round
-            text = str(e.message or "")
-            if "kit.local.set" not in text and "has no WoWBridge handle" not in text:
-                self.journal.add("INFO", "local extensions: WuxianKit did not take their list: "
-                                         + text.partition("\n")[0][:300])
-        self.roster_told = told
+            first = str(e.message or "").partition("\n")[0][:300]
+            self.journal.add("INFO", f"local extension {eid}: the option {name} from /wk is not taken ({e.code}): "
+                                     f"{first}")
+        else:
+            self.journal.add("INFO", f"local extension {eid}: the option {name} set from /wk")
+        await self.tell_roster(again=True)
+
+    def roster_again(self):
+        """(any thread) the local extensions changed (their options in the App, a description): WuxianKit's /wk window
+        told the list again when it is another, while the game is online now (it is told at the next kit.ready or
+        link-up anyway; nothing opens the link for it)"""
+        if self.ui_session() is not None and self.link_is_up():
+            self.soon(self.tell_roster())
 
     async def reconcile_local_apps(self, ready=False):
         """WuxianKit's apps of the local extensions made what the enabled extensions' manifests say, while the game is
@@ -1927,6 +1961,7 @@ class Service:
         of their sources are the game's"""
         self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": "local.changed", "d": {"revision": revision}}))
         self.soon(self.reactor.refresh())
+        self.roster_again()
 
     def extension_calls(self, eid, cap, args, chain=None):
         """(an extension's reader thread) its call {cap, args}: a Future of the result (ApiError as local_call's).
