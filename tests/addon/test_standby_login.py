@@ -78,6 +78,20 @@ class GameFirst(unittest.TestCase):
         self.assertGreaterEqual(comp.slot, 5)                        # its k= put the app where the addon reads
         self.assertTrue(self.ok(s, comp))
 
+    def test_after_a_game_without_the_app_the_first_call_goes_through(self):
+        """the last game ran without an app (the addon read "?" and went on to slot 101); this one the app saw start: it
+        starts the mailbox over, and the addon, seeing a process that started after that "?", reads from slot 1 too"""
+        s = Session(self, db=b'{ appNew = true, link = "standby", mail = { proc = "?", next = 101, unknownAt = 900 } }')
+        self.addCleanup(s.close)
+        comp = self.companion(s)
+        comp.new_process("P1-950", age=2.0)
+        s.comp = comp
+        s.login()
+        s.run(6)
+        self.assertEqual(s.lua.globals()[b"WoWBridgeDB"][b"mail"][b"next"], 2)   # it read the app's "here"
+        self.assertEqual(self.state(s), "standby")
+        self.assertTrue(self.ok(s, comp))
+
     def test_no_app_at_all_shows_the_hello_a_few_seconds(self):
         s = self.logged_in_alone()
         s.run(13)                                                     # 21 s after the login

@@ -3,7 +3,8 @@
 -- reference). Slots are read in order. On 1.60.1.70235 a font is cached by path until the client exits (/reload
 -- included) and a failed load is not, so: an empty slot can be polled, and a slot is read once per game process.
 -- mail\proc.ttf holds a stamp of the game process; when it differs from the saved one, reading starts at slot 1 again
--- (not when the saved one is "?", a stamp that could not be read: see M.Tick).
+-- (not when the saved one is "?", a stamp that could not be read, unless the stamp's process started after that: see
+-- M.Tick).
 -- A slot whose packet keeps failing its checks is skipped after BAD_LIMIT tries and remembered (db.mail.skipped, the
 -- last SKIPPED_KEPT); the link names it in its control frames so that the companion sends the slot's records again.
 local _, ns = ...
@@ -114,13 +115,25 @@ function M.Tick()
 		if stamp or now - st.t0 > 5 then
 			st.proc = stamp or "?"
 			-- a stamp unlike the saved one: the game was restarted, every slot is unread again. One read after a stamp that
-			-- could not be read ("?": no companion had written proc.ttf before the login) is taken as it is: most likely the
-			-- same process, whose slots read so far sit in the client's font cache, and from slot 1 they would all come back
-			if stamp and stamp ~= st.db.mail.proc then
-				if st.db.mail.proc ~= "?" then st.db.mail.next, st.db.mail.skipped = 1, nil end
-				st.db.mail.proc = stamp
-			elseif not stamp then
-				st.db.mail.proc = "?"
+			-- could not be read ("?": no companion had written proc.ttf before the login) is taken as it is when its process
+			-- ("P<pid>-<start>") started before that "?" was saved (db.mail.unknownAt): the same process, whose slots read so
+			-- far sit in the client's font cache, and from slot 1 they would all come back. One that started later is a new
+			-- game: from slot 1 (an app that saw it start wrote from there; the slots read before are another process's)
+			local saved = st.db.mail
+			if stamp and stamp ~= "?" and stamp ~= saved.proc then
+				local started = tonumber(stamp:match("^P%d+%-(%d+)$"))
+				if saved.proc ~= "?" or (started and saved.unknownAt and started > saved.unknownAt) then
+					saved.next, saved.skipped = 1, nil
+				end
+				saved.proc, saved.unknownAt = stamp, nil
+			elseif not stamp or stamp == "?" then
+				if saved.proc ~= "?" then
+					-- ("?": proc.ttf as an app leaves it when the game exits; the slots it emptied start over at 1)
+					if stamp == "?" then saved.next, saved.skipped = 1, nil end
+					saved.proc, saved.unknownAt = "?", time()
+				elseif not saved.unknownAt then
+					saved.unknownAt = time()
+				end
 			end
 			st.phase = "poll"
 			Want(st.db.mail.next)

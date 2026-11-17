@@ -231,6 +231,37 @@ class Jobs(unittest.TestCase):
         mail = s.lua.globals()[b"WoWBridgeDB"][b"mail"]
         self.assertEqual((mail[b"proc"], mail[b"next"]), (b"P1-100", 7))
 
+    def mail_after_login(self, db, stamp):
+        s = Session(self, db=db)
+        self.addCleanup(s.close)
+        s.comp = None
+        mailbox.write_proc(s.addons, stamp)
+        s.login()
+        s.run(8)
+        mail = s.lua.globals()[b"WoWBridgeDB"][b"mail"]
+        return mail[b"proc"], mail[b"next"], mail[b"unknownAt"]
+
+    def test_a_stamp_of_a_process_started_after_the_unknown_one_starts_over(self):
+        """the last game ran without an app ("?", saved at 900); this one an app saw start (its stamp, started at 950):
+        a new process, so slot 1, where that app writes"""
+        got = self.mail_after_login(b'{ mail = { proc = "?", next = 101, unknownAt = 900 } }', "P7-950")
+        self.assertEqual(got, (b"P7-950", 1, None))
+
+    def test_a_stamp_of_a_process_started_before_the_unknown_one_goes_on(self):
+        """an app started in this process wrote its stamp after the login that read "?": a relog, the slots cached"""
+        got = self.mail_after_login(b'{ mail = { proc = "?", next = 101, unknownAt = 900 } }', "P7-850")
+        self.assertEqual(got, (b"P7-850", 101, None))
+
+    def test_the_mark_an_app_leaves_when_the_game_exits_starts_over_and_notes_when(self):
+        proc, nxt, at = self.mail_after_login(b'{ mail = { proc = "P1-100", next = 22 } }', "?")
+        self.assertEqual((proc, nxt), (b"?", 1))
+        self.assertGreater(at, 900)
+
+    def test_an_unknown_stamp_saved_by_an_older_addon_gets_its_time(self):
+        proc, nxt, at = self.mail_after_login(b'{ mail = { proc = "?", next = 7 } }', "?")
+        self.assertEqual((proc, nxt), (b"?", 7))
+        self.assertIsNotNone(at)
+
     def test_a_reload_asked_long_ago_asks_nothing(self):
         s = self.start()
         g = s.lua.globals()
