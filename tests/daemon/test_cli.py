@@ -460,7 +460,7 @@ class ExtLines(unittest.TestCase):
             "    game addon VoiceGame 1.2.0: the game has another version: `wuxian ext install voice` updates it (so does "
             "`ext load`)",
             "    game addon VoiceGame 1.2.0: the game has an addon of this name that is not this extension's: it is left "
-            "alone",
+            "alone (`wuxian ext install voice --replace` puts this one in its place)",
             "    game addon VoiceGame 1.2.0: its folder in the extension is missing or has no .toc",
             "    game addon VoiceGame 1.2.0: the game's folder is not known",
             "    game addon Odd: later"])                            # a state this program does not know: as it is
@@ -710,11 +710,12 @@ class ExtLines(unittest.TestCase):
             def extension_load(self, eid):
                 return dict({"check": {"ok": True, "capabilities": ["voice.say"]}, "row": row}, **self.more)
 
-            def extension_install(self, eid):
+            def extension_install(self, eid, replace=False):
+                self.replace.append(replace)
                 return dict(self.more, id=eid)
 
         client = Client()
-        client.more = game
+        client.more, client.replace = game, []
         said = ["game addon VoiceGame 1.2.0: installed (it was missing)", "game addon VoiceMore: current",
                 "restart the game: it finds new addons and new files only when it starts",
                 "VoiceGame is new: the game lists it after a restart"]
@@ -728,6 +729,13 @@ class ExtLines(unittest.TestCase):
         client.more = {}                                             # a daemon that says nothing of the game
         self.assertEqual(len(self.run_ext(client, "load", "voice")[1]), 2)
         self.assertEqual(self.run_ext(client, "install", "voice")[1], ["voice: no game addons to install"])
+        self.assertEqual(client.replace, [False, False, False])
+        client.more = dict(addons=[dict(folder="VoiceGame", state="installed", was="foreign", version="1.2.0",
+                                        kept="0007")], restart=False, hint=None)
+        self.assertEqual(self.run_ext(client, "install", "voice", "--replace")[:2],       # 替换: what was there is kept
+                         (0, ["game addon VoiceGame 1.2.0: installed (in the place of the folder that was there, kept "
+                              "in the history: 0007)"]))
+        self.assertEqual(client.replace[-1], True)
 
     def test_pack(self):
         asked = []

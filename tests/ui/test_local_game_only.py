@@ -488,7 +488,8 @@ class Page(unittest.TestCase):
 
     def test_the_players_line(self):
         d = self.detail
-        line = '<div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)" x-text="lxPlayer(lxCur)"></div>'
+        line = ('<div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)">\n'
+                '              <span class="grow" x-text="lxPlayer(lxCur)"></span>')    # (and 替换: test_local_replace)
         self.assertEqual(d.count(line), 1)
         self.assertLess(d.index('x-text="lx.note.text"') if 'x-text="lx.note.text"' in d else 0, d.index(line))
 

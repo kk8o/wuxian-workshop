@@ -3,6 +3,7 @@ it shares with its addon, a row's state "game", its game half as the game lists 
 who approves it, what loading, checking, stopping and removing do without a process. The game is a folder of the
 test's and what the test says the game lists (game_side); no process is ever started."""
 import json
+import shutil
 from pathlib import Path
 
 from wuxianworkshop.local import adds as A
@@ -148,7 +149,8 @@ class Rows(GameCase):
         self.assertIn(f"启用「{ADDON}」", self.host.get("loot_peek")["player"]["text"])
         self.lists(None)
         self.assertIn(f"新装的插件「{ADDON}」", self.host.get("loot_peek")["player"]["text"])
-        self.assertEqual(set(H.PLAYER_ACTIONS), {"approve", "start_game", "restart_game", "enable_addon", "turn_on"})
+        self.assertEqual(set(H.PLAYER_ACTIONS), {"approve", "replace_addon", "start_game", "restart_game", "enable_addon",
+                                                 "turn_on"})
 
     def test_the_worst_of_its_ids_and_none(self):
         self.game_only("two", addons=("TwoA", "TwoB"), gid="")                       # both addons say the id "two"
@@ -257,6 +259,74 @@ class Approval(GameCase):
         self.assertEqual(self.stands("loot_peek"), ["missing"])
         self.assertTrue(self.host.check("loot_peek")["ok"])
         self.assertEqual(self.host.install("loot_peek")["addons"][0]["state"], "installed")
+
+    def by_hand(self, gid="loot_peek", version="0.0.9"):
+        """the game's AddOns holds LootPeek without the extension's mark: put there by hand (from the web site)"""
+        shutil.rmtree(self.addons / ADDON, ignore_errors=True)
+        put(self.addons / ADDON, f"{ADDON}.toc", game_toc(ADDON, gid, version=version))
+        put(self.addons / ADDON, "old.lua", "-- by hand\n")
+        self.host.forget_addons()
+
+    def packaged(self):
+        zip_path = Path(K.pack(write(self.root / "work" / "loot_peek"), self.root / "out")["file"])
+        return self.host.add(str(zip_path))
+
+    def test_the_approval_replaces_the_same_addon_installed_by_hand(self):
+        self.by_hand()
+        self.packaged()
+        (g,) = self.host.summary("loot_peek")["game"]                                # what the 批准 card says
+        self.assertEqual((g["cannot"], g["same"], g["there"], g["newer"]), ("foreign", True, "0.0.9", False))
+        self.assertEqual(self.host.get("loot_peek")["player"]["action"], "approve")
+        row = self.host.approve("loot_peek")                                         # the yes is the yes to replace it
+        installed = row["installed"]
+        self.assertTrue(installed["ok"], installed)
+        (a,) = installed["addons"]
+        self.assertEqual((a["state"], a["was"], a["kept"] is not None), ("installed", "foreign", True))
+        self.assertIn("kept in the history", installed["hint"])
+        self.assertEqual(self.stands("loot_peek"), ["current"])
+        self.assertFalse((self.addons / ADDON / "old.lua").exists())
+        self.assertNotEqual(self.host.get("loot_peek")["player"]["action"], "replace_addon")
+
+    def test_the_approval_keeps_a_newer_one_and_another_addon(self):
+        for gid, version, same, newer in (("loot_peek", "0.2.0", True, True), ("other", "0.0.1", False, False)):
+            with self.subTest(gid=gid):
+                self.by_hand(gid, version)
+                self.packaged()
+                (g,) = self.host.summary("loot_peek")["game"]
+                self.assertEqual((g["same"], g["newer"]), (same, newer))
+                row = self.host.approve("loot_peek")
+                installed = row["installed"]
+                self.assertEqual((installed["ok"], installed["code"], installed["same"], installed["there"],
+                                  installed["newer"]), (False, "addon_exists", same, version, newer))
+                self.assertTrue((self.addons / ADDON / "old.lua").is_file())             # left as it was
+                player = self.host.get("loot_peek")["player"]
+                if newer:                                                                # nothing to replace
+                    self.assertNotEqual((player or {}).get("action"), "replace_addon")
+                else:                                                                    # the player may say 替换
+                    self.assertEqual(player, dict(action="replace_addon", text=(
+                        "游戏里已有同名插件「LootPeek」，不是「掉落一瞥」带的，请在无限工坊 App 的「扩展」页确认替换")))
+                    self.err(409, "addon_exists", self.host.install, "loot_peek", "same")
+                    (a,) = self.host.install("loot_peek", True)["addons"]
+                    self.assertEqual((a["state"], a["was"]), ("installed", "foreign"))
+                    self.assertNotEqual((self.host.get("loot_peek")["player"] or {}).get("action"), "replace_addon")
+                self.host.remove("loot_peek")
+
+    def test_one_approved_before_says_replace_addon(self):
+        self.game_only()                                                             # approved (made here)
+        self.by_hand()
+        row = self.host.get("loot_peek")
+        self.assertEqual(row["addons"], [dict(folder=ADDON, version="0.1.0", state="foreign", same=True,
+                                              there="0.0.9")])
+        self.assertEqual(row["player"], dict(action="replace_addon", text=(
+            "游戏里已有手动安装的插件「LootPeek」，请在无限工坊 App 的「扩展」页点「替换」，换成「掉落一瞥」带的版本")))
+        error = self.err(409, "addon_exists", self.host.install, "loot_peek")
+        self.assertEqual({k: error.extra[k] for k in ("folder", "same", "there", "newer")},
+                         dict(folder=ADDON, same=True, there="0.0.9", newer=False))
+        self.assertEqual(self.host.install("loot_peek", "same")["addons"][0]["was"], "foreign")
+        self.assertEqual(self.stands("loot_peek"), ["current"])
+        self.assertNotEqual((self.host.get("loot_peek")["player"] or {}).get("action"), "replace_addon")
+        self.by_hand(version="0.3.0")                                                # newer: kept, nothing to say
+        self.assertNotEqual((self.host.get("loot_peek")["player"] or {}).get("action"), "replace_addon")
 
     def test_the_setting_too(self):
         row, _ = self.game_only()                                                    # auto_now True

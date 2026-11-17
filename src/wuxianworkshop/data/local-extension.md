@@ -394,8 +394,14 @@ with a Read capability and an event, and a `main.py` that uses both.
   `extension_install {"id": "<id>"}` (`wuxian ext install <id>`) at any time (`needs_approval`, `no_addons`,
   `no_game_folder`). The `.toc`'s `## Interface` is set to the client's number on the way.
 - The mark: an installed folder holds `.wuxian-extension.json`, which says whose it is. A folder of that name in
-  AddOns without the mark, or with another extension's, is someone else's addon: the workshop never replaces or
-  deletes it (`addon_exists`; `foreign` in the row). Give yours another name.
+  AddOns without the mark, or with another extension's, is someone else's addon: the workshop never deletes it, and
+  replaces it only when the player says so (`addon_exists`; `foreign` in the row, with `same`, `there` and, when the
+  one there is newer, `newer`). `same`: it has no mark and its `.toc` says it is your addon (the same
+  `## X-WuxianKit-Extension`, the same `## X-Website`, or the same `## Title` and `## Author`), most often one the
+  player installed by hand from a web site. The player's approval replaces that one unless it is newer; any other
+  only the player's 替换 replaces (the row's `player` is `replace_addon`; `wuxian ext install <id> --replace`), the
+  one there kept in the history first (`wuxian history`). A link or a file of that name is never replaced. Give
+  yours another name, or the `.toc` headers that say it is the same addon.
 - A name of the catalog: the addon folders the 扩展 page installs (WuxianKit's own and the catalog's extensions)
   are the catalog's. An extension's addon of such a name is never installed (`bad_addon`; `listed` in the row,
   `cannot` in the summary, an error of `extension_check`). Give yours another name.

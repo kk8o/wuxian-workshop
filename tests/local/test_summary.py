@@ -106,6 +106,22 @@ class OfFolder(Case):
                                    listed={"WuxianVoice"})
         self.assertEqual(with_package["game"][0]["cannot"], "listed")
 
+    def test_the_same_addon_installed_by_hand(self):
+        """a foreign folder: same, there and newer go with cannot (the 批准 card words its line with them)"""
+        m = self.both()
+        theirs = self.addons / "WuxianVoice"
+
+        def game():
+            g = S.of_folder(m, self.addons)["game"][0]
+            return {k: g.get(k) for k in ("cannot", "same", "there", "newer")}
+        put(theirs, "WuxianVoice.toc", "## Title: WuxianVoice\n## Author: 某人\n## Version: 0.9\n".encode("utf-8"))
+        self.assertEqual(game(), dict(cannot="foreign", same=True, there="0.9", newer=False))
+        put(theirs, "WuxianVoice.toc", "## Title: WuxianVoice\n## Author: 某人\n## Version: 9.0\n".encode("utf-8"))
+        self.assertEqual(game(), dict(cannot="foreign", same=True, there="9.0", newer=True))
+        put(theirs, "WuxianVoice.toc", b"## Title: WuxianVoice\n## Author: other\n")
+        self.assertEqual(game(), dict(cannot="foreign", same=False, there=None, newer=False))
+        self.assertNotIn("same", S.of_folder(m)["game"][0])                        # nothing there: no more fields
+
     def test_it_counts_what_a_package_holds(self):
         m = self.both()
         packed = K.pack(self.folder, self.root / "out")
@@ -286,6 +302,13 @@ class AsText(unittest.TestCase):
                                     "  game addon: C, not in the game's AddOns", "    " + S.CANNOT_TEXT["broken"]])
         self.assertEqual(len([line for line in out if "CANNOT BE INSTALLED" in line]), 3)
         self.assertEqual(len(out), 10)
+        s["game"] = [dict(folder="B", needs=[], path="C:/g/B", cannot="foreign", same=True, there="1.1", newer=False),
+                     dict(folder="F", needs=[], path="C:/g/F", cannot="foreign", same=True, there="2.0", newer=True)]
+        out = S.lines(s)
+        self.assertIn("    the game's AddOns holds the same addon 1.1, installed by hand: approving puts this version "
+                      "in its place, the one there kept in the history", out)
+        self.assertIn("    NOT INSTALLED: the game's AddOns holds the same addon in a newer version 2.0, installed by "
+                      "hand: it is kept", out)
 
     def test_changed(self):
         self.assertEqual(S.changed([dict(field="version", old="0.1.0", new="0.2.0"),

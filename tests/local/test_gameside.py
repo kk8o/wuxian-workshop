@@ -3,6 +3,7 @@ folder in AddOns without this extension's mark is never written over or removed.
 the history (WUXIAN_HOME) all lie in a temporary folder."""
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -230,7 +231,7 @@ class State(Case):
                          [dict(folder="Two", version="2.0", state="current"),
                           dict(folder="Nope", version=None, state="broken"),
                           dict(folder="One", version="1.2.0", state="missing"),
-                          dict(folder="Three", version="1.2.0", state="foreign")])
+                          dict(folder="Three", version="1.2.0", state="foreign", same=False, there="9.9", newer=True)])
         self.assertEqual(G.states(self.folder, [], self.addons, "voice"), [])
         self.assertEqual([s["state"] for s in G.states(self.folder, ["One", "Two"], None, "voice")],
                          ["unknown", "unknown"])
@@ -453,6 +454,167 @@ class Install(Case):
         self.assertEqual([(r["state"], r["was"]) for r in got["addons"]],
                          [("current", "current"), ("installed", "differs")])
         self.assertEqual((self.addons / NAME / "core.lua").read_bytes(), b"print('new')\n")
+
+
+class Replace(Case):
+    """a folder of the addon's name without this extension's mark: the same addon installed by hand (its .toc says
+    so), or another; replace False / "same" / True"""
+
+    def src(self, headers, version="1.2.0"):
+        d = G.source(self.folder, NAME)
+        put(d, f"{NAME}.toc", f"## Interface: 16001\n{headers}## Version: {version}\n\ncore.lua\n".encode("utf-8"))
+        put(d, "core.lua", b"print('core')\n")
+        return d
+
+    def by_hand(self, headers, version="1.1.1", mark=None):
+        d = self.addons / NAME
+        put(d, f"{NAME}.toc", (f"## Interface: 16001\n{headers}" + (f"## Version: {version}\n" if version else "")
+                               + "\nold.lua\n").encode("utf-8"))
+        put(d, "old.lua", b"-- by hand\n")
+        if mark is not None:
+            put(d, G.MARK, json.dumps(mark).encode("utf-8"))
+        return d
+
+    def row(self):
+        return G.state(self.folder, NAME, self.addons, "voice")
+
+    def test_same_addon(self):
+        """the three ways two .toc files say they are the same addon, and what is not enough"""
+        same = [("## X-WuxianKit-Extension: cocreate\n", "## X-WuxianKit-Extension: cocreate\n## Title: Other\n"),
+                ("## X-Website: https://wuxianwow.com/cocreate\n", "## X-Website: https://wuxianwow.com/cocreate\n"),
+                ("## Title: 无限数据共创\n## Author: Tim\n", "## Author: Tim\n## Title: 无限数据共创\n")]
+        other = [("## X-WuxianKit-Extension: cocreate\n", "## X-WuxianKit-Extension: voice\n"),
+                 ("## X-Website: https://a.example\n", "## X-Website: https://b.example\n"),
+                 ("## Title: 无限数据共创\n## Author: Tim\n", "## Title: 无限数据共创\n## Author: Someone\n"),
+                 ("## Title: 无限数据共创\n", "## Title: 无限数据共创\n"),                          # no author
+                 ("## Title: \n## Author: \n", "## Title: \n## Author: \n"),                    # empty
+                 ("## X-Website: https://a.example\n", "## Title: x\n")]
+        for ours, theirs in same:
+            with self.subTest(ours=ours, theirs=theirs):
+                self.src(ours)
+                self.by_hand(theirs)
+                self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign", same=True,
+                                                  there="1.1.1"))
+        for ours, theirs in other:
+            with self.subTest(ours=ours, theirs=theirs):
+                (self.addons / NAME / f"{NAME}.toc").unlink()
+                self.src(ours)
+                self.by_hand(theirs)
+                self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign", same=False,
+                                                  there="1.1.1"))
+        self.assertTrue(G.same_addon({"Title": " A ", "Author": "B"}, {"Title": "A", "Author": " B"}))
+        self.assertFalse(G.same_addon(None, {}))
+
+    def test_another_extensions_mark_is_never_the_same(self):
+        self.src("## X-WuxianKit-Extension: voice\n")
+        self.by_hand("## X-WuxianKit-Extension: voice\n", mark={"extension": "other", "digest": "x"})
+        self.assertEqual(self.row()["same"], False)
+        self.refused(409, "addon_exists", self.install, replace="same")
+
+    def test_newer(self):
+        for there, version, newer in (("1.2.1", "1.2.0", True), ("1.10", "1.9", True), ("2", "1.9.9", True),
+                                      ("v1.3", "1.2", True), ("1.2.0", "1.2", False), ("1.2", "1.2.0", False),
+                                      ("1.1.9", "1.2.0", False), ("1.3-beta", "1.2", False), ("", "1.2", False),
+                                      (None, "1.2", False), ("1.3", None, False), ("1.3", "abc", False)):
+            with self.subTest(there=there, version=version):
+                self.assertIs(G.newer(there, version), newer)
+        self.src("## X-Website: w\n")
+        self.by_hand("## X-Website: w\n", version="1.3.0")
+        self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign", same=True, there="1.3.0",
+                                          newer=True))
+        self.by_hand("## X-Website: w\n", version="1.3-beta")                       # cannot be told: not newer
+        self.assertNotIn("newer", self.row())
+        (self.addons / NAME / f"{NAME}.toc").write_bytes(b"## X-Website: w\n\nold.lua\n")
+        self.assertEqual(self.row()["there"], None)
+
+    def test_replace_false_as_before(self):
+        self.src("## X-Website: w\n")
+        self.by_hand("## X-Website: w\n")
+        before = tree(self.addons)
+        for replace in (False, None, "yes", 1, "True"):
+            with self.subTest(replace=replace):
+                e = self.refused(409, "addon_exists", self.install, replace=replace)
+                self.assertEqual(e.data, dict(folder=NAME, same=True, there="1.1.1", newer=False))
+                self.assertIn("--replace", str(e))
+        self.assertEqual(tree(self.addons), before)
+        self.assertEqual(self.versions(), [])
+
+    def test_replace_same(self):
+        self.src("## X-Website: w\n")
+        self.by_hand("## X-Website: w\n")
+        got = self.install(replace="same")
+        (row,) = got["addons"]
+        self.assertEqual((row["state"], row["was"], row["version"]), ("installed", "foreign", "1.2.0"))
+        self.assertEqual(self.state(), "current")
+        self.assertEqual(self.mark()["extension"], "voice")
+        self.assertFalse((self.addons / NAME / "old.lua").exists())
+        self.assertTrue(got["restart"])                                          # other code files
+        (kept,) = self.versions()
+        self.assertEqual((kept["id"], kept["reason"], kept["note"]), (row["kept"], "replace", "1.1.1 -> 1.2.0"))
+        history.restore(self.addons, NAME, kept["id"])                           # `wuxian history` gives it back
+        self.assertEqual((self.addons / NAME / "old.lua").read_bytes(), b"-- by hand\n")
+
+    def test_replace_same_leaves_a_newer_one_and_another_addon(self):
+        self.addon("Fine")
+        self.src("## X-Website: w\n")
+        for headers, version, data in (("## X-Website: w\n", "1.3.0", dict(same=True, there="1.3.0", newer=True)),
+                                       ("## X-Website: other\n", "1.0", dict(same=False, there="1.0", newer=False))):
+            with self.subTest(headers=headers):
+                self.by_hand(headers, version)
+                before = tree(self.addons)
+                e = self.refused(409, "addon_exists", self.install, ["Fine", NAME], replace="same")
+                self.assertEqual(e.data, dict(folder=NAME, **data))
+                self.assertEqual(tree(self.addons), before)                       # Fine is not installed either
+        self.assertEqual(self.versions(), [])
+
+    def test_replace_true(self):
+        self.src("## X-Website: w\n")
+        for headers, version in (("## X-Website: other\n", "1.0"), ("## X-Website: w\n", "9.0")):
+            with self.subTest(headers=headers):
+                shutil.rmtree(self.addons / NAME, ignore_errors=True)
+                self.by_hand(headers, version)
+                (row,) = self.install(replace=True)["addons"]
+                self.assertEqual((row["state"], row["was"]), ("installed", "foreign"))
+                self.assertEqual(self.state(), "current")
+                self.assertEqual(self.versions()[0]["note"], f"{version} -> 1.2.0")
+        shutil.rmtree(self.addons / NAME)                                         # no version there: "?"
+        self.by_hand("## X-Website: other\n", version=None)
+        self.install(replace=True)
+        self.assertEqual(self.versions()[0]["note"], "? -> 1.2.0")
+
+    def test_never_a_link_or_a_file(self):
+        self.src("## X-Website: w\n")
+        put(self.addons, NAME, b"a file of that name")
+        self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign"))
+        e = self.refused(409, "addon_exists", self.install, replace=True)
+        self.assertEqual(e.data, dict(folder=NAME, same=False, there=None, newer=False))
+        self.assertEqual((self.addons / NAME).read_bytes(), b"a file of that name")
+        (self.addons / NAME).unlink()
+        elsewhere = self.root / "elsewhere" / NAME
+        put(elsewhere, f"{NAME}.toc", b"## X-Website: w\n## Version: 1.0\n")
+        self.link(elsewhere, self.addons / NAME)
+        self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign"))
+        self.refused(409, "addon_exists", self.install, replace=True)
+        self.assertEqual(sorted(p.name for p in elsewhere.iterdir()), [f"{NAME}.toc"])
+
+    def test_one_that_cannot_be_kept(self):
+        self.src("## X-Website: w\n")
+        self.by_hand("## X-Website: w\n")
+        put(self.addons, f"{NAME}/.git/HEAD", b"ref: refs/heads/main\n")           # a developer's checkout
+        before = tree(self.addons)
+        e = self.refused(409, "addon_exists", self.install, replace=True)
+        self.assertIn(".git", str(e))
+        self.assertEqual(tree(self.addons), before)
+        self.assertEqual(sorted(p.name for p in self.addons.iterdir()), [NAME])
+
+    def test_taken_meanwhile(self):
+        """foreign a moment ago, now missing or ours: installed as such"""
+        self.src("## X-Website: w\n")
+        with mock.patch.object(G, "state", return_value=dict(folder=NAME, version="1.2.0", state="foreign",
+                                                              same=True, there="1.1.1")):
+            (row,) = self.install(replace="same")["addons"]
+        self.assertEqual((row["state"], row["was"], row["kept"]), ("installed", "foreign", None))
+        self.assertEqual(self.state(), "current")
 
 
 class Remove(Case):

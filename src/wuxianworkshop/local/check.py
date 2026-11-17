@@ -197,7 +197,8 @@ def addon_problems(host, m, problems):
                 "warning", f"{M.MANIFEST}: addons",
                 f"the game's AddOns holds a folder {name} that is not this extension's: the workshop leaves it as "
                 f"it is and does not install this one",
-                "the player moves that folder away, or the addon folder gets another name"))
+                "the player replaces it (the App's 替换: the one there is kept in the history), or moves it away, "
+                "or the addon folder gets another name"))
 
 
 def check_message(proc, msg):

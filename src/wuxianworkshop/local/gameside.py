@@ -7,7 +7,12 @@ A folder in AddOns that this put there holds a mark, the file MARK:
     {"extension": "voice", "digest": "<the source's digest when it was installed>", "version": "<its .toc's version>"}
 
 A folder of that name without the mark, or with another extension's, is someone else's addon: install() refuses it
-(409 addon_exists) and remove() leaves it, whatever is in it. state() says where an addon stands: "current" (the mark's
+(409 addon_exists) unless it is told to replace it, and remove() leaves it, whatever is in it. A folder without any mark
+whose .toc says it is the same addon as the extension's (same_addon: the same ## X-WuxianKit-Extension, the same
+## X-Website, or the same ## Title and ## Author) is most often one the player installed by hand before (from the web
+site): the player's approval replaces that one (replace="same"), unless its version is newer than the extension's; any
+other is replaced only when the player says so (replace=True: the App's 替换, `wuxian ext install <id> --replace`). A
+link or a file of the name is never replaced. state() says where an addon stands: "current" (the mark's
 digest is the source's), "differs" (ours, another digest: the source changed since), "missing", "foreign", "broken" (the
 source cannot be installed: no folder, no .toc, a file that is no addon's kind), "listed" (its name is that of an addon
 of the catalog, which no extension can bring: it is never installed, whatever AddOns holds) and "unknown" (no game
@@ -39,11 +44,12 @@ MARK = ".wuxian-extension.json"
 
 class GameSideError(Exception):
     """an addon that cannot be installed: status and code as the API answers them (400 bad_addon, 409 addon_exists,
-    409 addon_busy, 503 no_game_folder, 500 addon_failed); done: the rows of the addons installed before it failed"""
+    409 addon_busy, 503 no_game_folder, 500 addon_failed); done: the rows of the addons installed before it failed;
+    data: more for the answer (addon_exists: foreign_data)"""
 
-    def __init__(self, status, code, message, done=()):
+    def __init__(self, status, code, message, done=(), data=None):
         super().__init__(message)
-        self.status, self.code, self.done = status, code, list(done)
+        self.status, self.code, self.done, self.data = status, code, list(done), dict(data or {})
 
 
 def source(folder, name):
@@ -133,6 +139,82 @@ def _version(src):
         return None
 
 
+def same_addon(a, b):
+    """whether two .toc's headers (read_toc's dicts) say they are the same addon: both name the same
+    ## X-WuxianKit-Extension, or the same ## X-Website, or both the same ## Title and the same ## Author (none empty)"""
+    a, b = a or {}, b or {}
+
+    def of(toc, key):
+        return str(toc.get(key) or "").strip()
+
+    for key in ("X-WuxianKit-Extension", "X-Website"):
+        if of(a, key) and of(a, key) == of(b, key):
+            return True
+    return all(of(a, key) and of(a, key) == of(b, key) for key in ("Title", "Author"))
+
+
+def _numbers(version):
+    """a version as a tuple of numbers ("1.2.10" -> (1, 2, 10); a "v" first is no part of it), or None when it is not
+    only numbers and dots"""
+    text = str(version or "").strip()
+    text = text[1:] if text[:1] in ("v", "V") else text
+    parts = text.split(".")
+    if not text or not all(p.isascii() and p.isdigit() for p in parts):
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def newer(there, version):
+    """whether the version `there` is newer than `version`, number by number (1.10 is newer than 1.9, 1.2 the same as
+    1.2.0); False when either cannot be told so (not only numbers and dots, or none)"""
+    a, b = _numbers(there), _numbers(version)
+    if a is None or b is None:
+        return False
+    n = max(len(a), len(b))
+    return a + (0,) * (n - len(a)) > b + (0,) * (n - len(b))
+
+
+def _toc_of(folder):
+    """an addon folder's .toc headers ({} when it has none or it cannot be read)"""
+    try:
+        toc = M.addon_toc(folder)
+        return (A.read_toc(toc) or {}) if toc else {}
+    except OSError:
+        return {}
+
+
+def _foreign(src, target, version):
+    """(state) what a foreign row says more of the folder in AddOns: {} for a link or a file (never replaced), else
+    dict(same, there[, newer: True]): same: it has no mark and its .toc says it is the extension's addon (same_addon);
+    there: the version its .toc says, or None; newer: there is newer than the extension's version"""
+    if _is_link(target) or not target.is_dir():
+        return {}
+    theirs = _toc_of(target)
+    same = not os.path.lexists(target / MARK) and same_addon(_toc_of(src), theirs)
+    there = str(theirs.get("Version") or "").strip() or None
+    out = dict(same=same, there=there)
+    if newer(there, version):
+        out["newer"] = True
+    return out
+
+
+def takes(row, replace):
+    """whether install() with `replace` puts the extension's addon in the place of the foreign one of this state() row:
+    replace True, any folder (not a link, not a file); "same", one that is the same addon and not newer"""
+    if row.get("state") != "foreign" or "same" not in row:
+        return False
+    if replace is True:
+        return True
+    return replace == "same" and bool(row.get("same")) and not row.get("newer")
+
+
+def foreign_data(row):
+    """what an addon_exists error says of the folder in AddOns (an App words it with these): {folder, same, there,
+    newer}"""
+    return dict(folder=row.get("folder"), same=bool(row.get("same")), there=row.get("there"),
+                newer=bool(row.get("newer")))
+
+
 def _held(target, eid):
     """what AddOns holds at an addon's place: "missing", "foreign" (something without this extension's mark: a folder,
     a file, a link), or this extension's mark (a dict)"""
@@ -155,7 +237,9 @@ def state(folder, name, addons, eid, listed=None):
     .toc says (None: nothing). state: "listed" (the name is one of the catalog's: install() refuses it, with or
     without a game folder), "broken" (the source cannot be installed: source_problem), "unknown" (addons is None),
     "missing" (not in AddOns), "foreign" (there, not this extension's), "current" (this extension's, of the source's
-    digest), "differs" (this extension's, another digest)"""
+    digest), "differs" (this extension's, another digest). A foreign folder (not a link, not a file) has two more:
+    same (it has no mark, and its .toc says it is the same addon: same_addon) and there (the version its .toc says, or
+    None), and newer: True when there is newer than the source's version"""
     if _folder_problem(name):
         return dict(folder=name, version=None, state="broken")
     src = source(folder, name)
@@ -167,6 +251,8 @@ def state(folder, name, addons, eid, listed=None):
     if addons is None:
         return dict(out, state="unknown")
     held = _held(Path(addons) / name, eid)
+    if held == "foreign":
+        return dict(out, state=held, **_foreign(src, Path(addons) / name, out["version"]))
     if isinstance(held, str):
         return dict(out, state=held)
     try:
@@ -198,12 +284,14 @@ def _code(files):
     return {rel.lower() for rel in files if PurePosixPath(rel).suffix.lower() in X.CODE}
 
 
-def _put(folder, name, addons, eid, interface, version):
-    """one addon written beside its place and swapped in: (kept, restart). GameSideError when its place was taken
+def _put(folder, name, addons, eid, interface, version, take=None):
+    """one addon written beside its place and swapped in: (kept, restart). take: the version the foreign folder there
+    says (state()'s there, "" for none) when it is to be replaced, else None. GameSideError when its place was taken
     meanwhile or the game holds the folder; AddOns is then as it was"""
     src, target = source(folder, name), addons / name
     held = _held(target, eid)
-    if held == "foreign":                                           # it was ours, or missing, a moment ago
+    taking = held == "foreign"
+    if taking and (take is None or _is_link(target) or not target.is_dir()):    # it was ours or missing a moment ago
         raise GameSideError(409, "addon_exists", f"{name}: AddOns holds a folder of this name that is not this "
                                                  "extension's; it is left as it is")
     there = held != "missing"
@@ -226,8 +314,16 @@ def _put(folder, name, addons, eid, interface, version):
             new.append(rel)
         mark = dict(extension=eid, digest=h.hexdigest(), version=version or "")
         (staging / MARK).write_text(json.dumps(mark, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-        kept = X._keep(addons, name, "update", f"{held.get('version') or '?'} -> {version or '?'}") if there else None
+        if taking:
+            kept = X._keep(addons, name, "replace", f"{take or '?'} -> {version or '?'}")
+        elif there:
+            kept = X._keep(addons, name, "update", f"{held.get('version') or '?'} -> {version or '?'}")
+        else:
+            kept = None
         X._swap(target, staging, backup)
+    except X.NotKept as e:                                          # (a developer's checkout, with its .git)
+        _clear(staging)
+        raise GameSideError(409, "addon_exists" if taking else "addon_failed", f"{name}: {e}") from None
     except PermissionError:
         _clear(staging)
         raise GameSideError(409, "addon_busy", f"{name}: the game holds a file of AddOns/{name} (or the folder cannot "
@@ -244,16 +340,19 @@ def _put(folder, name, addons, eid, interface, version):
     return kept, not there or _code(new) != before
 
 
-def install(folder, names, addons, eid, interface=None, listed=None):
+def install(folder, names, addons, eid, interface=None, listed=None, replace=False):
     """the extension's addons `names` put into the AddOns folder `addons`: dict(addons=[dict(folder, state, was,
     version, kept)], restart). An addon that is current stays (state "current"); one that is missing or differs is
     installed (state "installed"; was: its state before; kept: the history's id of the version kept of what was there,
-    or None). interface: the client's Interface number for the .toc files (None: as they are). listed: the catalog's
-    addon folders (extensions.listed_folders()), which an extension cannot have. restart: the client sees it only
-    when the game starts again (a new folder, or the set of .lua / .toc / .xml files changed). GameSideError: 503
-    no_game_folder; 400 bad_addon (a name that cannot be, one twice, a source that is broken) and 409 addon_exists (a
-    folder of the name that is not this extension's), both before anything is touched; 409 addon_busy and 500
-    addon_failed while installing: that addon is as it was, the ones before it are installed (the error's done)"""
+    or None). replace: what of a foreign folder of the name is replaced (takes()): False none; "same" the same addon
+    (state()'s same) when it is not newer; True any (a link or a file never); one replaced has was "foreign", the
+    version that was there kept in the history first. interface: the client's Interface number for the .toc files
+    (None: as they are). listed: the catalog's addon folders (extensions.listed_folders()), which an extension cannot
+    have. restart: the client sees it only when the game starts again (a new folder, or the set of .lua / .toc / .xml
+    files changed). GameSideError: 503 no_game_folder; 400 bad_addon (a name that cannot be, one twice, a source that
+    is broken) and 409 addon_exists (a folder of the name that is not this extension's, and not one to replace; the
+    error's data: foreign_data), both before anything is touched; 409 addon_busy and 500 addon_failed while
+    installing: that addon is as it was, the ones before it are installed (the error's done)"""
     if addons is None or not Path(addons).is_dir():
         raise GameSideError(503, "no_game_folder", "the game's AddOns folder is not known: start the game once, or "
                                                    "say where it is in the 无限工坊 App")
@@ -269,10 +368,8 @@ def install(folder, names, addons, eid, interface=None, listed=None):
             raise GameSideError(400, "bad_addon", f"{name!r}: {why}")
         seen.add(name.lower())
         row = state(folder, name, addons, eid)
-        if row["state"] == "foreign":
-            raise GameSideError(409, "addon_exists", f"{name}: AddOns holds a folder of this name that is not this "
-                                                     "extension's (it has no mark of it): it is left as it is. Move "
-                                                     "it away yourself, or give the extension's addon another name")
+        if row["state"] == "foreign" and not takes(row, replace):
+            raise GameSideError(409, "addon_exists", _exists(name, row, eid), data=foreign_data(row))
         if row["state"] == "broken":                                # it cannot be read any more
             raise GameSideError(400, "bad_addon", f"{name!r}: {source_problem(folder, name) or 'it cannot be read'}")
         plan.append(row)
@@ -282,14 +379,33 @@ def install(folder, names, addons, eid, interface=None, listed=None):
         if row["state"] == "current":
             out.append(dict(folder=name, state="current", was="current", version=row["version"], kept=None))
             continue
+        take = (row.get("there") or "") if row["state"] == "foreign" else None
         try:
-            kept, again = _put(folder, name, addons, eid, interface, row["version"])
+            kept, again = _put(folder, name, addons, eid, interface, row["version"], take)
         except GameSideError as e:
             e.done = out
             raise
         restart = restart or again
         out.append(dict(folder=name, state="installed", was=row["state"], version=row["version"], kept=kept))
     return dict(addons=out, restart=restart)
+
+
+def _exists(name, row, eid):
+    """the message of the addon_exists of a foreign folder that is not replaced"""
+    there = f" {row['there']}" if row.get("there") else ""
+    if "same" not in row:
+        return (f"{name}: AddOns holds a link or a file of this name, not this extension's: it is left as it is. "
+                f"Move it away yourself, or give the extension's addon another name")
+    if row.get("same") and row.get("newer"):
+        return (f"{name}: AddOns holds the same addon in a newer version{there}, without this extension's mark "
+                f"(installed by hand): it is left as it is")
+    if row.get("same"):
+        return (f"{name}: AddOns holds the same addon{there}, without this extension's mark (installed by hand): it "
+                f"is left as it is. `wuxian ext install {eid} --replace` (the App's 替换) puts this extension's in "
+                f"its place, the one there kept in the history")
+    return (f"{name}: AddOns holds a folder of this name that is not this extension's{there}: it is left as it is. "
+            f"Move it away yourself, give the extension's addon another name, or replace it (`wuxian ext install "
+            f"{eid} --replace`, the App's 替换: the one there is kept in the history)")
 
 
 def marked(addons, eid):

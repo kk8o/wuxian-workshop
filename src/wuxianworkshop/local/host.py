@@ -99,7 +99,9 @@ GAME_STATES = ("unknown", "absent", "offline", "restart", "missing", "disabled",
 # game's AddOns as it is here; offline: the game is not linked; restart: the game has not seen its addon yet; missing,
 # disabled, off, on: as WuxianKit lists its extension; installed: in AddOns, and none of its addons declares a
 # WuxianKit extension, so the game says no more
-PLAYER_ACTIONS = ("approve", "start_game", "restart_game", "enable_addon", "turn_on")   # a row's player.action
+PLAYER_ACTIONS = ("approve", "replace_addon", "start_game", "restart_game", "enable_addon", "turn_on")
+# a row's player.action; replace_addon: the game's AddOns holds a folder of an addon's name that is not the extension's
+# (one the player installed by hand, most often), which only the player replaces (the App's 替换)
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
 EVENT_MAX = 64 * 1024                 # bytes of one event's data (as JSON) at most: a larger one is dropped
@@ -134,6 +136,7 @@ def api_error(e):
     if getattr(e, "problems", None):
         extra["problems"] = e.problems
     if isinstance(e, G.GameSideError):
+        extra.update(e.data)
         extra["done"] = list(e.done)
     return ApiError(e.status, e.code, str(e), **extra)
 
@@ -142,7 +145,9 @@ def game_hint(rows, restart):
     """what to do after gameside.install, in a sentence (None: nothing): a new addon needs the game restarted, one
     the game has already takes its changed files with `load <Name>`"""
     new = [r["folder"] for r in rows if r.get("state") == "installed" and r.get("was") == "missing"]
-    changed = [r["folder"] for r in rows if r.get("state") == "installed" and r.get("was") != "missing"]
+    changed = [r["folder"] for r in rows
+               if r.get("state") == "installed" and r.get("was") not in ("missing", "foreign")]
+    took = [r["folder"] for r in rows if r.get("state") == "installed" and r.get("was") == "foreign"]
     out = []
     if new:
         out.append(f"{', '.join(new)}: new in the game's AddOns, restart the game to load "
@@ -151,6 +156,12 @@ def game_hint(rows, restart):
         out.append(f"{', '.join(changed)}: updated, " + ", ".join(f"`load {name}`" for name in changed)
                    + " reloads it in the running game"
                    + (" (files added or removed need a restart of the game)" if restart else ""))
+    if took:
+        out.append(f"{', '.join(took)}: put in the place of the folder of "
+                   f"{'this name' if len(took) == 1 else 'these names'} that was there (kept in the history: "
+                   f"`wuxian history`); "
+                   + ("restart the game to load it" if restart else ", ".join(f"`load {name}`" for name in took)
+                      + " reloads it in the running game"))
     return "; ".join(out) or None
 
 
@@ -400,11 +411,16 @@ class Host:
         return dict(extensions=ids, state=state)
 
     @staticmethod
-    def player_says(action, title, addon=None, changed=False):
-        """{action, text}: one thing only the player can do now, and the sentence to tell them"""
+    def player_says(action, title, addon=None, changed=False, same=False):
+        """{action, text}: one thing only the player can do now, and the sentence to tell them (same: replace_addon's
+        folder is the same addon, installed by hand)"""
         text = {
             "approve": (f"「{title}」要运行的内容变了，请在无限工坊 App 的「扩展」页重新批准" if changed else
                         f"请在无限工坊 App 的「扩展」页批准「{title}」"),
+            "replace_addon": (f"游戏里已有手动安装的插件「{addon}」，请在无限工坊 App 的「扩展」页点「替换」，"
+                              f"换成「{title}」带的版本" if same else
+                              f"游戏里已有同名插件「{addon}」，不是「{title}」带的，"
+                              f"请在无限工坊 App 的「扩展」页确认替换"),
             "start_game": "请启动游戏并进入世界，窗口不要最小化",
             "restart_game": f"请重启游戏：新装的插件「{addon}」重启后才会载入",
             "enable_addon": f"请在游戏的插件列表里启用「{addon}」，然后重载界面",
@@ -412,15 +428,19 @@ class Host:
         }[action]
         return dict(action=action, text=text)
 
-    def player_of(self, e, m, allowed, approval, game):
+    def player_of(self, e, m, allowed, approval, game, addons=()):
         """a row's player: what the player has to do before the extension works, {action: one of PLAYER_ACTIONS,
         text: the sentence for them}, or None (nothing: what is left is the agent's, or it works). First the
-        approval, then its game half"""
+        approval, then a folder in AddOns to replace (addons: its addon_rows; replace_addon for the first foreign one
+        that can be replaced and is not newer than the extension's), then its game half"""
         if m is None or not e["enabled"] or self.unmet_error(m) is not None:
             return None
         title = m.get("title") or e["id"]
         if not allowed:
             return self.player_says("approve", title, changed=approval == "changed")
+        theirs = next((a for a in addons or () if G.takes(a, True) and not a.get("newer")), None)
+        if theirs is not None:
+            return self.player_says("replace_addon", title, addon=theirs["folder"], same=bool(theirs.get("same")))
         action = {"offline": "start_game", "restart": "restart_game", "disabled": "enable_addon",
                   "off": "turn_on"}.get((game or {}).get("state"))
         return self.player_says(action, title, addon=m["addons"][0]) if action else None
@@ -581,7 +601,8 @@ class Host:
                     adds=A.row(m), approval=approval, allowed=allowed, fingerprint=self.seen(e)[0],
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
-                    addons=addons, where=where, game=game, player=self.player_of(e, m, allowed, approval, game))
+                    addons=addons, where=where, game=game,
+                    player=self.player_of(e, m, allowed, approval, game, addons))
 
     def rows(self):
         side = self.side()
@@ -1143,10 +1164,12 @@ class Host:
             return []
         return [a for a in names if isinstance(a, str) and M.ADDON_FOLDER.match(a)] if isinstance(names, list) else []
 
-    def put_addons(self, e, m):
+    def put_addons(self, e, m, replace=False):
         """the game addons of a manifest put into the game's AddOns (gameside.install: one that is current stays):
         {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}, and, only when there
         are some, removed: the folders it installed there before and names no more (stale_addons), taken out now.
+        replace: which folder of an addon's name that is not the extension's is replaced (gameside.install: False,
+        "same" or True; was "foreign", what was there kept in the history).
         GameSideError as gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not
         under the lock"""
         listed = self.listed()
@@ -1154,7 +1177,7 @@ class Host:
             try:
                 addons = self.game_addons()
                 res = G.install(e["path"], m["addons"], addons, e["id"],
-                                interface=self.client_interface(), listed=listed)
+                                interface=self.client_interface(), listed=listed, replace=replace)
                 stale = self.stale_addons(e["id"], m["addons"], addons)
             finally:
                 self.forget_addons(e["id"])
@@ -1188,21 +1211,23 @@ class Host:
 
     def approved_addons(self, e, m):
         """(approve) the game addons of an extension the player just allowed are installed, when it has some and
-        this workshop is not too old for it. Nothing here fails: what went wrong is noted, and answered for the
-        approval to say: None (nothing was tried), {ok: True, addons, restart, hint} (put_addons), or {ok: False,
-        code, message, addons: the ones installed before it failed}"""
+        this workshop is not too old for it. The approval is the player's yes to the summary they saw, which says
+        that the same addon installed by hand (not newer) is replaced: replace "same". Nothing here fails: what went
+        wrong is noted, and answered for the approval to say: None (nothing was tried), {ok: True, addons, restart,
+        hint} (put_addons), or {ok: False, code, message, addons: the ones installed before it failed} (addon_exists
+        with folder, same, there, newer)"""
         try:
             if not m["addons"] or self.unmet_error(m) is not None:
                 return None
             if self.game_addons() is None:
                 raise G.GameSideError(503, "no_game_folder", "the game's AddOns folder is not known: start the game "
                                                              "once, or say where it is in the 无限工坊 App")
-            return dict(ok=True, **self.put_addons(e, m))
+            return dict(ok=True, **self.put_addons(e, m, replace="same"))
         except G.GameSideError as ex:
             if ex.code != "no_game_folder":            # (the row says a game folder that is not known)
                 self.note(f"local extension {e['id']}: its game addons are not installed: {first_line(ex, 300)} "
                           f"(extension_install {e['id']} tries again)")
-            return dict(ok=False, code=ex.code, message=first_line(ex, 300), addons=list(ex.done))
+            return dict(ex.data, ok=False, code=ex.code, message=first_line(ex, 300), addons=list(ex.done))
         except Exception as ex:
             self.note(f"local extension {e['id']}: its game addons are not installed: {ex!r}")
             return dict(ok=False, code="addon_failed", message=first_line(ex, 300), addons=[])
@@ -1251,12 +1276,16 @@ class Host:
                       f"{', '.join(gone)}")
         return [g for g in rows if g["why"] in (None, "foreign", "busy")]
 
-    def install(self, eid):
+    def install(self, eid, replace=False):
         """extension_install: the extension's game addons put into the game's AddOns now: {id, addons: [{folder,
-        state: installed | current, was, version, kept}], restart, hint}. ApiError bad_manifest (409), requires_unmet
-        (409), needs_approval (403: the player has not allowed it as it is now; allow()), no_addons (400: its
-        manifest names none), no_game_folder (503), and gameside's bad_addon (400), addon_exists (409), addon_busy
-        (409), addon_failed (500), each with done: the addons installed before it failed"""
+        state: installed | current, was, version, kept}], restart, hint}. replace (the player's 替换, `ext install
+        --replace`): True replaces a folder of an addon's name that is not the extension's, "same" only the same
+        addon installed by hand when it is not newer; anything else: none (gameside.install). ApiError bad_manifest
+        (409), requires_unmet (409), needs_approval (403: the player has not allowed it as it is now; allow()),
+        no_addons (400: its manifest names none), no_game_folder (503), and gameside's bad_addon (400), addon_exists
+        (409, with folder, same, there, newer), addon_busy (409), addon_failed (500), each with done: the addons
+        installed before it failed"""
+        replace = replace if replace is True or replace == "same" else False
         e = self.entry(eid)
         eid = e["id"]
         m, problems = M.check_manifest(e["path"])
@@ -1273,7 +1302,7 @@ class Host:
             raise ApiError(503, "no_game_folder", "the game's AddOns folder is not known: start the game once, or say "
                                                   "where it is in the WuxianWorkshop App")
         try:
-            return dict(id=eid, **self.put_addons(e, m))
+            return dict(id=eid, **self.put_addons(e, m, replace=replace))
         except G.GameSideError as ex:
             raise api_error(ex) from None
 

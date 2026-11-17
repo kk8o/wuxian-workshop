@@ -17,7 +17,10 @@ package replaces a version, a pack's result, extension_summary). It says what is
                "cannot"}],                           why the workshop will not install it, or None: "listed" (its
                                                      name is an addon of the catalog's), "foreign" (AddOns holds a
                                                      folder of the name that is not this extension's), "broken"
-                                                     (its source cannot be installed)
+                                                     (its source cannot be installed); with "foreign" also
+               "same", "there", "newer"                  same: it is the same addon, installed by hand (an approval
+                                                     replaces it unless newer); there: the version it says, or
+                                                     None; newer: there is newer than the extension's
      "addons_dir": the game's AddOns folder or None,
      "local": None | {"run": [argv as written], "python": the manifest's own interpreter (relative) or None,
                       "start": "use" | "workshop", "env": [names the manifest sets], "pass": [names of the player's
@@ -97,12 +100,21 @@ CANNOT = ("listed", "foreign", "broken")
 
 def cannot(folder, name, addons_dir, eid, listed=None):
     """why the workshop will not install the extension's addon `name` (gameside.state: one of CANNOT), or None"""
+    return cannot_of(folder, name, addons_dir, eid, listed)["cannot"]
+
+
+def cannot_of(folder, name, addons_dir, eid, listed=None):
+    """{cannot: cannot()'s answer}, and with "foreign" also {same, there, newer} of the folder in AddOns
+    (gameside.state; same False and there None for a link or a file)"""
     from .gameside import state
     try:
-        found = state(folder, name, addons_dir or None, eid, listed)["state"]
+        row = state(folder, name, addons_dir or None, eid, listed)
     except Exception:                       # (a file that went while it was read)
-        return None
-    return found if found in CANNOT else None
+        return dict(cannot=None)
+    found = row["state"]
+    if found == "foreign":
+        return dict(cannot=found, same=bool(row.get("same")), there=row.get("there"), newer=bool(row.get("newer")))
+    return dict(cannot=found if found in CANNOT else None)
 
 
 def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
@@ -121,7 +133,7 @@ def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
         except OSError:
             pass
     game = [dict(addon(folder / M.ADDONS_DIR / name, addons_dir, m["addons"])[0],
-                 cannot=cannot(folder, name, addons_dir, m["id"], listed)) for name in m["addons"]]
+                 **cannot_of(folder, name, addons_dir, m["id"], listed)) for name in m["addons"]]
     local = None
     if m["run"]:
         local = dict(run=list(m["run"]), python=_rel(m["python"], folder), start=m["start"], env=sorted(m["env"]))
@@ -269,7 +281,14 @@ def lines(s):
         out.append(f"  game addon: {g['folder']}" + (f" {g['version']}" if g.get("version") else "")
                    + (f", needs {needs}" if needs else "")
                    + (f", at {g['path']}" if g.get("path") else ", not in the game's AddOns"))
-        if g.get("cannot"):
+        there = f" {g['there']}" if g.get("there") else ""
+        if g.get("cannot") == "foreign" and g.get("same") and g.get("newer"):
+            out.append(f"    NOT INSTALLED: the game's AddOns holds the same addon in a newer version{there}, "
+                       f"installed by hand: it is kept")
+        elif g.get("cannot") == "foreign" and g.get("same"):
+            out.append(f"    the game's AddOns holds the same addon{there}, installed by hand: approving puts this "
+                       f"version in its place, the one there kept in the history")
+        elif g.get("cannot"):
             out.append("    " + CANNOT_TEXT.get(g["cannot"], f"CANNOT BE INSTALLED: {g['cannot']}"))
     local = s.get("local")
     if local:

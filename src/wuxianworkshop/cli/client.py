@@ -234,8 +234,8 @@ class DaemonClient:
     def extension_pack(self, id, to=None):
         return self.post("/api/local/pack", id=id, timeout=PACK_WAIT, **({"to": to} if to else {}))
 
-    def extension_install(self, id):
-        return self.post("/api/local/install", id=id, timeout=PACK_WAIT)
+    def extension_install(self, id, replace=False):
+        return self.post("/api/local/install", id=id, timeout=PACK_WAIT, **({"replace": replace} if replace else {}))
 
     def extension_logs(self, id, since=0, limit=200):
         return self.get("/api/local/logs", id=id, since=since, limit=limit)
