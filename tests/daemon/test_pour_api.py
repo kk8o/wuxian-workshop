@@ -1,9 +1,10 @@
 """The rest of a long answer in the Service (daemon/service.py) over stand-ins for the game: from a WoWBridge that pours
 (0.9.13), one data call "pour" and its segments joined in order, whatever order they come in; a segment that never
 comes asked for again alone; a link down in the middle waited for; another UI session, a quiet link, a game that says
-another size, an error in the game: errors; a pour whose own result is lost goes on with its segments. From an older
-addon, the pieces asked for eight at a time, one more as one comes back. run with whole, call with whole (0.9.15: the
-data call's "w"), and status's link.pour."""
+another size, an error in the game: errors; a pour whose own result is lost goes on with its segments. An addon that
+does not pour cannot bring a long answer back: an error that says its version. run with whole, call and its `most`
+(0.10.0: the data call's "m"), what a failed call adds when the game's WoWBridge is older than the program (by the
+version of its HELLO), and status's link.pour."""
 import asyncio
 import json
 import re
@@ -11,6 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from wuxianworkshop import __version__
 from wuxianworkshop.agent import probes
 from wuxianworkshop.daemon import service as service_mod
 from wuxianworkshop.daemon.api import ApiError
@@ -206,11 +208,12 @@ class Pour(unittest.IsolatedAsyncioTestCase):
         self.svc.data = data
         res = await self.svc.call_exposed("Foo", "long", {"n": 1})
         self.assertEqual(res["result"], "长" * 130)
-        self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}}), ("pour", {"k": "7", "g": False})])
+        self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}, "m": probes.WHOLE_MOST}),
+                                      ("pour", {"k": "7", "g": False})])
 
-    async def test_a_whole_call(self):
-        """call with whole: "w" goes with the data call, the rest is poured, `whole: true` comes back; WuxianKit's own
-        reads with whole go to the game, not its cache"""
+    async def test_a_call_and_its_most(self):
+        """call: "m" goes with the data call (16 MB when the caller names none), the rest is poured, and what comes
+        back says nothing of it; WuxianKit's own reads that name a most go to the game, not its cache"""
         self.svc.data_calls = lambda: True
         text = '{"result":"' + "长" * 30
         rest = ('长' * 100 + '"}').encode()
@@ -223,45 +226,63 @@ class Pour(unittest.IsolatedAsyncioTestCase):
                 return 7, dict(ok=True, values=[f"2 {len(rest)}"])
             return 7, dict(ok=True, values=[f"1/3\n{text}"])
         self.svc.data = data
-        res = await self.svc.call_exposed("Foo", "long", {"n": 1}, whole=True)
-        self.assertEqual(res, dict(addon="Foo", name="long", ok=True, result="长" * 130, whole=True))
-        self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}, "w": True}),
-                                      ("pour", {"k": "7", "g": False})])
+        for most, m in ((None, 16 * 1024 * 1024), (4096, 4096), (16 * 1024 * 1024, 16 * 1024 * 1024), (1, 1)):
+            self.asked.clear()
+            res = await self.svc.call_exposed("Foo", "long", {"n": 1}, most=most)
+            self.assertEqual(res, dict(addon="Foo", name="long", ok=True, result="长" * 130))
+            self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}, "m": m}),
+                                          ("pour", {"k": "7", "g": False})])
         self.asked.clear()
+        cached = []
 
-        async def cached(name, ask):
-            raise AssertionError("a whole read went to the cache")
-        self.svc.kit_cache.call = cached
-        res = await self.svc.call_exposed("WuxianKit", "kit.manifest", whole=True, shared=True)
-        self.assertEqual(res["result"], "长" * 130)
+        async def cache(name, ask):
+            cached.append(name)
+            return await ask()
+        self.svc.kit_cache.call = cache
+        res = await self.svc.call_exposed("WuxianKit", "kit.manifest", most=1 << 20, shared=True)
+        self.assertEqual((res["result"], cached), ("长" * 130, []))
         self.assertEqual(self.asked[0], ("call", {"a": "WuxianKit", "n": "kit.manifest", "d": None, "q": True,
-                                                  "w": True}))
+                                                  "m": 1 << 20}))
+        await self.svc.call_exposed("WuxianKit", "kit.manifest", shared=True)
+        self.assertEqual(cached, ["kit.manifest"])                # no most named: the views' shared answer
 
-    async def test_a_whole_call_refused(self):
-        """a bad whole is a bad request; an older WoWBridge (it ignores "w") refuses past 256 KB, and with whole the
-        error says why; past 16 MB the game's error as it is"""
+    async def test_a_bad_most_and_a_call_the_game_refuses(self):
+        """a bad most is a bad request; an answer over most is the game's error as it is; in a game whose WoWBridge is
+        older than the program (the version of its HELLO) a failed call says so, whatever it failed with"""
         self.svc.data_calls = lambda: True
-        for bad in ("yes", 1, [True]):
+        for bad in ("yes", True, 0, -1, 16 * 1024 * 1024 + 1, 2.5, [4096]):
             with self.assertRaises(ApiError) as cm:
-                await self.svc.call_exposed("Foo", "long", whole=bad)
+                await self.svc.call_exposed("Foo", "long", most=bad)
             self.assertEqual((cm.exception.status, cm.exception.code), (400, "bad_request"))
+            self.assertTrue(cm.exception.message.startswith("most: "), cm.exception.message)
         self.assertEqual(self.asked, [])
-        said = ["the answer is 300 KB, more than the 256 KB a call brings back"]
+        said = ["the answer is 17000000 bytes, more than the 16777216 bytes this call takes (its most)"]
 
         async def data(verb, payload, timeout_ms, what):
             self.asked.append((verb, payload))
             return 7, dict(ok=True, values=["1/1\n" + json.dumps({"error": said[0]})])
         self.svc.data = data
-        for whole, hint in ((True, True), (False, False)):
+
+        async def refused():
             with self.assertRaises(ApiError) as cm:
-                await self.svc.call_exposed("Foo", "long", whole=whole)
+                await self.svc.call_exposed("Foo", "long")
             self.assertEqual((cm.exception.status, cm.exception.code), (400, "call_failed"))
-            self.assertTrue(cm.exception.message.startswith(said[0]), cm.exception.message)
-            self.assertEqual("older than 0.9.15" in cm.exception.message, hint)
-        said[0] = "the answer is 17000 KB, more than the 16384 KB a call brings back"
-        with self.assertRaises(ApiError) as cm:
-            await self.svc.call_exposed("Foo", "long", whole=True)
-        self.assertEqual(cm.exception.message, said[0])
+            return cm.exception.message
+        self.assertEqual(await refused(), said[0])                # no HELLO seen: nothing to say
+        self.comp.sessions = {5: SimpleNamespace(version_text=__version__)}
+        self.assertEqual(await refused(), said[0])                # the program's own WoWBridge
+        self.comp.sessions = {5: SimpleNamespace(version_text="99.0.0")}
+        self.assertEqual(await refused(), said[0])                # a newer one
+        note = (f" (the WoWBridge in the game is 0.9.14, older than this 无限工坊 {__version__}: the new one takes effect "
+                f"once the game is restarted)")
+        self.comp.sessions = {5: SimpleNamespace(version_text="0.9.14")}
+        for text in ("the answer is 300 KB, more than the 256 KB a call brings back",     # what 0.9.14 says past 256 KB
+                     "Foo has no long (it exposes nothing)"):
+            said[0] = text
+            self.assertEqual(await refused(), text + note)
+        self.comp.sessions = {5: SimpleNamespace(version_text="0.9.14"), 6: SimpleNamespace(version_text=__version__)}
+        self.comp.current = 6                                     # the game restarted: the new one's session
+        self.assertEqual(await refused(), said[0])
 
     async def test_run_whole_refuses_and_passes_errors_on(self):
         with self.assertRaises(ApiError) as cm:
@@ -281,73 +302,49 @@ class Pour(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((res["values"], res["whole"], res["cut"], self.asked), (["42"], True, None, []))
 
 
-class Window(unittest.IsolatedAsyncioTestCase):
-    """an addon that does not pour (before 0.9.13): pieces 2..n asked for probes.WINDOW at a time, one more as one comes
-    back"""
+class NoPour(unittest.IsolatedAsyncioTestCase):
+    """an addon that does not pour (before 0.9.13): what fits in one piece comes, a longer answer is an error that says
+    the version of the WoWBridge in the game (nothing is asked for piece by piece any more)"""
 
     def setUp(self):
         self.svc = Service(lambda on_debug, log: Worker(), journal=Journal())
-        self.svc.worker.comp = self.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: False)
-        self.pieces = [f"第{i}块;" * 20 for i in range(1, 21)]
-        self.flight, self.started, self.slid = set(), [], asyncio.Event()
+        self.svc.worker.comp = self.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: False,
+                                                           sessions={5: SimpleNamespace(version_text="0.9.12")})
+        self.svc.data_calls = lambda: True
+        self.pieces, self.asked = 3, []
 
         async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
-            m = re.match(r'local KEY, I = "\w+", (\d+)\n', code)
-            i = int(m[1]) if m else 1
-            self.started.append((i, set(self.flight)))
-            self.flight.add(i)
-            if i == 12:
-                self.slid.set()
-            try:
-                if i == 3:          # piece 3 comes back only once 12 was asked for (a batch of 8 would wait for it)
-                    await asyncio.wait_for(self.slid.wait(), 5)
-                else:
-                    await asyncio.sleep(0.002 * (i % 4 + 1))
-                return dict(ok=True, values=[f"{i}/{len(self.pieces)}\n{self.pieces[i - 1]}"])
-            finally:
-                self.flight.discard(i)
-        self.svc.run = run
-
-    async def test_eight_at_a_time_sliding(self):
-        res = await self.svc.run_whole("return BIG")
-        self.assertEqual(res["values"], ["".join(self.pieces)])
-        self.assertEqual(max(len(f) for _, f in self.started), probes.WINDOW - 1)    # those out when one more started
-        self.assertEqual([i for i, _ in self.started], list(range(1, 21)))
-        later = dict(self.started)
-        self.assertIn(3, later[12])                         # 12 went while 3 was still out: no batch waits for its slowest
-
-
-class WholeCallPieces(unittest.IsolatedAsyncioTestCase):
-    """call with whole from an addon that does not pour: 2 MB in some 1,600 pieces, eight asked for at a time, the game
-    keeping the answer from the latest piece asked for (refresh)"""
-
-    async def test_2_mb_piece_by_piece(self):
-        svc = Service(lambda on_debug, log: Worker(), journal=Journal())
-        svc.worker.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: False)
-        svc.data_calls = lambda: True
-        value = "无限\t物品 " * (2_100_000 // 15)
-        text = json.dumps({"result": value}, ensure_ascii=False)
-        pieces = [text[i:i + 1300] for i in range(0, len(text), 1300)]
-        asked, refreshed = [], []
+            self.asked.append(chunk)
+            return dict(ok=True, values=[f"1/{self.pieces}\n" + '"abc"'])
 
         async def data(verb, payload, timeout_ms, what):
-            asked.append((verb, payload))
-            i = payload["i"] if verb == "piece" else 1
-            await asyncio.sleep(0)
-            return 7, dict(ok=True, values=[f"{i}/{len(pieces)}\n{pieces[i - 1]}"])
-        window = svc.window
+            self.asked.append(verb)
+            return 7, dict(ok=True, values=[f"1/{self.pieces}\n" + '{"result":"abc"}'])
+        self.svc.run, self.svc.data = run, data
 
-        async def spy(n, more, session, refresh, what):
-            refreshed.append(refresh)
-            return await window(n, more, session, refresh, what)
-        svc.data, svc.window = data, spy
-        res = await svc.call_exposed("Foo", "big", whole=True, timeout_ms=3000)
-        self.assertEqual((res["result"], res["whole"]), (value, True))
-        self.assertGreater(len(text.encode()), 2_000_000)
-        self.assertEqual(asked[0], ("call", {"a": "Foo", "n": "big", "d": None, "w": True}))
-        self.assertEqual(sorted(p["i"] for v, p in asked[1:]), list(range(2, len(pieces) + 1)))
-        self.assertEqual({p["k"] for v, p in asked[1:]}, {"7"})
-        self.assertEqual(refreshed, [True])
+    async def test_a_long_answer_is_refused_by_the_version(self):
+        note = (f"(the WoWBridge in the game is 0.9.12, older than this 无限工坊 {__version__}: the new one takes effect "
+                f"once the game is restarted)")
+        for what, ask in (("run", lambda: self.svc.run_whole("return BIG")),
+                          ("call", lambda: self.svc.call_exposed("Foo", "big")),
+                          ("probe", lambda: self.svc.probe("return BIG", 10000))):
+            with self.assertRaises(ApiError) as cm:
+                await ask()
+            self.assertEqual((cm.exception.status, cm.exception.code), (409, "addon_outdated"), what)
+            self.assertEqual(cm.exception.message, f"{what}: its answer is longer than one piece, which the WoWBridge in "
+                                                   f"the game cannot bring back {note}")
+        self.assertEqual(self.asked, ["=run", "call", "=probe"])  # each asked once, and nothing after it
+        self.assertEqual(self.svc.pours, {})
+        self.comp.sessions = {}                                   # a session seen without its HELLO: no version
+        with self.assertRaises(ApiError) as cm:
+            await self.svc.call_exposed("Foo", "big")
+        self.assertTrue(cm.exception.message.endswith("cannot bring back (it is too old)"), cm.exception.message)
+
+    async def test_one_piece_comes(self):
+        self.pieces = 1
+        self.assertEqual((await self.svc.run_whole("return 'abc'"))["values"], ['"abc"'])
+        self.assertEqual((await self.svc.call_exposed("Foo", "small"))["result"], "abc")
+        self.assertEqual(await self.svc.probe("return 'abc'", 10000), "abc")
 
 
 class Status(unittest.TestCase):

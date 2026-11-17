@@ -3,7 +3,8 @@
 of a long answer goes up in whole segments for one data call "pour": they are cut by the text alone (asked again, they
 are numbered and cut the same), at most two wait in the queue unshown, a RUN result goes before them, both stores (a
 probe's, a data call's) pour, `only` sends the ones asked for; `run` with whole brings a long value back whole. Pour
-here is what tests/addon/test_pour_trouble.py drives too (a lost segment, the link down, an addon that does not pour)."""
+here is what tests/addon/test_pour_trouble.py drives too (a lost segment, the link down, an addon that does not pour),
+and test_call_most.py and test_on_progress.py (a call's `most`, an addon's OnProgress)."""
 import asyncio
 import re
 import unittest
@@ -22,9 +23,9 @@ COUNT_SENDS = b"""
 local ns = ...
 local send = ns.Link.Send
 Queued = {}                                    -- when each segment went into the link's queue
-ns.Link.Send = function(text, kind, pour)
+ns.Link.Send = function(text, kind, ...)
 	if kind == "pour" then Queued[#Queued + 1] = GetTime() end
-	return send(text, kind, pour)
+	return send(text, kind, ...)
 end
 """
 
@@ -44,6 +45,7 @@ def text_of(n, seed=7):
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
 class Pour(unittest.TestCase):
     features = None                       # what the addon says it can do (None: as it is)
+    version = None                        # the version its HELLO says (None: as it is)
 
     def setUp(self):
         self.timeline, self.segments, self.drop = [], [], set()
@@ -51,6 +53,8 @@ class Pour(unittest.TestCase):
         self.addCleanup(s.close)
         if self.features is not None:
             s.ns[b"Link"][b"FEATURES"] = self.features
+        if self.version is not None:
+            s.ns[b"Link"][b"VERSION"] = self.version.encode()
         self.journal = Journal()
 
         def on_debug(kind, text):
@@ -231,7 +235,6 @@ class Poured(Pour):
         (key,) = keys
         self.assertTrue(key.isdigit())                                 # the data call's job
         self.assertEqual(self.calls("pour"), [{"k": key, "g": False}])
-        self.assertEqual(self.calls("piece"), [])
 
 
 if __name__ == "__main__":

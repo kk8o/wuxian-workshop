@@ -332,17 +332,15 @@ function A.Code(data)
 end
 
 -- Data calls (link features 2, 0.9.7): a CALL record "<job> <i>/<n>[ <verb>]\n<JSON>", in parts as a CODE job's, carries
--- what the agent asks of an addon's API (API.lua) as data: "call" {"a": addon, "n": name, "d": args} runs a function the
--- addon exposed, "reply" {"r": request id, "d": data} answers its request, "describe" {"a": addon or null, "b": true for
--- the names only} says what addons expose, "piece" {"k": job, "i": n} brings piece n of a long answer. WoWBridge reads
--- them itself and compiles nothing: they work with hot loading off, and the addon's function runs as any addon code
--- does, without the taint the client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
--- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds, or
--- ANSWER_AGAIN more once every piece went (the daemon asks for a piece again when the link lost it; each piece asked
--- for keeps it ANSWER_KEPT seconds from then). An answer is at most ANSWER_MOST bytes, else an {error}; a request with
--- "w": true (0.9.15: `call` with whole, the daemon's call_exposed) up to WHOLE_MOST, as `run` with whole
--- (agent/probes.py WHOLE_MOST): the daemon then takes the rest for as long as it keeps coming. An older WoWBridge
--- ignores "w" and answers past ANSWER_MOST with the {error}.
+-- what the agent asks of an addon's API (API.lua) as data: "call" {"a": addon, "n": name, "d": args, "m": most} runs a
+-- function the addon exposed, "reply" {"r": request id, "d": data} answers its request, "describe" {"a": addon or null,
+-- "b": true for the names only} says what addons expose. WoWBridge reads them itself and compiles nothing: they work
+-- with hot loading off, and the addon's function runs as any addon code does, without the taint the client gives code
+-- loaded at run time. The answer goes back as a RUN result whose one value is "1/<n>\n<piece 1>", as a probe's does
+-- (src/wuxianworkshop/agent/probes.py): its first PIECE bytes, and how many pieces of that size it makes (1: that is
+-- all of it). The rest is kept ANSWER_KEPT seconds for the daemon's pour, which is the one way it goes up. An answer is
+-- at most ANSWER_MOST bytes, a call's at most its "m" (0.10.0: the bytes its caller takes, MOST_MAX at most; the
+-- daemon's call_exposed says it with every call), else an {error} and none of it goes.
 -- "pour" {"k": key, "g": true|false, "only": [segment, ...]} (link features 4, 0.9.13) sends the rest of a long answer,
 -- all that follows its first piece, in one go: cut into segments of SEGMENT bytes (between two UTF-8 characters, by the
 -- text alone, so that a pour asked again numbers them the same), each a TYPE_POUR message "<key> <i>/<m>\n<segment>"
@@ -351,18 +349,19 @@ end
 -- RUN result's one value is "<m> <bytes of the rest>". While its segments go the answer is kept ANSWER_KEPT seconds
 -- from the last one handed to the link or acknowledged, never cut off halfway; once every one is acknowledged,
 -- ANSWER_AGAIN more. A reload takes it, as it takes every answer. A data call's answer keeps whose it is (the addon and
--- the name it exposed): that name's OnPour (API.lua, 0.9.15) hears as its pour starts and as each segment is in.
-local PIECE, ANSWER_MOST, WHOLE_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 16 * 1024 * 1024, 300, 60
+-- the name it exposed) and how much of it the daemon has: that name's OnProgress (API.lua, 0.10.0) hears as its first
+-- pour starts and as each segment is in for the first time.
+local PIECE, ANSWER_MOST, MOST_MAX, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 16 * 1024 * 1024, 300, 60
 local SEGMENT = 32 * 1024
-local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece", pour = "=pour" }
-local answers = {}                    -- job id -> { s, cuts, left, at, served }: answers longer than a piece
+local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", pour = "=pour" }
+local answers = {}                    -- job id -> { s, cuts, at[, addon, name] }: answers longer than a piece
 
 -- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece); one over `most` bytes is
--- an {error} that says so
-local function Pieces(s, most)
+-- an {error} that says so (mine: `most` is the call's own "m")
+local function Pieces(s, most, mine)
 	if #s > most then
-		s = ns.Json.Encode({ error = ("the answer is %d KB, more than the %d KB a call brings back"):format(
-			math.ceil(#s / 1024), most / 1024) })
+		s = ns.Json.Encode({ error = ("the answer is %d bytes, more than the %d bytes %s"):format(#s, most,
+			mine and "this call takes (its most)" or "an answer may be") })
 	end
 	local cuts, from = {}, 1
 	repeat
@@ -428,13 +427,15 @@ local function Pour(req)
 	local ok, line = false, nil
 	if n > 0 and ns.Console then ok, line = pcall(ns.Console.Add, "LINK", ns.L.CON_POURING:format(0, n)) end
 	if not ok then line = nil end
-	-- the exposed function's OnPour (API.lua), asked each time (registered again: the new fn; nil: no more), told while
-	-- this pour is the answer's latest; an fn that raises goes to the error handler, the pour goes on
-	local rest = #a.s - a.cuts[1]
+	-- how much of the answer the daemon has, over every pour of it: the first piece (it asks for the rest because it
+	-- read that one), then each segment once, when it is first acknowledged (one sent again adds nothing: sent only
+	-- grows). The exposed function's OnProgress (API.lua) is asked each time (registered again: the new fn; nil: no
+	-- more); an fn that raises goes to the error handler, the pour goes on
+	a.got, a.sent = a.got or {}, a.sent or a.cuts[1]
 	local function Tell()
-		local fn = a.name and a.pour == p and ns.PourWatcher and ns.PourWatcher(a.addon, a.name)
+		local fn = a.name and ns.ProgressWatcher and ns.ProgressWatcher(a.addon, a.name)
 		if not fn then return end
-		local fine, err = pcall(fn, { done = done, total = n, bytes = bytes, seconds = GetTime() - t0, answer = rest })
+		local fine, err = pcall(fn, { id = key, sent = a.sent, size = #a.s, seconds = GetTime() - a.t0 })
 		if not fine then geterrorhandler()(err) end
 	end
 	function p.Next()
@@ -444,27 +445,32 @@ local function Pour(req)
 		a.out, a.at = a.out + 1, GetTime()
 		local seg = a.s:sub((i == 1 and a.cuts[1] or ends[i - 1]) + 1, ends[i])
 		bytes = bytes + #seg
-		return ("%s %d/%d\n"):format(key, i, m) .. seg
+		return ("%s %d/%d\n"):format(key, i, m) .. seg, i
 	end
-	function p.Acked()
+	function p.Acked(i)
 		a.out, a.at = math.max(0, a.out - 1), GetTime()
-		local before = done
 		done = math.min(n, done + 1)
 		if line then
 			pcall(ns.Console.Update, line, done < n and ns.L.CON_POURING:format(done, n)
 				or ns.L.CON_POURED:format(n, bytes / 1024, GetTime() - t0))
 		end
-		if done > before then Tell() end
+		if i and not a.got[i] then
+			a.got[i], a.sent = true, a.sent + ends[i] - (i == 1 and a.cuts[1] or ends[i - 1])
+			Tell()
+		end
 		if a.out == 0 and a.pour == p and not list[at] then       -- every segment of the last pour is in: a while more
 			a.at = GetTime() - ANSWER_KEPT + ANSWER_AGAIN
 			C_Timer.After(ANSWER_AGAIN + 1, function() Sweep(store) end)
 		end
 	end
 	if list[1] then
-		Tell()                                         -- it starts: done 0
+		if not a.t0 then                               -- the answer's first pour: it starts (sent: the first piece)
+			a.t0 = t0
+			Tell()
+		end
 		ns.Link.Pour(p)
 	end
-	return ("%d %d"):format(m, rest)
+	return ("%d %d"):format(m, #a.s - a.cuts[1])
 end
 
 -- (the answer's text, or nil + why not) for a data call
@@ -474,16 +480,7 @@ local function Answer(verb, req)
 	if verb == "reply" then return WB.Reply(req.r, req.d) end
 	if verb == "describe" then return WB.Describe(req.a, req.b == true) end
 	if verb == "pour" then return Pour(req) end
-	if verb ~= "piece" then return nil, ("no data call %q"):format(tostring(verb)) end
-	local key, i = tostring(req.k), tonumber(req.i)
-	local a = answers[key]
-	if not a or not i or i < 2 or not a.cuts[i] then
-		return nil, "the rest of this answer is no longer kept in the game (the UI reloaded?)"
-	end
-	if not a.served[i] then a.served[i], a.left = true, a.left - 1 end     -- a piece asked again counts once
-	a.at = GetTime()                                    -- a long answer (whole: up to 16 MB) is kept while it is asked for
-	if a.left <= 0 then a.at = math.min(a.at, GetTime() - ANSWER_KEPT + ANSWER_AGAIN) end
-	return ("%d/%d\n%s"):format(i, #a.cuts, a.s:sub(a.cuts[i - 1] + 1, a.cuts[i]))
+	return nil, ("no data call %q"):format(tostring(verb))
 end
 
 local function RunCall(id, job)
@@ -506,12 +503,13 @@ local function RunCall(id, job)
 			if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
 		end
 	end
-	if text and job.verb ~= "piece" and job.verb ~= "pour" then
-		local s, cuts = Pieces(text, type(req) == "table" and req.w == true and WHOLE_MOST or ANSWER_MOST)
+	if text and job.verb ~= "pour" then
+		local mine = job.verb == "call" and type(req.m) == "number" and req.m >= 1     -- the bytes its caller takes
+		local s, cuts = Pieces(text, mine and math.min(math.floor(req.m), MOST_MAX) or ANSWER_MOST, mine)
 		if #cuts > 1 then
 			Sweep(answers)                              -- the ones left by a daemon that never asked
-			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }
-			if job.verb == "call" then                  -- whose answer it is: the addon's OnPour hears how its pour goes
+			answers[id] = { s = s, cuts = cuts, at = GetTime() }
+			if job.verb == "call" then                  -- whose answer it is: the addon's OnProgress hears how it goes up
 				answers[id].addon, answers[id].name = tostring(req.a), tostring(req.n)
 			end
 		end

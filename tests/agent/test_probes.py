@@ -130,12 +130,11 @@ class Probes(unittest.TestCase):
         self.assertEqual(got[10], "".join(map(chr, range(128))))
         self.assertEqual(got[11], '两 \\ "')
 
-    def test_a_long_answer_comes_in_pieces(self):
-        """answer_chunk keeps an answer longer than PIECE in the game and returns its first piece, piece_chunk each of
-        the others: each fits a RUN result (WoWBridge cuts one at 4000 bytes) with its line "<i>/<pieces>", ends
-        between two UTF-8 characters, and together they are the answer. A piece may be asked for again (the link lost
-        it); the answer is let go a minute after its last piece went (or 5 minutes on, when the rest was never asked
-        for); an answer over MOST bytes is an error"""
+    def test_a_long_answer_keeps_its_rest_for_the_pour(self):
+        """answer_chunk returns the first piece of an answer longer than PIECE with its line "1/<pieces>": it fits a RUN
+        result (WoWBridge cuts one at 4000 bytes) and ends between two UTF-8 characters. The answer is kept in the game
+        under its key, with where each piece ends, for the pour of the rest (Agent.lua), and let go 5 minutes on when
+        nobody asked; one piece is all of a short answer and nothing is kept; an answer over MOST bytes is an error"""
         lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)    # bytes: a cut character would show
         lua.execute(STUB.encode())
 
@@ -143,43 +142,37 @@ class Probes(unittest.TestCase):
             return lua.execute(chunk.encode())
         chunk = P.LUA_JSON + 'return J({ ("两"):rep(3000), "a, b (OnUnload ok)" })'
         answer = run(chunk)
-        head, _, text = run(P.answer_chunk(chunk, "k1")).partition(b"\n")
-        n, pieces = int(head.split(b"/")[1]), [text]
-        self.assertEqual(head, b"1/%d" % n)
-        self.assertEqual(n, 3)
-        for i in range(2, n + 1):
-            got = run(P.piece_chunk("k1", i))
-            self.assertLessEqual(len(got), 4000)
-            self.assertEqual(P.piece([got.decode("utf-8")], i)[0], n)       # whole characters: decodes strictly
-            pieces.append(got.partition(b"\n")[2])
-        self.assertTrue(all(len(p) <= P.PIECE for p in pieces))
-        self.assertLess(len(pieces[0]), P.PIECE)                       # P.PIECE would end inside a character
-        self.assertEqual(b"".join(pieces), answer)
-        self.assertEqual(run(P.piece_chunk("k1", 2)).partition(b"\n")[2], pieces[1])   # asked again: still there
-        run("__now = __now + 61")
-        run(P.answer_chunk(chunk, "k6"))                                 # the next long answer lets the old ones go
-        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k1"))        # a minute after every piece went
-        with self.assertRaises(lupa.LuaError) as cm:
-            run(P.piece_chunk("k1", 2))
-        self.assertIn("no longer kept", str(cm.exception))
-
+        got = run(P.answer_chunk(chunk, "k1"))
+        self.assertLessEqual(len(got), 4000)
+        n, first = P.first_piece([got.decode("utf-8")])                 # whole characters: decodes strictly
+        self.assertEqual((n, got.partition(b"\n")[0]), (3, b"1/3"))
+        self.assertLess(len(first.encode()), P.PIECE)                   # P.PIECE would end inside a character
+        kept = lua.eval(b"WuxianWorkshopAnswers.k1")
+        self.assertEqual((kept[b"s"], len(kept[b"cuts"]), kept[b"cuts"][1]), (answer, 3, len(first.encode())))
+        self.assertEqual(sorted(k.decode() for k in kept), ["at", "cuts", "s"])   # what Agent.lua's Pour reads
         self.assertEqual(run(P.answer_chunk(P.LUA_JSON + "return J({ 1, 2 })", "k2")), b"1/1\n[1,2]")
         self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k2"))        # one piece: nothing kept
+        run("__now = __now + 299")
         run(P.answer_chunk(chunk, "k3"))
-        run("__now = __now + 301")
-        run(P.answer_chunk(chunk, "k4"))
-        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k3"))        # never asked for: gone 5 minutes on
-        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.k4"))
+        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.k1"))
+        run("__now = __now + 2")
+        run(P.answer_chunk(chunk, "k4"))                                 # the next long answer lets the old ones go
+        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.k1"))        # never asked for: gone 5 minutes on
+        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.k3"))
 
         big = run(P.answer_chunk(f'return ("x"):rep({P.MOST + 1})', "k5")).decode()
         with self.assertRaises(ValueError) as cm:
-            P.parse([P.piece([big], 1)[1]])
+            P.parse([P.first_piece([big])[1]])
         self.assertTrue(str(cm.exception).startswith("the answer is 257 KB, more than the 256 KB a probe brings back"))
+        for odd in ([], [5], ["no line"], ["2/3\nx"], ["1/0\nx"], ["1/x\ny"]):
+            with self.assertRaises(ValueError) as cm:
+                P.first_piece(odd)
+            self.assertIn("not the first piece of an answer", str(cm.exception))
+        self.assertFalse(hasattr(P, "piece_chunk"))                      # the piece-by-piece way is gone
 
-    def test_a_whole_value_and_how_long_it_is_kept(self):
+    def test_a_whole_value(self):
         """whole (run --whole): the code's first value as tostring makes it, up to WHOLE_MOST bytes, past that a Lua error
-        (not a probe's JSON). The game keeps a long answer 5 minutes from the latest piece asked for, not from the first:
-        one asked for slowly (eight at a time over a slow link) is not let go in the middle"""
+        (not a probe's JSON)"""
         lua = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
         lua.execute(STUB.encode())
 
@@ -188,15 +181,7 @@ class Probes(unittest.TestCase):
         self.assertEqual(run(P.answer_chunk("return 42, 43", "w0", whole=True)), b"1/1\n42")
         chunk = 'return ("两"):rep(3000)'
         self.assertEqual(run(P.answer_chunk(chunk, "w1", whole=True)).partition(b"\n")[0], b"1/3")
-        run("__now = __now + 200")
-        run(P.piece_chunk("w1", 2))
-        run("__now = __now + 200")                                       # 400 s after the first piece, 200 after the latest
-        run(P.answer_chunk(chunk, "w2"))                                 # what lets the old ones go
-        self.assertIsNotNone(lua.eval(b"WuxianWorkshopAnswers.w1"))
-        self.assertEqual(P.piece([run(P.piece_chunk("w1", 3)).decode()], 3)[0], 3)
-        run("__now = __now + 61")
-        run(P.answer_chunk(chunk, "w3"))
-        self.assertIsNone(lua.eval(b"WuxianWorkshopAnswers.w1"))        # a minute after its last piece
+        self.assertEqual(lua.eval(b"WuxianWorkshopAnswers.w1.s"), "两".encode() * 3000)
         with self.assertRaises(lupa.LuaError) as cm:
             run(P.answer_chunk(f'return ("x"):rep({P.WHOLE_MOST + 1})', "w4", whole=True))
         self.assertIn("the value is 16385 KB, more than the 16384 KB a whole run brings back", str(cm.exception))

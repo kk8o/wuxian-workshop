@@ -6,6 +6,7 @@ import asyncio
 import re
 import unittest
 
+from tests.support import pours
 from tests.support.wowmock import ADDON, Session, lupa
 from wuxianworkshop.core import fontpack, mailbox
 from wuxianworkshop.core.game import atomic_write
@@ -539,8 +540,8 @@ class ProbeAnswers(unittest.TestCase):
     def test_inspect_the_debug_window_with_its_details_open(self):
         """seen in the game (0.9.4): inspect WoWBridgeConsole failed. Its answer, 16821 bytes at depth 2, was cut at the
         4000 a RUN result carries; with a [详情] box open, the ", " and " (OnUnload " of the box's text were taken for
-        value separators and a note. Through the real Agent.lua and link the answer (agent/probes.py) comes back whole,
-        in pieces"""
+        value separators and a note. Through the real Agent.lua and link the answer (agent/probes.py) comes back whole:
+        its first piece with the probe's result, the rest poured"""
         got = []
         s = Session(self)
         comp = link.Companion(s.addons, clock=s.now, log=lambda text: None, on_debug=lambda kind, text: got.append((kind, text)))
@@ -555,7 +556,17 @@ class ProbeAnswers(unittest.TestCase):
                 if text is not None:
                     return Service.run_result(parse_run(text))
             self.fail(f"no RUN result for job {job}")
-        svc.run = run
+
+        async def data(verb, payload, timeout_ms=10000, what="call"):      # the daemon's data call (the pour)
+            job = comp.data_call(verb, payload)
+            for _ in range(200):
+                s.run(0.25)
+                text = next((t for k, t in got if k == "RUN" and t.startswith(f"{job} ")), None)
+                if text is not None:
+                    return job, Service.run_result(parse_run(text))
+            self.fail(f"no RUN result for data call {job}")
+        svc.run, svc.data = run, data
+        pours.wire(self, svc, comp, s)
 
         def boxes(frame):
             """the edit boxes in an answer's frame and below"""
@@ -584,9 +595,9 @@ class ProbeAnswers(unittest.TestCase):
                 res = asyncio.run(svc.inspect("WoWBridgeConsole", depth=depth))
                 window = res["frames"][0]
                 self.assertEqual((window["name"], window["type"], window["shown"]), ("WoWBridgeConsole", "Frame", True))
-                pieces = [t for k, t in got[before:] if k == "RUN" and " ok =probe " in t]
-                self.assertGreater(len(pieces), 1)
-                self.assertTrue(all(parse_run(t)["cut"] is None for t in pieces))                # never cut
+                (first,) = [t for k, t in got[before:] if k == "RUN" and " ok =probe " in t]    # its first piece
+                self.assertIsNone(parse_run(first)["cut"])                                       # never cut
+                self.assertEqual(len([t for k, t in got[before:] if k == "RUN" and " ok =pour " in t]), 1)   # the rest
             self.assertEqual([b["text"] for b in boxes(window)], [shown])                 # at depth 3: the box's text
         finally:
             s.close()

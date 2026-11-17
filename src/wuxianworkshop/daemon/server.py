@@ -521,7 +521,7 @@ def make_app(service, access, handle, mcp=None):
     async def call_(request):
         b = await body_of(request)
         return await service.call_exposed(b.get("addon"), b.get("name"), b.get("args"), b.get("timeout_ms", 10000),
-                                          shared=b.get("shared") is True, whole=b.get("whole", False))
+                                          shared=b.get("shared") is True, most=b.get("most"))
 
     @api
     async def respond(request):
