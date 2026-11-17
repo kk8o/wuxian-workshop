@@ -312,10 +312,15 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.addCleanup(shutil.rmtree, theirs, True)
         (theirs / "theirs.lua").write_text("-- not ours\n", encoding="utf-8")
         self.ok("POST", "/api/local/add", {"path": str(with_game(self.root / "ext" / "hx", "hx", "WuxianHx"))})
-        self.assertEqual(self.row("hx")["addons"], [dict(folder="WuxianHx", version="1.2.0", state="foreign")])
-        status, res = self.call("POST", "/api/local/install", {"id": "hx"})
-        self.assertEqual((status, res["error"]["code"]), (409, "addon_exists"), res)
-        self.assertEqual((res["done"], res["error"]["done"]), ([], []))        # what it installed before that
+        self.assertEqual(self.row("hx")["addons"], [dict(folder="WuxianHx", version="1.2.0", state="foreign",
+                                                         same=False, there=None)])
+        self.assertEqual(self.row("hx")["player"]["action"], "replace_addon")   # only the player says 替换
+        for replace in (None, False, "yes", 1, "same"):                        # not the same addon: "same" is no yes
+            status, res = self.call("POST", "/api/local/install", {"id": "hx", "replace": replace})
+            self.assertEqual((status, res["error"]["code"]), (409, "addon_exists"), res)
+            self.assertEqual((res["done"], res["error"]["done"]), ([], []))    # what it installed before that
+            self.assertEqual({k: res["error"][k] for k in ("folder", "same", "there", "newer")},
+                             dict(folder="WuxianHx", same=False, there=None, newer=False))
         res = self.ok("POST", "/api/local/load", {"id": "hx"})                 # it runs all the same, and says so
         self.assertEqual((res["row"]["state"], res["addons"], res["check"]["ok"]), ("running", [], False))
         self.assertEqual([p["level"] for p in res["check"]["problems"] if p["where"] == "addons"], ["error"])
@@ -323,6 +328,37 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(res["addons"], [dict(folder="WuxianHx", removed=False, kept=None, why="foreign")])
         self.assertNotIn("hint", res)
         self.assertEqual(os.listdir(theirs), ["theirs.lua"])
+
+    def test_replacing_an_addon_installed_by_hand(self):
+        theirs = self.addons / "WuxianRx"
+        theirs.mkdir()
+        self.addCleanup(shutil.rmtree, theirs, True)
+        (theirs / "WuxianRx.toc").write_text("## Title: WuxianRx\n## Author: Tim\n## Version: 1.1.1\n\nold.lua\n",
+                                             encoding="utf-8")
+        (theirs / "old.lua").write_text("-- by hand\n", encoding="utf-8")
+        folder = with_game(self.root / "ext" / "rx", "rx", "WuxianRx")
+        toc = folder / "addons" / "WuxianRx" / "WuxianRx.toc"
+        toc.write_text(toc.read_text(encoding="utf-8").replace("## Version", "## Author: Tim\n## Version"),
+                       encoding="utf-8")
+        self.ok("POST", "/api/local/add", {"path": str(folder)})
+        self.addCleanup(self.call, "POST", "/api/local/remove", {"id": "rx"})
+        row = self.row("rx")
+        self.assertEqual(row["addons"], [dict(folder="WuxianRx", version="1.2.0", state="foreign", same=True,
+                                              there="1.1.1")])
+        self.assertEqual(row["player"]["action"], "replace_addon")
+        self.assertIn("手动安装", row["player"]["text"])
+        status, res = self.call("POST", "/api/local/install", {"id": "rx"})       # no replace: as before
+        self.assertEqual((status, res["error"]["code"], res["error"]["same"], res["error"]["there"]),
+                         (409, "addon_exists", True, "1.1.1"))
+        self.assertIn("--replace", res["error"]["message"])
+        res = self.ok("POST", "/api/local/install", {"id": "rx", "replace": "same"})
+        (got,) = res["addons"]
+        self.assertEqual((got["state"], got["was"], got["kept"] is not None), ("installed", "foreign", True))
+        self.assertTrue((theirs / "core.lua").is_file())
+        self.assertFalse((theirs / "old.lua").exists())
+        self.assertIn("kept in the history", res["hint"])
+        self.assertEqual(self.row("rx")["addons"][0]["state"], "current")
+        self.assertNotEqual((self.row("rx")["player"] or {}).get("action"), "replace_addon")
 
     def test_a_package_from_the_folder_to_another_computer(self):
         folder = with_game(self.root / "ext" / "px", "px", "WuxianPx")

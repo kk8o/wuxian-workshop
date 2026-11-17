@@ -917,7 +917,19 @@
             <div class="xp-note" :class="{ bad: lxBlocked(lxCur) }" x-show="lxUnmet(lxCur)" x-text="lxUnmet(lxCur)"></div>
             <div class="xp-note bad" x-show="lxCur.error && !lxBlocked(lxCur)" x-text="lxCur.error"></div>
             <div class="xp-note" :class="{ bad: lx.note && lx.note.bad }" x-show="lx.note" x-text="lx.note && lx.note.text"></div>
-            <div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)" x-text="lxPlayer(lxCur)"></div>
+            <div class="xp-note" x-show="lxPlayer(lxCur) && !lxNeeds(lxCur)">
+              <span class="grow" x-text="lxPlayer(lxCur)"></span>
+              <button class="btn small" x-show="lxCur.player && lxCur.player.action === 'replace_addon' && lxSwapOf(lxCur) && !lxSwapLine(lxCur)"
+                      :disabled="lx.busy !== ''" @click="lxSwap(lxCur, lxSwapOf(lxCur))"
+                      x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('替换')"></button>
+            </div>
+            <!-- 替换一个不是这个扩展带的同名插件：先确认；原来的那份存进历史，在开发台可以找回 -->
+            <div class="xp-confirm" x-show="lxSwapLine(lxCur)">
+              <span class="grow" x-text="lxSwapLine(lxCur)"></span>
+              <button class="btn confirm small" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, (lxCur.addons || []).find((a) => lx.swap === lxCur.id + ':' + a.folder), true)"
+                      x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('确认替换')"></button>
+              <button class="btn small" @click="lx.swap = ''">取消</button>
+            </div>
             <div class="xp-note" x-show="lx.packed && lx.packed.id === lxCur.id">
               <span>已打包</span>
               <span class="mono selectable grow" x-text="lx.packed ? lx.packed.file : ''"></span>
@@ -958,7 +970,7 @@
                   <dt x-show="(lxCur.addons || []).length">游戏插件</dt>
                   <dd x-show="(lxCur.addons || []).length" class="lx-game">
                     <template x-for="a in (lxCur.addons || [])" :key="a.folder">
-                      <span class="lx-addon"><span class="mono selectable" x-text="a.folder"></span><span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span></span>
+                      <span class="lx-addon"><span class="mono selectable" x-text="a.folder"></span><span class="pill tiny" :class="lxAddonPill(a)" x-text="lxAddonState(a)"></span><button class="btn tiny" x-show="lxSwappable(a) && !lxUnapproved(lxCur)" :disabled="lx.busy !== ''" @click="lxSwap(lxCur, a)" x-text="lxBusy(lxCur, 'replace') ? t('进行中…') : t('替换')"></button></span>
                     </template>
                     <button class="btn tiny" x-show="lxGameAct(lxCur) && !lxUnapproved(lxCur)" :disabled="lx.busy !== ''" @click="lxInstall(lxCur)"
                             x-text="lxBusy(lxCur, 'install') ? t('进行中…') : lxGameAct(lxCur) === 'update' ? t('更新') : t('安装')"></button>

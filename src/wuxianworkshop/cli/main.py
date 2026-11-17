@@ -286,6 +286,9 @@ def build_parser():
     q = act.add_parser("install", help="install or update an extension's game addons now (one the player allowed; a "
                                        "new addon needs a game restart)")
     q.add_argument("id")
+    q.add_argument("--replace", action="store_true",
+                   help="replace a folder of an addon's name in AddOns that is not this extension's (one installed by "
+                        "hand): the one there is kept in the history (`wuxian history`)")
     act.add_parser("dir", help="print the extensions folder: a package unpacks there, a folder put there is found")
     q = act.add_parser("logs", help="an extension's output (its stderr and the workshop's lines on its starts and ends)")
     q.add_argument("id")
@@ -1118,7 +1121,8 @@ EXT_ADDON = {"unknown": "the game's folder is not known",
              "missing": "not in the game: `wuxian ext install {id}` installs it (so does `ext load`)",
              "current": "installed",
              "differs": "the game has another version: `wuxian ext install {id}` updates it (so does `ext load`)",
-             "foreign": "the game has an addon of this name that is not this extension's: it is left alone",
+             "foreign": "the game has an addon of this name that is not this extension's: it is left alone "
+                        "(`wuxian ext install {id} --replace` puts this one in its place)",
              "listed": "its folder name is that of an addon of the catalog: it is never installed (the addon folder "
                        "needs another name)"}
 
@@ -1186,6 +1190,9 @@ def print_game_side(res):
         if isinstance(g, dict):
             name = " ".join(str(x) for x in (g.get("folder"), g.get("version")) if x)
             was = f" (it was {g['was']})" if g.get("state") == "installed" and g.get("was") else ""
+            if g.get("state") == "installed" and g.get("was") == "foreign":
+                was = " (in the place of the folder that was there, kept in the history" + (
+                    f": {g['kept']})" if g.get("kept") else ")")
             print(f"game addon {name}: {g.get('state')}{was}")
     if res.get("restart"):
         print("restart the game: it finds new addons and new files only when it starts")
@@ -1294,7 +1301,7 @@ def cmd_ext(client, args):
         print_ext(res["row"])
         return 0 if res["check"].get("ok") else 1
     if a == "install":
-        res = client.extension_install(args.id)
+        res = client.extension_install(args.id, replace=args.replace)
         print_game_side(res)
         if not res.get("addons"):
             print(f"{res.get('id', args.id)}: no game addons to install")

@@ -624,7 +624,8 @@ def make_app(service, access, handle, mcp=None):
 
     @api
     async def local_install(request):
-        return await service.extension_install((await body_of(request)).get("id"))
+        b = await body_of(request)                     # replace: true, or "same"; anything else is false
+        return await service.extension_install(b.get("id"), b.get("replace"))
 
     @api
     async def local_new(request):

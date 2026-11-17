@@ -2371,10 +2371,12 @@ class Service:
                                                "extension's folder or a game addon's folder")
         return await asyncio.to_thread(self.local.summary, id, path)
 
-    async def extension_install(self, id):
+    async def extension_install(self, id, replace=False):
         """a local extension's game addons put into the game's AddOns now (Host.install): {id, addons, restart,
-        hint}"""
-        return await asyncio.to_thread(self.local.install, id)
+        hint}. replace: True or "same" replaces a folder of an addon's name that is not the extension's (the
+        player's 替换); anything else none"""
+        replace = replace if replace is True or replace == "same" else False
+        return await asyncio.to_thread(self.local.install, id, replace)
 
     async def new_extension(self, id, title=None, folder=None, addon=None, where=None):
         """a new local extension from the template (scaffold.new_extension_files) in folder (default

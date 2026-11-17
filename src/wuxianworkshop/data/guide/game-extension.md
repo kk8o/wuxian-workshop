@@ -60,6 +60,7 @@ add anything the template does not show.
 | `enable_addon` | the player turned the addon off in the game's list | they reload |
 | `turn_on` | the extension is off in `/wk` | its tools come back |
 | `approve` | it came as a package, or was found in the extensions folder: not made by you in this session | nothing of it runs before |
+| `replace_addon` | the game's AddOns holds a folder of the addon's name that is not the extension's (most often one installed by hand): only the player replaces it (替换 on the Extensions page; the one there is kept in the history) | its addon is installed; a new one needs a restart |
 
 Until the first restart a new addon is there only as long as the hot load lasts: it works now, and a UI reload
 drops it. Tell the player once the idea is worth keeping.

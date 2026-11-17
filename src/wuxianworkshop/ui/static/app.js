@@ -171,7 +171,7 @@ const EXAMPLES = [                             // 试一下: an argument's name 
 ];
 const KINDS = ['ERR', 'OUT', 'WARN', 'BLOCKED', 'RUN', 'RELOAD', 'EVENT', 'SNAP', 'WATCH', 'SLOTS', 'INFO'];
 const REASON_TEXT = { load: '热加载', watch: '开始监视', save: '保存后热加载', new: '新建', manual: '手动存', restore: '回退前',
-                      update: '更新前', remove: '卸载前' };
+                      update: '更新前', remove: '卸载前', replace: '替换前' };
 const STATUS_TEXT = { added: '新增', changed: '改动', removed: '删除' };
 const CHECK_TEXT = {                           // agent/lint.py's codes, for people (the messages stay the agent's English)
   syntax: '语法错误', 'missing-lib': '客户端没有的库', lua52: 'Lua 5.1 没有', 'event-unknown': '未知事件',
@@ -315,11 +315,12 @@ function appState() {
     wxw: { list: null, manual: {}, busy: '', note: {} },   // 无限图鉴's MCP server in the same agents (server=wuxianwow)
     apps: { data: null, error: '' },           // /api/kit/apps: the apps an agent can be handed
     lx: { list: null, revision: null, caps: null, error: '', problem: '', loading: false, again: false, busy: '', note: null,
-          check: null, ask: '', home: '', menu: '', drop: '', packed: null, game: {}, sum: null, sumN: 0 },
+          check: null, ask: '', home: '', menu: '', drop: '', swap: '', packed: null, game: {}, sum: null, sumN: 0 },
                                                // 扩展 · 本机: the rows, the capabilities by id, the last check {id, data},
                                                // the id whose start was refused until its command is allowed; home: the
                                                // extensions' folder; menu: the one open (add | more); drop: the id whose
-                                               // 移除 waits for 确认; packed: the last package {id, file, folder, line};
+                                               // 移除 waits for 确认; swap: id + ':' + folder whose 替换 waits for 确认 (a
+                                               // folder in AddOns that is not the same addon); packed: the last package {id, file, folder, line};
                                                // game: by id, true once game addons went in that need the game restarted
     lxr: { open: false, kind: 'zip', path: '', old: null, new: null, changes: null, same: null, busy: false, error: '' },
                                                // 扩展 · 本机 · 添加: its id is here already: the two summaries, asked first
@@ -1503,7 +1504,7 @@ function appState() {
     lxShow(id) {                               // selected in the list
       this.lx.note = null;
       this.lx.ask = '';
-      Object.assign(this.lx, { menu: '', drop: '', packed: null });
+      Object.assign(this.lx, { menu: '', drop: '', swap: '', packed: null });
       this.lxOutReset(this.selLx || { id });
       const r = this.selLx;                    // the apps it adds to are named by their titles: read them once
       if (r && Object.keys(r.adds || {}).length && !this.apps.data) this.loadApps();
@@ -1563,7 +1564,8 @@ function appState() {
         const needs = list(g.needs).map((n) => (n.installed === false ? t('{name}（未安装）', { name: n.addon }) : n.addon));
         put('game', t('游戏插件'), [(g.folder || '') + (g.version ? ' ' + g.version : ''),
           needs.length ? t('需要插件：{names}', { names: needs.join(sep) }) : '',
-          g.cannot ? t('无法安装：{why}', { why: this.lxCannot(g.cannot) }) : g.path || t('尚未安装到游戏')]);
+          g.cannot === 'foreign' ? this.lxForeignLine(g, g.version) : g.cannot ? t('无法安装：{why}', { why: this.lxCannot(g.cannot) })
+            : g.path || t('尚未安装到游戏')]);
       }
       const l = s.local;
       if (l && typeof l === 'object') {
@@ -1651,6 +1653,14 @@ function appState() {
         case 'restart_game': return t('请重启游戏：新插件 {addon} 重启后才会载入', { addon });
         case 'enable_addon': return t('请在游戏的插件列表中启用 {addon}，然后重载界面', { addon });
         case 'turn_on': return t('请在游戏中输入 /wk，开启此扩展');
+        case 'replace_addon': {
+          const a = this.lxSwapOf(r);
+          if (!a) return p.text || '';
+          const name = this.lxThere(a);
+          if (!a.same) return t('游戏里已有同名插件 {name}，替换后生效', { name });
+          return a.version ? t('游戏里已有手动安装的 {name}，替换为扩展带的 {version} 后生效', { name, version: a.version })
+            : t('游戏里已有手动安装的 {name}，替换为扩展带的版本后生效', { name });
+        }
         default: return p.text || '';
       }
     },
@@ -1897,18 +1907,63 @@ function appState() {
           : u.what === 'kit' ? t('需要 WuxianKit {v} 以上', { v: u.needs }) : '';
       }).filter(Boolean).join(t('；'));
     },
-    lxAddonState(a) {
+    lxAddonState(a) {                          // a foreign folder that is the same addon: one installed by hand
+      if (a && a.state === 'foreign' && a.same) return a.there ? t('手动安装的 {v}', { v: a.there }) : t('手动安装的版本');
       return t({ missing: '未安装', current: '已安装', differs: '有更新', foreign: '同名插件已存在', unknown: '游戏目录未知',
                  broken: '文件缺失', listed: '与目录插件同名' }[a && a.state] || '—');
     },
     lxAddonPill(a) {
+      if (a && a.state === 'foreign' && a.same) return 'warn';
       return { current: 'ok', differs: 'warn', missing: 'warn', foreign: 'bad', broken: 'bad', listed: 'bad' }[a && a.state] || 'off';
+    },
+    lxThere(a) { return a ? [a.folder, a.there].filter(Boolean).join(' ') : ''; },   // the folder in AddOns and its version
+    lxForeignLine(g, version) {                // a folder of the addon's name in AddOns that is not the extension's, as
+      const name = this.lxThere(g);            // the 批准 card says it (g: a summary's game row, or an addon row)
+      if (g.same && g.newer) return t('游戏里的 {name} 比扩展带的新，保留不换', { name });
+      if (g.same && version) return t('游戏里已有手动安装的 {name}，批准后换成 {version}；原来的存进历史，可以找回', { name, version });
+      if (g.same) return t('游戏里已有手动安装的 {name}，批准后换成扩展带的版本；原来的存进历史，可以找回', { name });
+      return t('无法安装：{why}', { why: this.lxCannot('foreign') });
+    },
+    lxSwappable(a) {                           // an addon row whose folder in AddOns 替换 puts the extension's in place of:
+      return !!a && a.state === 'foreign' && a.same !== undefined && !a.newer;   // a folder (not a link), not newer
+    },
+    lxSwapOf(r) { return ((r && r.addons) || []).find((a) => this.lxSwappable(a)) || null; },
+    lxSwapLine(r) {                            // the 确认 before replacing a folder that is not the same addon
+      const a = r && this.lx.swap ? ((r.addons || []).find((x) => x && this.lx.swap === r.id + ':' + x.folder)) : null;
+      if (!a) return '';
+      return t('游戏里的 {folder} 不是这个扩展带的插件（{there}）。替换后原来的存进历史，可以在开发台找回。替换？',
+               { folder: a.folder, there: a.there || t('未知版本') });
+    },
+    async lxSwap(r, a, sure) {              // 替换: POST /api/local/install {id, replace}; one that is not the same
+      if (!r || !r.id || !a || this.lx.busy) return;   // addon asks first (lx.swap)
+      const key = r.id + ':' + a.folder;
+      if (!a.same && !sure) { this.lx.swap = key; return; }
+      this.lx.swap = '';
+      this.lx.busy = r.id + ':replace';
+      this.lx.note = null;
+      try {
+        const d = await this.api('/api/local/install', { body: { id: r.id, replace: a.same ? 'same' : true } });
+        this.lxGameDone(r, d);
+        await this.loadLocal(true);
+        this.lxSum(r.id);
+        this.say(t('已替换 {name}', { name: a.folder }));
+      } catch (e) {
+        if (e && e.status === 403 && e.data && e.data.error && e.data.error.code === 'needs_approval') {
+          this.lx.ask = r.id;
+          this.say(t('{name} 需要批准', { name: this.lxTitle(r) }));
+        } else this.lx.note = { bad: true, text: t('替换失败：') + lxWhy(e) };
+        await this.loadLocal(true);
+      } finally {
+        this.lx.busy = '';
+      }
     },
     lxCannot(c) {                              // why the workshop will not install a game addon (a summary's cannot, or
       return t({ listed: '与扩展目录中的插件同名', foreign: '游戏里已有同名插件', broken: '文件缺失' }[c] || '—');   // its state)
     },
     lxStuck(r) {                               // the first of its game addons that cannot be installed as things are, as
-      const a = ((r && r.addons) || []).find((x) => x && ['listed', 'foreign', 'broken'].includes(x.state));   // a line ('')
+      const a = ((r && r.addons) || []).find((x) => x && ['listed', 'foreign', 'broken'].includes(x.state)   // a line ('');
+        && !(x.state === 'foreign' && x.same && !x.newer));   // the same addon installed by hand: the yes replaces it
+      if (a && a.state === 'foreign' && a.same) return this.lxForeignLine(a, a.version);
       return a ? t('{name} {why}', { name: a.folder, why: this.lxCannot(a.state) }) : '';
     },
     lxGameAct(r) {                             // what the 游戏插件 button does: 'install' | 'update' | '' (nothing to do, or
@@ -3121,7 +3176,7 @@ function lxWhy(e) {
     case 'addon_failed': return t('游戏插件写入失败') + t('：') + (err.message || '');
     case 'requires_unmet': return t('版本不足');
     case 'no_game_folder': return t('未找到游戏目录');
-    case 'addon_exists': return t('游戏里已有同名插件，未覆盖');
+    case 'addon_exists': return err.same && err.newer ? t('游戏里的插件版本更新，保留不换') : t('游戏里已有同名插件，未覆盖');
     case 'no_addons': return t('没有游戏插件');
     case 'package_too_big': return t('扩展包过大');
     case 'bad_manifest': return t('清单有误') + t('：') + (err.message || '');

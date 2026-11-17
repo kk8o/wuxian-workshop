@@ -778,7 +778,9 @@ def build_server(backend, name="wuxian"):
         {row, was, timeout}: when that is done (row.player is then the next thing to tell them, or null: nothing is
         left for the player), or after `seconds` (default 120, 600 at most; timeout true: ask the player, then wait
         again). With nothing to wait for it answers at once (was null). action: approve (on the Extensions (扩展) page
-        of the 无限工坊 App: never do it for them), start_game (run it, enter the world, not minimized), restart_game
+        of the 无限工坊 App: never do it for them), replace_addon (替换 on that page: the game's AddOns holds a folder
+        of its addon's name that is not its own; never do it for them), start_game (run it, enter the world, not
+        minimized), restart_game
         (the game finds a new addon only when it starts; the wait goes on until the game is back), enable_addon (in
         the game's addon list, then a reload), turn_on (/wk in the game). row.game.state is how the game lists its
         addons' WuxianKit extensions: on, off, disabled, missing (its addon runs and declares no such extension),
