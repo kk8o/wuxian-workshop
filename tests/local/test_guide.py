@@ -72,12 +72,31 @@ class Guide(unittest.TestCase):
     def test_what_it_explains(self):
         for word in ("needs_approval", "not_allowed", "批准运行", "`pass`", "`adds`", "`reactions`", "reaction_set",
                      "wk_kit_app_open", "wuxian listen", "deadline_ms", "`cancel", "`ping", "`loop`", '"player"',
-                     '"workshop"', "extension_set", "forgotten", "`link`", "`pace`", "2,048 bytes"):
+                     '"workshop"', "extension_set", "forgotten", "`link`", "`pace`", "2,048 bytes", "`driver`",
+                     '"driver": "local"', "@ext.app", "t.wake", "apps.json", "本机选项", "whole=True",
+                     '"kit": "0.6.1"', '"start": "workshop"'):
             self.assertIn(word, self.text)
-        for word in ("annotate", "extends", "`driver`", "`launch`"):         # what the fifth batch took away
+        for word in ("annotate", "extends", "`launch`", '"program"'):        # what the fifth batch took away
             self.assertNotIn(word, self.text)
         for word in M.RESERVED:
             self.assertRegex(self.text, rf"\b{word}\b")
+
+    def test_an_app_the_extension_runs(self):
+        """the example of an app with driver local: kept by the check, given to kit.app.declare with its local; and
+        the Python beside it uses @ext.app on the app the manifest names"""
+        from wuxianworkshop.local import adds as A
+        d = next(m for m in self.manifests() if any(a.get("driver") == "local" for a in m.get("apps", [])))
+        folder = self.root / d["id"]
+        (folder / "skills").mkdir(parents=True)
+        (folder / "AGENT.md").write_text("# x\n", encoding="utf-8")
+        (folder / "wuxian-extension.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        m, problems = M.check_manifest(folder)
+        self.assertEqual(problems, [])
+        app = m["apps"][0]
+        self.assertNotIn("prompt", app)
+        decl = A.declaration(app, m["id"], m["title"])
+        self.assertEqual((decl["driver"], decl["local"]), ("local", {"id": d["id"], "title": d["title"]}))
+        self.assertIn(f'@ext.app("{app["app"]}")', self.text)
 
     def test_the_home_and_the_packages(self):
         """what the extensions' home brought: where an extension lives, who is asked, packages, requires, the game

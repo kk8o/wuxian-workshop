@@ -44,7 +44,7 @@ A local extension is the same thing as a WuxianKit extension, running on this co
 | Capabilities | `ext:See` / `Keep` / `Point` / `Say` / `Do` | `see` / `keep` / `point` (say / do come later) |
 | Tools | `wk_<extension>_<name>` | the same; they work without the game |
 | Sources | `ext:Source`, heard by apps and reactions as `<source>:<what>` | `ext.source`, heard by reactions as `<extension>:<name>` |
-| Options | set in the game's `/wk` window | set in the workshop App, Extensions page |
+| Options | set in the game's `/wk` window | set in the workshop App, Extensions page, and in `/wk` (text: the App only) |
 | Docs, skills, apps | `AGENT.md`, `skills/`, `WuxianKit:App` | `AGENT.md`, `skills/`, `apps` and `adds` in the manifest |
 
 The workshop is the hub: every call between the agent, the player's controls, reactions and extensions goes through
@@ -189,6 +189,11 @@ Settings the player changes on the extension's row in the workshop App: `boolean
 `step`, `unit`) or `choice` (`choices`). Each has a `title` and a `default`. The values come with `initialize` and
 again, all of them, whenever one changes.
 
+The game's `/wk` window shows them too, under 本机选项 (local options) on the extension's page: the player changes a
+`boolean`, `number` or `choice` there as in the App (the workshop checks the value the same way, and the extension
+hears it the same way); a `text` shows its value there and is changed in the App only. Write titles and hints that
+read well in both places.
+
 Options are the player's. The agent sets them (`extension_set`) only for an extension it registered itself in this
 session (`new_extension`, `extension_add`; adding one that was registered before, `already: true` in the answer, does
 not make it the session's), or where the player's setting approves extensions automatically; for any
@@ -201,6 +206,13 @@ other the answer is `not_allowed`: ask the player to change it in the App. Turni
 (`kit.app.declare`) whenever the game comes online or the extension changes; each gets a card with 交给 AI (Hand to
 AI) that says which local extension it comes with. Declaring does not start an app: the player starts it from the
 card, or the agent with `wk_kit_app_open`.
+
+`driver` says who runs an app: `"agent"` (the default; leave it out), an agent by the skill its `prompt` names, or
+`"local"`, the extension's own program (in Python, `@ext.app`: see An app the extension runs). WuxianKit takes
+`"local"` from 0.6.1 on, so such a manifest says `"requires": {"kit": "0.6.1"}` (without it, a warning). An app the
+extension runs needs no `prompt` (one it has is a warning: nobody uses it); its card has no 交给 AI and says which
+local extension runs it, or that the extension is not running. The player can still stop it there, and its
+controls, reactions and wake notes work as for any app.
 
 One switch: when the extension is turned off or removed, its apps are withdrawn from the game (one that runs stops,
 `why` `forgotten`). The options the player set for them stay in the game's saved data and are there again when the
@@ -499,11 +511,85 @@ The library:
   gone): ask it between the steps of long work and return. `ext.remaining()`: the seconds it still waits, or None.
 - `ext.run(setup)`: serves until `shutdown`, then returns. Capabilities run in worker threads, 8 at once
   (`Extension(workers=...)`; a call beyond that is refused as `busy`): guard shared state with a lock.
+- `@ext.app(app_id)`: the function that gets each wake of an app of the manifest with `"driver": "local"` (see An
+  app the extension runs).
 - `ExtensionTest(ext, setup=, options=, answers=)` runs it in memory for unit tests: `t.call(name, args, caller=,
   deadline_ms=)`, `t.next_event(source)`, `t.events`, `t.calls` (what it called), `t.set_options(values)`,
   `t.start(name, args)` / `t.cancel(rid)` / `t.result(rid)` for a call that goes on, `t.check_description()` (the
-  problems the workshop would find), `t.close()`; `answers` maps a capability id to the result `ext.call` gets, or to
-  `fn(args)`.
+  problems the workshop would find), `t.wake(app_id, items=[...], reason=...)` (a wake straight to the `@ext.app`
+  function, in the test's thread: what it returns or raises comes out; nothing is opened or kept), `t.close()`;
+  `answers` maps a capability id to the result `ext.call` gets, or to `fn(args)`.
+
+### An app the extension runs
+
+An app that needs no judging, only work the program does (sync something when the game says so, keep a tally),
+can be run by the extension itself instead of an agent. Declare it with `"driver": "local"`:
+
+```json
+{
+  "id": "ledger",
+  "title": "账本",
+  "version": "0.1.0",
+  "requires": {"workshop": "0.9.15", "kit": "0.6.1"},
+  "run": ["python", "main.py"],
+  "start": "workshop",
+  "apps": [{
+    "app": "ledger",
+    "title": "账本",
+    "driver": "local",
+    "hear": ["game:loot", "game:money"],
+    "controls": ["stop", {"cmd": "export", "label": "导出", "call": "export"}]
+  }]
+}
+```
+
+and give it a function:
+
+```python
+import threading
+
+from wuxiankit import Extension
+
+ext = Extension()
+lock = threading.Lock()
+lines = []
+
+
+@ext.app("ledger")                                      # the manifest's app with "driver": "local"
+def wake(w):                                            # {app, seq, reason, items, skipped, after, next, state?, notes?}
+    with lock:
+        lines.extend(i for i in w["items"] if i.get("source") != "control")
+
+
+@ext.keep("export", title="导出", doc="Writes the ledger to ext.data; returns {lines}.")
+def export():
+    with lock:
+        (ext.data / "ledger.json").write_text(repr(lines), encoding="utf-8")
+        return {"lines": len(lines)}
+
+
+if __name__ == "__main__":
+    ext.run()
+```
+
+The app opens while the extension's process runs, so such an extension says `"start": "workshop"` (without it, a
+warning). Once `ext.run()` answered `initialize`, a thread for each such app opens it in the game
+(`kit.app.open`, with the declared `minutes`) while the game is online, listens, and hands the function the wakes
+one after another: first one with `reason` `"open"` each time it opened the app (no items; `status` is the app's
+status then), then WuxianKit's, with `"catchup"` for what came while nothing listened. What the function raises goes
+to the log, and the next wake comes all the same. Where the wakes got (their `next`) is kept in
+`ext.data / "apps.json"`: the next start goes on from there. When the app ends: stopped by the player (`why`
+`player`, also when it was so as the extension started), it is opened again after the next login or UI reload; the
+extension turned off (`extension`), not again; anything else (`expired`, `left`, `stopped`, ...), again after a few
+seconds. While the game or the workshop is away it waits. `shutdown` stops the
+threads; the app is the workshop's to withdraw. The heartbeat is `wuxian listen`'s: every max(30, lease / 3)
+seconds while the link is online, and while it stands by only when the lease needs it.
+
+The control above is bound to `export`: the workshop calls it when the player presses it, and the control still
+comes in the next wake. Test the function with `ExtensionTest(ext).wake("ledger", items=[...])`.
+
+`Client.call(name, args, whole=True)` (the SDK's client of the game, `from wuxiankit import Client`) takes an
+answer of up to 16 MB from the game in one call, for what is too large for the 256 KB of a plain one.
 
 ## Other languages: the protocol
 
@@ -597,7 +683,9 @@ The same from a shell: `wuxian ext list`, `new`, `add`, `summary`, `load`, `wait
 
 Sources: see their items with `events` (addon `local`, topic `<id>.<name>`), or act on them with a reaction
 (`reaction_set {"spec": {"hear": "<id>:<name>", "call": "...", ...}}`). An app of the manifest: `extension_load`, then
-`wk_kit_app_open`, then `wuxian listen <app>`; its reactions and bound controls work while it runs.
+`wk_kit_app_open`, then `wuxian listen <app>`; its reactions and bound controls work while it runs. One the extension
+runs (`"driver": "local"`) opens itself once the extension runs: `extension_load`; `extension_logs` has its lines
+(opened, ended, a wake that failed), and `t.wake` tests the function.
 
 ## Rules
 

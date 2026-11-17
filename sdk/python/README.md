@@ -24,6 +24,8 @@ end = kit.wait(p["id"], timeout=120)                   # done / declined / expir
 ans = kit.events(["kit.proposal", "kit.ready"], since=-1, wait=25)   # {events, next, truncated, session}
 ```
 
+回答大的调用加 `whole=True`：`kit.call("cocreate.payload", {...}, whole=True)` 一次取回最多 16 MB（无限工坊 0.9.15 和它的 WoWBridge；默认 256 KB）。`timeout_ms` 只管第一段，之后只要还有新段就一直等；旧 WoWBridge 超过 256 KB 照旧答错误。
+
 出错是 `WuxianError(reason, code, status)`：`code` 是守护进程的错误码（`link_down` 游戏没连上、`call_failed` 能力拒绝了、`bad_request`……），或客户端自己的 `no_daemon`（无限工坊没开）、`timeout`、`bad_answer`、`no_proposal`、`not_started`（应用没能启动）。
 
 ## 应用：声明、启动、加入
@@ -70,6 +72,8 @@ while app.ended is None:
 print("应用停了：", app.ended)                        # player、left、expired、forgotten……
 ```
 
+心跳（`kit.app.status`）和 `wuxian listen` 同一规则（`beat_rule(lease)`）：链路连着（`online`）时每 max(30, 租期/3) 秒；链路待命（`standby`，没有会话）时等到距上次 租期 − max(90, 租期/3) 秒才发（租期 600 秒：连着每 200 秒，待命 400 秒），免得只为心跳开一次会话。链路状态读守护进程的 `GET /api/status`（`kit.link_state()`），读不到就照连着算。
+
 `app` 不会因为无限工坊没开、游戏没连上而抛异常：它按 1、2、5、10 秒退避重试，`app.state` 说明在等什么。玩家停了应用（`/wk` 窗口里的应用卡片、`stop` 指令），`app.ended` 就是原因，循环结束。程序退出时 `app.close(stop=True)` 顺便在游戏里停掉它；`close()` 只是不再听，应用到租期（`lease`）自己停。
 
 陪玩做成本机扩展时不用自己听：应用写进清单的 `apps`，反应快的事交给清单里的反射（`reactions`）和绑定了能力的控制（`controls` 的 `call`），工坊在应用运行期间替它做。见下一节和 `extension_guide`。
@@ -108,8 +112,22 @@ ext.run(setup=load_model)                              # setup 在回答 initial
 - `ext.on_options(fn)` 在玩家改了选项后调用。
 - `ext.data`：扩展自己存东西的文件夹（`Path`，用到时建）。工坊在环境变量 `WUXIAN_EXTENSION_DATA` 里给它（`<工坊目录>\state\extensions\<扩展>\data`），在扩展的文件夹之外：更新扩展不丢，打扩展包也不带上。手动运行、没有这个变量时按 `WUXIAN_HOME` 算出同一个位置；测试里把 `WUXIAN_EXTENSION_DATA` 指到临时文件夹。
 - 来源只有反射听得到（清单里应用自己的，或 Agent 用 `reaction_set` 设的）；应用的 `hear` 只收游戏里的来源。
+- 选项在无限工坊 App 的扩展页改，也能在游戏的 `/wk` 窗口里改（开关、数字、选择；文字只在 App 里改）：都经 `on_options` 到这里。
 
-测试用 `ExtensionTest(ext, setup=..., options=..., answers=...)`：不起进程，在内存里按协议 `initialize`、`call`（可以带 `caller=`、`deadline_ms=`）、`ping`，收 `event`，给扩展发出的 `call` 回假答；`start` / `cancel` / `result` 测取消，`check_description()` 给出工坊会挑的毛病。
+### 本机程序驱动的应用：`@ext.app`
+
+应用默认由 Agent 照技能运行。清单里 `"driver": "local"` 的应用（`requires` 写 `"kit": "0.6.1"`；不用 `prompt`）由扩展自己的程序运行：
+
+```python
+@ext.app("cocreate")                                   # 清单 apps 里 driver 为 local 的那个应用
+def wake(w):                                           # {app, seq, reason, items, skipped, after, next, state?, notes?}
+    if w["reason"] in ("open", "catchup") or any(i.get("kind") == "snapshot" for i in w["items"]):
+        sync()                                         # 抛的错进日志，下一个唤醒照样来
+```
+
+`ext.run()` 回答 `initialize` 之后，每个这样的应用起一个线程（`AppDriver`）：游戏在线时 `kit.app.open`（用声明的时长），用 `Client.app` 收唤醒，同一个应用一个接一个交给函数。每次打开先交一个 `reason` 为 `open` 的唤醒（没有条目，`status` 是打开时的状态）；`catchup` 是没在听时攒下的。游标（唤醒的 `next`）存在 `ext.data / "apps.json"`，下次启动从它接着。应用结束：玩家停的（`player`，扩展启动时它就是玩家停着的也一样）等下一次登录或重载（`kit.ready`）再开；扩展被停用（`extension`）不再开；别的（`expired`、`left`、`stopped`……）隔几秒再开。游戏不在、无限工坊没开时只等。`shutdown` 时线程停下，应用留给工坊处理（扩展停用时工坊让游戏忘掉它）。控件绑定的能力、反射、唤醒附注照常。
+
+测试用 `ExtensionTest(ext, setup=..., options=..., answers=...)`：不起进程，在内存里按协议 `initialize`、`call`（可以带 `caller=`、`deadline_ms=`）、`ping`，收 `event`，给扩展发出的 `call` 回假答；`start` / `cancel` / `result` 测取消，`check_description()` 给出工坊会挑的毛病；`t.wake("cocreate", items=[...], reason="catchup")` 把一个唤醒直接交给 `@ext.app` 的函数（在当前线程里，函数的返回值和异常原样出来；不开应用、不存游标、不连守护进程）。
 
 完整的标准（清单的 `apps`、`adds`、`pass`，批准，协议，开发循环，规矩）是无限工坊的 `extension_guide`（仓库里 `src/wuxianworkshop/data/local-extension.md`）。
 
@@ -160,4 +178,4 @@ for wake in app:                                       # 一直等到下一个�
 
 ## 测试
 
-工坊仓库的 `tests/sdk/`：`test_extension.py` 本机扩展（内存里与真子进程）；`test_protocol.py` 协议第 1 版（版本协商、`cancel`、`ping`、`busy`、`reason`）；`test_sdk.py` 客户端与应用流，假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等；`test_validate_sync.py` 核对文件里那段共用检查和工坊的 `local/validate.py` 一字不差。改了 `local/validate.py` 跑 `python scripts/sync_sdk_validate.py` 同步进来，`--check` 只核对。
+工坊仓库的 `tests/sdk/`：`test_extension.py` 本机扩展（内存里与真子进程）；`test_protocol.py` 协议第 1 版（版本协商、`cancel`、`ping`、`busy`、`reason`）；`test_sdk.py` 客户端与应用流，假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等；`test_apps.py` 心跳规则、`whole`、`@ext.app` 与 `AppDriver`（打开、游标、结束后按 why 处理、等游戏和守护进程、`shutdown`）；`test_validate_sync.py` 核对文件里那段共用检查和工坊的 `local/validate.py` 一字不差。改了 `local/validate.py` 跑 `python scripts/sync_sdk_validate.py` 同步进来，`--check` 只核对。

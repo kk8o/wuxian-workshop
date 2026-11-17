@@ -107,6 +107,7 @@ EVENT_BURST, EVENT_RATE = 200, 50.0   # events of one extension passed on at onc
 EVENT_SAID = 10.0                     # seconds between two lines of its output about dropped events at least
 QUIET_CODES = ("stopping", "stopped", "needs_approval", "not_found", "off")   # a start that ended so did not fail
 DISCOVER_EVERY = 2.0                  # seconds between two looks at the extensions' home folder at least (discover)
+GAME_OPTION_KINDS = ("boolean", "number", "choice")   # options the player may change in the game's /wk window
 
 
 def duration(seconds):
@@ -1420,6 +1421,21 @@ class Host:
             if m is not None and m["start"] == "workshop":
                 self.ensure(eid, "set on")
         return self.get(eid)
+
+    def option_from_game(self, eid, name, value):
+        """an option the player changed in the game's /wk window (WuxianKit's kit.local.option): set as set() sets it
+        (checked against what the extension described, a running one told all of them), when its kind is boolean,
+        number or choice; a text option is changed in the App only. Its row; ApiError when it is not taken (no such
+        extension or option, a text, a value it does not take, not described yet)"""
+        if not isinstance(eid, str) or not isinstance(name, str):
+            raise ApiError(400, "bad_request", "kit.local.option: extension and name are texts")
+        e = self.entry(eid)
+        described = {o.get("name"): o for o in (e.get("described") or {}).get("options") or [] if isinstance(o, dict)}
+        opt = described.get(name)
+        if opt is not None and opt.get("kind") not in GAME_OPTION_KINDS:
+            raise ApiError(400, "bad_option", f"option {name} of {e['id']} is {opt.get('kind')}: it is changed in "
+                                              f"the 无限工坊 App only")
+        return self.set(e["id"], options={name: value})
 
     def option_values(self, eid):
         return self.reg.option_values(eid)

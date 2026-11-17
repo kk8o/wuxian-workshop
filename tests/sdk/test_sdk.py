@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +56,8 @@ class FakeDaemon:
         self.events, self.next_id = [], 1
         self.requests = []                    # (path, body, auth, clock time)
         self.link_down = False
+        self.link_state = None                # GET /api/status: link.state (None: a daemon without it, 404)
+        self.idle = 0.0                       # real seconds an empty long-poll takes (threads that poll: not a spin)
         self.lease = 600
         self.app_on = True                    # the app demo runs
         self.app_why = None                   # why it does not
@@ -86,6 +89,15 @@ class FakeDaemon:
                     return self.answer(*fake.call(body))
                 if self.path == "/api/addon_events":
                     return self.answer(*fake.pick(body))
+                self.answer(404, {"error": {"code": "not_found", "message": self.path}})
+
+            def do_GET(self):
+                auth = self.headers.get("Authorization") or ""
+                fake.requests.append((self.path, None, auth, fake.clock.t))
+                if auth != f"Bearer {TOKEN}":
+                    return self.answer(401, {"error": {"code": "unauthorized", "message": "bad token"}})
+                if self.path == "/api/status" and fake.link_state is not None:
+                    return self.answer(200, {"link": {"state": fake.link_state}, "version": "0.9.15"})
                 self.answer(404, {"error": {"code": "not_found", "message": self.path}})
 
             def answer(self, status, obj):
@@ -197,6 +209,8 @@ class FakeDaemon:
                 hits, nxt = hits[:limit], hits[limit]["id"]
         if not hits and wait:
             self.clock.t += wait                 # the long-poll took its time
+            if self.idle:
+                time.sleep(self.idle)
         truncated, self.truncated = self.truncated, False
         return 200, {"events": hits, "next": nxt, "truncated": truncated, "session": 7}
 

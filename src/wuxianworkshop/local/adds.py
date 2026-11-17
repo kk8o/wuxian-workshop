@@ -26,6 +26,7 @@ import copy
 import os
 
 from . import manifest as M
+from .registry import option_rows
 
 
 def adds(host, app):
@@ -80,7 +81,8 @@ def declarations(host):
 
 def declaration(app, eid, title):
     """an app of a manifest as kit.app.declare gets it. A control with a call goes as WuxianKit writes controls: its
-    own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}"""
+    own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}. driver goes as it is: the
+    manifest's check keeps it only when it is "local" (WuxianKit 0.6.1 takes that from a local extension's app)"""
     out = {k: v for k, v in app.items() if k not in ("reactions", "link")}      # WuxianKit 0.6.0 knows neither
     if isinstance(out.get("controls"), list):
         out["controls"] = [c if isinstance(c, str) else c["cmd"] if c["cmd"] in M.CORE_CONTROLS
@@ -91,11 +93,12 @@ def declaration(app, eid, title):
 
 def roster(host):
     """what the game's WuxianKit is told of the extensions added to this computer (kit.local.set; its /wk window lists
-    them beside the game's own): [{id, title, version?, author?, notes?, where, on, game?, adds?}] of those with a
-    local part (where "local" or "both": one in the game only is the game's own to show), in the registry's order.
-    on: enabled and adding what it adds (as enabled_manifests() takes it); game: the ids its addons give WuxianKit;
-    adds: the apps it adds to. One whose manifest does not pass is left out. Read anew each time (an extension that
-    is off counts too, and the table keeps only those that are on)"""
+    them beside the game's own): [{id, title, version?, author?, notes?, where, on, game?, adds?, options?}] of those
+    with a local part (where "local" or "both": one in the game only is the game's own to show), in the registry's
+    order. on: enabled and adding what it adds (as enabled_manifests() takes it); game: the ids its addons give
+    WuxianKit; adds: the apps it adds to; options: roster_options(), left out when it has none. One whose manifest
+    does not pass is left out. Read anew each time (an extension that is off counts too, and the table keeps only
+    those that are on)"""
     out = []
     with host.lock:
         for e in host.load()["extensions"]:
@@ -111,7 +114,28 @@ def roster(host):
                 item["game"] = list(m["game"])
             if m.get("adds"):
                 item["adds"] = sorted(m["adds"])
+            options = roster_options(e)
+            if options:
+                item["options"] = options
             out.append(item)
+    return out
+
+
+ROSTER_OPTION_KEYS = ("default", "hint", "choices", "min", "max", "step", "unit")   # the optional ones, when given
+
+
+def roster_options(entry):
+    """the options of a registry entry as WuxianKit's /wk window shows them (kit.local.set): [{name, kind, title,
+    value, default?, hint?, choices? [{value, label}], min?, max?, step?, unit?}] in the order the extension described
+    them, value the player's (else the default); [] before it described itself. kind boolean, number and choice the
+    player may change there (kit.local.option), text only here"""
+    out = []
+    for o in option_rows(entry):
+        item = dict(name=o["name"], kind=o["kind"], title=o.get("title") or o["name"], value=o.get("value"))
+        for key in ROSTER_OPTION_KEYS:
+            if o.get(key) is not None:
+                item[key] = copy.deepcopy(o[key])
+        out.append(item)
     return out
 
 

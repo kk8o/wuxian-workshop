@@ -37,10 +37,14 @@ the extension's id, or {call: name, timeout: seconds, default 3 and at most 10})
 extension's folder that is appended to the skill the app's prompt names. That wake is a see capability it has is known
 once it described itself (adds_problems).
 
-apps: kit.app.open's fields without temp, driver and launch; the daemon declares them (kit.app.declare) after every
-kit.ready. Three fields are the workshop's and do not reach WuxianKit: reactions (at most APP_REACTIONS_MOST; a
-reaction's fields without id and owner: the workshop sets them while the app runs and clears them when it stops; call
-is a whole capability id, this extension's, another's or the game's; pace, the app's activities it calls in); link
+apps: kit.app.open's fields without temp and launch; the daemon declares them (kit.app.declare) after every
+kit.ready. driver (DRIVERS): "agent", the default (an agent runs the app by the skill its prompt names: the field is
+left out of the declaration), or "local" (the extension's own program runs it, the SDK's @ext.app: WuxianKit 0.6.1
+takes it, so such a manifest says requires.kit 0.6.1, and start workshop for the process to run, or a warning says
+so; it needs no prompt, and one it has is a warning, nobody uses it). Three fields are the workshop's and do not
+reach WuxianKit: reactions (at most APP_REACTIONS_MOST; a reaction's fields without id and owner: the workshop sets
+them while the app runs and clears them when it stops; call is a whole capability id, this extension's, another's
+or the game's; pace, the app's activities it calls in); link
 (LINKS: "live", the link to the game is kept open while the app runs, for reactions and quick replies; "standby", the
 default, opened when there is something to send: Host.app_link); and, in a control {cmd, label}, call and args: the
 name of a capability of this extension's own that the workshop calls when the player gives that control, with args (an
@@ -75,7 +79,9 @@ APP_ID = ID
 KIT_EXTENSIONS = ("chat", "game", "route", "sense", "guide", "data", "tune", "gate", "codex", "guides")
 RESERVED = KIT_EXTENSIONS + ("local", "wb", "wk", "kit")
 NOTES_MAX = 400
-NOT_IN_APP = ("temp", "driver", "launch")
+NOT_IN_APP = ("temp", "launch")
+DRIVERS = ("agent", "local")                        # who runs an app: an agent by its skill, or the extension's program
+DRIVER_KIT = "0.6.1"                                # the WuxianKit that takes driver "local"
 STARTS = ("use", "workshop")
 KIT_APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")   # an app id as WuxianKit writes it
 ADDS_MOST = 8
@@ -302,6 +308,17 @@ def check_manifest(path, taken=()):
         out.append(problem("warning", field("docs"), "there is no AGENT.md",
                            "write one: wk_docs {\"extension\": id} shows it to the agent before it uses the tools"))
     apps = check_apps(d.get("apps"), field("apps"), out)
+    driven = [a["app"] for a in apps if a.get("driver") == "local"]
+    if driven and not (requires.get("kit") and version_tuple(requires["kit"]) >= version_tuple(DRIVER_KIT)):
+        out.append(problem("warning", field("requires"),
+                           f"the app {', '.join(driven)} is driven by this extension (driver \"local\"), which "
+                           f"WuxianKit {DRIVER_KIT} takes first",
+                           f'"requires": {{"kit": "{DRIVER_KIT}"}}: an older WuxianKit refuses the declaration'))
+    if driven and start != "workshop":
+        out.append(problem("warning", field("start"),
+                           f"the app {', '.join(driven)} is driven by this extension (driver \"local\"): it opens "
+                           f"only while the extension's process runs, and start \"use\" starts it at a call",
+                           '"start": "workshop": it starts with 无限工坊, and the app opens when the game is online'))
     adds = check_adds(d.get("adds"), eid, folder, field("adds"), out)
     manifest = dict(id=eid, title=title, version=text_of(version, 32) if version is not None else None,
                     notes=text_of(notes, NOTES_MAX) if notes is not None else None,
@@ -589,6 +606,16 @@ def check_apps(apps, where, out):
             out.append(problem("error", f"{at}.hear", "hear is a list of entries <source>:<what>",
                                '["game:combat", "route:*"]'))
             continue
+        driver = a.get("driver")
+        if driver is not None and driver not in DRIVERS:
+            out.append(problem("error", f"{at}.driver", f"{driver!r} is not a driver",
+                               "\"local\": this extension's own program runs the app (the SDK's @ext.app); "
+                               "\"agent\" (the default, or leave it out): an agent runs it by its prompt's skill"))
+            continue
+        if driver == "local" and a.get("prompt") is not None:
+            out.append(problem("warning", f"{at}.prompt", "the app is driven by this extension's program "
+                                                          "(driver \"local\"): no agent starts it by a prompt",
+                               "leave prompt out"))
         link = a.get("link")
         if link is not None and link not in LINKS:
             out.append(problem("error", f"{at}.link", f"{link!r} is not a link",
@@ -605,6 +632,8 @@ def check_apps(apps, where, out):
         app = dict(a, app=aid, title=title, reactions=reactions)
         if link is None:
             app.pop("link", None)
+        if driver != "local":                      # "agent" is the default: WuxianKit 0.6.0 knows no driver
+            app.pop("driver", None)
         if controls is not None:
             app["controls"] = controls
         kept.append(app)
