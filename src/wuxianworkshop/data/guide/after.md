@@ -47,7 +47,7 @@ usually come off:
 |---|---|---|
 | A coding agent (now) | MCP: the tools, the skill, `wuxian listen <app>` | nothing |
 | No brain, for the fixed parts | reactions (`reaction_set`, or the app's own in the manifest) and an app's controls | what always follows from an event stops costing a model call |
-| A program of your own | the Python SDK (`sdk/python/wuxiankit.py`: `Client`, `kit.app(id)`, `kit.call`, `kit.propose`); in a local extension, `"driver": "local"` on the app and `@ext.app` | the loop is your code, with any model; the extension opens the app and gets its wakes |
+| A program of your own | the Python SDK (`sdk/python/wuxiankit.py`: `Client`, `kit.app(id)`, `kit.call`, `kit.propose`); in a local extension, `"driver": "local"` on the app and `@ext.app` | the loop is your code, with any model; the workshop keeps the app open while the extension runs and hands it the wakes |
 
 The extensions, the app's declaration, the player's approvals and the proposals they confirm stay exactly as they
 are: the brain can be changed, the rest does not move. So verify with the coding agent first, and peel the chain

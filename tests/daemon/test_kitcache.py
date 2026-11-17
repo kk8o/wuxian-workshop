@@ -237,7 +237,7 @@ class Plumbing(unittest.TestCase):
                 self.calls.append(("addon_api", shared))
                 return {}
 
-            def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False):
+            def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False, most=None):
                 self.calls.append((name, shared))
                 return {}
         client = Client()

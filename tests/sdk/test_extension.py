@@ -98,7 +98,7 @@ class Declarations(unittest.TestCase):
     def test_describe(self):
         ext, _, _ = make()
         d = ext.describe()
-        self.assertEqual(d["protocol"], 1)
+        self.assertEqual((d["protocol"], d["apps"]), (2, []))
         self.assertEqual(d["capabilities"][0], {"name": "hello", "kind": "see", "title": "打招呼",
                                                 "doc": "Returns a greeting.",
                                                 "args": {"name": "string?", "mood": "calm|happy?"}})
@@ -431,7 +431,7 @@ class Process(unittest.TestCase):
                 others.append(m)
 
     def initialize(self, options=None):
-        mid = self.request("initialize", {"protocol": {"min": 1, "max": 1}, "workshop": "0.9.13", "id": "voice",
+        mid = self.request("initialize", {"protocol": {"min": 2, "max": 2}, "workshop": "0.10.0", "id": "voice",
                                           "options": options or {}})
         return self.answer_of(mid)
 

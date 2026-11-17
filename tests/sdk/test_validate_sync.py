@@ -79,7 +79,7 @@ class OneRule(unittest.TestCase):
     """the SDK refuses at declaration what the workshop refuses in the description, with the workshop's words"""
 
     def workshop(self, **described):
-        desc, problems = M.check_description("demo", dict({"protocol": 1}, **described))
+        desc, problems = M.check_description("demo", dict({"protocol": 2}, **described))
         return desc, [p["message"] for p in M.errors_in(problems)]
 
     def test_source_names(self):

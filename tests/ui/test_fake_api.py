@@ -128,14 +128,18 @@ class Endpoints(unittest.TestCase):
         self.assertEqual(set(s), {"mode", "capture", "capture_in_use", "game_dir", "language", "font_scale",
                                   "onboarded", "extension_approval", "link_mode"})
         self.assertEqual(s["extension_approval"], "ask")         # a local extension's command waits for the player
-        self.assertEqual(s["link_mode"], "auto")                 # 跟随应用
-        link = self.client.get("/api/status", headers=AUTH).json()["link"]
+        self.assertEqual(s["link_mode"], "auto")                 # 自动
+        status = self.client.get("/api/status", headers=AUTH).json()
+        link = status["link"]
         self.assertEqual(link["mode"], "auto")
-        self.assertEqual(set(link["held_titles"]), set(link["held_by"]))
-        self.assertEqual(self.client.post("/api/settings", json={"link_mode": "demand"}, headers=AUTH).json()["link_mode"],
-                         "demand")
+        self.assertNotIn("held_titles", link)
+        self.assertTrue(all(set(h) == {"id", "title"} for h in link["held_by"]))
+        self.assertNotIn("outdated", status["kit"])              # (--old-kit: {needs, has})
+        self.assertEqual(self.client.post("/api/settings", json={"link_mode": "always"}, headers=AUTH).json()["link_mode"],
+                         "always")
         self.assertEqual(self.client.get("/api/status", headers=AUTH).json()["link"]["held_by"], [])
-        self.assertEqual(self.client.post("/api/settings", json={"link_mode": "x"}, headers=AUTH).status_code, 400)
+        for bad in ("demand", "x"):                              # two modes: 自动, 常开
+            self.assertEqual(self.client.post("/api/settings", json={"link_mode": bad}, headers=AUTH).status_code, 400)
         self.assertIs(s["onboarded"], False)                     # the 开始 page opens first
         self.assertIs(self.client.post("/api/settings", json={"onboarded": True}, headers=AUTH).json()["onboarded"], True)
         r = self.client.post("/api/settings", json={"mode": "player", "capture": "gdi"}, headers=AUTH).json()

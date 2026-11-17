@@ -30,7 +30,8 @@ class LocalOption(LocalDaemon, unittest.TestCase):
     def described(self):
         self.add()
         self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "hi"}})     # it starts: described
-        self.assertTrue(until(lambda: self.options() == [VOLUME]), self.kit.roster)
+        self.assertTrue(until(lambda: self.options() == [VOLUME] and self.kit.roster[0]["running"] is True),
+                        self.kit.roster)                                   # (the list says that it runs, too)
 
     def test_the_roster_has_the_options(self):
         self.add()
@@ -52,7 +53,8 @@ class LocalOption(LocalDaemon, unittest.TestCase):
         self.assertTrue(until(lambda: self.options() == [dict(VOLUME, value=70)]), self.kit.roster)
         self.assertEqual(self.ok("POST", "/api/local/call", {"cap": "fx.opts"})["result"], {"volume": 70})  # told
         self.assertEqual(self.ok("GET", "/api/local")["extensions"][0]["options"][0]["value"], 70)
-        self.assertGreater(len(self.told()), told)
+        time.sleep(0.3)
+        self.assertEqual(len(self.told()), told + 1)                       # once: not for the change and again
         self.assertIn("local extension fx: the option volume set from /wk", self.notes(first))
 
     def test_the_same_value_is_told_back_all_the_same(self):

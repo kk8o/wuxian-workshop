@@ -15,6 +15,12 @@ told to cancel, deadlines: {capability: its last deadline_ms}}), env {} (see: it
 then never reads its input again), helper {} (keep: starts a process that holds its stdout and stderr and sleeps a
 minute; answers its pid), raw {what, size?} (keep: writes "gbk" a line of GBK bytes to stdout and to stderr, "long" a
 line of size bytes to stdout, "badid" answers whose ids are a list and an object).
+
+The apps it drives: FIXTURE_APPS (ids with commas between them) is what its initialize answers as apps. It keeps the
+wakes it is handed (the request wake {app, wake}) and answers {}; a wake whose first item's kind is "fail" is
+answered with an error, "slow" after 1.5 s, "die" not at all (it exits with code 4), "never" not at all (it goes on).
+With apps it declares two more capabilities: wakes {} (see: the wakes it got, in order) and tell {report} (keep: tells
+the report notification with that object as it is).
 """
 import json
 import os
@@ -27,7 +33,8 @@ lock = threading.Lock()
 state = {"options": {}, "init": None, "next": 0}
 waiting = {}
 EXTRA = {word.strip() for word in os.environ.get("FIXTURE_EXTRA", "").split(",") if word.strip()}
-state.update(cancelled=[], deadlines={}, deaf=False)
+state.update(cancelled=[], deadlines={}, deaf=False, wakes=[])
+APPS = [word.strip() for word in os.environ.get("FIXTURE_APPS", "").split(",") if word.strip()]
 
 
 def send(msg):
@@ -75,6 +82,31 @@ if "caps" in EXTRA:
         {"name": "raw", "kind": "keep", "title": "原样", "doc": "writes bytes as they are",
          "args": {"what": "string", "size": "number?"}},
     ])
+
+
+if APPS:
+    CAPS.extend([
+        {"name": "wakes", "kind": "see", "title": "唤醒", "doc": "the wakes it got", "args": {}},
+        {"name": "tell", "kind": "keep", "title": "上报", "doc": "tells a report", "args": {"report": "table"}},
+    ])
+
+
+def wake(rid, params):
+    """a wake of an app it drives: kept, and answered as its first item's kind says"""
+    w = params.get("wake") or {}
+    state["wakes"].append({"app": params.get("app"), "wake": w})
+    items = w.get("items") or []
+    kind = items[0].get("kind") if items and isinstance(items[0], dict) else None
+    if kind == "die":
+        print("dying in a wake", file=sys.stderr, flush=True)
+        os._exit(4)
+    if kind == "never":
+        return
+    if kind == "slow":
+        time.sleep(1.5)
+    if kind == "fail":
+        return answer(rid, error={"code": 1, "message": "the wake failed"})
+    answer(rid, {})
 
 
 def write_raw(stream, data):
@@ -144,6 +176,11 @@ def call(rid, name, args, caller):
     if name == "crash":
         print("crashing now", file=sys.stderr, flush=True)
         os._exit(3)
+    if name == "wakes" and APPS:
+        return answer(rid, list(state["wakes"]))
+    if name == "tell" and APPS:
+        send({"jsonrpc": "2.0", "method": "report", "params": args.get("report")})
+        return answer(rid, {"told": True})
     if more(rid, name, args):
         return None
     return answer(rid, error={"code": -32601, "message": f"no capability {name}"})
@@ -178,13 +215,15 @@ def main():
                 continue
             state["init"] = params
             state["options"] = dict({"volume": 50}, **(params.get("options") or {}))
-            answer(rid, {"protocol": 1, "capabilities": CAPS,
+            answer(rid, {"protocol": 2, "capabilities": CAPS,
                          "sources": [{"name": "said", "title": "说完", "doc": "a line was said"}],
                          "options": [{"name": "volume", "kind": "number", "title": "音量", "default": 50, "min": 0,
-                                      "max": 100}]})
+                                      "max": 100}], **({"apps": APPS} if APPS else {})})
         elif method == "call":
             threading.Thread(target=call, args=(rid, params.get("name"), params.get("args") or {},
                                                 params.get("caller")), daemon=True).start()
+        elif method == "wake":
+            threading.Thread(target=wake, args=(rid, params), daemon=True).start()
         elif method == "options":
             state["options"] = params.get("options") or {}
         elif method == "shutdown":

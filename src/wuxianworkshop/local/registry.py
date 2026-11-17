@@ -190,8 +190,11 @@ def texts(d, *keys):
 def described_ok(d):
     """whether d has the shape of a description as the host stores it ({capabilities: [{id, name, kind, title, doc,
     args, timeout}], sources: [{name, title, doc}], options: [{name, kind, title, ...}]}): every key the code that
-    reads a description takes for granted is there, with its type. One that fails counts as no description"""
+    reads a description takes for granted is there, with its type; apps (the ids of the apps its program drives)
+    may be missing, as in one stored before there was such a thing. One that fails counts as no description"""
     if not isinstance(d, dict) or not all(isinstance(d.get(k), list) for k in ("capabilities", "sources", "options")):
+        return False
+    if not (d.get("apps") is None or isinstance(d["apps"], list) and all(isinstance(a, str) for a in d["apps"])):
         return False
     for c in d["capabilities"]:
         if not (isinstance(c, dict) and texts(c, "id", "name", "kind", "title", "doc")

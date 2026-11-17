@@ -332,7 +332,7 @@ class Extensions(unittest.TestCase):
         env = dict(os.environ, PYTHONPATH=str(scaffold.sdk_file().parent), WUXIAN_EXTENSION="runner",
                    PYTHONIOENCODING="utf-8")
         lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                     "protocol": {"min": 1, "max": 1}, "workshop": "test", "id": "runner", "options": {}}},
+                     "protocol": {"min": 2, "max": 2}, "workshop": "test", "id": "runner", "options": {}}},
                  {"jsonrpc": "2.0", "id": 2, "method": "call", "params": {
                      "name": "hello", "args": {"name": "Jaina"}, "caller": {"by": "agent"}, "deadline_ms": 30000}},
                  {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}}]
@@ -341,7 +341,7 @@ class Extensions(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         out = [json.loads(line) for line in run.stdout.decode("utf-8").splitlines()]
         answers = {m["id"]: m for m in out if "id" in m}
-        self.assertEqual(answers[1]["result"]["protocol"], 1)
+        self.assertEqual(answers[1]["result"]["protocol"], 2)
         self.assertEqual([c["name"] for c in answers[1]["result"]["capabilities"]], ["hello"])
         self.assertEqual(answers[2]["result"], {"text": "Hello, Jaina!"})
         self.assertEqual(answers[3]["result"], {})

@@ -55,10 +55,11 @@ design them with the player. The player then starts it from its card with 交给
 rebuilding anything.
 
 When the app needs no judging at all, only work a program does (sync, tally, file away), the extension can run
-it itself: `"driver": "local"` on the app (no `prompt`, no skill; `requires` `"kit": "0.6.1"`, `"start":
-"workshop"`) and `@ext.app("<app>")` on the function that gets its wakes. The player still starts and stops it from
-its card, and changes the extension's options in the App or in `/wk`. `guide {"topic": "local-extension"}`, An app
-the extension runs.
+it itself: `"driver": "local"` on the app (no `prompt`, no skill, nothing else to write: such an extension starts
+with the workshop) and `@ext.app("<app>")` on the function that gets its wakes. The workshop keeps the app open
+while the extension runs; `ext.report(...)` tells the player on its card how the work stands. The player still
+stops and starts it from its card, and changes the extension's options in the App or in `/wk`. `guide {"topic":
+"local-extension"}`, An app the extension runs.
 
 If an app that does the hearing and replying exists already (`wk_kit_apps`: 公会聊天 is one), do not make a second:
 give it your knowledge instead: `guide {"topic": "enrich-app"}`.

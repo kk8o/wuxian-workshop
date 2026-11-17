@@ -71,7 +71,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.host.revision, 1)
         res = self.host.call_sync("fx.echo", {"text": "你好"}, {"by": "agent"})       # its first call starts it
         self.assertEqual((res["text"], res["caller"], res["ext"]), ("你好", {"by": "agent"}, "fx"))
-        self.assertEqual(res["init"], {"protocol": {"min": 1, "max": 1}, "workshop": "9.9.9", "id": "fx",
+        self.assertEqual(res["init"], {"protocol": {"min": 2, "max": 2}, "workshop": "9.9.9", "id": "fx",
                                        "options": {}})
         self.assertEqual(res["path0"], str(self.sdk))
         self.assertEqual(os.path.normcase(res["cwd"]), os.path.normcase(str(folder)))

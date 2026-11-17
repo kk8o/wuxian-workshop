@@ -151,7 +151,7 @@ class Errors(unittest.TestCase):
                                                     "data": {"reason": reason}})
         self.assertEqual(R.error("bad_option", "m")["data"], {"reason": "failed"})       # none of the words: failed
         self.assertEqual(R.error("failed", ValueError("x"))["message"], "x")
-        self.assertEqual(R.PROTOCOL, {"min": 1, "max": 1})
+        self.assertEqual(R.PROTOCOL, {"min": 2, "max": 2})
         self.assertEqual(R.PING_TIMEOUT, 5.0)
 
     def test_error_of(self):
@@ -187,16 +187,16 @@ class Errors(unittest.TestCase):
         self.assertEqual((err.status, err.code, err.problems[0]["level"]), (503, "down", "error"))
 
     def test_protocol_problem(self):
-        self.assertIsNone(R.protocol_problem({"protocol": 1}))
+        self.assertIsNone(R.protocol_problem({"protocol": 2}))
         for none in ({}, {"protocol": "1"}, {"protocol": True}, {"protocol": None}, None, [1]):
             self.assertIsNone(R.protocol_problem(none), none)      # no version: the description's check says so
         why = R.protocol_problem({"protocol": 9})
-        self.assertIn("it speaks protocol 9, this workshop speaks 1", why)
+        self.assertIn("it speaks protocol 9, this workshop speaks 2", why)
         self.assertIn("update the workshop", why)
-        self.assertIn("update the extension", R.protocol_problem({"protocol": 0}))
-        with mock.patch.dict(R.PROTOCOL, {"min": 1, "max": 2}):
-            self.assertIsNone(R.protocol_problem({"protocol": 2}))
-            self.assertIn("this workshop speaks 1 to 2", R.protocol_problem({"protocol": 3}))
+        self.assertIn("update the extension", R.protocol_problem({"protocol": 1}))
+        with mock.patch.dict(R.PROTOCOL, {"min": 2, "max": 3}):
+            self.assertIsNone(R.protocol_problem({"protocol": 3}))
+            self.assertIn("this workshop speaks 2 to 3", R.protocol_problem({"protocol": 4}))
 
 
 if __name__ == "__main__":

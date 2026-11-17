@@ -624,7 +624,7 @@ def make_app(service, access, handle, mcp=None):
 
     @api
     async def local_install(request):
-        b = await body_of(request)                     # replace: true, or "same"; anything else is false
+        b = await body_of(request)                     # replace: [{folder, there}], the folders in AddOns to replace
         return await service.extension_install(b.get("id"), b.get("replace"))
 
     @api

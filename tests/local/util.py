@@ -13,10 +13,11 @@ from unittest import mock
 FIXTURE = Path(__file__).with_name("fixture_ext.py")
 
 
-def make_extension(folder, eid, mode="", tests=None, extra=None, **fields):
+def make_extension(folder, eid, mode="", tests=None, extra=None, drives=None, **fields):
     """an extension folder: wuxian-extension.json (run ["python", "main.py"], env FIXTURE_MODE), main.py (the fixture),
     AGENT.md; tests: {file name: text} in tests/. fields go into the manifest (None leaves one out). extra: the
-    fixture's FIXTURE_EXTRA (words with commas between them), None leaves it out"""
+    fixture's FIXTURE_EXTRA (words with commas between them), None leaves it out. drives: the app ids the fixture
+    says it drives (FIXTURE_APPS); None: those of the manifest's apps with driver "local", as a program should"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(FIXTURE, folder / "main.py")
@@ -25,6 +26,10 @@ def make_extension(folder, eid, mode="", tests=None, extra=None, **fields):
                 "env": {"FIXTURE_MODE": mode}}
     if extra is not None:
         manifest["env"]["FIXTURE_EXTRA"] = extra
+    if drives is None:
+        drives = [a.get("app") for a in fields.get("apps") or [] if isinstance(a, dict) and a.get("driver") == "local"]
+    if drives:
+        manifest["env"]["FIXTURE_APPS"] = ",".join(drives)
     manifest.update(fields)
     manifest = {k: v for k, v in manifest.items() if v is not None}
     (folder / "wuxian-extension.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")

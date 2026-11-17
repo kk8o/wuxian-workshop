@@ -33,7 +33,8 @@
     wuxian ext list | add <folder|manifest|zip> [--replace] | summary <id|path> | remove <id> | load <id> | stop <id>
                | wait <id> [--seconds N] | set <id> [--on|--off] [--option k=v] | check <id|path>
                | new <id> [--title T] [--addon Name] [--where game|local|both] | pack <id> [--to PATH]
-               | install <id> | dir | logs <id> [-f]   local extensions (on this computer), their packages, game addons
+               | install <id> [--replace [Folder ...]] | dir | logs <id> [-f]   local extensions (on this computer),
+                                              their packages, game addons
     wuxian wk <capability> ['<json args>']    call a capability: a local extension's, or WuxianKit's in the game
     wuxian reaction list | set '<json>' | clear [--id X] [--owner A]   reactions: an item heard calls a capability
     (a JSON argument can also be @<file>, read from that file, or -, read from the input: Windows PowerShell drops
@@ -286,9 +287,10 @@ def build_parser():
     q = act.add_parser("install", help="install or update an extension's game addons now (one the player allowed; a "
                                        "new addon needs a game restart)")
     q.add_argument("id")
-    q.add_argument("--replace", action="store_true",
-                   help="replace a folder of an addon's name in AddOns that is not this extension's (one installed by "
-                        "hand): the one there is kept in the history (`wuxian history`)")
+    q.add_argument("--replace", nargs="*", metavar="FOLDER", default=None,
+                   help="replace a folder of an addon's name in AddOns that is not this extension's: without a name "
+                        "the same addon installed by hand (not a newer one), with names those folders whatever they "
+                        "are; the one there is kept in the history (`wuxian history`)")
     act.add_parser("dir", help="print the extensions folder: a package unpacks there, a folder put there is found")
     q = act.add_parser("logs", help="an extension's output (its stderr and the workshop's lines on its starts and ends)")
     q.add_argument("id")
@@ -632,6 +634,7 @@ def events_once(client, args):
 
 
 KIT = "WuxianKit"
+KIT_MOST = 256 * 1024      # bytes an answer of WuxianKit to `listen` may be (without it: 16 MB, waited for as long)
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")
 EXT_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")          # a local extension's id (local/manifest.py ID)
 
@@ -720,7 +723,7 @@ class Listening:
         raise Done(code)
 
     def kit(self, name, **call_args):
-        return (self.client.call_exposed(KIT, name, call_args) or {}).get("result")
+        return (self.client.call_exposed(KIT, name, call_args, most=KIT_MOST) or {}).get("result")
 
     def ask(self, since, wait):
         """one ask for the events; a daemon that takes no list of topics (before 0.9.13) is asked for all of
@@ -1122,7 +1125,7 @@ EXT_ADDON = {"unknown": "the game's folder is not known",
              "current": "installed",
              "differs": "the game has another version: `wuxian ext install {id}` updates it (so does `ext load`)",
              "foreign": "the game has an addon of this name that is not this extension's: it is left alone "
-                        "(`wuxian ext install {id} --replace` puts this one in its place)",
+                        "(`wuxian ext install {id} --replace {folder}` puts this one in its place)",
              "listed": "its folder name is that of an addon of the catalog: it is never installed (the addon folder "
                        "needs another name)"}
 
@@ -1166,7 +1169,12 @@ def ext_lines(r, now=None):
     for g in r.get("addons") or []:
         if isinstance(g, dict):
             name = " ".join(str(x) for x in (g.get("folder"), g.get("version")) if x)
-            said = EXT_ADDON.get(g.get("state"), str(g.get("state"))).replace("{id}", str(r["id"]))
+            said = EXT_ADDON.get(g.get("state"), str(g.get("state")))
+            said = said.replace("{id}", str(r["id"])).replace("{folder}", str(g.get("folder")))
+            if g.get("state") == "foreign" and g.get("same"):
+                said = (f"the game has the same addon{' ' + str(g['there']) if g.get('there') else ''}, installed by "
+                        "hand: " + ("a newer version, it is kept" if g.get("newer") else
+                                    f"`wuxian ext install {r['id']} --replace` puts this one in its place"))
             lines.append(f"    game addon {name}: {said}")
     if isinstance(r.get("game"), dict) and r["game"].get("extensions"):
         lines.append(f"    in the game: {', '.join(map(str, r['game']['extensions']))} {r['game'].get('state')}")
@@ -1180,6 +1188,20 @@ def print_ext(r, lead=""):
     print(lead + lines[0])
     for line in lines[1:]:
         print(line)
+
+
+def ext_replace(row, names):
+    """what `ext install --replace [Folder ...]` replaces, of an extension's row: [{folder, there}] of its game addons
+    whose folder in AddOns is not its own (state foreign, a folder). Without names: the same addon installed by hand
+    that is not newer (what an approval replaces); with names: those folders, whatever they are"""
+    wanted = {n.casefold() for n in names or []}
+    out = []
+    for a in row.get("addons") or []:
+        if not isinstance(a, dict) or a.get("state") != "foreign" or "same" not in a:
+            continue
+        if (str(a.get("folder")).casefold() in wanted) if wanted else (a.get("same") and not a.get("newer")):
+            out.append(dict(folder=a["folder"], there=a.get("there")))
+    return out
 
 
 def print_game_side(res):
@@ -1301,7 +1323,16 @@ def cmd_ext(client, args):
         print_ext(res["row"])
         return 0 if res["check"].get("ok") else 1
     if a == "install":
-        res = client.extension_install(args.id, replace=args.replace)
+        replace = None
+        if args.replace is not None:               # the folders as the daemon lists them now: what is replaced
+            row = next((r for r in client.local_extensions().get("extensions") or [] if r.get("id") == args.id), {})
+            replace = ext_replace(row, args.replace)
+            missing = [n for n in args.replace if n.casefold() not in {r["folder"].casefold() for r in replace}]
+            if missing:
+                say_error(f"{', '.join(missing)}: not a folder in the game's AddOns that {args.id} could replace (its "
+                          f"addons there that are not its own: `wuxian ext list`)")
+                return 1
+        res = client.extension_install(args.id, replace=replace)
         print_game_side(res)
         if not res.get("addons"):
             print(f"{res.get('id', args.id)}: no game addons to install")

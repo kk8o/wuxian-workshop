@@ -68,16 +68,16 @@ class Version(unittest.TestCase):
 
     def test_the_range(self):
         d = self.t.initialize()
-        self.assertEqual(d["protocol"], 1)
-        self.assertEqual(self.t.initialize(protocol={"min": 1, "max": 3})["protocol"], 1)
+        self.assertEqual((d["protocol"], d["apps"]), (2, []))
+        self.assertEqual(self.t.initialize(protocol={"min": 1, "max": 3})["protocol"], 2)
         self.assertIsNone(self.t.exited)
 
-    def test_a_range_without_1(self):
+    def test_a_range_without_2(self):
         with self.assertRaises(wk.ExtensionError) as cm:
-            self.t.initialize(protocol={"min": 2, "max": 3})
+            self.t.initialize(protocol={"min": 3, "max": 4})
         self.assertEqual((cm.exception.code, cm.exception.reason), (1, "failed"))
-        self.assertIn("protocol 1", cm.exception.message)
-        self.assertIn('{"min": 2, "max": 3}', cm.exception.message)
+        self.assertIn("protocol 2", cm.exception.message)
+        self.assertIn('{"min": 3, "max": 4}', cm.exception.message)
         time.sleep(0.05)
         self.assertEqual(self.t.exited, 1)                               # run() exits with 1 then
         with self.assertRaises(AssertionError) as cm:                    # and nothing answers any more
@@ -92,8 +92,11 @@ class Version(unittest.TestCase):
             self.assertEqual(ans["error"]["data"], {"reason": "failed"}, asked)
 
     def test_a_single_number_is_a_range_of_one(self):
-        ans = self.t.send("initialize", {"protocol": 1, "workshop": "test", "id": "demo", "options": {}})
-        self.assertEqual(ans["result"]["protocol"], 1)
+        ans = self.t.send("initialize", {"protocol": 2, "workshop": "test", "id": "demo", "options": {}})
+        self.assertEqual(ans["result"]["protocol"], 2)
+        t = wk.ExtensionTest(make()[0])                                  # the protocol before: not spoken any more
+        self.addCleanup(t.close)
+        self.assertIn("error", t.send("initialize", {"protocol": 1, "id": "demo", "options": {}}))
 
     def test_the_description_passes_the_workshop(self):
         self.assertEqual(self.t.check_description(), [])                 # initializes by itself
@@ -362,7 +365,7 @@ class WithTheWorkshopsWire(unittest.TestCase):
         return e.code, e.data
 
     def test_the_protocol(self):
-        answer = self.ask("initialize", dict(protocol={"min": 1, "max": 1}, workshop="0.9.13", id="voice", options={}))
+        answer = self.ask("initialize", dict(protocol={"min": 2, "max": 2}, workshop="0.10.0", id="voice", options={}))
         desc, problems = M.check_description("voice", answer)
         self.assertEqual((problems, [c["id"] for c in desc["capabilities"]]),
                          ([], ["voice.wait", "voice.left", "voice.bags"]))
@@ -400,7 +403,7 @@ class WithTheWorkshopsWire(unittest.TestCase):
 
     def test_another_protocol(self):
         with mock.patch("sys.stderr"):
-            code, data = self.failure("initialize", dict(protocol={"min": 2, "max": 2}, workshop="1.0", id="voice",
+            code, data = self.failure("initialize", dict(protocol={"min": 3, "max": 3}, workshop="1.0", id="voice",
                                                          options={}))
         self.assertEqual((code, data), (1, {"reason": "failed"}))
         self.assertEqual(self.w.p.wait(5), 1)

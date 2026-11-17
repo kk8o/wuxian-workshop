@@ -2,21 +2,28 @@ r"""The wire between the workshop and a local extension: one stdio pipe, JSON-RP
 process here (process.py has the pipe and its threads): the lines (frame, parse), the workshop's requests and the Futures
 waiting for their answers (Wire, which process.Proc is), the protocol's numbers and the errors of a call.
 
-Protocol 1. The workshop asks (requests):
+Protocol 2. The workshop asks (requests):
 
     initialize {protocol: {min, max}, workshop, id, options}   -> {protocol: <one of min..max>, capabilities, sources,
-                                                                  options}; INIT_TIMEOUT seconds (a model may load)
+                                                                  options, apps: [the ids of the apps its program
+                                                                  drives]}; INIT_TIMEOUT seconds (a model may load)
     call {name, args, caller, deadline_ms?}                    -> the capability's result. caller: {by: "agent" |
                                                                   "extension" | "workshop" | "player", id?, app?,
                                                                   chain?}; deadline_ms: how long the workshop still waits
+    wake {app, wake}                                           -> {} once its program has dealt with the wake of the
+                                                                  app it drives ({app, seq, reason, items, skipped,
+                                                                  after, next, status?, state?, notes?}); one at a
+                                                                  time for an app, and no time limit (local/drive.py)
     ping {}                                                    -> {} within PING_TIMEOUT seconds (asked after a call
-                                                                  timed out: one that does not answer is hung)
+                                                                  timed out, and while a wake waits: one that does
+                                                                  not answer is hung)
     shutdown {}                                                -> {} and it exits
 
 and tells (notifications): options {options} when the player changed them (all of them); cancel {id}: the workshop no
 longer waits for request id (it timed out, or its caller went away), an answer to it is dropped. The extension tells
-event {source, data} and asks call {cap, args, chain?}; what the workshop does with them is the host's (host.py:
-on_message, extension_event, extension_call).
+event {source, data} and report {app, key, state, step?, text?, done?, total?, retry?, data?} (how a piece of its work
+stands, for the game to show: validate.check_report) and asks call {cap, args, chain?}; what the workshop does with
+them is the host's (host.py: on_message, extension_event, extension_report, extension_call).
 
 An error answer is {code, message, data: {reason}}. code: BAD_ARGS (-32602), NO_METHOD (-32601, no such capability),
 FAILED (1), BUSY (2: the extension has too much to do, it may refuse) or CANCELLED (3). reason is one of REASONS, the
@@ -33,7 +40,7 @@ from . import manifest as M
 
 INIT_TIMEOUT = 180.0          # seconds initialize may take (an extension that loads a model first)
 PING_TIMEOUT = 5.0            # seconds an extension has to answer ping
-PROTOCOL = {"min": 1, "max": 1}   # the protocol versions this workshop speaks (initialize says so)
+PROTOCOL = {"min": 2, "max": 2}   # the protocol versions this workshop speaks (initialize says so)
 LINE_LIMIT = 8 * 1024 * 1024  # bytes of one line of the protocol at most (a longer one from the extension is dropped)
 
 # JSON-RPC error codes of a call, and the reason each stands for

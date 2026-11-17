@@ -96,7 +96,8 @@ def check(host, ident):
     A game addon the workshop will not install is one of the problems (addon_problems).
     One in the game only: its manifest, and {where: "game", addons: [{folder, path}]}, its addons' sources for the
     caller to check as addons (nothing of it runs here). Else the
-    manifest; a process of its own started, initialized (its description checked) and shut down (not while the
+    manifest; a process of its own started, initialized (its description checked, the apps it drives against the
+    manifest's) and shut down (not while the
     registered one runs: then its description is the one that one gave, and running is its pid); its tests (a tests
     folder) run with its Python. ApiError needs_approval before anything of it runs that the player has not allowed"""
     e, folder = host.resolve(ident)
@@ -122,6 +123,7 @@ def check(host, ident):
             problems += more
             if desc is not None:
                 caps, described = [c["id"] for c in desc["capabilities"]], desc
+                driven_problem(m, desc, problems)
     elif m is not None:
         taken_by_another(host, m, folder, problems)
         out = Output(host.root / "extensions" / m["id"] / "check.log")
@@ -133,6 +135,7 @@ def check(host, ident):
             proc.ready = True                              # it is asked shutdown, not just ended
             problems += more
             caps, described = [c["id"] for c in desc["capabilities"]], desc
+            driven_problem(m, desc, problems)
         except Down as d:
             problems += d.problems
             lines = tail(out.path)
@@ -164,6 +167,14 @@ def check(host, ident):
                                           "tests.output says which and why"))
     result["ok"] = not M.errors_in(problems)
     return result
+
+
+def driven_problem(m, desc, problems):
+    """(check) the error of a program that does not drive the very apps its manifest gives it (manifest.driven_problem:
+    such an extension does not start)"""
+    wrong = M.driven_problem(m, desc)
+    if wrong is not None:
+        problems.append(wrong)
 
 
 def taken_by_another(host, m, folder, problems):

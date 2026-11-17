@@ -26,7 +26,7 @@ START_WAIT = 200    # seconds a call of a local extension may wait for it to sta
 LOAD_WAIT = 330     # seconds extension_load / extension_check may take: a start (180 s) and its tests (120 s)
 PACK_WAIT = 180     # seconds a package may take: packing a folder, unpacking one (64 MB, 8000 files), a game addon
 AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
-                    # (service.PIECE_WAIT), and a piece may wait out its timeout before that
+                    # (service.POUR_WAIT), and a piece may wait out its timeout before that
 LOAD_MOST = 600     # seconds a load may take in the daemon however small its timeout_ms (service.MAX_TIMEOUT_MS: a big
                     # addon gets 5 s + 1 s per 2.5 KB), and its check and kept version before that
 WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
@@ -139,12 +139,13 @@ class DaemonClient:
         return self.post("/api/addon_events", addon=addon, topic=topic, since=since, limit=limit, wait=wait,
                          timeout=wait + 30)
 
-    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False, whole=False):
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False, most=None, whole=False):
         # shared: an ask of WuxianKit's view (daemon/kitcache.py), said only then (a daemon before it reads no such
         # field); whole: an answer up to 16 MB, whose rest comes for as long as it keeps coming (service.call_exposed)
         return self.post("/api/call", addon=addon, name=name, args=args, timeout_ms=timeout_ms,
                          timeout=timeout_ms / 1000 + (WHOLE_WAIT if whole else 30 + AGAIN),
-                         **({"shared": True} if shared else {}), **({"whole": True} if whole else {}))
+                         **({"shared": True} if shared else {}), **({"whole": True} if whole else {}),
+                         **({} if most is None else {"most": most}))
 
     def respond(self, request, data=None, timeout_ms=10000):
         return self.post("/api/respond", request=request, data=data, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)
@@ -234,7 +235,7 @@ class DaemonClient:
     def extension_pack(self, id, to=None):
         return self.post("/api/local/pack", id=id, timeout=PACK_WAIT, **({"to": to} if to else {}))
 
-    def extension_install(self, id, replace=False):
+    def extension_install(self, id, replace=None):       # replace: [{folder, there}], the folders in AddOns to replace
         return self.post("/api/local/install", id=id, timeout=PACK_WAIT, **({"replace": replace} if replace else {}))
 
     def extension_logs(self, id, since=0, limit=200):
