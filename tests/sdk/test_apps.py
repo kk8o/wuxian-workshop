@@ -2,8 +2,9 @@
 the heartbeat that waits while the link stands by (beat_rule, as `wuxian listen` has it), Client.call with whole,
 @ext.app and ExtensionTest.wake, and AppDriver: it opens the app, hands the wakes over one after another (an "open"
 wake first, a catch-up from the kept cursor), keeps where they got in ext.data / apps.json, and after the app's end
-opens it again as its why says (player: after kit.ready; extension: never; others: a few seconds later), waits while
-the game or the daemon is away, and stops with shutdown. The clock is fake; the drivers run in threads."""
+opens it again as its why says (player: after kit.ready; extension: never; others: a few seconds later), hands a
+"ready" wake after a login or UI reload the app ran through, waits while the game or the daemon is away, and stops
+with shutdown. The clock is fake; the drivers run in threads."""
 import contextlib
 import io
 import json
@@ -344,6 +345,46 @@ class Driver(Base):
         self.fake.app_known = True
         self.fake.emit("kit.ready", {"version": "0.6.1"})
         self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
+
+    def test_a_reload_it_ran_through_gives_a_ready_wake(self):
+        d = self.driver()
+        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
+        self.fake.wake([1, 2])
+        self.assertTrue(until(lambda: len(self.got) == 2), self.got)
+        statuses = len(self.fake.calls("kit.app.status"))
+        self.fake.emit("kit.ready", {"version": "0.6.1"})                       # a reload; the app goes on
+        self.assertTrue(until(lambda: len(self.got) == 3), self.got)
+        ready = self.got[2]
+        self.assertEqual((ready["reason"], ready["items"], ready["after"], ready["next"]), ("ready", [], 2, 2))
+        self.assertEqual(ready["status"]["on"], True)
+        self.assertGreater(len(self.fake.calls("kit.app.status")), statuses)  # after the status was read again
+        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 2}}), self.kept())   # the cursor stays
+        self.fake.wake([3])
+        self.assertTrue(until(lambda: len(self.got) == 4), self.got)
+        self.assertEqual([i["id"] for i in self.got[3]["items"]], [3])
+        self.fake.emit("kit.ready", {"version": "0.6.1"})                       # once for each
+        self.assertTrue(until(lambda: self.reasons()[4:] == ["ready"]), self.got)
+        self.assertEqual((self.got[4]["after"], self.got[4]["next"]), (3, 3))
+        self.assertEqual((self.opens(), d.opened), (1, 1))
+
+    def test_a_ready_that_ends_the_app_gives_none(self):
+        self.driver()
+        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
+        self.fake.app_on, self.fake.app_why = False, "left"                     # a login as another character
+        self.fake.emit("kit.ready", {"version": "0.6.1"})
+        self.assertTrue(until(lambda: self.opens() == 2), self.fake.calls())
+        self.assertTrue(until(lambda: self.reasons() == ["open", "open"]), self.got)
+        self.assertNotIn("ready", self.reasons())
+
+    def test_a_ready_wake_that_fails_goes_on(self):
+        self.fail_on.add("ready")
+        self.driver()
+        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
+        self.fake.emit("kit.ready", {"version": "0.6.1"})
+        self.assertTrue(until(lambda: self.reasons() == ["open", "ready"]), self.got)
+        self.fake.wake([1])
+        self.assertTrue(until(lambda: len(self.got) == 3), self.got)
+        self.assertIn("the wake (ready) failed", self.err.getvalue())
 
 
 class Run(Base):

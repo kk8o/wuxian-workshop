@@ -432,7 +432,9 @@ class AppStream:
     """the wakes of one app that runs; see Client.app. Attributes: cursor (the id of the last item given or passed
     over: pass it as since to go on later; None until the app's status was read, unless since was given); state
     ("connected" | "waiting", reason); ended (None while it listens; else why it ended: stopped, player, expired,
-    left, extension, forgotten, closed, ...); status (the last kit.app.status answer)"""
+    left, extension, forgotten, closed, ...); status (the last kit.app.status answer); ready_wakes (False; AppDriver
+    sets it): after a login or a UI reload (kit.ready) that the app ran through, one wake with reason "ready" (no
+    items, after and next the cursor, status the app's status then), once the status was read again"""
 
     def __init__(self, client: Client, app_id: str, *, since: Optional[int] = None, wait: Optional[float] = None,
                  yield_timeouts: bool = False):
@@ -456,6 +458,8 @@ class AppStream:
         self._fails = 0
         self._retry_at = 0.0
         self._pending: collections.deque = collections.deque()
+        self.ready_wakes = False
+        self._ready = False                              # a kit.ready came; the status was not read since
 
     # ---- iteration
 
@@ -581,6 +585,11 @@ class AppStream:
         elif nxt is not None and nxt < self.cursor:      # the app's items end before the cursor (another character,
             self.cursor = nxt                            # saved data that started again): every wake would be a repeat
         self._joined = True
+        if self._ready:                                  # it ran through a login or a UI reload
+            self._ready = False
+            if self.ready_wakes:
+                self._pending.append(dict(app=self.id, reason="ready", items=[], skipped=0, after=self.cursor,
+                                          next=self.cursor, status=ans))
 
     @property
     def beat_every(self) -> float:
@@ -629,7 +638,7 @@ class AppStream:
     def _take(self, ev: dict) -> None:
         topic, data = ev.get("topic"), ev.get("data")
         if topic == "kit.ready":                         # a login or a UI reload: does the app still run?
-            self._joined = False
+            self._joined, self._ready = False, True
             return
         if not isinstance(data, dict):
             return
@@ -1356,7 +1365,8 @@ class Extension:
 
         Once ext.run() answered initialize, a thread for each such app (AppDriver) opens it in the game (kit.app.open
         with the declared minutes), listens (Client.app) and hands fn the wakes; besides WuxianKit's, one with reason
-        "open" (no items) each time it opened the app, and "catchup" for what came while nothing listened. What fn
+        "open" (no items) each time it opened the app, one with reason "ready" (no items) after each login or UI
+        reload (kit.ready) the app ran through, and "catchup" for what came while nothing listened. What fn
         raises goes to the log and the next wake comes all the same. Where the wakes got (their next) is kept in
         ext.data / "apps.json": the next start goes on from there. When the app ends: the player stopped it (why
         player, also when it was so as the extension started): opened again after the next login or UI reload
@@ -1888,9 +1898,10 @@ class AppDriver:
 
     def listen(self, status: dict) -> tuple:
         """the wakes of the app that runs, to fn, until it ends: (why, the daemon's event id to hear kit.ready from) or
-        (None, None) once stop is set. A wake with reason "open" comes first. It goes on from the kept cursor; the first
-        time from where the app's wakes got when it opened (what came between the open and the listening comes as a
-        catch-up)"""
+        (None, None) once stop is set. A wake with reason "open" comes first; after each login or UI reload (kit.ready)
+        that the app ran through, one with reason "ready" (no items, the cursor stays: the game may have forgotten
+        what it was told). It goes on from the kept cursor; the first time from where the app's wakes got when it
+        opened (what came between the open and the listening comes as a catch-up)"""
         since = self.ext._cursor(self.id) if self.ext.id else None
         if since is None:
             since = _id(status.get("sent")) if _id(status.get("sent")) is not None else _id(status.get("next"))
@@ -1898,6 +1909,7 @@ class AppDriver:
         self.handle({"app": self.id, "reason": "open", "items": [], "skipped": 0, "after": since, "next": since,
                      "status": status})
         stream = self.stream = self.client.app(self.id, since=since)
+        stream.ready_wakes = True
         try:
             while not self.stop.is_set():
                 w = stream.get(POLL_WAIT)

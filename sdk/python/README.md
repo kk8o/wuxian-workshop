@@ -121,11 +121,11 @@ ext.run(setup=load_model)                              # setup 在回答 initial
 ```python
 @ext.app("cocreate")                                   # 清单 apps 里 driver 为 local 的那个应用
 def wake(w):                                           # {app, seq, reason, items, skipped, after, next, state?, notes?}
-    if w["reason"] in ("open", "catchup") or any(i.get("kind") == "snapshot" for i in w["items"]):
+    if w["reason"] in ("open", "ready", "catchup") or any(i.get("kind") == "snapshot" for i in w["items"]):
         sync()                                         # 抛的错进日志，下一个唤醒照样来
 ```
 
-`ext.run()` 回答 `initialize` 之后，每个这样的应用起一个线程（`AppDriver`）：游戏在线时 `kit.app.open`（用声明的时长），用 `Client.app` 收唤醒，同一个应用一个接一个交给函数。每次打开先交一个 `reason` 为 `open` 的唤醒（没有条目，`status` 是打开时的状态）；`catchup` 是没在听时攒下的。游标（唤醒的 `next`）存在 `ext.data / "apps.json"`，下次启动从它接着。应用结束：玩家停的（`player`，扩展启动时它就是玩家停着的也一样）等下一次登录或重载（`kit.ready`）再开；扩展被停用（`extension`）不再开；别的（`expired`、`left`、`stopped`……）隔几秒再开。游戏不在、无限工坊没开时只等。`shutdown` 时线程停下，应用留给工坊处理（扩展停用时工坊让游戏忘掉它）。控件绑定的能力、反射、唤醒附注照常。
+`ext.run()` 回答 `initialize` 之后，每个这样的应用起一个线程（`AppDriver`）：游戏在线时 `kit.app.open`（用声明的时长），用 `Client.app` 收唤醒，同一个应用一个接一个交给函数。每次打开先交一个 `reason` 为 `open` 的唤醒（没有条目，`status` 是打开时的状态）；应用跑着时遇到登录或重载（`kit.ready`），读过状态后交一个 `reason` 为 `ready` 的唤醒（没有条目，游标不动，`status` 是那时的状态），插件存档回到了上次下线或重载时的样子，该告诉它的再说一遍；`catchup` 是没在听时攒下的。游标（唤醒的 `next`）存在 `ext.data / "apps.json"`，下次启动从它接着。应用结束：玩家停的（`player`，扩展启动时它就是玩家停着的也一样）等下一次登录或重载（`kit.ready`）再开；扩展被停用（`extension`）不再开；别的（`expired`、`left`、`stopped`……）隔几秒再开。游戏不在、无限工坊没开时只等。`shutdown` 时线程停下，应用留给工坊处理（扩展停用时工坊让游戏忘掉它）。控件绑定的能力、反射、唤醒附注照常。
 
 测试用 `ExtensionTest(ext, setup=..., options=..., answers=...)`：不起进程，在内存里按协议 `initialize`、`call`（可以带 `caller=`、`deadline_ms=`）、`ping`，收 `event`，给扩展发出的 `call` 回假答；`start` / `cancel` / `result` 测取消，`check_description()` 给出工坊会挑的毛病；`t.wake("cocreate", items=[...], reason="catchup")` 把一个唤醒直接交给 `@ext.app` 的函数（在当前线程里，函数的返回值和异常原样出来；不开应用、不存游标、不连守护进程）。
 
@@ -157,7 +157,7 @@ for wake in app:                                       # 一直等到下一个�
 
 唤醒（事件 `app.<id>`）：`{app, seq, reason, items, skipped, after, next, state?, pace?, quiet?, notes?}`。
 
-- `reason`：`item`（不汇总，到了就发）、`urgent`、`full`、`batch`、`idle`，以及补读时合成的 `catchup`。
+- `reason`：`item`（不汇总，到了就发）、`urgent`、`full`、`batch`、`idle`，以及补读时合成的 `catchup`；`@ext.app` 的函数另会收到 SDK 合成的 `open`、`ready`（见上）。
 - `after`、`next`：这次唤醒覆盖编号在 `after` 之后、到 `next` 为止的条目；`seq` 是应用这次运行的第几个唤醒。
 - `skipped`：单个事件太大时去掉的条目数，可以用 `kit.call("kit.app.recent", {"app": ..., "since": id})` 回看。
 - `notes`：`{<扩展 id>: 结果}`，本机扩展用清单的 `adds` 给这个应用的唤醒加的附注；失败的那一份是 `{error, reason}`，唤醒照常到。
@@ -178,4 +178,4 @@ for wake in app:                                       # 一直等到下一个�
 
 ## 测试
 
-工坊仓库的 `tests/sdk/`：`test_extension.py` 本机扩展（内存里与真子进程）；`test_protocol.py` 协议第 1 版（版本协商、`cancel`、`ping`、`busy`、`reason`）；`test_sdk.py` 客户端与应用流，假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等；`test_apps.py` 心跳规则、`whole`、`@ext.app` 与 `AppDriver`（打开、游标、结束后按 why 处理、等游戏和守护进程、`shutdown`）；`test_validate_sync.py` 核对文件里那段共用检查和工坊的 `local/validate.py` 一字不差。改了 `local/validate.py` 跑 `python scripts/sync_sdk_validate.py` 同步进来，`--check` 只核对。
+工坊仓库的 `tests/sdk/`：`test_extension.py` 本机扩展（内存里与真子进程）；`test_protocol.py` 协议第 1 版（版本协商、`cancel`、`ping`、`busy`、`reason`）；`test_sdk.py` 客户端与应用流，假的守护进程（`http.server`）加可注入的时钟，`Client(clock=..., sleep=...)`，不用真等；`test_apps.py` 心跳规则、`whole`、`@ext.app` 与 `AppDriver`（打开、游标、重载后的 `ready`、结束后按 why 处理、等游戏和守护进程、`shutdown`）；`test_validate_sync.py` 核对文件里那段共用检查和工坊的 `local/validate.py` 一字不差。改了 `local/validate.py` 跑 `python scripts/sync_sdk_validate.py` 同步进来，`--check` 只核对。
