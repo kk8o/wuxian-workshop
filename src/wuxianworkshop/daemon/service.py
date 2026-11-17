@@ -2089,10 +2089,11 @@ class Service:
                 if isinstance(x, dict) and isinstance(x.get("id"), str)}
 
     def game_side_known(self):
-        """(the local host's game_side) what the game says of the extensions' game halves now: {online: the link is
-        up, extensions: {id: {addon, state, version}} as the WuxianKit manifest known now lists them}"""
+        """(the local host's game_side) what the game says of the extensions' game halves now: {online: the game can
+        be reached (the link is up, or stands by: a call opens a session), extensions: {id: {addon, state, version}}
+        as the WuxianKit manifest known now lists them}"""
         manifest = self.kit_manifest_known() or {}
-        return dict(online=bool(self.link_is_up()),
+        return dict(online=bool(self.link_is_up()) or self.link_word() == "standby",
                     extensions={x["id"]: dict(addon=x.get("addon"), state=x.get("state"), version=x.get("version"))
                                 for x in manifest.get("extensions") or []
                                 if isinstance(x, dict) and isinstance(x.get("id"), str)})
