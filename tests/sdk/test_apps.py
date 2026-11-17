@@ -1,15 +1,14 @@
-"""The SDK's apps driven by a local extension (fx2, contract2 sections 1 and 2) against the fake daemon of test_sdk.py:
-the heartbeat that waits while the link stands by (beat_rule, as `wuxian listen` has it), Client.call with whole,
-@ext.app and ExtensionTest.wake, and AppDriver: it opens the app, hands the wakes over one after another (an "open"
-wake first, a catch-up from the kept cursor), keeps where they got in ext.data / apps.json, and after the app's end
-opens it again as its why says (player: after kit.ready; extension: never; others: a few seconds later), hands a
-"ready" wake after a login or UI reload the app ran through, waits while the game or the daemon is away, and stops
-with shutdown. The clock is fake; the drivers run in threads."""
+"""The SDK and the apps (contract3 sections 1 to 3). Against the fake daemon of test_sdk.py: the heartbeat of Client.app
+that waits while the link stands by (beat_rule, as `wuxian listen` has it), Client.call with most. In memory
+(ExtensionTest): @ext.app only names the function of an app the extension's program drives (initialize answers the
+apps; the workshop opens the app and sends the request wake), one wake of an app at a time on the app's own thread,
+ExtensionTest.wake, and ext.report with ExtensionTest.reports."""
 import contextlib
 import io
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -77,14 +76,16 @@ class Heartbeat(Base):
         self.assertEqual(self.beats(s, 450), [0, 200, 400])
 
 
-class WholeCall(Base):
-    def test_whole_goes_to_the_daemon(self):
-        self.assertEqual(self.kit.call("cocreate.payload", {"at": 1}, whole=True),
-                         {"name": "cocreate.payload", "args": {"at": 1}})
-        self.kit.call("cocreate.info")
-        whole, plain = self.fake.calls()
-        self.assertEqual((whole["whole"], whole["timeout_ms"]), (True, wk.CALL_TIMEOUT_MS))
+class MostCall(Base):
+    def test_most_goes_to_the_daemon(self):
+        self.assertEqual(self.kit.call("cocreate.payload", {"at": 1}), {"name": "cocreate.payload", "args": {"at": 1}})
+        self.kit.call("cocreate.info", most=4096)
+        plain, small = self.fake.calls()
+        self.assertEqual((small["most"], small["timeout_ms"]), (4096, wk.CALL_TIMEOUT_MS))
+        self.assertNotIn("most", plain)                  # not given: the daemon's own (16 MB)
         self.assertNotIn("whole", plain)
+        with self.assertRaises(TypeError):
+            self.kit.call("x", whole=True)               # there is no such thing any more
         seen = []
         real = wk.Client._post
 
@@ -92,9 +93,11 @@ class WholeCall(Base):
             seen.append(timeout)
             return real(client, info, path, body, timeout, method)
         with mock.patch.object(wk.Client, "_post", post):
-            self.kit.call("x", whole=True, timeout_ms=2000)
-            self.kit.call("x", timeout_ms=2000)
-        self.assertEqual(seen, [2 + wk.WHOLE_WAIT, 32])
+            self.kit.call("x", timeout_ms=2000)          # as long as a long answer keeps coming
+            self.kit.call("x", most=1 << 20, timeout_ms=2000)
+            self.kit.call("x", most=256 * 1024, timeout_ms=2000)     # one that comes within seconds
+            self.kit.proposal(7)                         # the client's own asks are such
+        self.assertEqual(seen, [2 + wk.ANSWER_WAIT, 2 + wk.ANSWER_WAIT, 32, wk.CALL_TIMEOUT_MS / 1000 + 30])
 
 
 class Decorator(unittest.TestCase):
@@ -119,6 +122,8 @@ class Decorator(unittest.TestCase):
             ext.app("cocreate")
         with self.assertRaises(TypeError):
             ext.app("other")(None)
+        self.assertEqual(ext.describe()["apps"], ["cocreate"])       # what initialize says it drives
+        self.assertFalse(hasattr(wk, "AppDriver"))                   # the workshop runs the app, not the program
 
     def test_the_manifest_says_who_drives(self):
         local = {"id": "cc", "apps": [{"app": "cocreate", "driver": "local"}, {"app": "talk", "prompt": "talk"}]}
@@ -147,9 +152,11 @@ class Decorator(unittest.TestCase):
         with wk.ExtensionTest(ext) as t:
             self.assertEqual(t.wake("cocreate"), 0)
             self.assertIsNotNone(t.described)            # initialize ran first
+            self.assertEqual(t.described["apps"], ["cocreate"])
             items = [{"id": 7, "source": "cocreate", "kind": "snapshot"}, {"id": 8, "source": "control", "cmd": "x"}]
             self.assertEqual(t.wake("cocreate", items=items), 2)
             self.assertEqual(t.wake("cocreate", {"reason": "catchup", "next": 20}, after=9), 0)
+            self.assertEqual(t.wake("cocreate", reason="open", status={"on": True}), 0)
             with self.assertRaises(RuntimeError):
                 t.wake("cocreate", reason="boom")
             with self.assertRaises(AssertionError):
@@ -158,270 +165,143 @@ class Decorator(unittest.TestCase):
                                   "after": 0, "next": 0})
         self.assertEqual((got[1]["after"], got[1]["next"], got[1]["seq"]), (6, 8, 2))
         self.assertEqual((got[2]["reason"], got[2]["after"], got[2]["next"]), ("catchup", 9, 20))
+        self.assertEqual((got[3]["reason"], got[3]["status"]), ("open", {"on": True}))
 
 
-class Driver(Base):
-    """an AppDriver of the app demo (the fake daemon's), its pauses on the fake clock"""
+class Wakes(unittest.TestCase):
+    """the request wake {app, wake}, as the workshop sends it: one wake of an app at a time, in a thread of the app's
+    own, answered {} once its function returned, whatever it did"""
 
     def setUp(self):
-        super().setUp()
-        self.data = self.home / "data"
-        env = mock.patch.dict(os.environ, {"WUXIAN_EXTENSION_DATA": str(self.data)})
-        env.start()
-        self.addCleanup(env.stop)
-        self.fake.idle = 0.02                            # a driver polls in a loop: some real time each, not a spin
-        self.ext = wk.Extension("cc", folder=self.home)
-        self.got = []
-        self.fail_on = set()
-        self.err = io.StringIO()
+        self.ext = wk.Extension("cc", folder=tempfile.gettempdir())
+        self.got, self.gate, self.inside = [], threading.Event(), threading.Event()
+        self.threads = set()
 
-    def handler(self, w):
-        self.got.append(w)
-        if w.get("reason") in self.fail_on or any(i.get("id") in self.fail_on for i in w.get("items") or ()):
-            raise RuntimeError("the handler failed")
+        @self.ext.app("cocreate")
+        def cocreate(w):
+            self.threads.add(threading.current_thread().name)
+            self.got.append(("cocreate", w["next"]))
+            if w["reason"] == "slow":
+                self.inside.set()
+                self.gate.wait(10)
+            if w["reason"] == "boom":
+                raise RuntimeError("the handler failed")
 
-    def driver(self):
-        d = wk.AppDriver(self.ext, "demo", self.handler, self.kit)
-        d.pause = lambda s: (self.clock.sleep(s), time.sleep(0.02), d.stop.is_set())[2]
-        self.addCleanup(self.finish, d)
-        quiet = contextlib.redirect_stderr(self.err)
-        quiet.__enter__()
-        self.addCleanup(quiet.__exit__, None, None, None)
-        d.start()
-        return d
+        @self.ext.app("other")
+        def other(w):
+            self.threads.add(threading.current_thread().name)
+            self.got.append(("other", w["next"]))
 
-    def finish(self, d):
-        d.stop.set()
-        d.thread.join(10)
-        self.assertFalse(d.thread.is_alive())
+        @self.ext.see("hello", doc="Says hello.")
+        def hello():
+            return "hi"
 
-    def reasons(self):
-        return [w["reason"] for w in list(self.got)]
+        self.t = wk.ExtensionTest(self.ext)
+        self.addCleanup(self.t.close)
+        self.addCleanup(self.gate.set)
+        self.t.initialize()
 
-    def kept(self):
-        try:
-            return json.loads((self.data / "apps.json").read_text(encoding="utf-8"))
-        except OSError:
-            return None
+    def wake(self, app, nxt, reason="item"):
+        return {"app": app, "wake": {"app": app, "seq": nxt, "reason": reason, "items": [], "skipped": 0,
+                                     "after": nxt - 1, "next": nxt}}
 
-    def end(self, why):
-        """the app stops in the game: its kit.app event, and its status says so (whichever the stream sees first)"""
-        self.fake.app_on, self.fake.app_why = False, why
-        self.fake.emit("kit.app", {"app": "demo", "on": False, "why": why})
+    def test_answered_once_the_function_returned(self):
+        self.assertEqual(self.t.send("wake", self.wake("cocreate", 1))["result"], {})
+        self.assertEqual(self.got, [("cocreate", 1)])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):            # what it raises goes to the log: answered all the same
+            self.assertEqual(self.t.send("wake", self.wake("cocreate", 2, "boom"))["result"], {})
+        self.assertIn("the wake (boom) failed", err.getvalue())
+        self.assertIn("RuntimeError: the handler failed", err.getvalue())
+        self.assertEqual(self.t.send("wake", self.wake("cocreate", 3))["result"], {})    # and the next one comes
 
-    def opens(self):
-        return len(self.fake.calls("kit.app.open"))
+    def test_one_at_a_time_each_app_on_its_own_thread(self):
+        slow = self.t.post("wake", self.wake("cocreate", 1, "slow"))
+        self.assertTrue(self.inside.wait(10))
+        nxt = self.t.post("wake", self.wake("cocreate", 2))          # behind the one that runs
+        self.assertEqual(self.t.send("wake", self.wake("other", 9))["result"], {})   # another app's goes on
+        self.assertEqual(self.t.call("hello"), "hi")                 # and so do its capabilities, and ping
+        self.assertEqual(self.t.ping(), {})
+        self.assertEqual(self.got, [("cocreate", 1), ("other", 9)])
+        self.gate.set()
+        self.assertEqual(self.t.result(slow), {})
+        self.assertEqual(self.t.result(nxt), {})
+        self.assertEqual(self.got, [("cocreate", 1), ("other", 9), ("cocreate", 2)])
+        self.assertEqual(self.threads, {"wuxiankit-app-cocreate", "wuxiankit-app-other"})
 
-    def test_open_then_the_wakes_one_after_another(self):
-        self.fail_on.add(1)                              # the wake with item 1
-        d = self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        self.assertEqual(self.fake.calls("kit.app.open")[0]["args"], {"app": "demo"})    # the declared minutes
-        self.assertEqual(self.got[0]["status"]["on"], True)
-        self.assertEqual((self.got[0]["after"], self.got[0]["next"]), (0, 0))   # where the app's wakes got
-        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 0}}), self.kept())
-        self.fake.wake([1, 2])
-        self.assertTrue(until(lambda: len(self.got) == 2), self.got)
-        self.assertEqual([i["id"] for i in self.got[1]["items"]], [1, 2])
-        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 2}}), self.kept())   # though the handler failed
-        self.fake.wake([3], reason="batch")
-        self.assertTrue(until(lambda: len(self.got) == 3), self.got)
-        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 3}}), self.kept())
-        self.assertIn(f"the wake ({self.got[1]['reason']}) failed", self.err.getvalue())
-        self.assertEqual((self.opens(), d.opened, d.state), (1, 1, "listening"))
-
-    def test_it_goes_on_where_the_last_run_got(self):
-        self.data.mkdir(parents=True)
-        (self.data / "apps.json").write_text(json.dumps({"demo": {"next": 3}, "other": {"next": 9}}), encoding="utf-8")
-        self.fake.wake([1, 2, 3], lost=True)
-        self.fake.wake([4, 5], lost=True)                # while it did not run
-        self.driver()
-        self.assertTrue(until(lambda: len(self.got) == 2), self.got)
-        opened, caught = self.got
-        self.assertEqual((opened["reason"], opened["after"], opened["next"], opened["items"]), ("open", 3, 3, []))
-        self.assertEqual((caught["reason"], [i["id"] for i in caught["items"]], caught["next"]), ("catchup", [4, 5], 5))
-        self.assertEqual(self.fake.calls("kit.app.recent")[0]["args"], {"app": "demo", "since": 3, "limit": 100})
-        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 5}, "other": {"next": 9}}), self.kept())
-
-    def test_an_end_that_opens_it_again_soon(self):
-        self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]))
-        t0 = self.clock.t
-        self.end("expired")
-        self.assertTrue(until(lambda: self.opens() == 2), self.fake.calls())
-        self.assertGreaterEqual(self.fake.call_times("kit.app.open")[1] - t0, wk.APP_REOPEN)
-        self.assertTrue(until(lambda: self.reasons() == ["open", "open"]), self.got)
-        self.assertIn("ended (expired)", self.err.getvalue())
-
-    def test_the_players_stop_waits_for_kit_ready(self):
-        d = self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]))
-        self.end("player")
-        self.assertTrue(until(lambda: "the player stopped it" in self.err.getvalue()))
-        polls = len(self.fake.polls())
-        self.assertTrue(until(lambda: len(self.fake.polls()) > polls + 5))     # it waits, a while on the clock
-        self.assertEqual(self.opens(), 1)
-        self.assertEqual(d.thread.is_alive(), True)
-        self.fake.emit("kit.ready", {"version": "0.6.1"})                       # a reload
-        self.assertTrue(until(lambda: self.opens() == 2), self.fake.calls())
-        self.assertTrue(until(lambda: self.reasons() == ["open", "open"]), self.got)
-
-    def test_stopped_by_the_player_before_it_started(self):
-        self.fake.app_on, self.fake.app_why = False, "player"   # the workshop restarted; the player had stopped it
-        self.driver()
-        self.assertTrue(until(lambda: "the player stopped it" in self.err.getvalue()))
-        polls = len(self.fake.polls())
-        self.assertTrue(until(lambda: len(self.fake.polls()) > polls + 5))
-        self.assertEqual(self.opens(), 0)
-        self.fake.emit("kit.ready", {"version": "0.6.1"})
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        self.assertEqual(self.fake.calls()[0]["name"], "kit.app.status")    # read once before the first open
-
-    def test_another_end_before_it_started_opens_it(self):
-        self.fake.app_on, self.fake.app_why = False, "expired"
-        self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-
-    def test_the_extension_turned_off_ends_it(self):
-        d = self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]))
-        self.end("extension")
-        d.thread.join(10)
-        self.assertFalse(d.thread.is_alive())
-        self.assertEqual((self.opens(), d.state), (1, "ended"))
-        self.assertIn("its extension was turned off", self.err.getvalue())
-        self.assertEqual(self.fake.calls("kit.app.stop"), [])
-
-    def test_while_the_game_is_away_it_waits(self):
-        self.fake.link_down = True
-        d = self.driver()
-        self.assertTrue(until(lambda: len(self.fake.call_times("kit.app.status")) >= 3))   # the status first
-        times = self.fake.call_times("kit.app.status")
-        self.assertTrue(all(b - a >= wk.APP_RETRY for a, b in zip(times, times[1:])), times)
-        self.assertEqual((self.got, d.thread.is_alive(), self.opens()), ([], True, 0))
-        self.assertIn(d.state, ("opening", "waiting"))
-        self.assertEqual(self.err.getvalue().count("waiting for the game"), 1)   # said once
-        self.fake.link_down = False
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-
-    def test_while_the_daemon_is_away_it_waits(self):
-        self.json.unlink()
-        d = self.driver()
-        self.assertTrue(until(lambda: "no_daemon" in self.err.getvalue()))
-        self.assertEqual((self.got, self.fake.requests, d.thread.is_alive()), ([], [], True))
-        self.write_json(self.fake.port)
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-
-    def test_a_refusal_waits_for_kit_ready_or_longer_each_time(self):
-        self.fake.app_blocked = "「公会」扩展关着"     # also an app the workshop declares a moment after the process started
-        self.driver()
-        self.assertTrue(until(lambda: len(self.fake.call_times("kit.app.open")) >= 6))
-        times = self.fake.call_times("kit.app.open")
-        waits = [min(wk.APP_REFUSED, wk.APP_RETRY * 2 ** i) for i in range(5)]       # 5, 10, 20, 40, 60
-        self.assertEqual(waits[-1], wk.APP_REFUSED)
-        self.assertTrue(all(w <= b - a < w + 1 for w, a, b in zip(waits, times, times[1:])), times)
-        self.assertIn("not_started", self.err.getvalue())
+    def test_what_is_no_wake(self):
+        for params, code in (({"app": "ghost", "wake": {}}, -32601), ({"wake": {}}, -32601),
+                             ({"app": "cocreate", "wake": [1]}, -32602), ({"app": "cocreate"}, -32602)):
+            ans = self.t.send("wake", params)
+            self.assertEqual(ans["error"]["code"], code, params)
+        self.assertIn("it drives: cocreate, other", self.t.send("wake", {"app": "ghost", "wake": {}})["error"]["message"])
         self.assertEqual(self.got, [])
-        tries = self.opens()
 
-        turns = []
-
-        def ready_after(body):                           # refused once more, then the player turns it on and reloads
-            if turns:
-                self.fake.app_blocked = None
-            else:
-                self.fake.emit("kit.ready", {"version": "0.6.1"})
-            turns.append(body)
-        self.fake.on_call["kit.app.open"] = ready_after
-        self.assertTrue(until(lambda: self.opens() >= tries + 2), self.fake.calls())
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        refused, opened = self.fake.call_times("kit.app.open")[tries:tries + 2]
-        self.assertLess(opened - refused, wk.APP_REFUSED)    # the kit.ready, not the minute
-
-    def test_an_app_that_is_not_declared_yet(self):
-        self.fake.app_known = False                      # the workshop declares it at the next kit.ready
-        self.driver()
-        self.assertTrue(until(lambda: "call_failed" in self.err.getvalue()))
-        self.fake.app_known = True
-        self.fake.emit("kit.ready", {"version": "0.6.1"})
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-
-    def test_a_reload_it_ran_through_gives_a_ready_wake(self):
-        d = self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        self.fake.wake([1, 2])
-        self.assertTrue(until(lambda: len(self.got) == 2), self.got)
-        statuses = len(self.fake.calls("kit.app.status"))
-        self.fake.emit("kit.ready", {"version": "0.6.1"})                       # a reload; the app goes on
-        self.assertTrue(until(lambda: len(self.got) == 3), self.got)
-        ready = self.got[2]
-        self.assertEqual((ready["reason"], ready["items"], ready["after"], ready["next"]), ("ready", [], 2, 2))
-        self.assertEqual(ready["status"]["on"], True)
-        self.assertGreater(len(self.fake.calls("kit.app.status")), statuses)  # after the status was read again
-        self.assertTrue(until(lambda: self.kept() == {"demo": {"next": 2}}), self.kept())   # the cursor stays
-        self.fake.wake([3])
-        self.assertTrue(until(lambda: len(self.got) == 4), self.got)
-        self.assertEqual([i["id"] for i in self.got[3]["items"]], [3])
-        self.fake.emit("kit.ready", {"version": "0.6.1"})                       # once for each
-        self.assertTrue(until(lambda: self.reasons()[4:] == ["ready"]), self.got)
-        self.assertEqual((self.got[4]["after"], self.got[4]["next"]), (3, 3))
-        self.assertEqual((self.opens(), d.opened), (1, 1))
-
-    def test_a_ready_that_ends_the_app_gives_none(self):
-        self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        self.fake.app_on, self.fake.app_why = False, "left"                     # a login as another character
-        self.fake.emit("kit.ready", {"version": "0.6.1"})
-        self.assertTrue(until(lambda: self.opens() == 2), self.fake.calls())
-        self.assertTrue(until(lambda: self.reasons() == ["open", "open"]), self.got)
-        self.assertNotIn("ready", self.reasons())
-
-    def test_a_ready_wake_that_fails_goes_on(self):
-        self.fail_on.add("ready")
-        self.driver()
-        self.assertTrue(until(lambda: self.reasons() == ["open"]), self.got)
-        self.fake.emit("kit.ready", {"version": "0.6.1"})
-        self.assertTrue(until(lambda: self.reasons() == ["open", "ready"]), self.got)
-        self.fake.wake([1])
-        self.assertTrue(until(lambda: len(self.got) == 3), self.got)
-        self.assertIn("the wake (ready) failed", self.err.getvalue())
+    def test_shutdown_leaves_the_waiting_ones_unanswered(self):
+        slow = self.t.post("wake", self.wake("cocreate", 1, "slow"))
+        self.assertTrue(self.inside.wait(10))
+        waiting = self.t.post("wake", self.wake("cocreate", 2))
+        self.t.shutdown()                                # (close: the loop ended)
+        self.gate.set()
+        self.assertEqual(self.t.exited, 0)
+        time.sleep(0.1)
+        self.assertEqual(self.got, [("cocreate", 1)])    # the one behind never ran: the workshop gives it again
+        del slow, waiting
 
 
-class Run(Base):
-    """the drivers as ext.run() starts them: after initialize is answered, and stopped by shutdown"""
+class Reports(unittest.TestCase):
+    """ext.report: checked as the workshop checks it, told as the notification report; ExtensionTest keeps them"""
 
     def setUp(self):
-        super().setUp()
-        env = mock.patch.dict(os.environ, {"WUXIAN_EXTENSION_DATA": str(self.home / "data")})
-        env.start()
-        self.addCleanup(env.stop)
-        self.fake.idle = 0.02
-        self.ext = wk.Extension("cc", folder=self.home)
-        self.got = []
-        self.ext.app("demo")(self.got.append)
+        self.ext = wk.Extension("cc", folder=tempfile.gettempdir())
 
-    def test_shutdown_stops_them(self):
-        self.ext._drive = True                           # as run() sets it
-        self.ext._app_client = lambda: self.kit
-        with contextlib.redirect_stderr(io.StringIO()):
-            t = wk.ExtensionTest(self.ext)
-            self.assertEqual(self.fake.requests, [])     # nothing before initialize
-            t.initialize()
-            self.assertTrue(until(lambda: [w["reason"] for w in self.got] == ["open"]), self.got)
-            driver, = self.ext._drivers
-            t.initialize()                               # once
-            self.assertEqual(self.ext._drivers, [driver])
-            t.shutdown()
-            self.assertTrue(driver.stop.is_set())
-            driver.thread.join(10)
-        self.assertFalse(driver.thread.is_alive())
-        self.assertEqual(self.fake.calls("kit.app.stop"), [])    # the workshop sees to the app
+        @self.ext.app("cocreate")
+        def cocreate(w):
+            self.ext.report("cocreate", "k1", "run", step="fetch", text="取回快照", done=1, total=4)
+            self.ext.report("cocreate", "k1", "done", data={"n": 3})
 
-    def test_a_test_drives_nothing(self):
-        with wk.ExtensionTest(self.ext) as t:
-            t.initialize()
-            t.settle()
-        self.assertEqual((self.ext._drivers, self.fake.requests), ([], []))
+        self.t = wk.ExtensionTest(self.ext)
+        self.addCleanup(self.t.close)
+
+    def test_told_in_order(self):
+        self.ext.report("cocreate", "early", "run")      # before initialize: held, as events are
+        self.assertEqual(self.t.reports, [])
+        self.t.wake("cocreate")                          # (initialize first; back when what it told was read)
+        self.assertEqual(self.t.reports, [
+            {"app": "cocreate", "key": "early", "state": "run"},
+            {"app": "cocreate", "key": "k1", "state": "run", "step": "fetch", "text": "取回快照", "done": 1, "total": 4},
+            {"app": "cocreate", "key": "k1", "state": "done", "data": {"n": 3}}])
+        self.ext.report("cocreate", "1794938824:Horde", "retry", retry=1794939000, text="  网络 \n 不通  ")
+        self.t.ping()
+        self.assertEqual(self.t.reports[-1], {"app": "cocreate", "key": "1794938824:Horde", "state": "retry",
+                                              "retry": 1794939000, "text": "网络 不通"})
+
+    def test_what_is_no_report(self):
+        ok = dict(app="cocreate", key="k", state="run")
+        for bad, words in ((dict(ok, app="talk"), "drives no app 'talk'"), (dict(ok, app="Bad"), "not an app id"),
+                           (dict(ok, key=""), "key"), (dict(ok, key="k" * 65), "key"), (dict(ok, key=" k"), "key"),
+                           (dict(ok, key="a\nb"), "key"), (dict(ok, key=7), "key"),
+                           (dict(ok, state="busy"), "state"), (dict(ok, state=None), "state"),
+                           (dict(ok, step="Fetch"), "step"), (dict(ok, step="x" * 25), "step"),
+                           (dict(ok, text="x" * 201), "text"), (dict(ok, text=7), "text"),
+                           (dict(ok, text="a\x07b"), "text"),
+                           (dict(ok, done="3"), "done"), (dict(ok, total=float("nan")), "total"),
+                           (dict(ok, retry=True), "retry"),
+                           (dict(ok, data=[1]), "data"), (dict(ok, data={"big": "x" * 2100}), "data"),
+                           (dict(ok, data={"x": object()}), "data")):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self.ext.report(**bad)
+            self.assertIn(words, str(cm.exception), bad)
+        with self.assertRaises(TypeError):
+            self.ext.report("cocreate", "k", "run", colour="red")
+        self.t.initialize()
+        self.t.ping()
+        self.assertEqual(self.t.reports, [])
+        self.ext.report("cocreate", "k" * 64, "failed", text="中" * 66, data={"a": "x" * 2030}, step="a_1")
+        self.t.ping()                                    # at the limits: taken
+        self.assertEqual(len(self.t.reports), 1)
+        self.assertEqual(wk.check_report({"app": "a", "key": "k", "state": "run", "text": "  ", "step": None}),
+                         ({"app": "a", "key": "k", "state": "run"}, None))
 
 
 if __name__ == "__main__":

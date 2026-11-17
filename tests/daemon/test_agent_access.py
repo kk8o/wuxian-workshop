@@ -65,7 +65,7 @@ class Game:
     async def status(self):
         return {"addons_dir": None}
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, most=None):
         return answer(self, name)
 
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
@@ -93,7 +93,7 @@ class Daemon(Game):
     def status(self):
         return {"addons_dir": None}
 
-    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False):
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False, most=None):
         return answer(self, name)
 
     def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):

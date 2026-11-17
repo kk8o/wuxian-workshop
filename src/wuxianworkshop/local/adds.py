@@ -3,7 +3,7 @@ r"""What the enabled local extensions add to apps, read from their manifests for
     declarations(host)            [(extension id, what kit.app.declare gets)] of their own apps
     adds(host, app)               what they add to an app that may be another's: its wake notes and skill supplements
     app_reactions(host, app)      the reactions of the app's own declaration (installed while the app runs)
-    app_link(host, app)           "live" when the app's declaration keeps the link to the game open while it runs
+    drivers(host)                 {app: extension id} of the apps an extension's own program drives
     control_call(host, app, cmd)  the capability a control of the app is bound to, and its arguments
     row(manifest)                 the adds of one manifest for the rows of the API
     roster(host)                  the extensions with a local part, as WuxianKit's window is told of them
@@ -16,7 +16,7 @@ described itself anew). Every answer is a copy.
 
 An extension whose command the player has not allowed (registry.approval is not "ok"; where the setting lets the
 workshop allow commands by itself, host.auto(), it does so at the first start) adds nothing: no declaration, no wake,
-no skill supplement, no reaction, no bound control, no live link. All of it comes when the player allows it (the
+no skill supplement, no reaction, no bound control, no app to drive. All of it comes when the player allows it (the
 registry is saved then, so the table is built anew). Neither does one that needs a newer workshop than this one (its
 manifest's requires.workshop; Host.unmet_error): nothing of it runs here.
 
@@ -47,12 +47,10 @@ def app_reactions(host, app):
     return copy.deepcopy(table(host)["reactions"].get(app, []))
 
 
-def app_link(host, app):
-    """"live" when an enabled extension's manifest declares app with "link": "live" (the daemon keeps the link to the
-    game open while it runs); None otherwise ("standby", not given, or an app no enabled extension declares)"""
-    if not isinstance(app, str) or not app:
-        return None
-    return table(host)["links"].get(app)
+def drivers(host):
+    """{app: extension id} of the apps the enabled extensions' own programs drive (apps[].driver "local"), whether
+    or not the program runs now (Host.driven says which do)"""
+    return dict(table(host)["drivers"])
 
 
 def control_call(host, app, cmd):
@@ -75,15 +73,15 @@ def row(manifest):
 def declarations(host):
     """[(extension id, what kit.app.declare gets)] of the enabled extensions' apps; each says the extension it comes
     with (local {id, title}: its card in the game names the extension). Without what is the workshop's alone: the
-    reactions, the link, and the call and args of a control"""
+    reactions, and the call and args of a control"""
     return copy.deepcopy(table(host)["declarations"])
 
 
 def declaration(app, eid, title):
     """an app of a manifest as kit.app.declare gets it. A control with a call goes as WuxianKit writes controls: its
-    own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}. driver goes as it is: the
-    manifest's check keeps it only when it is "local" (WuxianKit 0.6.1 takes that from a local extension's app)"""
-    out = {k: v for k, v in app.items() if k not in ("reactions", "link")}      # WuxianKit 0.6.0 knows neither
+    own words as strings (it takes no {cmd, label} of them), the app's own as {cmd, label}. driver and link go as
+    they are (the manifest's check keeps them only when they say "local" and "live")"""
+    out = {k: v for k, v in app.items() if k != "reactions"}
     if isinstance(out.get("controls"), list):
         out["controls"] = [c if isinstance(c, str) else c["cmd"] if c["cmd"] in M.CORE_CONTROLS
                            else {"cmd": c["cmd"], "label": c.get("label")} for c in out["controls"]]
@@ -93,10 +91,12 @@ def declaration(app, eid, title):
 
 def roster(host):
     """what the game's WuxianKit is told of the extensions added to this computer (kit.local.set; its /wk window lists
-    them beside the game's own): [{id, title, version?, author?, notes?, where, on, game?, adds?, options?}] of those
-    with a local part (where "local" or "both": one in the game only is the game's own to show), in the registry's
-    order. on: enabled and adding what it adds (as enabled_manifests() takes it); game: the ids its addons give
-    WuxianKit; adds: the apps it adds to; options: roster_options(), left out when it has none. One whose manifest
+    them beside the game's own): [{id, title, version?, author?, notes?, where, on, running, addons, adds?,
+    options?}] of those with a local part (where "local" or "both": one in the game only is the game's own to show),
+    in the registry's order. on: enabled and adding what it adds (as enabled_manifests() takes it); running: its
+    process runs now (Host.is_running); addons: the folders of the game addons it brings ([]: none), by which
+    WuxianKit knows the game extensions that belong to it (those such an addon registers; and the one of its own id);
+    adds: the apps it adds to; options: roster_options(), left out when it has none. One whose manifest
     does not pass is left out. Read anew each time (an extension that is off counts too, and the table keeps only
     those that are on)"""
     out = []
@@ -106,12 +106,11 @@ def roster(host):
             if m is None or m["id"] != e["id"] or m["where"] == "game":
                 continue
             item = dict(id=e["id"], title=m.get("title") or e["id"], where=m["where"],
-                        on=bool(e["enabled"]) and allowed(host, e) and host.unmet_error(m) is None)
+                        on=bool(e["enabled"]) and allowed(host, e) and host.unmet_error(m) is None,
+                        running=host.is_running(e["id"]), addons=list(m.get("addons") or []))
             for key in ("version", "author", "notes"):
                 if isinstance(m.get(key), str) and m[key]:
                     item[key] = m[key]
-            if m.get("game"):
-                item["game"] = list(m["game"])
             if m.get("adds"):
                 item["adds"] = sorted(m["adds"])
             options = roster_options(e)
@@ -179,7 +178,7 @@ def wake_ok(wake, eid, described):
 
 
 def table(host):
-    """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "links": {app: "live"},
+    """{"declarations": [(ext, declaration)], "adds": {app: [..]}, "reactions": {app: [..]}, "drivers": {app: ext},
     "controls": {(app, cmd): {ext, call, args}}} of the enabled extensions, kept while auto() and the stamps of the
     registry and of the enabled extensions' manifests stay (save() drops it at once). Not to be changed: the callers
     copy what they give out"""
@@ -190,7 +189,7 @@ def table(host):
         stamps = [(host.registry, stamp(host.registry))]
         stamps += [(path, stamp(path)) for path in (M.locate(e["path"])[1] for e in host.load()["extensions"]
                                                         if e["enabled"])]
-        built = {"declarations": [], "adds": {}, "reactions": {}, "links": {}, "controls": {}}
+        built = {"declarations": [], "adds": {}, "reactions": {}, "drivers": {}, "controls": {}}
         for e, m in enabled_manifests(host):
             eid, title = e["id"], m.get("title") or e["id"]
             for app, a in m["adds"].items():
@@ -200,8 +199,8 @@ def table(host):
                 built["declarations"].append((eid, declaration(a, eid, title)))
                 if a["reactions"]:
                     built["reactions"].setdefault(a["app"], []).extend(dict(r, ext=eid) for r in a["reactions"])
-                if a.get("link") == "live":
-                    built["links"][a["app"]] = "live"
+                if a.get("driver") == "local":
+                    built["drivers"].setdefault(a["app"], eid)
                 for c in a.get("controls") or []:
                     if isinstance(c, dict) and c.get("call"):
                         built["controls"].setdefault((a["app"], c["cmd"]), dict(ext=eid, call=f"{eid}.{c['call']}",

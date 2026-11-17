@@ -172,7 +172,8 @@ def value_problem(opt, value):
 
 # --- the description: initialize's answer. Every finding is a problem {level: "error" | "warning", where, message, hint}
 
-PROTOCOL = 1                           # the protocol version a description is written in
+PROTOCOL = 2                           # the protocol version a description is written in
+APP_NAME = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")    # an app's id, as a manifest's apps write it
 LATER_KINDS = ("say", "do")            # proposals: a later step
 
 
@@ -186,15 +187,17 @@ def errors_in(problems):
 
 def check_description(eid, answer):
     """(description or None, problems) of an extension's answer to initialize: {capabilities: [{id, name, kind,
-    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt]}"""
+    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt], apps: [the ids of the apps its
+    program drives]}"""
     out = []
     where = "initialize"
     if not isinstance(answer, dict):
         return None, [problem("error", where, "initialize must answer a JSON object",
-                              "{protocol: 1, capabilities: [...], sources: [...], options: [...]}")]
+                              "{protocol: 2, capabilities: [...], sources: [...], options: [...], apps: [...]}")]
     if answer.get("protocol") != PROTOCOL or isinstance(answer.get("protocol"), bool):
-        out.append(problem("error", f"{where}: protocol", f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks 1",
-                           "answer protocol 1 (the Python library does)"))
+        out.append(problem("error", f"{where}: protocol",
+                           f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks {PROTOCOL}",
+                           f"answer protocol {PROTOCOL} (the Python library that comes with this 无限工坊 does)"))
     caps, names = [], set()
     raw_caps = answer.get("capabilities", [])
     if not isinstance(raw_caps, list):
@@ -225,7 +228,21 @@ def check_description(eid, answer):
         if opt is not None:
             options.append(opt)
             onames.add(opt["name"])
-    desc = dict(capabilities=caps, sources=sources, options=options)
+    apps = []
+    raw_apps = answer.get("apps", [])
+    if not isinstance(raw_apps, list):
+        out.append(problem("error", f"{where}: apps", "apps is a list of app ids",
+                           '["cocreate"]: the apps of the manifest with "driver": "local", which this program drives'))
+        raw_apps = []
+    for a in raw_apps:
+        if not isinstance(a, str) or not APP_NAME.match(a):
+            out.append(problem("error", f"{where}: apps", f"{a!r} is not an app id",
+                               "lowercase letters, digits and _, a letter first, at most 24 characters"))
+        elif a in apps:
+            out.append(problem("error", f"{where}: apps", f"the app {a} is named twice", "once each"))
+        else:
+            apps.append(a)
+    desc = dict(capabilities=caps, sources=sources, options=options, apps=apps)
     return (None if errors_in(out) else desc), out
 
 
@@ -368,4 +385,71 @@ def check_option(o, i, names, out):
         return None
     opt["default"] = default
     return opt
+
+
+# --- a report: what an extension's program tells the game of a piece of its work (its notification report)
+
+REPORT_STATES = ("run", "done", "failed", "retry")
+REPORT_FIELDS = ("app", "key", "state", "step", "text", "done", "total", "retry", "data")
+REPORT_KEY_MAX, REPORT_TEXT_MAX, REPORT_DATA_MAX = 64, 200, 2048      # bytes of UTF-8; data: as compact JSON
+REPORT_STEP = re.compile(r"^[a-z0-9_]{1,24}\Z")
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def check_report(report):
+    """(the report as it is passed on, None), or (None, why it is none): {app, key, state, step?, text?, done?,
+    total?, retry?, data?}. app: an app id; key: the name of the piece of work, a text of at most REPORT_KEY_MAX bytes
+    without control characters; state: one of REPORT_STATES; step: the app's own name of the step (REPORT_STEP); text:
+    one line of plain text of at most REPORT_TEXT_MAX bytes (its spaces run together; an empty one counts as not
+    given); done, total: numbers; retry: a Unix time; data: an object of at most REPORT_DATA_MAX bytes as JSON. What
+    is None counts as not given and is left out"""
+    if not isinstance(report, dict):
+        return None, "a report is a JSON object {app, key, state, ...}"
+    extra = sorted(str(k) for k in report if k not in REPORT_FIELDS)
+    if extra:
+        return None, f"a report has no {', '.join(extra)}; its fields are {', '.join(REPORT_FIELDS)}"
+    app, key, state = report.get("app"), report.get("key"), report.get("state")
+    if not isinstance(app, str) or not APP_NAME.match(app):
+        return None, f"app {app!r} is not an app id"
+    try:
+        size = len(key.encode("utf-8")) if isinstance(key, str) else 0
+    except UnicodeEncodeError:
+        size = 0
+    if not size or size > REPORT_KEY_MAX or CONTROL_CHARS.search(key) or key != key.strip():
+        return None, (f"key {key!r}: the name of the piece of work, a text of 1 to {REPORT_KEY_MAX} bytes without "
+                      f"control characters or spaces around it")
+    if not isinstance(state, str) or state not in REPORT_STATES:
+        return None, f"state {state!r}: one of {', '.join(REPORT_STATES)}"
+    out = dict(app=app, key=key, state=state)
+    step = report.get("step")
+    if step is not None:
+        if not isinstance(step, str) or not REPORT_STEP.match(step):
+            return None, f"step {step!r}: lowercase letters, digits and _, at most 24 characters"
+        out["step"] = step
+    text = report.get("text")
+    if text is not None:
+        if not isinstance(text, str):
+            return None, "text: one line of plain text"
+        if text.strip():
+            line = text_of(text, REPORT_TEXT_MAX)
+            if line is None or CONTROL_CHARS.search(line):
+                return None, f"text: one line of plain text of at most {REPORT_TEXT_MAX} bytes, no control characters"
+            out["text"] = line
+    for name in ("done", "total", "retry"):
+        v = report.get(name)
+        if v is not None:
+            if not finite(v):
+                return None, f"{name} {v!r}: a number"
+            out[name] = v
+    data = report.get("data")
+    if data is not None:
+        try:
+            size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")) \
+                if isinstance(data, dict) else None
+        except (TypeError, ValueError, RecursionError):
+            size = None
+        if size is None or size > REPORT_DATA_MAX:
+            return None, f"data: a JSON object of at most {REPORT_DATA_MAX} bytes"
+        out["data"] = data
+    return out, None
 # ---- shared: end -----------------------------------------------------------------------------------------------------

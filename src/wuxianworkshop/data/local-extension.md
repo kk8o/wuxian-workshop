@@ -71,7 +71,7 @@ it.
   "notes": "Speaks lines aloud with a local TTS model.",
   "author": "Thrall",
   "homepage": "https://example.com/voice",
-  "requires": {"workshop": "0.9.13", "kit": "0.6.0"},
+  "requires": {"workshop": "0.10.0", "kit": "0.7.0"},
   "addons": ["WuxianVoice"],
   "pack": {"exclude": ["models/*"]},
   "run": ["python", "main.py"],
@@ -105,7 +105,8 @@ it.
 - `pass`: optional, at most 16 names of the player's own environment variables the process also gets (see The
   environment).
 - `start`: `use` (default) starts it at the first call of one of its capabilities; `workshop` starts it with the
-  workshop, for a model that takes long to load.
+  workshop, for a model that takes long to load. An extension whose program runs an app (`"driver": "local"`, see An
+  app the extension runs) always starts with the workshop: leave `start` out (`use` beside it is an error).
 - `docs`, `skills`: default `AGENT.md` and `skills/` when they exist. Paths inside the extension folder (one that
   leads out of it is an error). The agent reads them once the player has allowed the extension.
 - `apps`: optional, see Apps and skills.
@@ -133,7 +134,8 @@ workshop waits 1, 5, 30, then 120 seconds between tries); when the workshop exit
 An extension is a command on the player's computer, so the player decides whether it runs. The first time an
 extension would run, its calls answer `needs_approval` until the player clicks 批准运行 (Approve) on its card in the
 workshop App (Extensions page). The card shows the extension's summary (`extension_summary`: who it says wrote it,
-the command, what starts with the workshop, the variables handed to it, its game addons and what they need) and one
+the command, what starts with the workshop, the variables handed to it, its game addons, what they need and which
+folders in the game's AddOns they would replace: `replaces`) and one
 sentence on what approving means; 复制给 Agent 审阅 copies a request the player can give an agent, which then reads
 the extension for them (`guide {"topic": "review"}`). Tell the player, then go on. When the command changes (the
 folder, or the manifest's `run`, `python`, `env`, `pass` or the names in `addons`), the player is asked again;
@@ -208,10 +210,11 @@ AI) that says which local extension it comes with. Declaring does not start an a
 card, or the agent with `wk_kit_app_open`.
 
 `driver` says who runs an app: `"agent"` (the default; leave it out), an agent by the skill its `prompt` names, or
-`"local"`, the extension's own program (in Python, `@ext.app`: see An app the extension runs). WuxianKit takes
-`"local"` from 0.6.1 on, so such a manifest says `"requires": {"kit": "0.6.1"}` (without it, a warning). An app the
-extension runs needs no `prompt` (one it has is a warning: nobody uses it); its card has no 交给 AI and says which
-local extension runs it, or that the extension is not running. The player can still stop it there, and its
+`"local"`, the extension's own program (in Python, `@ext.app`: see An app the extension runs). The workshop keeps
+such an app open for as long as the program runs; nothing else is written for it: the extension starts with the
+workshop and needs WuxianKit 0.7.0 without the manifest saying so (`"start": "use"` beside it is an error, and so is
+`minutes`: its run has no end). It needs no `prompt` (one it has is a warning: nobody uses it); its card has no
+交给 AI and says 本机端运行中 or 本机端未运行. The player can stop it there and start it again (开始), and its
 controls, reactions and wake notes work as for any app.
 
 One switch: when the extension is turned off or removed, its apps are withdrawn from the game (one that runs stops,
@@ -225,7 +228,8 @@ background. `wuxian listen` only joins an app that runs: it never opens one, and
 the app does not run, so the skill opens the app first. An app is the finished product built on parts; an extension
 that is only a part declares no app.
 
-Three things in an app's declaration are the workshop's own and never reach the game:
+Two things in an app's declaration are the workshop's own and never reach the game (`reactions`, and a control's
+`call` and `args`); `link` reaches it, and the workshop acts on what the game then says:
 
 ```json
 {
@@ -238,13 +242,14 @@ Three things in an app's declaration are the workshop's own and never reach the 
     "title": "语音搭子",
     "prompt": "companion",
     "hear": ["game:combat", "game:loot"],
+    "pace": true,
     "link": "live",
     "controls": ["stop", {"cmd": "mute", "call": "mute", "args": {"on": true}},
                  {"cmd": "unmute", "call": "mute", "args": {"on": false}},
                  {"cmd": "again", "label": "再说一遍", "call": "again"}],
     "reactions": [
       {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite", "rareelite"]},
-       "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 30, "pace": ["normal", "lively"]},
+       "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 30, "activity": ["normal", "lively"]},
       {"hear": "voice:said", "call": "voice.count", "item": "line", "note": "counts what was said"}
     ]
   }]
@@ -256,16 +261,18 @@ Three things in an app's declaration are the workshop's own and never reach the 
   `game:combat.start`, `chat:guild`, or a local source, `voice:said`), `when` (dotted paths into the item, each must
   hold; a list: any of its values), `call` (a whole capability id: this extension's, another's or the game's; `see`,
   `keep` or `point`), `args`, `item` (an argument name: the whole item goes in it), `cooldown` (seconds, default 10),
-  `pace`, `note`. The workshop sets them when the app starts to run and clears them when it stops; the agent no
-  longer sets them one by one. Reactions the agent adds with `reaction_set` work as before.
-- `pace` on a reaction: `"quiet"`, `"normal"`, `"lively"` or a list of them, the app's activity (the player's 少说 /
-  多说) it fires in. While the app's activity is another, what it hears calls nothing and spends no cooldown; while
-  the workshop does not know the activity (an older WuxianKit does not tell it), it fires as without `pace`. A
-  reaction the agent sets with `reaction_set` may have `pace` too, with an `owner` (the app whose activity counts).
+  `activity`, `note`. The workshop sets them when the app starts to run and clears them when it stops; the agent
+  does not set them one by one. Reactions the agent adds with `reaction_set` work beside them.
+- `activity` on a reaction: `"quiet"`, `"normal"`, `"lively"` or a list of them, the app's activity (the player's
+  少说 / 多说) it fires in. While the app's activity is another, what it hears calls nothing and spends no
+  cooldown. The activity is the one of the app's `pace` (an app's own field, as WuxianKit has it: `true`, or its
+  table of the three), so an app whose reactions name an `activity` declares a `pace` (without one: an error). A
+  reaction the agent sets with `reaction_set` may have `activity` too, with an `owner` (the app whose activity
+  counts).
 - `link`: `"live"` keeps the link to the game open while the app runs, so reactions and quick replies do not wait for
-  it to open; `"standby"` (the default, or leave it out) opens it when there is something to send. Only an app that
+  it to open; left out, the link opens when there is something to send (there is no other value). Only an app that
   must react within a second or two (a voice companion) needs `live`. The player's setting 链路 (link) decides last:
-  跟随应用 (follow the apps, the default) does this, 常开 (always) and 按需 (on demand) do not ask the apps.
+  自动 (auto, the default) does this, 常开 (always) keeps the link open whatever runs.
 - A control bound to a capability: `{"cmd", "label"?, "call", "args"?}`. `call` is the name of a capability of this
   extension (without the id), `see`, `keep` or `point`; `args` is an object (at most 2,048 bytes as JSON), the
   arguments it gets, `{}` when left out, so one capability can serve two controls (`mute` and `unmute` above). When
@@ -367,11 +374,12 @@ A package is an extension's folder as one `.zip`: how it gets to another player 
 
 ### `requires`
 
-`requires` names the lowest versions the extension runs with: `{"workshop": "0.9.13", "kit": "0.6.0"}`. A row's
+`requires` names the lowest versions the extension runs with: `{"workshop": "0.10.0", "kit": "0.7.0"}`. A row's
 `unmet` lists what is not met: `[{what, needs, has}]`. With an older workshop the extension does not start
 (`requires_unmet`; the row's `error` says which version): the player updates 无限工坊. An older WuxianKit only shows
 in `unmet`: the extension starts, and what it asks of the game may fail. A version nobody knows yet (the game has not
-been seen) is not judged. `new_extension` writes the workshop's version of the day; raise it when the extension comes
+been seen) is not judged. (The workshop itself tells a WuxianKit older than 0.7.0 nothing of the local extensions:
+no list, no apps, no reports; the App says that it needs the update.) `new_extension` writes the workshop's version of the day; raise it when the extension comes
 to need a newer one.
 
 ### The game half
@@ -395,13 +403,17 @@ with a Read capability and an event, and a `main.py` that uses both.
   `no_game_folder`). The `.toc`'s `## Interface` is set to the client's number on the way.
 - The mark: an installed folder holds `.wuxian-extension.json`, which says whose it is. A folder of that name in
   AddOns without the mark, or with another extension's, is someone else's addon: the workshop never deletes it, and
-  replaces it only when the player says so (`addon_exists`; `foreign` in the row, with `same`, `there` and, when the
-  one there is newer, `newer`). `same`: it has no mark and its `.toc` says it is your addon (the same
+  replaces it only when the player says so (`addon_exists`; `foreign` in the row, with `same` and `there`, the
+  version it says). `same`: it has no mark and its `.toc` says it is your addon (the same
   `## X-WuxianKit-Extension`, the same `## X-Website`, or the same `## Title` and `## Author`), most often one the
-  player installed by hand from a web site. The player's approval replaces that one unless it is newer; any other
-  only the player's 替换 replaces (the row's `player` is `replace_addon`; `wuxian ext install <id> --replace`), the
-  one there kept in the history first (`wuxian history`). A link or a file of that name is never replaced. Give
-  yours another name, or the `.toc` headers that say it is the same addon.
+  player installed by hand from a web site; `newer` (only with `same`): that one is newer than yours, and is kept.
+  The summary's `replaces` (`[{folder, there, same, newer}]`) lists what the player's approval replaces: the same
+  addon, not newer. It is part of what the approval is given to, and the approval replaces those folders and no
+  other, each only while it still says that version. Any other folder of the name only the player's 替换 replaces
+  (the row's `player` is `replace_addon`): `POST /api/local/install {id, replace: [{folder, there}]}`, `wuxian ext
+  install <id> --replace [Folder ...]` (no folder named: the same addon, not newer). What was there is kept in the
+  history first (`wuxian history`). A link or a file of that name is never replaced. Give yours another name, or the
+  `.toc` headers that say it is the same addon.
 - A name of the catalog: the addon folders the 扩展 page installs (WuxianKit's own and the catalog's extensions)
   are the catalog's. An extension's addon of such a name is never installed (`bad_addon`; `listed` in the row,
   `cannot` in the summary, an error of `extension_check`). Give yours another name.
@@ -517,13 +529,15 @@ The library:
   gone): ask it between the steps of long work and return. `ext.remaining()`: the seconds it still waits, or None.
 - `ext.run(setup)`: serves until `shutdown`, then returns. Capabilities run in worker threads, 8 at once
   (`Extension(workers=...)`; a call beyond that is refused as `busy`): guard shared state with a lock.
-- `@ext.app(app_id)`: the function that gets each wake of an app of the manifest with `"driver": "local"` (see An
-  app the extension runs).
+- `@ext.app(app_id)`: the function that gets each wake of an app of the manifest with `"driver": "local"`;
+  `ext.report(app, key, state, step=, text=, done=, total=, retry=, data=)` tells the game how a piece of its work
+  stands (see An app the extension runs).
 - `ExtensionTest(ext, setup=, options=, answers=)` runs it in memory for unit tests: `t.call(name, args, caller=,
   deadline_ms=)`, `t.next_event(source)`, `t.events`, `t.calls` (what it called), `t.set_options(values)`,
   `t.start(name, args)` / `t.cancel(rid)` / `t.result(rid)` for a call that goes on, `t.check_description()` (the
   problems the workshop would find), `t.wake(app_id, items=[...], reason=...)` (a wake straight to the `@ext.app`
-  function, in the test's thread: what it returns or raises comes out; nothing is opened or kept), `t.close()`;
+  function, in the test's thread: what it returns or raises comes out), `t.reports` (what it told with `ext.report`,
+  in order), `t.close()`;
   `answers` maps a capability id to the result `ext.call` gets, or to `fn(args)`.
 
 ### An app the extension runs
@@ -536,9 +550,8 @@ can be run by the extension itself instead of an agent. Declare it with `"driver
   "id": "ledger",
   "title": "账本",
   "version": "0.1.0",
-  "requires": {"workshop": "0.9.15", "kit": "0.6.1"},
+  "requires": {"workshop": "0.10.0"},
   "run": ["python", "main.py"],
-  "start": "workshop",
   "apps": [{
     "app": "ledger",
     "title": "账本",
@@ -565,6 +578,8 @@ lines = []
 def wake(w):                                            # {app, seq, reason, items, skipped, after, next, state?, notes?}
     with lock:
         lines.extend(i for i in w["items"] if i.get("source") != "control")
+        n = len(lines)
+    ext.report("ledger", "today", "run", text=f"已记 {n} 条", done=n)
 
 
 @ext.keep("export", title="导出", doc="Writes the ledger to ext.data; returns {lines}.")
@@ -578,41 +593,58 @@ if __name__ == "__main__":
     ext.run()
 ```
 
-The app opens while the extension's process runs, so such an extension says `"start": "workshop"` (without it, a
-warning). Once `ext.run()` answered `initialize`, a thread for each such app opens it in the game
-(`kit.app.open`, with the declared `minutes`) while the game is online, listens, and hands the function the wakes
-one after another: first one with `reason` `"open"` each time it opened the app (no items; `status` is the app's
-status then), then WuxianKit's, with `"catchup"` for what came while nothing listened. After each login or UI reload
-(`kit.ready`) that the app ran through comes one with `reason` `"ready"` (no items, the same `after` and `next`,
-`status` the app's status then): the addon's saved state is what it was at the last logout or reload, so tell it
-again what it should know. What the function raises goes
-to the log, and the next wake comes all the same. Where the wakes got (their `next`) is kept in
-`ext.data / "apps.json"`: the next start goes on from there. When the app ends: stopped by the player (`why`
-`player`, also when it was so as the extension started), it is opened again after the next login or UI reload; the
-extension turned off (`extension`), not again; anything else (`expired`, `left`, `stopped`, ...), again after a few
-seconds. While the game or the workshop is away it waits. `shutdown` stops the
-threads; the app is the workshop's to withdraw. The heartbeat is `wuxian listen`'s: every max(30, lease / 3)
-seconds while the link is online, and while it stands by only when the lease needs it.
+The program names the app and gets its wakes; the workshop runs the app. While the extension is enabled, approved
+and its process runs, and the game is online with WuxianKit 0.7.0 or newer, the workshop declares the app, opens it
+(`kit.app.open`), sends its heartbeat (`wuxian listen`'s rule: every max(30, lease / 3) seconds while the link is
+online, and while it stands by only when the lease needs it) and hands the program its wakes, one at a time: the
+next comes when the function returned, however long that took. What the program names (`@ext.app`) and what the
+manifest declares with `"driver": "local"` must be the same apps: otherwise the extension does not start, and its
+row's `error` and `extension_check` say which app is missing on which side.
+
+- The wakes: first one with `reason` `"open"` each time the workshop opened the app (no items; `status` is the app's
+  status then), then WuxianKit's, and `"catchup"` with the items that came while nothing read them (after a UI
+  reload, a lost link, a restart of the workshop). The workshop keeps where the wakes got, for each extension and
+  app: once the function returned, the wake's `next`. A process that ended inside a wake gets its items again at
+  its next start. What the function raises goes to the log, and the next wake comes all the same.
+- When the app ends: stopped by the player (`why` `player`), it stays stopped until they press 开始 on its card, or
+  until the next login or UI reload; anything else (`expired`, `left`, `extension`, ...), the workshop opens it
+  again after 5 seconds. When WuxianKit will not open it, the workshop tries again after 5 seconds, then twice as
+  long each time (60 at most), and at once after a login or UI reload. While the game is away it waits.
+- When the process stops (stopped, set off, crashed), the workshop stops the app in the game (`why` `extension`),
+  and its reactions and its hold on the link go with it.
+- Reports: `ext.report(app, key, state, step=None, text=None, done=None, total=None, retry=None, data=None)` tells
+  the game how a piece of the app's work stands. `key` names the piece (at most 64 bytes; a new report of the same
+  key takes the place of the one before), `state` is `"run"`, `"done"`, `"failed"` or `"retry"`, `step` the app's
+  own name of the step (lowercase letters, digits and `_`, at most 24), `text` one line of plain text for the
+  player (at most 200 bytes), `done` and `total` numbers, `retry` the Unix time of the next try (with `"retry"`),
+  `data` a small object (at most 2,048 bytes as JSON). The app's card shows the newest `text`, and the addon that
+  belongs to the extension hears every report (`ext:OnReport(app, fn)` in WuxianKit). While the game is away the
+  workshop keeps the newest report of each key (16 keys of an app, through a restart) and gives them after the
+  next login or UI reload, or when the link is back, marked `late`. A report that is none (`ValueError` in Python)
+  is dropped by the workshop, and the extension's output says why.
 
 The control above is bound to `export`: the workshop calls it when the player presses it, and the control still
-comes in the next wake. Test the function with `ExtensionTest(ext).wake("ledger", items=[...])`.
+comes in the next wake. Test the function with `ExtensionTest(ext).wake("ledger", items=[...])` and read what it
+reported in `t.reports`.
 
-`Client.call(name, args, whole=True)` (the SDK's client of the game, `from wuxiankit import Client`) takes an
-answer of up to 16 MB from the game in one call, for what is too large for the 256 KB of a plain one.
+`Client.call(name, args, most=None)` (the SDK's client of the game, `from wuxiankit import Client`) takes an answer
+of up to 16 MB from the game in one call; `most` is the most bytes it may be (a longer one is an error, and nothing
+of it is sent). `timeout_ms` is the time of its first part; the rest comes for as long as it keeps coming.
 
 ## Other languages: the protocol
 
-Version 1. One pipe: the workshop writes to the extension's stdin and reads its stdout; stderr is the log. JSON-RPC
+Version 2. One pipe: the workshop writes to the extension's stdin and reads its stdout; stderr is the log. JSON-RPC
 2.0, UTF-8, one JSON object per line (`\n`), nothing else on stdout. Requests carry `"jsonrpc": "2.0"`, an `id`, a
 `method` and `params`; answers carry the same `id` and either `result` or `error`; notifications have no `id`.
 Answer requests in any order: several calls may be open at once.
 
 Workshop to extension:
 
-- `initialize {protocol: {min: 1, max: 1}, workshop: "<version>", id: "<id>", options: {name: value}}` ->
-  `{protocol: 1, capabilities: [cap], sources: [src], options: [opt]}`, within 180 seconds (load models before
-  answering). `protocol` in the answer is the one version within `min`..`max` the extension speaks; when it speaks
-  none, answer an error and exit.
+- `initialize {protocol: {min: 2, max: 2}, workshop: "<version>", id: "<id>", options: {name: value}}` ->
+  `{protocol: 2, capabilities: [cap], sources: [src], options: [opt], apps: ["<app id>"]}`, within 180 seconds (load
+  models before answering). `protocol` in the answer is the one version within `min`..`max` the extension speaks;
+  when it speaks none, answer an error and exit. `apps`: the apps this program drives, the very ones the manifest
+  declares with `"driver": "local"` (none: leave it out); with others on either side the extension does not start.
   - cap: `{name, kind: "see" | "keep" | "point", title, doc, args: {name: spec}, timeout?}`; `name` as described in
     Capabilities.
   - src: `{name, title, doc}`; `name` matches `^[a-z][a-z0-9_]{0,23}$`.
@@ -625,8 +657,14 @@ Workshop to extension:
     of a wake of the app `app`. `player`: the player gave a control of the app `app`. `chain`: how the call came
     about, oldest first (`"reaction:<id>"`, `"wake:<app>"`, `"ext:<id>"`).
   - `deadline_ms`: how many milliseconds the workshop still waits for the answer.
-- `ping {}` -> `{}`, within 5 seconds, also while calls are open: the workshop asks after a call timed out, and takes
-  an extension that does not answer for hung (it ends the process tree before the next call starts it again).
+- `wake {app, wake}` -> `{}`, once the program has dealt with the wake of the app it drives (`wake`: `{app, seq,
+  reason, items, skipped, after, next, status?, state?, notes?}`; `seq` 0 for the workshop's own `open` and
+  `catchup`). One wake of an app at a time: the workshop sends the next when this one was answered, and waits as
+  long as that takes. An error answer is noted in the log and counts as dealt with; a process that ends without an
+  answer gets the items again at its next start.
+- `ping {}` -> `{}`, within 5 seconds, also while calls and wakes are open: the workshop asks after a call timed
+  out and now and then while a wake waits, and takes an extension that does not answer for hung (it ends the
+  process tree before the next call starts it again).
 - `shutdown {}` -> `{}`, then exit. After 5 seconds the workshop ends the process tree.
 - notification `options {options: {name: value}}`: all values, after one changed.
 - notification `cancel {id}`: the workshop no longer waits for the request `id` (its time is up, or whoever asked is
@@ -636,6 +674,9 @@ Extension to workshop:
 
 - notification `event {source: "<name>", data: {...}}`: an item of a source. Its data is 64 KB at most, and the
   workshop passes on 200 at once and 50 a second after: more are dropped (the extension's output says how many).
+- notification `report {app, key, state, step?, text?, done?, total?, retry?, data?}`: how a piece of the work of
+  an app it drives stands, for the game to show (the fields and their limits: Reports, under An app the extension
+  runs). One that does not fit, or of an app it does not drive, is dropped; they count with the events.
 - request `call {cap: "<capability id>", args, chain?}` -> its result or an error: another capability, Read, Store
   and Guide only. Use your own ids; the answer comes on stdin like the requests. `chain`: when the call is made for a
   call being served, that call's `caller.chain`, unchanged. The workshop refuses a chain of more than 4 hops with
@@ -650,8 +691,8 @@ reaction's error): `timeout`, `down`, `starting`, `failed`, `bad_args`, `no_capa
 A minimal exchange:
 
 ```
-<- {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":{"min":1,"max":1},"workshop":"0.9.13","id":"clock","options":{}}}
--> {"jsonrpc":"2.0","id":1,"result":{"protocol":1,"capabilities":[{"name":"now","kind":"see","title":"Time","doc":"Returns the local time as {time}.","args":{}}],"sources":[],"options":[]}}
+<- {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":{"min":2,"max":2},"workshop":"0.10.0","id":"clock","options":{}}}
+-> {"jsonrpc":"2.0","id":1,"result":{"protocol":2,"capabilities":[{"name":"now","kind":"see","title":"Time","doc":"Returns the local time as {time}.","args":{}}],"sources":[],"options":[]}}
 <- {"jsonrpc":"2.0","id":2,"method":"call","params":{"name":"now","args":{},"caller":{"by":"agent"},"deadline_ms":30000}}
 -> {"jsonrpc":"2.0","id":2,"result":{"time":"21:04"}}
 <- {"jsonrpc":"2.0","id":3,"method":"call","params":{"name":"then","args":{},"caller":{"by":"agent"},"deadline_ms":30000}}
@@ -693,8 +734,9 @@ The same from a shell: `wuxian ext list`, `new`, `add`, `summary`, `load`, `wait
 Sources: see their items with `events` (addon `local`, topic `<id>.<name>`), or act on them with a reaction
 (`reaction_set {"spec": {"hear": "<id>:<name>", "call": "...", ...}}`). An app of the manifest: `extension_load`, then
 `wk_kit_app_open`, then `wuxian listen <app>`; its reactions and bound controls work while it runs. One the extension
-runs (`"driver": "local"`) opens itself once the extension runs: `extension_load`; `extension_logs` has its lines
-(opened, ended, a wake that failed), and `t.wake` tests the function.
+runs (`"driver": "local"`) is opened by the workshop once the extension runs and the game is online:
+`extension_load`; the workshop's log (`logs`) has its lines (opened, ended, not opened and why, a wake answered
+with an error), `extension_logs` what the function printed and raised, and `t.wake` tests the function.
 
 ## Rules
 

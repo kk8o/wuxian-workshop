@@ -663,7 +663,7 @@ class KitTools(unittest.TestCase):
             async def status(self):
                 return {"addons_dir": str(addons) if addons else None}
 
-            async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+            async def call_exposed(self, addon, name, args=None, timeout_ms=10000, most=None):
                 self.calls.append((name, args))
                 if self.away:
                     raise ApiError(409, "link_down", "no frames come from the game")
@@ -763,7 +763,7 @@ class KitTools(unittest.TestCase):
         backend = self.backend(self.manifest())
         seen, real = [], backend.call_exposed
 
-        async def call_exposed(addon, name, args=None, timeout_ms=10000):
+        async def call_exposed(addon, name, args=None, timeout_ms=10000, most=None):
             seen.append((name, kit.SHARED.get()))
             return await real(addon, name, args, timeout_ms)
         backend.call_exposed = call_exposed
@@ -800,7 +800,7 @@ class KitTools(unittest.TestCase):
         backend = self.backend(self.manifest())
         answer = backend.call_exposed
 
-        async def call_exposed(addon, name, args=None, timeout_ms=10000):
+        async def call_exposed(addon, name, args=None, timeout_ms=10000, most=None):
             if name == "tune.cvar.get":
                 raise ApiError(400, "call_failed", "tune.cvar.get: no setting x (tune.cvar.find looks them up)" + stack)
             if name == "tune.cvar.set":
@@ -1080,7 +1080,7 @@ class KitTools(unittest.TestCase):
         self.assertIn("wk_tune_cvar_get", tools)
         broken = self.backend(manifest)
 
-        async def revision_of_another_shape(addon, name, args=None, timeout_ms=10000):
+        async def revision_of_another_shape(addon, name, args=None, timeout_ms=10000, most=None):
             if name == "kit.revision":
                 return {"ok": True, "result": "r9"}
             raise RuntimeError("the game said something odd")
@@ -1167,7 +1167,7 @@ class KitTools(unittest.TestCase):
         tools = kit.KitTools(backend, store=False)
         self.assertIn("wk_tune_cvar_get", self.settled(tools))
 
-        async def gone(addon, name, args=None, timeout_ms=10000):
+        async def gone(addon, name, args=None, timeout_ms=10000, most=None):
             raise ApiError(400, "call_failed", "WuxianKit has no WoWBridge handle: it did not call WoWBridge.Bind")
         backend.call_exposed, backend.manifest = gone, None
         with self.assertRaisesRegex(ToolError, "is not in the game now.*List the tools again"):
@@ -1183,7 +1183,7 @@ class KitTools(unittest.TestCase):
         tools = kit.KitTools(backend, store=False)
         seen = []
 
-        async def history(addon, name, args=None, timeout_ms=10000):
+        async def history(addon, name, args=None, timeout_ms=10000, most=None):
             seen.append(args)
             if args:
                 raise ApiError(400, "call_failed", "kit.history: takes no argument limit")
@@ -1333,7 +1333,7 @@ class KitTools(unittest.TestCase):
         self.assertEqual((late["state"], late["timeout"]), ("pending", True))
         reads, real = [], backend.call_exposed                         # done meanwhile, its event dropped:
 
-        async def flipping(addon, name, args=None, timeout_ms=10000):  # the game is asked again
+        async def flipping(addon, name, args=None, timeout_ms=10000, most=None):  # the game is asked again
             if name != "kit.proposal":
                 return await real(addon, name, args, timeout_ms)
             reads.append(name)

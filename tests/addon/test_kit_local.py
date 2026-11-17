@@ -43,7 +43,7 @@ class Backend:
     async def status(self):
         return {"addons_dir": str(self.addons) if self.addons else None}
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, most=None):
         self.calls.append((name, args))
         if self.away:
             raise ApiError(409, "link_down", "no frames come from the game")

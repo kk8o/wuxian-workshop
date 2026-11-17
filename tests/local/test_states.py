@@ -74,7 +74,7 @@ class Backoff(HostCase):
         self.add(extra="proto9")
         err = self.host.ensure("fx").exception(30)
         self.assertIsInstance(err, R.Down)
-        self.assertIn("it speaks protocol 9, this workshop speaks 1", err.message)
+        self.assertIn("it speaks protocol 9, this workshop speaks 2", err.message)
         self.assertEqual((err.problems[0]["level"], err.problems[0]["where"]), ("error", "initialize: protocol"))
         row = self.host.get("fx")
         self.assertEqual((row["state"], row["pid"], row["capabilities"]), ("backoff", None, []))

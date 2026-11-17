@@ -92,7 +92,7 @@ class Daemon:
         if self.gone is not None and self.game.now >= self.gone:
             raise DaemonGone("cannot reach the daemon at http://127.0.0.1:1: refused")
 
-    def call_exposed(self, addon, name, args=None, timeout_ms=10000):
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000, most=None):
         self.alive()
         assert addon == "WuxianKit"
         return self.game.call(name, args)

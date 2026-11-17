@@ -83,10 +83,14 @@ it unless it came in a package, and
                                    env, pass} | null, executables, agent: {docs, skills, apps, adds}, files, size}.
                                    path: a row's folder, or a .zip (read by its name as add reads it; nothing is added).
                                    Neither -> 400 bad_request; unknown -> 404 not_found
-    POST /api/local/install {id}   {id, addons: [{folder, state, was, version, kept}], restart, hint}. Not allowed yet
+    POST /api/local/install {id, replace?: [{folder, there}]}
+                                   {id, addons: [{folder, state, was, version, kept}], restart, hint}. Not allowed yet
                                    -> 403 needs_approval; no game addons -> 400 no_addons; --no-game-folder -> 503
-                                   no_game_folder (and every addon's state is "unknown"); a foreign one -> 409
-                                   addon_exists. 批准运行 (approve) installs them too (its answer is the row with
+                                   no_game_folder (and every addon's state is "unknown"); a foreign one that replace
+                                   does not name with the version it says -> 409 addon_exists (folder, same, there,
+                                   newer). A foreign row has same and there (an id with "same": the same addon by hand,
+                                   0.0.9; with "newer": the same one, newer, kept; else another addon); a summary's
+                                   replaces lists what a yes replaces, and its fingerprint (the row's too) covers it. 批准运行 (approve) installs them too (its answer is the row with
                                    installed: null | {ok: true, addons, restart, hint} | {ok: false, code, message,
                                    addons}), and so does a start
                                    (load answers addons, restart and hint as well when one was missing or differed)
@@ -188,7 +192,7 @@ class Fake:
     """the pretend daemon's state: logs (a ring of 5,000), subscribers, settings, the link that comes and goes"""
 
     def __init__(self, token=None, mode="developer", tick=1.0, seed=None, rotate=400, extension_approval="ask",
-                 addons_known=True):
+                 addons_known=True, old_kit=False):
         self.token = token or secrets.token_urlsafe(32)
         self.port = None
         self.mode = mode
@@ -196,6 +200,7 @@ class Fake:
         self.tick = tick
         self.rotate = rotate                     # a local extension's output starts again at line 1 after this many
         self.addons_known = bool(addons_known)   # False: the game's AddOns folder is not known (--no-game-folder)
+        self.old_kit = bool(old_kit)             # the game runs a WuxianKit before 0.7.0 (--old-kit): status says outdated
         self.started = time.time()
         self.rng = random.Random(seed)
         self.logs = collections.deque(maxlen=5000)
@@ -287,10 +292,13 @@ class Fake:
                      "slot_next": 4096 - self.slots_left + 1, "slots_left": self.slots_left, "hb": 15,
                      "capture": self.settings["capture_in_use"], "ping_p50": round(self.ping, 3) if online else None,
                      "last_frame": self.last_frame if online else None, "addon_version": __version__ if online else None,
-                     # 跟随应用: the voice companion runs and keeps the session while the link is up
+                     # 自动: the voice companion runs and keeps the session while the link is up
                      "mode": self.settings["link_mode"], "in_session": online,
-                     "held_by": ["companion"] if online and self.settings["link_mode"] == "auto" else [],
-                     "held_titles": {"companion": "语音搭子"} if online and self.settings["link_mode"] == "auto" else {}},
+                     "held_by": [{"id": "companion", "title": "语音搭子"}]
+                     if online and self.settings["link_mode"] == "auto" else []},
+            # the game's WuxianKit as this game process said it; outdated only while it is older than the 0.7.0 needed
+            "kit": ({"version": "0.6.0", "outdated": {"needs": "0.7.0", "has": "0.6.0"}} if self.old_kit else
+                    {"version": "0.7.0" if online else None}),
             "watch": list(self.watch),
             "reload_pending": self.reload_pending,
             "mcp_url": url + "mcp" if url else None,
@@ -843,8 +851,23 @@ class Fake:
     def local_addons(self, e):
         """the row's addons: [{folder, version, state}], every state "unknown" while the game's folder is not known
         (but "listed": a name of the catalog's is known without it)"""
-        return [dict(a, state=a["state"] if self.addons_known or a["state"] == "listed" else "unknown")
+        return [dict(a, state=a["state"] if self.addons_known or a["state"] == "listed" else "unknown",
+                     **(self.local_foreign(e) if a["state"] == "foreign" and self.addons_known else {}))
                 for a in e["addons"]]
+
+    @staticmethod
+    def local_foreign(e):
+        """what a foreign row says more of the folder in AddOns (gameside.state), by the extension's id: "same" in it:
+        the same addon, installed by hand, version 0.0.9; "newer" in it: the same addon in a newer version (kept);
+        else another addon of the name, which says no version"""
+        if "newer" in e["id"]:
+            return dict(same=True, there="9.9.9", newer=True)
+        return dict(same=True, there="0.0.9") if "same" in e["id"] else dict(same=False, there=None)
+
+    def local_replaces(self, e):
+        """the summary's replaces (gameside.replaces): what a yes replaces, the same addon and not newer"""
+        return [dict(folder=a["folder"], there=a.get("there"), same=True, newer=False)
+                for a in self.local_addons(e) if a["state"] == "foreign" and a.get("same") and not a.get("newer")]
 
     def local_seen(self, e):
         """the row's and the summary's fingerprint (Host.seen): what a yes would allow as it is now; None while its
@@ -852,7 +875,7 @@ class Fake:
         if not self.local_readable(e):
             return None
         what = [e["id"], e["version"], e["path"], e["command"], [a["folder"] for a in e["addons"]],
-                (e.get("package") or {}).get("sha256")]
+                (e.get("package") or {}).get("sha256"), [[r["folder"], r["there"]] for r in self.local_replaces(e)]]
         return hashlib.sha256(json.dumps(what, ensure_ascii=False).encode("utf-8")).hexdigest()
 
     def local_row(self, e):
@@ -1100,7 +1123,9 @@ class Fake:
         game = [dict(folder=a["folder"], title=a["folder"], notes=None, version=a["version"], author=None,
                      needs=[dict(addon="EllesmereUI", installed=True if addons else None)] if "Skin" in a["folder"] else [],
                      path=addons + "\\" + a["folder"] if addons and a["state"] in ("current", "differs", "foreign") else None,
-                     cannot=a["state"] if a["state"] in STUCK else None)
+                     cannot=a["state"] if a["state"] in STUCK else None,
+                     **(dict(same=bool(a.get("same")), there=a.get("there"), newer=bool(a.get("newer")))
+                        if a["state"] == "foreign" else {}))
                 for a in self.local_addons(e)]
         local = None
         if runs:
@@ -1111,7 +1136,8 @@ class Fake:
         rel = lambda p: p[len(e["path"]) + 1:].replace("\\", "/") if p else None
         return dict({"from": source}, id=e["id"], title=e["title"] or None, version=e["version"], notes=e["notes"],
                     author=e["author"], homepage=e["homepage"], package=package or e.get("package"), where=e["where"],
-                    risk="local" if runs else "game", game=game, addons_dir=addons, local=local,
+                    risk="local" if runs else "game", game=game, replaces=self.local_replaces(e), addons_dir=addons,
+                    local=local,
                     executables=["bin/tts.exe"] if e["id"] == "voice" else [],
                     agent=dict(docs="AGENT.md", skills=list(e["skills"]), apps=list(e["apps"]),
                                adds=[dict(app=app, wake=(a.get("wake") or {}).get("call"), skill=rel(a.get("skill")))
@@ -1263,9 +1289,15 @@ class Fake:
         return dict(id=e["id"], version=e["version"], file=file, size=4096 + 1830 * files, files=files,
                     sha256=sha, skipped=["__pycache__/", "logs/"], summary=summary, warnings=warnings)
 
-    def local_install(self, e):
-        """POST /api/local/install: gameside.install's answer for what this extension brings for the game. Every one is
-        looked at before any is touched"""
+    def local_install(self, e, replace=None):
+        """POST /api/local/install {id, replace?: [{folder, there}]}: gameside.install's answer for what this
+        extension brings for the game. Every one is looked at before any is touched; a foreign folder is replaced
+        only when replace names it with the version it says"""
+        if replace is not None and not (isinstance(replace, list) and all(
+                isinstance(r, dict) and isinstance(r.get("folder"), str) and r["folder"]
+                and (r.get("there") is None or isinstance(r["there"], str)) for r in replace)):
+            raise ValueError("replace: the folders in the game's AddOns to replace, [{folder, there}]")
+        named = {(r["folder"].casefold(), r.get("there") or None) for r in replace or []}
         if self.local_approval(e) != "ok":
             raise Refused(403, "needs_approval", f"{e['id']}: the player has not allowed it yet: confirm it on the "
                                                  f"Extensions (扩展) page of the 无限工坊 App",
@@ -1275,10 +1307,11 @@ class Fake:
         if not self.addons_known:
             raise Refused(503, "no_game_folder", "the game's folder is not known: set it on the 开始 page of the 无限工坊 "
                                                  "App")
-        for a in e["addons"]:
-            if a["state"] == "foreign":
+        for a in self.local_addons(e):
+            if a["state"] == "foreign" and (a["folder"].casefold(), a.get("there")) not in named:
                 raise Refused(409, "addon_exists", f"the game has an addon {a['folder']} that {e['id']} did not install: "
-                                                   f"it is left as it is")
+                                                   f"it is left as it is", folder=a["folder"], same=bool(a.get("same")),
+                              there=a.get("there"), newer=bool(a.get("newer")), done=[])
             if a["state"] == "broken":
                 raise Refused(400, "bad_addon", f"addons/{a['folder']} has no {a['folder']}.toc")
             if a["state"] == "listed":
@@ -1291,7 +1324,7 @@ class Fake:
         for a in e["addons"]:
             was = a["state"]
             out.append(dict(folder=a["folder"], state="current" if was == "current" else "installed", was=was,
-                            version=a["version"], kept=self.local_keep() if was == "differs" else None))
+                            version=a["version"], kept=self.local_keep() if was in ("differs", "foreign") else None))
             a["state"] = "current"
         restart = any(a["was"] == "missing" for a in out)
         new = [a["folder"] for a in out if a["was"] == "missing"]
@@ -1329,7 +1362,7 @@ class Fake:
         if action == "pack":
             return self.local_pack(e, body.get("to"))
         if action == "install":
-            return self.local_install(e)
+            return self.local_install(e, body.get("replace"))
         if action == "approve":                  # the player's 批准运行: the command as it is now may run
             if not self.local_readable(e):
                 raise ValueError(e["error"] or f"{e['id']}: its manifest cannot be read")
@@ -1341,7 +1374,8 @@ class Fake:
             e["approval"] = "ok"
             self.entry("INFO", f"local extension {e['id']}: its command allowed by the player")
             installed = None                     # what it brings for the game goes in with the player's yes; one that
-            stuck = next((a for a in e["addons"] if a["state"] in STUCK), None)   # cannot does not fail the approval:
+            mine = {r["folder"] for r in self.local_replaces(e)}              # (the yes replaces these: its summary said so)
+            stuck = next((a for a in self.local_addons(e) if a["state"] in STUCK and a["folder"] not in mine), None)
             if e["addons"] and not self.addons_known:                             # the answer's installed says it
                 installed = dict(ok=False, code="no_game_folder", message="the game's AddOns folder is not known",
                                  addons=[])
@@ -1350,7 +1384,9 @@ class Fake:
                                                          "not install: it is left as it is"),
                              "listed": ("bad_addon", "an addon of the catalog: the 扩展 page installs it"),
                              "broken": ("bad_addon", "no .toc of its name")}[stuck["state"]]
-                installed = dict(ok=False, code=code, message=f"{stuck['folder']!r}: {why}", addons=[])
+                installed = dict(ok=False, code=code, message=f"{stuck['folder']!r}: {why}", addons=[],
+                                 **(dict(folder=stuck["folder"], same=bool(stuck.get("same")), there=stuck.get("there"),
+                                         newer=bool(stuck.get("newer"))) if stuck["state"] == "foreign" else {}))
             elif e["addons"]:
                 installed = dict(ok=True, **self.local_put(e))
             self.local_changed()
@@ -1521,8 +1557,8 @@ class Fake:
     def update_settings(self, changes):
         """POST /api/settings as the daemon takes it: mode, capture, game_dir, language, font_scale,
         extension_approval, link_mode (unknown keys ignored)"""
-        if "link_mode" in changes and changes["link_mode"] not in ("auto", "always", "demand"):
-            raise ValueError('link_mode: "auto", "always" or "demand"')
+        if "link_mode" in changes and changes["link_mode"] not in ("auto", "always"):
+            raise ValueError('link_mode: "auto" or "always"')
         if "capture" in changes and changes["capture"] not in ("gdi", "wgc"):
             raise ValueError('capture: "gdi" or "wgc"')
         if "extension_approval" in changes and changes["extension_approval"] not in ("ask", "auto"):
@@ -2111,12 +2147,14 @@ def main(argv=None):
                     help="a local extension's output starts again at line 1 after this many lines")
     ap.add_argument("--no-game-folder", action="store_true",
                     help="the game's AddOns folder is not known: every game addon's state is unknown, 安装 answers 503")
+    ap.add_argument("--old-kit", action="store_true",
+                    help="the game runs a WuxianKit before 0.7.0: status's kit says outdated {needs, has}")
     args = ap.parse_args(argv)
     import uvicorn
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     fake = Fake(token=args.token, mode=args.mode, tick=args.tick, rotate=max(2, args.rotate),
-                extension_approval=args.approval, addons_known=not args.no_game_folder)
+                extension_approval=args.approval, addons_known=not args.no_game_folder, old_kit=args.old_kit)
     fake.port = args.port
     print(f"fake daemon: http://127.0.0.1:{args.port}/   token: {fake.token}", flush=True)
     print("open that in a browser, or the window on it:\n"

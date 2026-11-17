@@ -277,6 +277,33 @@ class Install(Local):
         self.assertEqual([a["state"] for a in self.rows()[row["id"]]["addons"]], ["foreign"])     # the yes did not fail
         r = self.post("install", id=row["id"])
         self.assertEqual((r.status_code, r.json()["error"]["code"]), (409, "addon_exists"))
+        error = r.json()["error"]                                        # another addon of the name: no version said
+        self.assertEqual((error["folder"], error["same"], error["there"], error["newer"]),
+                         (row["addons"][0]["folder"], False, None, False))
+        self.assertEqual(self.post("install", id=row["id"], replace=True).status_code, 400)       # a list, or nothing
+        r = self.post("install", id=row["id"], replace=[{"folder": error["folder"], "there": "1.0"}])
+        self.assertEqual(r.status_code, 409)                             # not the version it says
+        r = self.post("install", id=row["id"], replace=[{"folder": error["folder"], "there": None}]).json()
+        self.assertEqual([(a["state"], a["was"], a["kept"] is not None) for a in r["addons"]],
+                         [("installed", "foreign", True)])
+
+    def test_the_same_addon_installed_by_hand(self):
+        """the summary's replaces says what a yes replaces, the fingerprint covers it, and the yes replaces it; a
+        newer one is kept"""
+        row = self.post("add", path="D:\\Work\\foreign_same").json()
+        (a,) = row["addons"]
+        self.assertEqual((a["state"], a["same"], a["there"], "newer" in a), ("foreign", True, "0.0.9", False))
+        s = self.client.get("/api/local/summary", headers=AUTH, params={"id": row["id"]}).json()
+        self.assertEqual(s["replaces"], [dict(folder=a["folder"], there="0.0.9", same=True, newer=False)])
+        self.assertEqual((s["fingerprint"], s["game"][0]["same"]), (self.rows()[row["id"]]["fingerprint"], True))
+        d = self.post("approve", id=row["id"], fingerprint=s["fingerprint"]).json()
+        self.assertEqual((d["installed"]["ok"], d["installed"]["addons"][0]["was"]), (True, "foreign"))
+        row = self.post("add", path="D:\\Work\\foreign_newer").json()
+        s = self.client.get("/api/local/summary", headers=AUTH, params={"id": row["id"]}).json()
+        self.assertEqual((s["replaces"], s["game"][0]["newer"], s["game"][0]["there"]), ([], True, "9.9.9"))
+        said = self.post("approve", id=row["id"]).json()["installed"]
+        self.assertEqual((said["ok"], said["code"], said["same"], said["newer"], said["there"]),
+                         (False, "addon_exists", True, True, "9.9.9"))
 
     def test_the_yes_says_what_did_not_go_in(self):
         for name, state, code in (("foreign", "foreign", "addon_exists"), ("listed", "listed", "bad_addon")):
@@ -284,7 +311,8 @@ class Install(Local):
             d = self.post("approve", id=row["id"]).json()
             self.assertEqual((d["approval"], [a["state"] for a in d["addons"]]), ("ok", [state]), name)   # the yes holds
             said = d["installed"]
-            self.assertEqual(set(said), {"ok", "code", "message", "addons"}, name)
+            self.assertEqual(set(said), {"ok", "code", "message", "addons"}
+                             | ({"folder", "same", "there", "newer"} if state == "foreign" else set()), name)
             self.assertEqual((said["ok"], said["code"], said["addons"]), (False, code, []), name)
             self.assertIn(row["addons"][0]["folder"], said["message"], name)
             self.assertNotIn("installed", self.rows()[row["id"]], name)    # the answer says it, the row does not
@@ -329,7 +357,7 @@ class NoGameFolder(Local):
 
 class Summary(Local):
     KEYS = {"from", "id", "title", "version", "notes", "author", "homepage", "package", "where", "risk", "game",
-            "addons_dir", "local", "executables", "agent", "files", "size"}
+            "replaces", "addons_dir", "local", "executables", "agent", "files", "size"}
 
     def get(self, **q):
         return self.client.get("/api/local/summary", headers=AUTH, params=q)

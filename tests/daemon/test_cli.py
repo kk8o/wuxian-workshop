@@ -463,7 +463,7 @@ class ExtLines(unittest.TestCase):
             "    game addon VoiceGame 1.2.0: the game has another version: `wuxian ext install voice` updates it (so does "
             "`ext load`)",
             "    game addon VoiceGame 1.2.0: the game has an addon of this name that is not this extension's: it is left "
-            "alone (`wuxian ext install voice --replace` puts this one in its place)",
+            "alone (`wuxian ext install voice --replace VoiceGame` puts this one in its place)",
             "    game addon VoiceGame 1.2.0: its folder in the extension is missing or has no .toc",
             "    game addon VoiceGame 1.2.0: the game's folder is not known",
             "    game addon Odd: later"])                            # a state this program does not know: as it is
@@ -713,9 +713,17 @@ class ExtLines(unittest.TestCase):
             def extension_load(self, eid):
                 return dict({"check": {"ok": True, "capabilities": ["voice.say"]}, "row": row}, **self.more)
 
-            def extension_install(self, eid, replace=False):
+            def extension_install(self, eid, replace=None):
                 self.replace.append(replace)
                 return dict(self.more, id=eid)
+
+            def local_extensions(self):
+                return {"extensions": [dict(row, addons=[
+                    dict(folder="VoiceGame", version="1.2.0", state="foreign", same=True, there="1.1.1"),
+                    dict(folder="VoiceNew", version="1.2.0", state="foreign", same=True, there="1.3", newer=True),
+                    dict(folder="VoiceOther", version="1.2.0", state="foreign", same=False, there=None),
+                    dict(folder="VoiceLink", version="1.2.0", state="foreign"),
+                    dict(folder="VoiceMore", version="1.2.0", state="current")])]}
 
         client = Client()
         client.more, client.replace = game, []
@@ -732,13 +740,19 @@ class ExtLines(unittest.TestCase):
         client.more = {}                                             # a daemon that says nothing of the game
         self.assertEqual(len(self.run_ext(client, "load", "voice")[1]), 2)
         self.assertEqual(self.run_ext(client, "install", "voice")[1], ["voice: no game addons to install"])
-        self.assertEqual(client.replace, [False, False, False])
+        self.assertEqual(client.replace, [None, None, None])
         client.more = dict(addons=[dict(folder="VoiceGame", state="installed", was="foreign", version="1.2.0",
                                         kept="0007")], restart=False, hint=None)
         self.assertEqual(self.run_ext(client, "install", "voice", "--replace")[:2],       # 替换: what was there is kept
                          (0, ["game addon VoiceGame 1.2.0: installed (in the place of the folder that was there, kept "
                               "in the history: 0007)"]))
-        self.assertEqual(client.replace[-1], True)
+        self.assertEqual(client.replace[-1], [dict(folder="VoiceGame", there="1.1.1")])     # the same addon, not newer
+        self.run_ext(client, "install", "voice", "--replace", "voicenew", "VoiceOther")    # the ones named, whatever
+        self.assertEqual(client.replace[-1], [dict(folder="VoiceNew", there="1.3"), dict(folder="VoiceOther", there=None)])
+        for name in ("VoiceLink", "VoiceMore", "Ghost"):                             # a link, its own, none there
+            code, _, err = self.run_ext(client, "install", "voice", "--replace", name)
+            self.assertEqual((code, len(client.replace)), (1, 5), name)
+            self.assertIn(f"{name}: not a folder", err)
 
     def test_pack(self):
         asked = []

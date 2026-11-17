@@ -50,7 +50,7 @@ What needs the coding agent now? Sort the pieces:
 So first declare the app (`wk_docs {"skill": "kit-app"}`), which makes it startable from its card by any AI
 conversation; then move what is mechanical into reactions; and only if the player wants it running with no agent
 at all, write the loop as a program with the Python SDK: in the local extension itself, the app's `"driver":
-"local"` and `@ext.app`, so the workshop starts it and the player stops it from the card as before. Each step leaves
+"local"` and `@ext.app`, so the workshop keeps it open and the player stops it from the card as before. Each step leaves
 the extensions and the player's approvals as they are.
 
 ## 4. What to tell the player

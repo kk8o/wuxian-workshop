@@ -177,11 +177,11 @@ class Extensions(unittest.TestCase):
                          sorted(files))
         self.assertEqual(json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8")),
                          {"id": "zones", "title": '地区 "Z" \\', "version": "0.1.0",
-                          "requires": {"workshop": scaffold.workshop_version(), "kit": "0.6.0"},
+                          "requires": {"workshop": scaffold.workshop_version(), "kit": "0.7.0"},
                           "run": ["python", "main.py"], "start": "use", "addons": ["ZoneTrail"]})
         m, problems = manifest.check_manifest(folder)
         self.assertEqual(problems, [])
-        self.assertEqual((m["addons"], m["requires"]["kit"]), (["ZoneTrail"], "0.6.0"))
+        self.assertEqual((m["addons"], m["requires"]["kit"]), (["ZoneTrail"], "0.7.0"))
         texts = {f: (folder / f).read_text(encoding="utf-8") for f in files}
         self.assertNotIn("{{", "".join(texts.values()))
         compile(texts["main.py"], "main.py", "exec")
@@ -195,7 +195,7 @@ class Extensions(unittest.TestCase):
             self.assertIn(line, toc)
         lua = texts["addons/ZoneTrail/ZoneTrail.lua"]
         self.assertIn('Kit:Extension("zones_game"', lua)
-        self.assertIn('Kit:Requires("0.6.0")', lua)
+        self.assertIn('Kit:Requires("0.7.0")', lua)
         self.assertIn('TITLE = "地区 \\"Z\\" \\\\"', lua)                       # the title as a Lua string
         agent = texts["AGENT.md"]
         for said in ("## The game half", "`addons/ZoneTrail`", "`wk_zones_where`", "`wk_zones_game_where`",
@@ -248,7 +248,7 @@ class Extensions(unittest.TestCase):
                          sorted(files))
         self.assertEqual(json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8")),
                          {"id": "loot_peek", "title": "掉落一瞥", "version": "0.1.0",
-                          "requires": {"workshop": scaffold.workshop_version(), "kit": "0.6.0"}, "addons": ["LootPeek"]})
+                          "requires": {"workshop": scaffold.workshop_version(), "kit": "0.7.0"}, "addons": ["LootPeek"]})
         m, problems = manifest.check_manifest(folder, {"loot_peek": "LootPeek", "sense": None})
         self.assertEqual(problems, [])
         self.assertEqual((m["where"], m["game"], m["run"], m["start"], m["addons"]),
@@ -263,7 +263,7 @@ class Extensions(unittest.TestCase):
                                "## LoadOnDemand: 1", "## X-WuxianKit-Extension: loot_peek", "## X-Made-With: 无限工坊", "",
                                "LootPeek.lua"])
         lua = texts["addons/LootPeek/LootPeek.lua"]
-        for said in ('Kit:Extension("loot_peek"', 'Kit:Requires("0.6.0")', 'ext:See("where"', 'ext:Event("moved"',
+        for said in ('Kit:Extension("loot_peek"', 'Kit:Requires("0.7.0")', 'ext:See("where"', 'ext:Event("moved"',
                      "wk_loot_peek_<name>", 'guide {"topic": "game-extension"}'):
             self.assertIn(said, lua)
         agent = texts["addons/LootPeek/AGENT.md"]
@@ -332,7 +332,7 @@ class Extensions(unittest.TestCase):
         env = dict(os.environ, PYTHONPATH=str(scaffold.sdk_file().parent), WUXIAN_EXTENSION="runner",
                    PYTHONIOENCODING="utf-8")
         lines = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                     "protocol": {"min": 1, "max": 1}, "workshop": "test", "id": "runner", "options": {}}},
+                     "protocol": {"min": 2, "max": 2}, "workshop": "test", "id": "runner", "options": {}}},
                  {"jsonrpc": "2.0", "id": 2, "method": "call", "params": {
                      "name": "hello", "args": {"name": "Jaina"}, "caller": {"by": "agent"}, "deadline_ms": 30000}},
                  {"jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": {}}]
@@ -341,7 +341,7 @@ class Extensions(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         out = [json.loads(line) for line in run.stdout.decode("utf-8").splitlines()]
         answers = {m["id"]: m for m in out if "id" in m}
-        self.assertEqual(answers[1]["result"]["protocol"], 1)
+        self.assertEqual(answers[1]["result"]["protocol"], 2)
         self.assertEqual([c["name"] for c in answers[1]["result"]["capabilities"]], ["hello"])
         self.assertEqual(answers[2]["result"], {"text": "Hello, Jaina!"})
         self.assertEqual(answers[3]["result"], {})
@@ -442,7 +442,7 @@ class GameHalf(unittest.TestCase):
         kit = s.lua.globals()[b"__kit"]
         ns = s.lua.table()
         self.load(s, ns)
-        self.assertEqual(list(kit[b"requires"].values()), [b"0.6.0"])
+        self.assertEqual(list(kit[b"requires"].values()), [b"0.7.0"])
         self.assertEqual(list(kit[b"extensions"]), [b"zones_game"])
         ext = kit[b"extensions"][b"zones_game"]
         self.assertEqual((ext[b"def"][b"title"].decode("utf-8"), ext[b"def"][b"addon"]), ('地区 "Z"', b"ZoneTrail"))
@@ -495,7 +495,7 @@ class GameOnlyLua(unittest.TestCase):
         kit = s.lua.globals()[b"__kit"]
         ns = s.lua.table()
         self.load(s, ns)
-        self.assertEqual(list(kit[b"requires"].values()), [b"0.6.0"])
+        self.assertEqual(list(kit[b"requires"].values()), [b"0.7.0"])
         self.assertEqual(list(kit[b"extensions"]), [b"loot_peek"])
         ext = kit[b"extensions"][b"loot_peek"]
         self.assertEqual((ext[b"def"][b"title"].decode("utf-8"), ext[b"def"][b"addon"]), ('掉落 "一瞥"', b"LootPeek"))

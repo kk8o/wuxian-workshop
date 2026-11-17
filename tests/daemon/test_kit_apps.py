@@ -53,7 +53,7 @@ class Game:
                      {"id": "raid_talk", "title": "副本解说", "by": "agent", "on": True, "present": True,
                       "launch": False, "temp": True}]
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, most=None):
         self.calls.append((name, args, shared))
         if self.away:
             raise ApiError(409, "link_down", "no frames come from the game")

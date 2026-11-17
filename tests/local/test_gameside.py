@@ -231,7 +231,7 @@ class State(Case):
                          [dict(folder="Two", version="2.0", state="current"),
                           dict(folder="Nope", version=None, state="broken"),
                           dict(folder="One", version="1.2.0", state="missing"),
-                          dict(folder="Three", version="1.2.0", state="foreign", same=False, there="9.9", newer=True)])
+                          dict(folder="Three", version="1.2.0", state="foreign", same=False, there="9.9")])
         self.assertEqual(G.states(self.folder, [], self.addons, "voice"), [])
         self.assertEqual([s["state"] for s in G.states(self.folder, ["One", "Two"], None, "voice")],
                          ["unknown", "unknown"])
@@ -458,7 +458,7 @@ class Install(Case):
 
 class Replace(Case):
     """a folder of the addon's name without this extension's mark: the same addon installed by hand (its .toc says
-    so), or another; replace False / "same" / True"""
+    so), or another; replace names the folders to replace, each with the version it says ([{folder, there}])"""
 
     def src(self, headers, version="1.2.0"):
         d = G.source(self.folder, NAME)
@@ -509,7 +509,8 @@ class Replace(Case):
         self.src("## X-WuxianKit-Extension: voice\n")
         self.by_hand("## X-WuxianKit-Extension: voice\n", mark={"extension": "other", "digest": "x"})
         self.assertEqual(self.row()["same"], False)
-        self.refused(409, "addon_exists", self.install, replace="same")
+        self.assertEqual(G.replaces([self.row()]), [])                           # no approval replaces it
+        self.refused(409, "addon_exists", self.install, replace=G.replaces([self.row()]))
 
     def test_newer(self):
         for there, version, newer in (("1.2.1", "1.2.0", True), ("1.10", "1.9", True), ("2", "1.9.9", True),
@@ -526,23 +527,49 @@ class Replace(Case):
         self.assertNotIn("newer", self.row())
         (self.addons / NAME / f"{NAME}.toc").write_bytes(b"## X-Website: w\n\nold.lua\n")
         self.assertEqual(self.row()["there"], None)
+        self.by_hand("## X-Website: other\n", version="9.9")                       # another addon: its numbers say
+        self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign", same=False, there="9.9"))
 
-    def test_replace_false_as_before(self):
+    def test_what_an_approval_replaces(self):
+        """replaces(): the same addon installed by hand, not a newer one, never another addon, a link or a file"""
+        self.src("## X-Website: w\n")
+        self.by_hand("## X-Website: w\n")
+        self.assertEqual(G.replaces([self.row()]), [dict(folder=NAME, there="1.1.1", same=True, newer=False)])
+        self.by_hand("## X-Website: w\n", version="1.3.0")
+        self.assertEqual(G.replaces([self.row()]), [])
+        self.by_hand("## X-Website: other\n")
+        self.assertEqual((G.replaces([self.row()]), G.replaceable(self.row())), ([], True))
+        self.assertEqual(G.replaces([dict(folder=NAME, version="1", state="foreign"),      # a link or a file
+                                     dict(folder=NAME, version="1", state="current")]), [])
+        self.assertFalse(G.replaceable(dict(folder=NAME, version="1", state="foreign")))
+        self.assertEqual(G.replace_list(None), [])
+        self.assertEqual(G.replace_list([{"folder": "WuxianVoice", "there": "1.0"}, {"folder": "B"}]),
+                         [("wuxianvoice", "1.0"), ("b", None)])
+        for bad in (True, "same", "WuxianVoice", ["WuxianVoice"], [{"there": "1"}], [{"folder": 1}],
+                    [{"folder": "A", "there": 1}], {"folder": "A"}):
+            self.assertIsNone(G.replace_list(bad), bad)
+
+    def test_nothing_named_nothing_replaced(self):
         self.src("## X-Website: w\n")
         self.by_hand("## X-Website: w\n")
         before = tree(self.addons)
-        for replace in (False, None, "yes", 1, "True"):
+        for replace in (None, [], [{"folder": "Other", "there": "1.1.1"}],
+                        [{"folder": NAME, "there": "1.1.0"}],                    # not the version it says now
+                        [{"folder": NAME, "there": None}], [{"folder": NAME}]):
             with self.subTest(replace=replace):
                 e = self.refused(409, "addon_exists", self.install, replace=replace)
                 self.assertEqual(e.data, dict(folder=NAME, same=True, there="1.1.1", newer=False))
                 self.assertIn("--replace", str(e))
+        for bad in (True, "same", "yes", 1, [NAME]):                             # the three states of before: none
+            with self.subTest(replace=bad):
+                self.refused(400, "bad_addon", self.install, replace=bad)
         self.assertEqual(tree(self.addons), before)
         self.assertEqual(self.versions(), [])
 
-    def test_replace_same(self):
+    def test_the_one_named(self):
         self.src("## X-Website: w\n")
         self.by_hand("## X-Website: w\n")
-        got = self.install(replace="same")
+        got = self.install(replace=G.replaces([self.row()]))
         (row,) = got["addons"]
         self.assertEqual((row["state"], row["was"], row["version"]), ("installed", "foreign", "1.2.0"))
         self.assertEqual(self.state(), "current")
@@ -554,7 +581,7 @@ class Replace(Case):
         history.restore(self.addons, NAME, kept["id"])                           # `wuxian history` gives it back
         self.assertEqual((self.addons / NAME / "old.lua").read_bytes(), b"-- by hand\n")
 
-    def test_replace_same_leaves_a_newer_one_and_another_addon(self):
+    def test_an_approval_leaves_a_newer_one_and_another_addon(self):
         self.addon("Fine")
         self.src("## X-Website: w\n")
         for headers, version, data in (("## X-Website: w\n", "1.3.0", dict(same=True, there="1.3.0", newer=True)),
@@ -562,31 +589,34 @@ class Replace(Case):
             with self.subTest(headers=headers):
                 self.by_hand(headers, version)
                 before = tree(self.addons)
-                e = self.refused(409, "addon_exists", self.install, ["Fine", NAME], replace="same")
+                e = self.refused(409, "addon_exists", self.install, ["Fine", NAME], replace=G.replaces([self.row()]))
                 self.assertEqual(e.data, dict(folder=NAME, **data))
                 self.assertEqual(tree(self.addons), before)                       # Fine is not installed either
         self.assertEqual(self.versions(), [])
 
-    def test_replace_true(self):
+    def test_any_folder_the_player_names(self):
+        """another addon, a newer one of the same, one without a version: named with what it says, it is replaced;
+        the name alone, in whatever case"""
         self.src("## X-Website: w\n")
         for headers, version in (("## X-Website: other\n", "1.0"), ("## X-Website: w\n", "9.0")):
             with self.subTest(headers=headers):
                 shutil.rmtree(self.addons / NAME, ignore_errors=True)
                 self.by_hand(headers, version)
-                (row,) = self.install(replace=True)["addons"]
+                (row,) = self.install(replace=[{"folder": NAME.upper(), "there": version}])["addons"]
                 self.assertEqual((row["state"], row["was"]), ("installed", "foreign"))
                 self.assertEqual(self.state(), "current")
                 self.assertEqual(self.versions()[0]["note"], f"{version} -> 1.2.0")
         shutil.rmtree(self.addons / NAME)                                         # no version there: "?"
         self.by_hand("## X-Website: other\n", version=None)
-        self.install(replace=True)
+        self.refused(409, "addon_exists", self.install, replace=[{"folder": NAME, "there": "1.0"}])
+        self.install(replace=[{"folder": NAME, "there": None}])
         self.assertEqual(self.versions()[0]["note"], "? -> 1.2.0")
 
     def test_never_a_link_or_a_file(self):
         self.src("## X-Website: w\n")
         put(self.addons, NAME, b"a file of that name")
         self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign"))
-        e = self.refused(409, "addon_exists", self.install, replace=True)
+        e = self.refused(409, "addon_exists", self.install, replace=[{"folder": NAME, "there": None}])
         self.assertEqual(e.data, dict(folder=NAME, same=False, there=None, newer=False))
         self.assertEqual((self.addons / NAME).read_bytes(), b"a file of that name")
         (self.addons / NAME).unlink()
@@ -594,7 +624,7 @@ class Replace(Case):
         put(elsewhere, f"{NAME}.toc", b"## X-Website: w\n## Version: 1.0\n")
         self.link(elsewhere, self.addons / NAME)
         self.assertEqual(self.row(), dict(folder=NAME, version="1.2.0", state="foreign"))
-        self.refused(409, "addon_exists", self.install, replace=True)
+        self.refused(409, "addon_exists", self.install, replace=[{"folder": NAME, "there": "1.0"}])
         self.assertEqual(sorted(p.name for p in elsewhere.iterdir()), [f"{NAME}.toc"])
 
     def test_one_that_cannot_be_kept(self):
@@ -602,7 +632,7 @@ class Replace(Case):
         self.by_hand("## X-Website: w\n")
         put(self.addons, f"{NAME}/.git/HEAD", b"ref: refs/heads/main\n")           # a developer's checkout
         before = tree(self.addons)
-        e = self.refused(409, "addon_exists", self.install, replace=True)
+        e = self.refused(409, "addon_exists", self.install, replace=[{"folder": NAME, "there": "1.1.1"}])
         self.assertIn(".git", str(e))
         self.assertEqual(tree(self.addons), before)
         self.assertEqual(sorted(p.name for p in self.addons.iterdir()), [NAME])
@@ -612,7 +642,7 @@ class Replace(Case):
         self.src("## X-Website: w\n")
         with mock.patch.object(G, "state", return_value=dict(folder=NAME, version="1.2.0", state="foreign",
                                                               same=True, there="1.1.1")):
-            (row,) = self.install(replace="same")["addons"]
+            (row,) = self.install(replace=[{"folder": NAME, "there": "1.1.1"}])["addons"]
         self.assertEqual((row["state"], row["was"], row["kept"]), ("installed", "foreign", None))
         self.assertEqual(self.state(), "current")
 

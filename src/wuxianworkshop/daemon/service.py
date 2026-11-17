@@ -17,7 +17,10 @@ sources' items go into the journal as events of the addon "local" (topic <extens
 extensions changed). Their apps are kept the same in WuxianKit as their manifests say (reconcile_local_apps: after every
 kit.ready and whenever the extensions change, kit.app.declare for what is new or different, kit.app.forget for what is
 gone; before that WuxianKit is told which extensions with a local part are added here, kit.local.set, for its window
-to list them: tell_roster). Reactions (local/reactions.py) call a capability when an item is heard: a game source through the temporary app
+to list them: tell_roster). The apps an extension's own program drives (driver "local") are kept open here while that
+program runs, their wakes handed to it and its reports to the game (local/drive.py: drive_sync, drive_kit, drive_wake,
+local_report). All of that needs the game's WuxianKit to be KIT_NEEDS or newer: an older one is told nothing
+(kit_outdated; status says so). Reactions (local/reactions.py) call a capability when an item is heard: a game source through the temporary app
 "reactions" (kit.app.open), a local source directly; an app's own (its manifest's reactions) are there while it runs.
 The wakes of an app that local extensions add to (their manifest's adds.<app>.wake) go into the journal with those
 extensions' notes, in the order they came with the app's kit.app events (daemon/notes.py).
@@ -35,9 +38,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
+from ..local import drive as local_drive
+from ..local import gameside as local_gameside
 from ..local import manifest as local_manifest
 from ..local import summary as local_summary
-from ..local.host import Host as LocalHost, call_error
+from ..local.host import WAKE_PING, Host as LocalHost, call_error
 from ..local.reactions import ReactionError, Reactions
 from ..agent import history, lint, probes
 from ..agent.commands import addon_folder, toc_files
@@ -45,7 +50,7 @@ from ..agent.snap import SnapError, capture, in_picture, link_frame, save_snap
 from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
 from ..core.game import isolated
-from ..paths import settings_file
+from ..paths import settings_file, state_dir
 from ..transport.link import IDLE
 from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
@@ -63,10 +68,13 @@ FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's 
 EXTENSION_APPROVALS = ("ask", "auto")
 TRY_HOLD = 5                              # seconds past try's window the addon keeps the session (its end marker)
 # the settings' link_mode: "auto" a session always while an app that wants it runs (its link "live"), else one while
-# things pass; "always" a session always; "demand" one while things pass, whatever runs. 0.9.14 kept "demand" as its
-# default: one without link_mode_v (LINK_MODE_V, written with the player's choice) is read as "auto"
-LINK_MODES = ("auto", "always", "demand")
-LINK_MODE_V = 2
+# things pass; "always" a session always. Anything else that is kept (0.9.14's "demand") is read as "auto"
+LINK_MODES = ("auto", "always")
+KIT_NEEDS = "0.7.0"          # the WuxianKit the local side works with: an older one in the game is told nothing of the
+                             # local extensions (no list, no apps, no reports), and status says it is outdated
+NO_KIT = "has no WoWBridge handle"   # in a call_failed of a call of WuxianKit: the game runs none
+KIT_MOST = 256 * 1024        # bytes an answer of WuxianKit may be when the daemon itself asks, or an agent's tool
+                             # (call_exposed's most: without it an answer may be 16 MB, and is waited for as long)
 MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
 POUR_WAIT = 90.0             # seconds a pour waits for the link to come back (minimized, a loading screen)
 POUR_ASK = 20.0              # seconds with the link up and no new segment of a pour before the missing ones are asked
@@ -76,7 +84,6 @@ POUR_QUIET = 60.0            # ... and before the answer is given up
 POUR_NOTE = 10.0             # seconds between the journal's notes on how far a long answer has come
 POUR_POLL = 0.25             # seconds between a pour's looks at how far it is (a segment that comes wakes it at once)
 _now = time.monotonic        # the clock of a pour's waits (a test's mock client puts the game's, and POUR_POLL 0)
-ABSENT = "absent"            # declare(): the game's WuxianKit has no kit.app.declare
 LOCAL = "local"              # the addon name of the local extensions' events in the journal
 REACTIONS_APP = "reactions"  # the temporary app through which the reactions hear the game
 REACTIONS_MINUTES = 720
@@ -185,6 +192,8 @@ class Service:
         self.holders = set()             # the apps that run and want the link live (link_mode auto: a session always)
         self.app_titles = {}             # app -> its title as kit.apps or a local declaration said it (status)
         self.link_always = None          # what the loop was last told: a session always
+        self.kit_seen = None             # the version of the WuxianKit in the game as this game process said it (its
+                                         # kit.ready, else its manifest read when the link came up); None: not known
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -199,7 +208,11 @@ class Service:
                                taken=self.kit_extension_ids, kit_version=self.kit_version_known,
                                addons_dir=self.game_addons_known,
                                interface=self.client_interface_known,
-                               game_side=self.game_side_known)   # local/host.py
+                               game_side=self.game_side_known, on_report=self.local_report)   # local/host.py
+        self.drive = local_drive.Drive(self.drive_kit, self.drive_wake, self.link_word,     # local/drive.py: the apps
+                                       note=lambda text: self.journal.add("INFO", text),   # their programs drive
+                                       path=state_dir() / local_drive.FILE,
+                                       usable=lambda: self.kit_outdated() is None)
         self.reactor = Reactions(self.reaction_call, self.reactions_hear, self.cap_kind,
                                    note=lambda text: self.journal.add("INFO", text),
                                    local_sources=lambda: set(self.local.ids()))
@@ -213,6 +226,8 @@ class Service:
         self.declaring = None                # an asyncio.Lock: one round of reconciling the local apps at a time
         self.app_memory = {}                 # app -> (our declaration, WuxianKit's of it) as JSON when they last agreed
         self.roster_told = None              # (UI session, the roster as JSON) WuxianKit was last told (tell_roster)
+        self.roster_sent = 0                 # how many times it was told (local_option: once for a change)
+        self.roster_lock = None              # an asyncio.Lock: one telling at a time
         self.reacting = None                 # an asyncio.Lock: the apps' own reactions are put and taken one at a time
         if self.worker is not None:
             self.worker.before_load = self.watch_saved   # the saves of a watch keep a version first
@@ -243,6 +258,12 @@ class Service:
     def close(self):
         """stop the worker; whoever waits for a job hears that the daemon is going"""
         self.closed = True
+        loop = self.loop
+        if loop is not None:                 # the apps driven here: their tasks end (on their loop)
+            try:
+                loop.call_soon_threadsafe(self.drive.close)
+            except RuntimeError:
+                pass
         self.notes.close()                   # the wakes still held for their notes go into the journal
         self.history_pool.shutdown(wait=False, cancel_futures=True)
         for checks in (self.update_checks, self.content_checks, self.addon_sync):
@@ -493,12 +514,9 @@ class Service:
 
     @staticmethod
     def link_mode_of(stored):
-        """the link_mode the settings kept: "auto" when none, or 0.9.14's default "demand" (no link_mode_v: not the
-        player's choice)"""
+        """the link_mode the settings kept: "always", else "auto" (none kept, or 0.9.14's "demand")"""
         mode = stored.get("link_mode")
-        if mode not in LINK_MODES or mode == "demand" and stored.get("link_mode_v") != LINK_MODE_V:
-            return "auto"
-        return mode
+        return mode if mode in LINK_MODES else "auto"
 
     def link_settings_from(self, stored):
         """the link's setting kept (link_mode) to the loop: a session always, or one while things pass (the addon ends
@@ -521,8 +539,8 @@ class Service:
         self.link_always = always
 
     def hold(self, app, live):
-        """(any thread) an app that runs and wants the link live (its link "live", or a local extension's manifest says
-        so) holds it; one that stopped or does not want it lets go"""
+        """(any thread) an app that runs and wants the link live (its link "live") holds it; one that stopped or does
+        not want it lets go"""
         with self.holding:
             if live == (app in self.holders):
                 return
@@ -541,31 +559,33 @@ class Service:
             self.apply_link()
 
     def held_by(self):
-        """the apps that keep the link a session always now (link_mode auto), sorted; [] in the other modes"""
+        """the apps that keep the link a session always now (link_mode auto), [{id, title}] by id (title: as kit.apps
+        or its declaration said it, else the id); [] with link_mode always"""
         with self.holding:
-            return sorted(self.holders) if self.link_mode == "auto" else []
+            apps = sorted(self.holders) if self.link_mode == "auto" else []
+        return [dict(id=app, title=self.app_titles.get(app) or app) for app in apps]
 
     def game_gone(self):
-        """(worker thread) the game process exited, or another one runs now: no app of it holds the link"""
+        """(worker thread) the game process exited, or another one runs now: no app of it holds the link, and which
+        WuxianKit the next one runs is not known"""
+        self.kit_seen = None
         self.holders_are(())
 
-    async def app_link(self, app):
-        """"live" when a local extension's manifest declares the app so (Host.app_link), else None (also with a host
-        before it)"""
-        ask = getattr(self.local, "app_link", None)
-        if ask is None:
-            return None
-        try:
-            return await asyncio.to_thread(ask, app)
-        except Exception:                     # the host could not say: as if it said nothing
-            return None
+    def link_word(self):
+        """(any thread) how the link to the game is now: "online" (frames come), "standby" (a call opens a session) or
+        "offline" (nothing reaches the game)"""
+        comp = getattr(self.worker, "comp", None)
+        if comp is None:
+            return "offline"
+        if hasattr(comp, "link_state"):
+            return comp.link_state()
+        return "online" if getattr(comp, "link_up", False) else "offline"
 
-    def set_pace(self, app, activity):
-        """the reactions told an app's activity now (quiet, normal, lively: their pace; None or another value: not
-        known, forgotten), with a Reactions that takes it"""
-        tell = getattr(self.reactor, "set_pace", None)
-        if tell is not None and isinstance(app, str):
-            tell(app, activity if isinstance(activity, str) else None)
+    def set_activity(self, app, activity):
+        """the reactions told an app's activity now (quiet, normal, lively; None or another value: not known,
+        forgotten)"""
+        if isinstance(app, str):
+            self.reactor.set_activity(app, activity if isinstance(activity, str) else None)
 
     def fail_pending(self, text):
         """(any thread) whoever waits for a job's result hears link_down with text now"""
@@ -650,14 +670,14 @@ class Service:
             watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
             reload_pending = comp.reload_pending()
         link["mode"] = self.link_mode
-        link["held_by"] = self.held_by()          # auto: the apps that keep the session always, and their titles
-        link["held_titles"] = {app: self.app_titles.get(app) or app for app in link["held_by"]}
+        link["held_by"] = self.held_by()          # auto: the apps that keep the session always, [{id, title}]
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
                                 mode=self.mode, extension_approval=self.extension_approval,
                                 started=round(self.started, 3), url=self.url,
                                 command=[exe, *args[:-1]], isolated=isolated()),
                     game=w.game_status(), link=link, watch=watch, reload_pending=reload_pending, mcp_url=self.mcp_url,
+                    kit=self.kit_status(),
                     addons_dir=str(w.addons) if w.addons else None,
                     update=self.updater.status() if self.updater is not None else None,
                     content=self.content.status() if self.content is not None else None,
@@ -1573,7 +1593,8 @@ class Service:
 
     async def kit_read(self, name, args=None):
         """a read of WuxianKit for the pages (neither counted nor listed in the game): its result"""
-        answer = await self.call_exposed(KIT, name, args, 10000, shared=True)
+        cached = name in ("kit.revision", "kit.manifest")       # (what the kit cache answers: asked without most)
+        answer = await self.call_exposed(KIT, name, args, 10000, shared=True, **({} if cached else {"most": KIT_MOST}))
         return (answer or {}).get("result")
 
     async def kit_apps(self, refresh=False):
@@ -1595,7 +1616,7 @@ class Service:
         if manifest and not view.away:
             try:
                 live = await self.kit_read("kit.apps")
-            except ApiError:                                 # the game away, or a WuxianKit before its apps
+            except ApiError:                                 # the game away, or it runs no WuxianKit
                 live = None
             if not isinstance(live, list):
                 live = None
@@ -1664,6 +1685,16 @@ class Service:
             coro.close()
             return None
 
+    def later(self, fn, *args):
+        """(any thread) fn(*args) on the server's loop, in the order asked; dropped when there is none"""
+        loop = self.loop
+        if loop is None or self.closed:
+            return
+        try:
+            loop.call_soon_threadsafe(fn, *args)
+        except RuntimeError:                  # the loop has closed: the daemon stops
+            pass
+
     def link_came_up(self, sid):
         """(worker thread) the game can be told things again and no kit.ready says so: this program started while
         the game ran on, or the game was covered, minimized or behind a loading screen. The local extensions' apps
@@ -1673,13 +1704,18 @@ class Service:
         self.soon(self.reactions_hear_again(owed=True))
 
     def kit_event(self, topic, data):
-        """(any thread) WuxianKit's events for the local side: kit.ready (a login or a reload: the extensions' apps
-        are reconciled, the reactions' temporary app opened again), app.reactions (what that app heard: each item to
-        the reactions), kit.app (an app started: the reactions its manifest declares are set, it holds the link when
-        it wants it live, its activity goes to the reactions; stopped: the reactions it owns go, it lets go of the
-        link), kit.option (an app's activity changed: to the reactions), kit.local.option (the player changed a local
-        extension's option in the /wk window: local_option)"""
+        """(any thread) WuxianKit's events for the local side: kit.ready (a login or a reload: it says its version;
+        the extensions' apps are reconciled, the reactions' temporary app opened again), app.reactions (what that
+        app heard: each item to the reactions), kit.app (an app started: the reactions its manifest declares are set,
+        it holds the link when it wants it live, its activity goes to the reactions; stopped: the reactions it owns
+        go, it lets go of the link), kit.option (an app's activity changed: to the reactions), kit.local.option (the
+        player changed a local extension's option in the /wk window: local_option). The wakes of the apps (app.<id>)
+        and kit.app also go to the drive: those of an app a local extension's program drives are its to feed"""
+        if isinstance(topic, str) and (topic == "kit.app" or topic.startswith("app.")) and isinstance(data, dict):
+            self.later(self.drive.heard, topic, data)
         if topic == "kit.ready":
+            version = data.get("version") if isinstance(data, dict) else None
+            self.kit_seen = version if isinstance(version, str) and version else None
             self.reactions_open = False
             self.soon(self.reconcile_local_apps(ready=True))
             self.soon(self.reactions_hear_again())
@@ -1699,19 +1735,94 @@ class Service:
         elif topic == "kit.local.option" and isinstance(data, dict):
             self.soon(self.local_option(data))
 
+    # the WuxianKit in the game: which one runs, and whether it is one the local side works with
+
+    def kit_outdated(self):
+        """{needs, has} while the WuxianKit this game process runs is older than KIT_NEEDS (status's kit.outdated:
+        the App says so and offers the update), else None: none seen in this game process, one that is new enough,
+        or a version that is no row of numbers (a development build: not judged)"""
+        has = self.kit_seen
+        if local_manifest.unmet({"kit": KIT_NEEDS}, kit=has):
+            return dict(needs=KIT_NEEDS, has=has)
+        return None
+
+    def kit_status(self):
+        """status's kit: {version: of the WuxianKit this game process runs, None while none was seen}, and, only
+        while that one is too old, outdated: {needs, has}"""
+        old = self.kit_outdated()
+        return dict(version=self.kit_seen, **({"outdated": old} if old else {}))
+
+    async def kit_asked(self):
+        """(reconcile_local_apps) the version of the WuxianKit in the game when no kit.ready of this game process
+        said it (this program started while the game ran on): its manifest's, the one known when its revision is
+        still the game's, else read from the game; kept as kit_seen. None: no WuxianKit answers"""
+        if self.kit_seen is not None:
+            return self.kit_seen
+        try:
+            said = await self.kit_read("kit.revision")
+            revision = said.get("revision") if isinstance(said, dict) else None
+            manifest = self.kit_manifest_known()
+            if not (isinstance(manifest, dict) and revision is not None and manifest.get("revision") == revision):
+                manifest = await self.kit_read("kit.manifest")
+        except ApiError:
+            return None
+        version = manifest.get("kit") if isinstance(manifest, dict) else None
+        self.kit_seen = version if isinstance(version, str) and version else None
+        return self.kit_seen
+
+    # the apps the extensions' own programs drive (local/drive.py)
+
+    async def drive_kit(self, name, args):
+        """(the drive) a call of the game's WuxianKit: its result. ApiError as call_exposed raises it; drive.Absent
+        when the game runs no WuxianKit"""
+        try:
+            return ((await self.call_exposed(KIT, name, args, 10000, most=KIT_MOST)) or {}).get("result")
+        except ApiError as e:
+            if e.code == "call_failed" and NO_KIT in str(e.message or ""):
+                raise local_drive.Absent() from None
+            raise
+
+    async def drive_wake(self, eid, app, wake):
+        """(the drive) a wake handed to the extension's program (Host.wake): back once it answered, however long
+        that takes; meanwhile the extension is asked ping every WAKE_PING seconds (one that does not answer is
+        hung: its app is driven no more)"""
+        fut = asyncio.wrap_future(self.local.wake(eid, app, wake))
+        fut.add_done_callback(_seen)
+        try:
+            while True:
+                done, _ = await asyncio.wait({fut}, timeout=WAKE_PING)
+                if done:
+                    return fut.result()
+                await asyncio.to_thread(self.local.ping_waiting, eid)
+        except asyncio.CancelledError:        # the app is driven no more: the extension is told cancel
+            fut.cancel()
+            raise
+
+    async def drive_sync(self, event=None):
+        """the drive told which apps to drive now: those of driver "local" whose extension's process runs
+        (Host.driven), none while the game's WuxianKit is too old. event: "ready" after a kit.ready, "up" when the
+        link is back or the apps were declared anew (the drive's tasks try again at once, and its kept reports go)"""
+        try:
+            wanted = {} if self.kit_outdated() else await asyncio.to_thread(self.local.driven)
+            self.drive.sync(wanted, event)
+        except Exception as e:                # a bug: said, and the daemon goes on
+            self.journal.add("INFO", f"local extensions: the apps their programs drive could not be told: {e!r}")
+
+    def local_report(self, eid, report):
+        """(an extension's reader thread) a report of an app its program drives: to the game (the drive)"""
+        self.later(self.drive.report, eid, report)
+
     async def declare(self, eid, decl):
-        """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away); ABSENT when the
-        game's WuxianKit has no kit.app.declare (or no WuxianKit runs); else WuxianKit's refusal, journaled"""
+        """kit.app.declare of one app of a local extension: "ok"; None when not now (the game away, or it runs no
+        WuxianKit); else WuxianKit's refusal, journaled"""
         if not self.link_is_up():
             return None
         try:
-            await self.call_exposed(KIT, "kit.app.declare", decl, 10000)
+            await self.call_exposed(KIT, "kit.app.declare", decl, 10000, most=KIT_MOST)
         except ApiError as e:
             text = str(e.message)
-            if e.code != "call_failed":
+            if e.code != "call_failed" or NO_KIT in text:
                 return None
-            if "has no kit.app.declare" in text or "has no WoWBridge handle" in text:
-                return ABSENT
             first = text.splitlines()[0][:300] if text else "refused"
             self.journal.add("INFO", f"local extension {eid}: WuxianKit did not take its app {decl.get('app')}: {first}")
             return first
@@ -1719,9 +1830,9 @@ class Service:
 
     async def app_described(self, app):
         """WuxianKit's declaration of an app now as JSON (kit.app.describe: normalized); None when it has none, or
-        cannot say (the game away, a WuxianKit before describe)"""
+        cannot say (the game away)"""
         try:
-            answer = await self.call_exposed(KIT, "kit.app.describe", {"app": app}, 10000)
+            answer = await self.call_exposed(KIT, "kit.app.describe", {"app": app}, 10000, most=KIT_MOST)
         except ApiError:
             return None
         result = (answer or {}).get("result")
@@ -1729,20 +1840,22 @@ class Service:
             return None
         return json.dumps(result["decl"], sort_keys=True, ensure_ascii=False)
 
-    async def tell_roster(self, ready=False, again=False):
+    async def tell_roster(self, ready=False, again=False, since=None):
         """WuxianKit told the extensions added to this computer that have a local part (kit.local.set, the whole list:
-        its /wk window lists them beside the game's own, as the App's 扩展 page does, each with its options and their
-        values: local/adds.py roster; the player changes the boolean, number and choice ones there, kit.local.option,
-        local_option). It keeps the list until its UI
+        its /wk window lists them beside the game's own, as the App's 扩展 page does, each with whether its process
+        runs, the game addons it brings, its options and their values: local/adds.py roster; the player changes the
+        boolean, number and choice ones there, kit.local.option, local_option). It keeps the list until its UI
         reloads, so: once in each UI session (ready: its kit.ready came, it has none), and again when the list is
-        another (again: now, whether or not). A WuxianKit without kit.local.set (or one that refuses the list) is not
-        asked again until then; the game away: at the next round. One at a time (roster_lock): a reconcile, a change
-        of the extensions and the player's option may come together"""
-        lock = self.__dict__.get("roster_lock")
-        if lock is None:
-            lock = self.roster_lock = asyncio.Lock()
-        async with lock:
-            if ready or again:
+        another (again: now, whether or not; since: unless it was told since the roster_sent given, the list being
+        the same). The game away, or one without WuxianKit: at the next round; a WuxianKit that refuses the list is
+        not asked again until it is another. One at a time (roster_lock): a reconcile, a change of the extensions
+        and the player's option may come together"""
+        if self.roster_lock is None:
+            self.roster_lock = asyncio.Lock()
+        async with self.roster_lock:
+            if self.kit_outdated():           # an older WuxianKit knows other fields: it is told nothing
+                return
+            if ready or (again and (since is None or self.roster_sent == since)):
                 self.roster_told = None
             session = self.ui_session()
             roster = await asyncio.to_thread(self.local.roster)
@@ -1750,23 +1863,26 @@ class Service:
             if self.roster_told == told:
                 return
             try:
-                await self.call_exposed(KIT, "kit.local.set", {"extensions": roster}, 10000)
+                await self.call_exposed(KIT, "kit.local.set", {"extensions": roster}, 10000, most=KIT_MOST)
             except ApiError as e:
-                if e.code != "call_failed":
-                    return                    # the game went away: at the next round
                 text = str(e.message or "")
-                if "kit.local.set" not in text and "has no WoWBridge handle" not in text:
-                    self.journal.add("INFO", "local extensions: WuxianKit did not take their list: "
-                                             + text.partition("\n")[0][:300])
+                if e.code != "call_failed" or NO_KIT in text:
+                    return                    # the game went away, or runs no WuxianKit: at the next round
+                self.journal.add("INFO", "local extensions: WuxianKit did not take their list: "
+                                         + text.partition("\n")[0][:300])
+            else:
+                self.roster_sent += 1
             self.roster_told = told
 
     async def local_option(self, data):
         """WuxianKit's kit.local.option {extension, name, value}: the player changed an option of a local extension in
         the game's /wk window (only WuxianKit's core sends it; kit_event hears WuxianKit's events only). A boolean,
         number or choice is checked and set as /api/local/set sets it (the extension, when it runs, is told all of
-        them); a text is changed in the App only, so it is refused. Either way WuxianKit is told the list again
-        (tell_roster, whether or not it changed): it shows the new value until then, and the value here after"""
+        them); a text is changed in the App only, so it is refused. Either way WuxianKit is told the list once more
+        (it shows the new value until then, and the value here after): once, also when the change itself had the
+        list told (local_changed) before this got to it"""
         eid, name = data.get("extension"), data.get("name")
+        sent = self.roster_sent
         try:
             await asyncio.to_thread(self.local.option_from_game, eid, name, data.get("value"))
         except ApiError as e:
@@ -1775,12 +1891,12 @@ class Service:
                                      f"{first}")
         else:
             self.journal.add("INFO", f"local extension {eid}: the option {name} set from /wk")
-        await self.tell_roster(again=True)
+        await self.tell_roster(again=True, since=sent)
 
     def roster_again(self):
-        """(any thread) the local extensions changed (their options in the App, a description): WuxianKit's /wk window
-        told the list again when it is another, while the game is online now (it is told at the next kit.ready or
-        link-up anyway; nothing opens the link for it)"""
+        """(any thread) the local extensions changed (their options in the App, a description, a process that
+        started or stopped): WuxianKit's /wk window told the list again when it is another, while the game is online
+        now (it is told at the next kit.ready or link-up anyway; nothing opens the link for it)"""
         if self.ui_session() is not None and self.link_is_up():
             self.soon(self.tell_roster())
 
@@ -1793,12 +1909,24 @@ class Service:
         what WuxianKit has (kit.app.describe, against what it answered when it last took ours). First of all WuxianKit
         is told the extensions themselves (tell_roster: the rows its window has for them). The reactions of
         the apps that run are set; ready (a new UI session): those of the apps that do not run go, as when they
-        stopped (their kit.app event may have been missed)"""
+        stopped (their kit.app event may have been missed). An app a program drives that runs in the game while that
+        program does not is stopped (why "extension"). Last, the drive is told which apps to keep open now
+        (drive_sync). A WuxianKit older than KIT_NEEDS is told none of it (kit_outdated)"""
         if self.declaring is None:
             self.declaring = asyncio.Lock()
         try:
             async with self.declaring:
                 if self.ui_session() is None or not self.link_is_up():
+                    return
+                was = self.kit_outdated()
+                await self.kit_asked()
+                old = self.kit_outdated()
+                if old:
+                    if old != was or ready:
+                        self.journal.add("INFO", f"local extensions: the game runs WuxianKit {old['has']}, older "
+                                                 f"than the {old['needs']} this 无限工坊 works with: it is told "
+                                                 f"nothing of them (no list, no apps, no reports) until it is updated")
+                    await self.drive_sync()
                     return
                 await self.tell_roster(ready)
                 want = {}
@@ -1807,18 +1935,27 @@ class Service:
                         want.setdefault(decl["app"], (eid, decl))
                 try:
                     rows = await self.kit_read("kit.apps")
-                except ApiError:              # the game went away, or a WuxianKit before its apps
+                except ApiError:              # the game went away, or it runs no WuxianKit
                     rows = None
                 if isinstance(rows, list):
                     rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)]
                     await self.holders_from(rows, want)
                 else:
                     rows = []
+                driven = await asyncio.to_thread(self.local.driven)
+                for row in rows:              # an app whose program went while the game could not be told
+                    if row.get("driver") == "local" and row.get("on") is True and row["id"] in want \
+                            and row["id"] not in driven:
+                        try:
+                            await self.call_exposed(KIT, "kit.app.stop", {"app": row["id"], "why": "extension"},
+                                                    10000, most=KIT_MOST)
+                        except ApiError:      # its lease ends it
+                            pass
                 for row in rows:
                     if not isinstance(row.get("local"), dict) or row["id"] in want:
                         continue
                     try:
-                        await self.call_exposed(KIT, "kit.app.forget", {"app": row["id"]}, 10000)
+                        await self.call_exposed(KIT, "kit.app.forget", {"app": row["id"]}, 10000, most=KIT_MOST)
                     except ApiError as e:
                         first = str(e.message or "").partition("\n")[0][:300]
                         self.journal.add("INFO", f"local extensions: WuxianKit did not forget the app {row['id']} "
@@ -1836,8 +1973,6 @@ class Service:
                     if theirs is not None and self.app_memory.get(app) == (ours, theirs):
                         continue
                     result = await self.declare(eid, decl)
-                    if result == ABSENT:
-                        return                # a WuxianKit before declare: none of them
                     if result is None:
                         return                # the game went away: at the next kit.ready
                     self.app_memory.pop(app, None)
@@ -1848,14 +1983,15 @@ class Service:
                 for row in rows:              # the apps' own reactions: there while the app runs
                     if row["id"] in want and (row.get("on") is True or ready and row.get("on") is False):
                         await self.app_runs(row["id"], row["on"], link=row.get("link"), pace=row.get("pace"))
+                await self.drive_sync("ready" if ready else "up")
         except Exception as e:                # a bug: said, and the daemon goes on
             self.journal.add("INFO", f"local extensions: reconciling their apps failed: {e!r}")
 
     async def holders_from(self, rows, want=None):
         """kit.apps read (after a kit.ready, the link back, the extensions changed): the apps that hold the link made
-        what it says, all of them (those that run, with link "live" or a local manifest that says so); the activity of
-        the ones that run goes to the reactions; the titles are kept for status. want: the local declarations
-        (app -> (extension, declaration)), whose titles stand in for a row without one"""
+        what it says, all of them (those that run with link "live"); the activity of the ones that run goes to the
+        reactions; the titles are kept for status. want: the local declarations (app -> (extension, declaration)),
+        whose titles stand in for a row without one"""
         live = set()
         for row in rows:
             app = row["id"]
@@ -1866,9 +2002,9 @@ class Service:
                 self.app_titles[app] = title
             if row.get("on") is not True:
                 continue
-            if row.get("link") == "live" or await self.app_link(app) == "live":
+            if row.get("link") == "live":
                 live.add(app)
-            self.set_pace(app, row.get("pace"))       # None (a kit before pace): not known, forgotten
+            self.set_activity(app, row.get("pace"))   # None (an app without a pace): not known, forgotten
         self.holders_are(live)
 
     async def app_paced(self, app, activity):
@@ -1876,7 +2012,7 @@ class Service:
         if self.reacting is None:
             self.reacting = asyncio.Lock()
         async with self.reacting:
-            self.set_pace(app, activity)
+            self.set_activity(app, activity)
 
     async def extension_running(self, eid, why):
         """the Proc of a local extension once it runs (Host.ensure). The caller may go while it starts: the start goes
@@ -1888,9 +2024,8 @@ class Service:
     async def app_runs(self, app, on, link=None, pace=None):
         """an app started or stopped (its kit.app event, reconcile_local_apps): while it runs the reactions its
         extension's manifest declares for it are set (Host.app_reactions; local/reactions.py app_started), owner the
-        app, they hear its activity (pace), and it holds the link when it wants it live (link "live", or its local
-        manifest says so: Host.app_link); when it stops they go, with what an agent set with it as owner, and it lets
-        go of the link. An extension whose capability a reaction calls and that never described itself is started
+        app, they hear its activity (pace), and it holds the link when it wants it live (link "live"); when it stops
+        they go, with what an agent set with it as owner, and it lets go of the link. An extension whose capability a reaction calls and that never described itself is started
         first"""
         if self.reacting is None:
             self.reacting = asyncio.Lock()
@@ -1900,7 +2035,7 @@ class Service:
                     self.hold(app, False)
                     await self.reactor.app_stopped(app)
                     return
-                self.hold(app, link == "live" or await self.app_link(app) == "live")
+                self.hold(app, link == "live")
                 specs = [s for s in await asyncio.to_thread(self.local.app_reactions, app) or [] if isinstance(s, dict)]
                 for cap in {s.get("call") for s in specs}:
                     found = await asyncio.to_thread(self.local.capability, cap)
@@ -1911,7 +2046,7 @@ class Service:
                         except ApiError:      # it cannot start: the reaction is not taken, and said below
                             pass
                 problems = await self.reactor.app_started(app, specs)
-                self.set_pace(app, pace)      # after app_started (a start forgets the last run's); None: not known
+                self.set_activity(app, pace)  # after app_started (a start forgets the last run's); None: not known
                 for line in problems if specs else []:
                     self.journal.add("INFO", f"local extensions: {line}")
         except Exception as e:                # a bug: said, and the daemon goes on
@@ -1925,10 +2060,12 @@ class Service:
 
     def local_changed(self, revision):
         """(any thread) the local extensions changed: local.changed in the journal; the reactions look again at which
-        of their sources are the game's"""
+        of their sources are the game's, WuxianKit's window is told their list when it is another, and the drive
+        which apps their programs drive now"""
         self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": "local.changed", "d": {"revision": revision}}))
         self.soon(self.reactor.refresh())
         self.roster_again()
+        self.soon(self.drive_sync())          # a process started or stopped: the apps it drives
 
     def extension_calls(self, eid, cap, args, chain=None):
         """(an extension's reader thread) its call {cap, args}: a Future of the result (ApiError as local_call's).
@@ -2113,7 +2250,7 @@ class Service:
             raise ApiError(403, "not_allowed", f"{cap} is a {kind} capability: a proposal the player confirms; only see, "
                                                f"keep and point capabilities can be called this way")
         try:
-            answer = await self.call_exposed(KIT, cap, args, int((seconds or CALL_TIMEOUT) * 1000))
+            answer = await self.call_exposed(KIT, cap, args, int((seconds or CALL_TIMEOUT) * 1000), most=KIT_MOST)
         except ApiError as e:
             if e.code == "call_failed":
                 first, _, rest = str(e.message or "").partition("\n")
@@ -2161,6 +2298,7 @@ class Service:
         AddOns (addons); WuxianKit forgets its apps, now while the game is online, else at its next kit.ready"""
         res = await asyncio.to_thread(self.local.remove, id)
         self.notes.forgive(id)
+        self.drive.forget(res.get("id") or id)      # where its apps' wakes got, its reports not sent yet
         await self.reconcile_local_apps()
         return res
 
@@ -2324,11 +2462,13 @@ class Service:
                                                "extension's folder or a game addon's folder")
         return await asyncio.to_thread(self.local.summary, id, path)
 
-    async def extension_install(self, id, replace=False):
+    async def extension_install(self, id, replace=None):
         """a local extension's game addons put into the game's AddOns now (Host.install): {id, addons, restart,
-        hint}. replace: True or "same" replaces a folder of an addon's name that is not the extension's (the
-        player's 替换); anything else none"""
-        replace = replace if replace is True or replace == "same" else False
+        hint}. replace: [{folder, there}], the folders of an addon's name that are not the extension's and are
+        replaced (the player's 替换), each only while the version it says is still there; not given: none"""
+        if local_gameside.replace_list(replace) is None:
+            raise ApiError(400, "bad_request", "replace: the folders in the game's AddOns to replace, [{folder, there}] "
+                                               "(there: the version the folder says now, or null)")
         return await asyncio.to_thread(self.local.install, id, replace)
 
     async def new_extension(self, id, title=None, folder=None, addon=None, where=None):
@@ -2407,7 +2547,7 @@ class Service:
         if not self.reaction_hears:
             if self.reactions_open:
                 try:
-                    await self.call_exposed(KIT, "kit.app.stop", {"app": REACTIONS_APP}, 5000)
+                    await self.call_exposed(KIT, "kit.app.stop", {"app": REACTIONS_APP}, 5000, most=KIT_MOST)
                 except ApiError:
                     pass
             self.reactions_open = False
@@ -2415,7 +2555,7 @@ class Service:
         decl = dict(app=REACTIONS_APP, lease=0, minutes=REACTIONS_MINUTES,     # plumbing: a temporary app, not shown
                     temp=dict(title="反射", hear=list(self.reaction_hears), hidden=True, digest=False))
         try:
-            await self.call_exposed(KIT, "kit.app.open", decl, 10000)
+            await self.call_exposed(KIT, "kit.app.open", decl, 10000, most=KIT_MOST)
         except ApiError as e:
             if e.code == "call_failed":
                 raise ApiError(400, "not_heard", str(e.message or "").partition("\n")[0]) from None
@@ -3040,7 +3180,7 @@ class Service:
             if "game_dir" in update and update["game_dir"] is not None and not isinstance(update["game_dir"], str):
                 raise ApiError(400, "bad_request", "game_dir: the client folder, or null")
             if "link_mode" in update and update["link_mode"] not in LINK_MODES:
-                raise ApiError(400, "bad_request", 'link_mode: "auto", "always" or "demand"')
+                raise ApiError(400, "bad_request", 'link_mode: "auto" or "always"')
             if "capture" in update:
                 self.worker.capture_wanted = update["capture"]
             if "mode" in update:
@@ -3053,8 +3193,7 @@ class Service:
             for key in ("language", "font_scale", "onboarded", "link_mode"):
                 if key in update:
                     stored[key] = update[key]
-            if "link_mode" in update:
-                stored["link_mode_v"] = LINK_MODE_V      # the player's choice: a "demand" now is one
+            stored.pop("link_mode_v", None)              # 0.9.15 test builds marked the player's choice of a third mode
             stored.pop("idle_minutes", None)             # 0.9.14 test builds: a session ends when what passes is done
             stored.pop("autostart", None)                # 0.9.13 and before kept a 开机自启 that started nothing
             if "language" in update:                     # what the program says from now on (i18n.py)

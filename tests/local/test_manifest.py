@@ -151,7 +151,7 @@ class Manifest(unittest.TestCase):
 
 class Description(unittest.TestCase):
     def good(self, **more):
-        return dict({"protocol": 1, "capabilities": [
+        return dict({"protocol": 2, "capabilities": [
             {"name": "say", "kind": "point", "title": "说", "doc": "says it", "args": {"text": "string", "mood": "calm|happy?"}},
             {"name": "pool.list", "kind": "see", "title": "组", "doc": "the pools", "args": {}, "timeout": 120}],
             "sources": [{"name": "said", "title": "说完", "doc": "a line"}],
@@ -175,9 +175,15 @@ class Description(unittest.TestCase):
         def first(answer):
             desc, problems = M.check_description("voice", answer)
             return desc, problems
-        desc, problems = first(self.good(protocol=2))
+        desc, problems = first(self.good(protocol=1))
         self.assertIsNone(desc)
         self.assertIn("protocol", problems[0]["where"])
+        self.assertEqual(M.check_description("voice", self.good(apps=["cocreate", "b2"]))[0]["apps"], ["cocreate", "b2"])
+        self.assertEqual(M.check_description("voice", self.good())[0]["apps"], [])
+        for apps in ("cocreate", ["Bad"], [7], ["a", "a"], {"a": 1}):
+            desc, problems = first(self.good(apps=apps))
+            self.assertIsNone(desc, apps)
+            self.assertEqual(problems[0]["where"], "initialize: apps", apps)
         for cap, words in (({"name": "speak", "kind": "say"}, "bad_capability"), ({"name": "x", "kind": "write"}, "kind"),
                            ({"name": "Bad", "kind": "see"}, "no capability name"),
                            ({"name": "x", "kind": "see", "args": {"a": "string|"}}, "empty"),
@@ -333,9 +339,9 @@ class Adds(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual(m["apps"][0]["reactions"], [
             {"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"]}, "call": "voice.say",
-             "args": {"pool": "elite"}, "item": None, "cooldown": 30, "pace": None, "note": None},
+             "args": {"pool": "elite"}, "item": None, "cooldown": 30, "activity": None, "note": None},
             {"hear": "facts:found", "when": None, "call": "facts.note", "args": None, "item": "event", "cooldown": 10,
-             "pace": None, "note": "what it is for"}])
+             "activity": None, "note": "what it is for"}])
         self.assertEqual(self.app()[0]["apps"][0]["reactions"], [])
         self.assertNotIn("controls", self.app()[0]["apps"][0])
 
@@ -344,10 +350,10 @@ class Adds(unittest.TestCase):
         import asyncio
         from wuxianworkshop.local import reactions as R
         specs = [{"hear": "game:combat.start", "when": {"data.unit.classification": ["elite"], "kind": "combat.start"},
-                  "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 0, "pace": "lively"},
+                  "call": "voice.say", "args": {"pool": "elite"}, "cooldown": 0, "activity": "lively"},
                  {"hear": "chat:guild", "call": "facts.note", "item": "event", "note": "why",
-                  "pace": ["lively", "quiet", "lively"]}]
-        m, _ = self.app(reactions=specs)
+                  "activity": ["lively", "quiet", "lively"]}]
+        m, _ = self.app(reactions=specs, pace=True)
 
         async def kind_of(cap):
             return "point"
@@ -379,11 +385,13 @@ class Adds(unittest.TestCase):
             ([dict(ok, cooldown=-1)], "reactions[0]"),
             ([dict(ok, cooldown=True)], "reactions[0]"),
             ([dict(ok, note="x" * 201)], "reactions[0]"),
-            ([dict(ok, pace="loud")], "reactions[0]"),
-            ([dict(ok, pace=[])], "reactions[0]"),
-            ([dict(ok, pace=["normal", "chatty"])], "reactions[0]"),
-            ([dict(ok, pace={"normal": True})], "reactions[0]"),
-            ([dict(ok, pace=True)], "reactions[0]"),
+            ([dict(ok, activity="loud")], "reactions[0]"),
+            ([dict(ok, activity=[])], "reactions[0]"),
+            ([dict(ok, activity=["normal", "chatty"])], "reactions[0]"),
+            ([dict(ok, activity={"normal": True})], "reactions[0]"),
+            ([dict(ok, activity=True)], "reactions[0]"),
+            ([dict(ok, pace="normal")], "reactions[0]"),                          # its name before 0.10.0
+            ([dict(ok, activity="normal")], "reactions"),                         # the app has no pace
         ]
         for value, where in cases:
             m, problems = self.app(reactions=value)
@@ -391,25 +399,27 @@ class Adds(unittest.TestCase):
             self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].{where}"], value)
             self.assertTrue(all(p["hint"] for p in problems), value)
 
-    def test_reactions_pace(self):
-        """pace: one activity or a list, kept as a list in quiet, normal, lively order; the app owns them: no owner"""
+    def test_reactions_activity(self):
+        """activity: one or a list, kept as a list in quiet, normal, lively order; the app owns them: no owner, and
+        it has a pace (else its activity is never known)"""
         ok = {"hear": "game:combat.start", "call": "voice.say"}
-        m, problems = self.app(reactions=[dict(ok, pace="normal"), dict(ok, pace=["lively", "normal"]), ok])
+        m, problems = self.app(pace=True, reactions=[dict(ok, activity="normal"),
+                                                     dict(ok, activity=["lively", "normal"]), ok])
         self.assertEqual(problems, [])
-        self.assertEqual([r["pace"] for r in m["apps"][0]["reactions"]], [["normal"], ["normal", "lively"], None])
+        self.assertEqual([r["activity"] for r in m["apps"][0]["reactions"]],
+                         [["normal"], ["normal", "lively"], None])
 
     def test_link(self):
-        """link: "live" or "standby" kept on the app (the workshop's: adds.py leaves it out of the declaration), none
-        when not given; anything else is an error"""
-        for value in ("live", "standby"):
-            m, problems = self.app(link=value)
-            self.assertEqual(problems, [])
-            self.assertEqual(m["apps"][0]["link"], value)
+        """link: "live" kept on the app (it goes to WuxianKit with the declaration), none when not given; anything
+        else is an error, "standby" too: that is what leaving it out says"""
+        m, problems = self.app(link="live")
+        self.assertEqual(problems, [])
+        self.assertEqual(m["apps"][0]["link"], "live")
         for given in ({}, {"link": None}):
             m, problems = self.app(**given)
             self.assertEqual(problems, [])
             self.assertNotIn("link", m["apps"][0])
-        for value in ("always", "Live", True, 1, ["live"]):
+        for value in ("standby", "always", "Live", True, 1, ["live"]):
             m, problems = self.app(link=value)
             self.assertIsNone(m, value)
             self.assertEqual(where_of(problems), [f"{M.MANIFEST}: apps[0].link"], value)

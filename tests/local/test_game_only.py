@@ -274,10 +274,19 @@ class Approval(GameCase):
     def test_the_approval_replaces_the_same_addon_installed_by_hand(self):
         self.by_hand()
         self.packaged()
-        (g,) = self.host.summary("loot_peek")["game"]                                # what the 批准 card says
+        summary = self.host.summary("loot_peek")
+        (g,) = summary["game"]                                                       # what the 批准 card says
         self.assertEqual((g["cannot"], g["same"], g["there"], g["newer"]), ("foreign", True, "0.0.9", False))
+        self.assertEqual(summary["replaces"], [dict(folder=ADDON, there="0.0.9", same=True, newer=False)])
         self.assertEqual(self.host.get("loot_peek")["player"]["action"], "approve")
-        row = self.host.approve("loot_peek")                                         # the yes is the yes to replace it
+        self.assertEqual(self.host.get("loot_peek")["fingerprint"], summary["fingerprint"])
+        self.by_hand(version="0.0.8")                                                # another one there by now: the yes
+        error = self.err(409, "changed", self.host.approve, "loot_peek", "player", summary["fingerprint"])   # was not to it
+        self.assertIn("what it would replace", error.message)
+        self.assertTrue((self.addons / ADDON / "old.lua").is_file())
+        summary = self.host.summary("loot_peek")
+        self.assertEqual((summary["replaces"][0]["there"], summary["fingerprint"]), ("0.0.8", error.extra["fingerprint"]))
+        row = self.host.approve("loot_peek", "player", summary["fingerprint"])       # the yes is the yes to replace it
         installed = row["installed"]
         self.assertTrue(installed["ok"], installed)
         (a,) = installed["addons"]
@@ -292,8 +301,9 @@ class Approval(GameCase):
             with self.subTest(gid=gid):
                 self.by_hand(gid, version)
                 self.packaged()
-                (g,) = self.host.summary("loot_peek")["game"]
-                self.assertEqual((g["same"], g["newer"]), (same, newer))
+                summary = self.host.summary("loot_peek")
+                (g,) = summary["game"]
+                self.assertEqual((g["same"], g["newer"], summary["replaces"]), (same, newer, []))
                 row = self.host.approve("loot_peek")
                 installed = row["installed"]
                 self.assertEqual((installed["ok"], installed["code"], installed["same"], installed["there"],
@@ -305,8 +315,9 @@ class Approval(GameCase):
                 else:                                                                    # the player may say 替换
                     self.assertEqual(player, dict(action="replace_addon", text=(
                         "游戏里已有同名插件「LootPeek」，不是「掉落一瞥」带的，请在无限工坊 App 的「扩展」页确认替换")))
-                    self.err(409, "addon_exists", self.host.install, "loot_peek", "same")
-                    (a,) = self.host.install("loot_peek", True)["addons"]
+                    self.err(409, "addon_exists", self.host.install, "loot_peek", [])
+                    self.err(400, "bad_request", self.host.install, "loot_peek", True)
+                    (a,) = self.host.install("loot_peek", [dict(folder=ADDON, there=version)])["addons"]
                     self.assertEqual((a["state"], a["was"]), ("installed", "foreign"))
                     self.assertNotEqual((self.host.get("loot_peek")["player"] or {}).get("action"), "replace_addon")
                 self.host.remove("loot_peek")
@@ -322,7 +333,10 @@ class Approval(GameCase):
         error = self.err(409, "addon_exists", self.host.install, "loot_peek")
         self.assertEqual({k: error.extra[k] for k in ("folder", "same", "there", "newer")},
                          dict(folder=ADDON, same=True, there="0.0.9", newer=False))
-        self.assertEqual(self.host.install("loot_peek", "same")["addons"][0]["was"], "foreign")
+        self.err(400, "bad_request", self.host.install, "loot_peek", "same")
+        replaces = self.host.summary("loot_peek")["replaces"]
+        self.assertEqual(replaces, [dict(folder=ADDON, there="0.0.9", same=True, newer=False)])
+        self.assertEqual(self.host.install("loot_peek", replaces)["addons"][0]["was"], "foreign")
         self.assertEqual(self.stands("loot_peek"), ["current"])
         self.assertNotEqual((self.host.get("loot_peek")["player"] or {}).get("action"), "replace_addon")
         self.by_hand(version="0.3.0")                                                # newer: kept, nothing to say

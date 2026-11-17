@@ -20,7 +20,13 @@ package replaces a version, a pack's result, extension_summary). It says what is
                                                      (its source cannot be installed); with "foreign" also
                "same", "there", "newer"                  same: it is the same addon, installed by hand (an approval
                                                      replaces it unless newer); there: the version it says, or
-                                                     None; newer: there is newer than the extension's
+                                                     None; newer: the same addon, and there is newer than the
+                                                     extension's
+     "replaces": [{"folder", "there", "same", "newer"}],   what a yes to it replaces in the game's AddOns: the folders
+                                                 that are the same addon and not newer (gameside.replaces). It is
+                                                 part of what the yes is given to (the fingerprint), and the
+                                                 approval replaces these and no other, each only while it still
+                                                 says the version there
      "addons_dir": the game's AddOns folder or None,
      "local": None | {"run": [argv as written], "python": the manifest's own interpreter (relative) or None,
                       "start": "use" | "workshop", "env": [names the manifest sets], "pass": [names of the player's
@@ -117,6 +123,12 @@ def cannot_of(folder, name, addons_dir, eid, listed=None):
     return dict(cannot=found if found in CANNOT else None)
 
 
+def replaces(game):
+    """a summary's replaces, of its game rows: what a yes replaces (as gameside.replaces says it of state()'s rows)"""
+    return [dict(folder=g["folder"], there=g.get("there"), same=True, newer=False)
+            for g in game if g.get("cannot") == "foreign" and g.get("same") and not g.get("newer")]
+
+
 def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
     """the summary of an extension by its manifest (check_manifest's, not None). source: "folder" or "package";
     package: {sha256, file} of the package it is or came from; listed: the catalog's addon folders
@@ -143,7 +155,8 @@ def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
     notes = m["notes"] or next((g["notes"] for g in game if g["notes"]), None)
     return dict({"from": source}, id=m["id"], title=m["title"], version=m["version"], notes=notes, author=m["author"],
                 homepage=m["homepage"], package=dict(package) if package else None, where=M.where_of(m),
-                risk="local" if m["run"] else "game", game=game, addons_dir=str(addons_dir) if addons_dir else None,
+                risk="local" if m["run"] else "game", game=game, replaces=replaces(game),
+                addons_dir=str(addons_dir) if addons_dir else None,
                 local=local,
                 executables=[rel for rel, _ in files
                              if not K.in_addons(rel) and PurePosixPath(rel).suffix.lower() in EXECUTABLES],
@@ -172,7 +185,8 @@ def of_addon(folder, addons_dir=None):
     row["path"] = str(folder)
     return dict({"from": "game"}, id=eid, title=row["title"], version=row["version"], notes=row["notes"],
                 author=row["author"], homepage=site if site.startswith(("http://", "https://")) else None, package=None,
-                where="game", risk="game", game=[row], addons_dir=str(addons_dir if addons_dir else folder.parent),
+                where="game", risk="game", game=[row], replaces=[],
+                addons_dir=str(addons_dir if addons_dir else folder.parent),
                 local=None, executables=[],
                 agent=dict(docs="AGENT.md" if docs.is_file() else None, skills=_skills(folder / "skills"), apps=[],
                            adds=[]),

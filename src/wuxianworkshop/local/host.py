@@ -51,8 +51,13 @@ and the row says since when (since, epoch seconds) and why.
 
 The extension tells event {source, data} (an item {source: <id>, kind: <id>.<source>, data, time} for on_event; the
 first HELD_EVENTS it tells before it has answered initialize are kept until then, more are dropped; one whose data is
-more than EVENT_MAX bytes, and those over EVENT_BURST at once and EVENT_RATE a second after, are dropped too)
-and asks call {cap, args} (on_call: any capability, the game's or this computer's; the daemon allows see, keep and point).
+more than EVENT_MAX bytes, and those over EVENT_BURST at once and EVENT_RATE a second after, are dropped too) and
+report {app, key, state, ...} (how a piece of the work of an app it drives stands: checked, then on_report), and asks
+call {cap, args} (on_call: any capability, the game's or this computer's; the daemon allows see, keep and point).
+
+An extension whose manifest gives it apps to drive (apps[].driver "local") names them when it answers initialize
+(apps); one that does not name the very same does not start (manifest.driven_problem). While it runs the daemon keeps
+those apps open and hands it their wakes, one at a time (wake(); local/drive.py): driven() says which are driven now.
 
 Any thread may call the host; calls answer with concurrent.futures.Future. Every name this module had before it was
 split is still here (the imports below): others import Host and call_error from it, and the tests set INIT_TIMEOUT,
@@ -102,6 +107,7 @@ GAME_STATES = ("unknown", "absent", "offline", "restart", "missing", "disabled",
 PLAYER_ACTIONS = ("approve", "replace_addon", "start_game", "restart_game", "enable_addon", "turn_on")
 # a row's player.action; replace_addon: the game's AddOns holds a folder of an addon's name that is not the extension's
 # (one the player installed by hand, most often), which only the player replaces (the App's 替换)
+WAKE_PING = 30.0                      # seconds between two pings of an extension while a wake waits for its answer
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
 EVENT_MAX = 64 * 1024                 # bytes of one event's data (as JSON) at most: a larger one is dropped
@@ -171,7 +177,8 @@ class Host:
     """the registered local extensions and their processes. root: the state folder (default paths.state_dir());
     note(text): a line for the daemon's log; on_event(id, item): an item of an extension's source; on_call(id, cap,
     args, chain): an extension's call of a capability (chain: the caller chain of the call it is serving, a list
-    of strings), a Future of its result (ApiError for a refusal); on_change(revision):
+    of strings), a Future of its result (ApiError for a refusal); on_report(id, report): a report of an app it
+    drives ({app, key, state, ...}, checked); on_change(revision):
     the extensions changed. python: the interpreter for run ["python", ...] without the manifest's own (default:
     default_python()); sdk: the folder put first on PYTHONPATH (default: sdk_dir()); auto(): whether the workshop
     approves an extension's command by itself now (the daemon's setting extension_approval is "auto"; default: it
@@ -185,11 +192,11 @@ class Host:
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
                  python=None, sdk=None, auto=None, home=None, taken=None, kit_version=None, addons_dir=None,
-                 interface=None, game_side=None):
+                 interface=None, game_side=None, on_report=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
-        self.on_event, self.on_call, self.on_change = on_event, on_call, on_change
+        self.on_event, self.on_call, self.on_change, self.on_report = on_event, on_call, on_change, on_report
         self.python = python
         self.auto = auto or (lambda: False)         # auto(): the workshop approves a command by itself now
         self.home = Path(home) if home is not None else extensions_home()
@@ -431,14 +438,14 @@ class Host:
     def player_of(self, e, m, allowed, approval, game, addons=()):
         """a row's player: what the player has to do before the extension works, {action: one of PLAYER_ACTIONS,
         text: the sentence for them}, or None (nothing: what is left is the agent's, or it works). First the
-        approval, then a folder in AddOns to replace (addons: its addon_rows; replace_addon for the first foreign one
-        that can be replaced and is not newer than the extension's), then its game half"""
+        approval, then a folder in AddOns to replace (addons: its addon_rows; replace_addon for the first foreign
+        folder that is not the same addon in a newer version: that one is kept), then its game half"""
         if m is None or not e["enabled"] or self.unmet_error(m) is not None:
             return None
         title = m.get("title") or e["id"]
         if not allowed:
             return self.player_says("approve", title, changed=approval == "changed")
-        theirs = next((a for a in addons or () if G.takes(a, True) and not a.get("newer")), None)
+        theirs = next((a for a in addons or () if G.replaceable(a) and not a.get("newer")), None)
         if theirs is not None:
             return self.player_says("replace_addon", title, addon=theirs["folder"], same=bool(theirs.get("same")))
         action = {"offline": "start_game", "restart": "restart_game", "disabled": "enable_addon",
@@ -540,12 +547,26 @@ class Host:
             else:
                 self.addon_states.pop(eid, None)
 
-    def seen(self, e, fresh=False):
+    def replaces_of(self, e, m=None):
+        """what a yes to this extension replaces in the game's AddOns now (gameside.replaces of its addon_rows:
+        [{folder, there, same, newer}], the same addon installed by hand and not newer); [] when it brings no addon
+        or its manifest cannot be used. m: its manifest, when the caller has checked it"""
+        if m is None:
+            m, _ = M.check_manifest(e["path"])
+        if m is None or m["id"] != e["id"]:
+            return []
+        return G.replaces(self.addon_rows(e, m))
+
+    def seen(self, e, fresh=False, m=None):
         """(token, fingerprint): what a yes to this extension would allow as it is now. token: one opaque word of
-        the registry's fingerprint of what it runs, the bytes of its manifest file and the package it was imported
-        from (the row's and the summary's `fingerprint`: the App sends the one it showed back with 批准, and a yes
-        to anything else is refused, approve); fingerprint: the registry's (fresh: read anew). (None, None) when
-        its manifest cannot be read"""
+        the registry's fingerprint of what it runs, the bytes of its manifest file, the package it was imported
+        from and the folders in the game's AddOns it would replace (replaces_of) (the row's and the summary's
+        `fingerprint`: the App sends the one it showed back with 批准, and a yes
+        to anything else is refused, approve); fingerprint: the registry's (fresh: read anew, the game's AddOns
+        looked at again). (None, None) when its manifest cannot be read. m: its manifest, when the caller has
+        checked it"""
+        if fresh:
+            self.forget_addons(e["id"])
         fp = self.reg.fingerprint(e["path"], kept=not fresh)
         if fp is None:
             return None, None
@@ -556,7 +577,8 @@ class Host:
             return None, None
         package = e.get("package")
         came = package.get("sha256") if isinstance(package, dict) else None
-        text = "\n".join((fp, hashlib.sha256(raw).hexdigest(), came if isinstance(came, str) else ""))
+        replaced = json.dumps([[r["folder"], r["there"]] for r in self.replaces_of(e, m)], ensure_ascii=False)
+        text = "\n".join((fp, hashlib.sha256(raw).hexdigest(), came if isinstance(came, str) else "", replaced))
         return hashlib.sha256(text.encode("utf-8")).hexdigest(), fp
 
     def row(self, e, side=None):
@@ -598,7 +620,7 @@ class Host:
                     sources=[s["name"] for s in desc.get("sources") or []], options=self.option_rows(e),
                     apps=[a["app"] for a in (m or {}).get("apps") or []],
                     skills=self.skill_names((m or {}).get("skills")),
-                    adds=A.row(m), approval=approval, allowed=allowed, fingerprint=self.seen(e)[0],
+                    adds=A.row(m), approval=approval, allowed=allowed, fingerprint=self.seen(e, m=m)[0],
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
                     addons=addons, where=where, game=game,
@@ -671,8 +693,48 @@ class Host:
     def app_reactions(self, app):
         return A.app_reactions(self, app)
 
-    def app_link(self, app):
-        return A.app_link(self, app)
+    def drivers(self):
+        return A.drivers(self)
+
+    def is_running(self, eid):
+        """whether the extension's process runs now: it answered initialize, has not ended and is not being stopped
+        (one that is hung does not count)"""
+        with self.lock:
+            proc = self.procs.get(eid)
+            return bool(proc is not None and proc.ready and proc.running and not proc.stopping
+                        and (self.runs.get(eid) or {}).get("state") == "running")
+
+    def driven(self):
+        """{app: extension id} of the apps a program drives now: the apps of driver "local" (drivers()) whose
+        extension's process runs (is_running) and named the app when it answered initialize"""
+        out = {}
+        with self.lock:
+            for app, eid in self.drivers().items():
+                proc = self.procs.get(eid)
+                if self.is_running(eid) and app in (proc.apps or ()):
+                    out[app] = eid
+        return out
+
+    def wake(self, eid, app, wake):
+        """a wake of an app handed to the extension that drives it (the request wake {app, wake}): a Future of its
+        answer once its program has dealt with it (RpcError: it answered an error; ApiError down: its process
+        ended, or does not run; busy: its pipe takes no line). No time limit: whoever waits asks ping_waiting()
+        now and then"""
+        with self.lock:
+            proc = self.procs.get(eid)
+            if not self.is_running(eid):
+                fut = Future()
+                fut.set_exception(ApiError(503, "down", f"{eid} does not run"))
+                return fut
+        return proc.request("wake", dict(app=app, wake=wake))
+
+    def ping_waiting(self, eid):
+        """(while a wake waits for its answer, every WAKE_PING seconds) the extension is asked ping: one that does
+        not answer is hung, as after a call that timed out (ping())"""
+        with self.lock:
+            proc = self.procs.get(eid)
+        if proc is not None:
+            self.ping(proc)
 
     def control_call(self, app, cmd):
         return A.control_call(self, app, cmd)
@@ -683,7 +745,8 @@ class Host:
         when the extension is something else by now (its manifest, what it runs, the package it came from),
         ApiError changed (409, with fingerprint: what it is now) and nothing is approved. Its
         failed starts are forgotten. The player's approval also puts its game addons into the game's AddOns (the
-        manifest's addons; what goes wrong there is noted and never fails the approval: the row's addons say where
+        manifest's addons, in the place of the folders the summary's replaces named, each only while it still says
+        that version; what goes wrong there is noted and never fails the approval: the row's addons say where
         they stand, and extension_install tries again) and starts it: for good
         when its manifest says start "workshop", else, when it never described itself, for as long as it takes to
         learn what it can do (describe). The answer says what became of the game addons, installed: None (nothing
@@ -696,11 +759,13 @@ class Host:
             e = self.entry(eid)
             eid = e["id"]
             token, fp = self.seen(e, fresh=True)
+            replaces = self.replaces_of(e)             # (what that token stands for: the rows it just looked at)
             if seen is not None and token is not None and seen != token:
                 raise ApiError(409, "changed",
-                               f"{eid} is not what the player looked at any more: its manifest, what it runs or the "
-                               f"package it came from changed since. Nothing was approved; read its row and its "
-                               f"summary again and show them to the player", fingerprint=token)
+                               f"{eid} is not what the player looked at any more: its manifest, what it runs, the "
+                               f"package it came from or what it would replace in the game's AddOns changed since. "
+                               f"Nothing was approved; read its row and its summary again and show them to the "
+                               f"player", fingerprint=token)
             self.reg.approve(eid, by, expect=fp)
             self.forgive(e)
         self.forget_addons(eid)
@@ -709,7 +774,7 @@ class Host:
         if by == "player":
             m, _ = M.check_manifest(e["path"])
             if m is not None and m["id"] == eid:
-                installed = self.approved_addons(e, m)
+                installed = self.approved_addons(e, m, replaces)
                 if not m["run"]:                       # in the game only: nothing starts here
                     pass
                 elif e["enabled"] and m["start"] == "workshop":
@@ -970,8 +1035,9 @@ class Host:
             if m is None:
                 raise ApiError(409, "bad_manifest", f"{e['id']}: {M.ManifestError(problems)}", problems=problems)
             package = e.get("package")
+            self.forget_addons(e["id"])                # (the game's AddOns as it is now: what the yes is given to)
             return dict(S.of_folder(m, addons, package=package if isinstance(package, dict) else None,
-                                    listed=self.listed()), fingerprint=self.seen(e)[0])
+                                    listed=self.listed()), fingerprint=self.seen(e, m=m if m["id"] == e["id"] else None)[0])
         if not isinstance(path, str) or not path.strip() or not Path(path.strip()).is_absolute():
             raise ApiError(400, "bad_request", "path: the full path of a package (.zip), of an extension's folder, or "
                                                "of an addon folder in the game's AddOns")
@@ -1164,12 +1230,12 @@ class Host:
             return []
         return [a for a in names if isinstance(a, str) and M.ADDON_FOLDER.match(a)] if isinstance(names, list) else []
 
-    def put_addons(self, e, m, replace=False):
+    def put_addons(self, e, m, replace=None):
         """the game addons of a manifest put into the game's AddOns (gameside.install: one that is current stays):
         {addons: [{folder, state: installed | current, was, version, kept}], restart, hint}, and, only when there
         are some, removed: the folders it installed there before and names no more (stale_addons), taken out now.
-        replace: which folder of an addon's name that is not the extension's is replaced (gameside.install: False,
-        "same" or True; was "foreign", what was there kept in the history).
+        replace: the folders of an addon's name that are not the extension's and are replaced, [{folder, there}]
+        (gameside.install; was "foreign", what was there kept in the history; None: none).
         GameSideError as gameside raises it (no_game_folder, bad_addon, addon_exists, addon_busy, addon_failed). Not
         under the lock"""
         listed = self.listed()
@@ -1209,10 +1275,11 @@ class Host:
             self.note(f"local extension {eid}: the addons it names no more could not be taken out of AddOns: {ex!r}")
             return []
 
-    def approved_addons(self, e, m):
+    def approved_addons(self, e, m, replaces=None):
         """(approve) the game addons of an extension the player just allowed are installed, when it has some and
-        this workshop is not too old for it. The approval is the player's yes to the summary they saw, which says
-        that the same addon installed by hand (not newer) is replaced: replace "same". Nothing here fails: what went
+        this workshop is not too old for it. The approval is the player's yes to the summary they saw, whose
+        replaces says which folders of the same addon installed by hand are replaced: those, each while it still
+        says that version, and no other. Nothing here fails: what went
         wrong is noted, and answered for the approval to say: None (nothing was tried), {ok: True, addons, restart,
         hint} (put_addons), or {ok: False, code, message, addons: the ones installed before it failed} (addon_exists
         with folder, same, there, newer)"""
@@ -1222,7 +1289,7 @@ class Host:
             if self.game_addons() is None:
                 raise G.GameSideError(503, "no_game_folder", "the game's AddOns folder is not known: start the game "
                                                              "once, or say where it is in the 无限工坊 App")
-            return dict(ok=True, **self.put_addons(e, m, replace="same"))
+            return dict(ok=True, **self.put_addons(e, m, replace=replaces))
         except G.GameSideError as ex:
             if ex.code != "no_game_folder":            # (the row says a game folder that is not known)
                 self.note(f"local extension {e['id']}: its game addons are not installed: {first_line(ex, 300)} "
@@ -1276,16 +1343,20 @@ class Host:
                       f"{', '.join(gone)}")
         return [g for g in rows if g["why"] in (None, "foreign", "busy")]
 
-    def install(self, eid, replace=False):
+    def install(self, eid, replace=None):
         """extension_install: the extension's game addons put into the game's AddOns now: {id, addons: [{folder,
         state: installed | current, was, version, kept}], restart, hint}. replace (the player's 替换, `ext install
-        --replace`): True replaces a folder of an addon's name that is not the extension's, "same" only the same
-        addon installed by hand when it is not newer; anything else: none (gameside.install). ApiError bad_manifest
+        --replace`): [{folder, there}], the folders of an addon's name that are not the extension's and are
+        replaced, each only while the version it says is still there; not given: none (gameside.install). ApiError
+        bad_request (replace is no such list), bad_manifest
         (409), requires_unmet (409), needs_approval (403: the player has not allowed it as it is now; allow()),
         no_addons (400: its manifest names none), no_game_folder (503), and gameside's bad_addon (400), addon_exists
         (409, with folder, same, there, newer), addon_busy (409), addon_failed (500), each with done: the addons
         installed before it failed"""
-        replace = replace if replace is True or replace == "same" else False
+        if G.replace_list(replace) is None:
+            raise ApiError(400, "bad_request", "replace: the folders in the game's AddOns to replace, [{folder, there}] "
+                                               "(there: the version the folder says now, or null), as the "
+                                               "extension's row lists them (addons: state foreign)")
         e = self.entry(eid)
         eid = e["id"]
         m, problems = M.check_manifest(e["path"])
@@ -1613,6 +1684,11 @@ class Host:
             self.note(f"local extension {eid}: starting" + (f" ({why})" if why else "") + f", pid {proc.pid}")
             self.changed()
             desc, _ = self.initialize(proc, m, dict(e["options"]))
+            wrong = M.driven_problem(m, desc)
+            if wrong is not None:                      # its program and its manifest name other apps: not started
+                blamed = False
+                proc.output.write(f"-- {clock()} it cannot be used: {wrong['message']}")
+                raise Down(wrong["message"], [wrong])
             with self.lock:
                 data = self.load()
                 entry = next((x for x in data["extensions"] if x["id"] == eid), None)
@@ -1626,6 +1702,7 @@ class Host:
                     raise self.down(proc, f"{eid} exited right after it answered initialize (code {proc.exit_code})")
                 took = duration(time.time() - proc.started)
                 proc.sources = [s["name"] for s in desc["sources"]]
+                proc.apps = list(desc.get("apps") or [])
                 proc.ready = True
                 probe = fut.probe
                 self.starting.pop(eid, None)
@@ -1637,7 +1714,8 @@ class Host:
                     self.to(eid, "running", f"ready in {took}" + (f" ({why})" if why else ""), fails=0, retry_at=0.0,
                             error=None)
             out.write(f"-- {clock()} ready: {len(desc['capabilities'])} capabilities, {len(desc['sources'])} sources, "
-                      f"{len(desc['options'])} options")
+                      f"{len(desc['options'])} options"
+                      + (f", drives the app {', '.join(desc['apps'])}" if desc.get("apps") else ""))
             self.note(f"local extension {eid}: running (pid {proc.pid}, ready in {took})")
         except Exception as ex:
             error = ex if isinstance(ex, ApiError) else ApiError(500, "internal", f"{eid}: {ex!r}")
@@ -1779,25 +1857,56 @@ class Host:
                 return
             self.extension_call(proc, msg["id"], params)
             return
-        if method == "event":
-            self.extension_event(proc, params)
+        if method in ("event", "report"):
+            self.extension_event(proc, params, method)
         else:
             proc.output.write(f"-- {clock()} a notification the workshop does not know: {method!r}")
 
-    def extension_event(self, proc, params):
-        """(its reader thread) an event it tells. Before it has answered initialize nobody knows its sources: the
-        first HELD_EVENTS are kept until then (release), more are dropped, and its output says so"""
+    def extension_event(self, proc, params, method="event"):
+        """(its reader thread) an event or a report it tells. Before it has answered initialize nobody knows its
+        sources and its apps: the first HELD_EVENTS are kept until then (release), more are dropped, and its output
+        says so"""
         with self.lock:
             if proc.held is not None:
                 if len(proc.held) < HELD_EVENTS:
-                    proc.held.append(params)
+                    proc.held.append((method, params))
                 else:
                     proc.dropped += 1
                     if proc.dropped == 1:
                         proc.output.write(f"-- {clock()} it tells events before it has answered initialize: "
                                           f"{HELD_EVENTS} are kept until it has, the rest are dropped")
                 return
-        self.deliver(proc, params)
+        self.pass_on(proc, method, params)
+
+    def pass_on(self, proc, method, params):
+        if method == "report":
+            self.extension_report(proc, params)
+        else:
+            self.deliver(proc, params)
+
+    def extension_report(self, proc, params):
+        """a report of an extension that described itself: {app, key, state, step?, text?, done?, total?, retry?,
+        data?} of an app it drives, for on_report. One that is not such (validate.check_report), or of an app it
+        does not drive, is dropped, and its output says why; they are counted against the same bucket as its
+        events (deliver)"""
+        report, why = M.check_report(params)
+        if report is not None and report["app"] not in (proc.apps or []):
+            why = (f"it does not drive the app {report['app']} (it drives: {', '.join(proc.apps or []) or 'none'}): "
+                   f"@ext.app, and \"driver\": \"local\" in the manifest")
+        if why:
+            proc.output.write(f"-- {clock()} report dropped: {why}")
+            return
+        now = time.monotonic()
+        with self.lock:
+            left, at = proc.events or (float(EVENT_BURST), now)
+            left = min(float(EVENT_BURST), left + max(0.0, now - at) * EVENT_RATE)
+            passed = left >= 1.0
+            proc.events = [left - 1.0 if passed else left, now]
+        if not passed:
+            self.drop_event(proc, f"it tells more than {EVENT_BURST} at once and {EVENT_RATE:g} a second after")
+            return
+        if self.on_report is not None:
+            self.on_report(proc.id, report)
 
     def deliver(self, proc, params):
         """an event of an extension that described itself: an item for on_event, when it is of one of its sources.
@@ -1852,9 +1961,9 @@ class Host:
                 if not batch:
                     proc.held, dropped, proc.dropped = None, proc.dropped, 0
                     break
-            for params in batch:
+            for method, params in batch:
                 try:
-                    self.deliver(proc, params)
+                    self.pass_on(proc, method, params)
                 except Exception as e:
                     proc.output.write(f"-- {clock()} the workshop could not pass an event on: {e!r}")
         if dropped:

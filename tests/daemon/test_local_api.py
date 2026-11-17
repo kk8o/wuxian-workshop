@@ -48,21 +48,33 @@ def with_game(folder, eid, name, addon_version="1.2.0", **fields):
 
 class Kit:
     """WuxianKit in the game as the daemon's Service calls it: what it was asked (calls), the answers of a kit 0.7:
-    the apps it was told of (apps: id -> declaration), on: the ids that run"""
+    the apps it was told of (apps: id -> declaration), on: the ids that run, why: how an app's last run ended,
+    items: an app's items (kit.app.recent), reports: what kit.app.report was given"""
 
     def __init__(self, svc):
         self.svc, self.calls, self.apps, self.on, self.roster = svc, [], {}, set(), None
+        self.why, self.items, self.reports = {}, {}, []
+
+    def status(self, app):
+        if app not in self.apps:
+            raise ApiError(400, "call_failed", f"no app {app}\nstack ...")
+        newest = max([i["id"] for i in self.items.get(app, [])] or [0])
+        return dict(app=app, on=app in self.on, lease=600, next=newest,
+                    **(dict(sent=newest) if app in self.on else dict(why=self.why.get(app))))
 
     def emit(self, topic, data):
         self.svc.on_debug("EVENT", json.dumps({"a": "WuxianKit", "t": topic, "d": data}))
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, most=None):
         self.calls.append((name, args))
         if name == "kit.app.declare":
             result = {"app": args["app"], "changed": self.apps.get(args["app"]) != args}
             self.apps[args["app"]] = json.loads(json.dumps(args))
+        elif name == "kit.revision":
+            result = {"revision": "r1"}
         elif name == "kit.apps":
-            result = [dict(id=app, on=app in self.on, local=decl.get("local")) for app, decl in self.apps.items()]
+            result = [dict(id=app, on=app in self.on, local=decl.get("local"),
+                           **{k: decl[k] for k in ("driver", "link") if k in decl}) for app, decl in self.apps.items()]
         elif name == "kit.app.describe":
             if args["app"] not in self.apps:
                 raise ApiError(400, "call_failed", f"no app {args['app']}\nstack ...")
@@ -72,11 +84,27 @@ class Kit:
                 raise ApiError(400, "call_failed", f"no app {args['app']}\nstack ...")
             self.on.discard(args["app"])
             result = {"app": args["app"]}
+        elif name == "kit.app.open" and "temp" not in args:
+            result = self.status(args["app"])
+            self.on.add(args["app"])
+            result = self.status(args["app"])
         elif name == "kit.app.open":
             if "game:nonsense" in (args.get("temp") or {}).get("hear", []):
                 raise ApiError(400, "call_failed", "no source game:nonsense\nstack ...")
             result = {"on": True}
+        elif name == "kit.app.status":
+            result = self.status(args["app"])
+        elif name == "kit.app.recent":
+            self.status(args["app"])
+            items = [i for i in self.items.get(args["app"], []) if i["id"] > args.get("since", 0)]
+            result = {"items": items, "next": max([i["id"] for i in self.items.get(args["app"], [])] or [0])}
+        elif name == "kit.app.report":
+            self.reports.append(json.loads(json.dumps(args)))
+            result = {"kept": True}
         elif name == "kit.app.stop":
+            if args["app"] in self.on:
+                self.on.discard(args["app"])
+                self.why[args["app"]] = args.get("why") or "stopped"
             result = {"on": False}
         elif name == "kit.local.set":
             self.roster = json.loads(json.dumps(args["extensions"]))
@@ -129,6 +157,9 @@ class LocalDaemon:
         self.kit.apps.clear()
         self.kit.on.clear()
         self.kit.roster = None
+        self.kit.why.clear()
+        self.kit.items.clear()
+        self.kit.reports.clear()
 
     def tearDown(self):
         self.ok("POST", "/api/reactions/clear", {})
@@ -315,12 +346,15 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual(self.row("hx")["addons"], [dict(folder="WuxianHx", version="1.2.0", state="foreign",
                                                          same=False, there=None)])
         self.assertEqual(self.row("hx")["player"]["action"], "replace_addon")   # only the player says 替换
-        for replace in (None, False, "yes", 1, "same"):                        # not the same addon: "same" is no yes
+        self.assertEqual((self.ok("GET", "/api/local/summary?id=hx")["replaces"]), [])   # no approval replaces it
+        for replace in (None, [], [{"folder": "WuxianHx", "there": "1.0"}], [{"folder": "Other", "there": None}]):
             status, res = self.call("POST", "/api/local/install", {"id": "hx", "replace": replace})
             self.assertEqual((status, res["error"]["code"]), (409, "addon_exists"), res)
             self.assertEqual((res["done"], res["error"]["done"]), ([], []))    # what it installed before that
             self.assertEqual({k: res["error"][k] for k in ("folder", "same", "there", "newer")},
                              dict(folder="WuxianHx", same=False, there=None, newer=False))
+        for replace in (True, False, "same", "yes", 1, ["WuxianHx"], [{"there": None}]):   # no list of {folder, there}
+            self.fails("POST", "/api/local/install", {"id": "hx", "replace": replace}, 400, "bad_request")
         res = self.ok("POST", "/api/local/load", {"id": "hx"})                 # it runs all the same, and says so
         self.assertEqual((res["row"]["state"], res["addons"], res["check"]["ok"]), ("running", [], False))
         self.assertEqual([p["level"] for p in res["check"]["problems"] if p["where"] == "addons"], ["error"])
@@ -351,7 +385,16 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual((status, res["error"]["code"], res["error"]["same"], res["error"]["there"]),
                          (409, "addon_exists", True, "1.1.1"))
         self.assertIn("--replace", res["error"]["message"])
-        res = self.ok("POST", "/api/local/install", {"id": "rx", "replace": "same"})
+        summary = self.ok("GET", "/api/local/summary?id=rx")                    # what a yes would replace
+        self.assertEqual(summary["replaces"], [dict(folder="WuxianRx", there="1.1.1", same=True, newer=False)])
+        self.assertEqual(summary["fingerprint"], row["fingerprint"])             # the row's and the summary's: one
+        self.assertEqual({k: summary["game"][0][k] for k in ("cannot", "same", "there", "newer")},
+                         dict(cannot="foreign", same=True, there="1.1.1", newer=False))
+        status, res = self.call("POST", "/api/local/install", {"id": "rx", "replace": [{"folder": "WuxianRx",
+                                                                                    "there": "1.0.0"}]})
+        self.assertEqual((status, res["error"]["code"]), (409, "addon_exists"))   # not the version it says now
+        res = self.ok("POST", "/api/local/install", {"id": "rx", "replace": [{"folder": "WuxianRx", "there": "1.1.1"}]})
+        self.assertTrue(res["restart"])
         (got,) = res["addons"]
         self.assertEqual((got["state"], got["was"], got["kept"] is not None), ("installed", "foreign", True))
         self.assertTrue((theirs / "core.lua").is_file())
@@ -534,18 +577,23 @@ class LocalApi(LocalDaemon, unittest.TestCase):
                              adds={"officers": {"wake": None, "skill": "AGENT.md"}, "guild": {"skill": "AGENT.md"}})
         title = json.loads((folder / "wuxian-extension.json").read_text(encoding="utf-8"))["title"]
         fx = {"id": "fx", "title": title, "version": "0.1.0", "author": "Ann", "notes": "Quick answers",
-              "where": "local", "on": True, "adds": ["guild", "officers"]}
+              "where": "local", "on": True, "running": False, "addons": [], "adds": ["guild", "officers"]}
         bare = lambda: [{k: v for k, v in r.items() if k != "options"} for r in self.kit.roster or ()]   # noqa: E731
         self.assertTrue(until(lambda: bare() == [fx]), self.kit.roster)  # (described by a test before: with options)
         self.assertEqual(self.kit.asked("kit.local.set")[-1], {"extensions": self.kit.roster})
-        self.ok("POST", "/api/local/load", {"id": "fx"})                # it described its options: told with them
-        fx["options"] = [{"name": "volume", "kind": "number", "title": "音量", "value": 50, "default": 50, "min": 0,
-                          "max": 100}]
+        self.ok("POST", "/api/local/load", {"id": "fx"})                # it runs, and described its options: told so
+        fx.update(running=True, options=[{"name": "volume", "kind": "number", "title": "音量", "value": 50,
+                                          "default": 50, "min": 0, "max": 100}])
         self.assertTrue(until(lambda: self.kit.roster == [fx]), self.kit.roster)
         told = len(self.kit.asked("kit.local.set"))
-        self.ok("POST", "/api/local/load", {"id": "fx"})                # nothing of the list changed: not told again
-        time.sleep(0.3)
+        self.ok("POST", "/api/local/set", {"id": "fx", "options": {"volume": 50}})   # nothing of the list changed:
+        time.sleep(0.3)                                                 # not told again
         self.assertEqual(len(self.kit.asked("kit.local.set")), told)
+        self.ok("POST", "/api/local/stop", {"id": "fx"})                # its process stopped: told so
+        self.assertTrue(until(lambda: self.kit.roster == [dict(fx, running=False)]), self.kit.roster)
+        self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "hi"}})   # and that it runs again
+        self.assertTrue(until(lambda: self.kit.roster == [fx]), self.kit.roster)
+        told = len(self.kit.asked("kit.local.set"))
         self.kit.emit("kit.ready", {})                                  # a login or a reload: it has none, told again
         self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == told + 1), self.kit.calls)
         with_game(self.root / "ext" / "pair", "pair", "PairSide", run=["python", "main.py"])
@@ -558,63 +606,17 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.ok("POST", "/api/local/add", {"path": str(self.root / "ext" / "peek")})
         self.assertTrue(until(lambda: [r["id"] for r in self.kit.roster or ()] == ["fx", "pair"]), self.kit.roster)
         pair = self.kit.roster[1]
-        self.assertEqual((pair["where"], pair["game"], pair["on"]), ("both", ["pair_game"], True))
+        self.assertEqual((pair["where"], pair["on"], pair["addons"]), ("both", True, ["PairSide"]))
+        self.assertNotIn("game", pair)                                 # WuxianKit joins the two halves by the addons
         self.assertNotIn("adds", pair)
         self.assertNotIn("author", pair)
         self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
-        self.assertTrue(until(lambda: self.kit.roster[0] == dict(fx, on=False)), self.kit.roster)
+        self.assertTrue(until(lambda: self.kit.roster[0] == dict(fx, on=False, running=False)), self.kit.roster)
         self.ok("POST", "/api/local/remove", {"id": "fx"})
         self.assertTrue(until(lambda: [r["id"] for r in self.kit.roster] == ["pair"]), self.kit.roster)
         self.ok("POST", "/api/local/remove", {"id": "pair"})
         self.ok("POST", "/api/local/remove", {"id": "peek"})
         self.assertTrue(until(lambda: self.kit.roster == []), self.kit.roster)
-
-    def test_the_roster_and_a_kit_before_it(self):
-        """a WuxianKit without kit.local.set: asked once, nothing in the journal, the apps declared as ever; asked
-        again only when the list is another or its UI is a new one"""
-        answer = self.kit.call_exposed
-
-        async def old(addon, name, args=None, timeout_ms=10000, shared=None):
-            if name == "kit.local.set":
-                self.kit.calls.append((name, args))
-                raise ApiError(400, "call_failed", "WuxianKit has no kit.local.set")
-            return await answer(addon, name, args, timeout_ms, shared)
-        self.svc.roster_told = None
-        first = self.svc.journal.next_id
-        with mock.patch.object(self.svc, "call_exposed", old):
-            self.add(apps=[{"app": "companion", "title": "语音搭子", "prompt": "companion"}])
-            self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
-            self.assertEqual(len(self.kit.asked("kit.local.set")), 1)
-            self.ok("POST", "/api/local/load", {"id": "fx"})            # it described its options: another list
-            self.assertTrue(until(lambda: "options" in self.kit.asked("kit.local.set")[-1]["extensions"][0]),
-                            self.kit.calls)
-            told = len(self.kit.asked("kit.local.set"))
-            self.assertLessEqual(told, 2)
-            self.ok("POST", "/api/local/load", {"id": "fx"})
-            time.sleep(0.3)
-            self.assertEqual(len(self.kit.asked("kit.local.set")), told)
-            self.ok("POST", "/api/local/set", {"id": "fx", "enabled": False})
-            self.assertTrue(until(lambda: len(self.kit.asked("kit.local.set")) == told + 1), self.kit.calls)
-            time.sleep(0.3)                                             # a tell still queued: the old kit's too
-        texts = [e["text"] for e in list(self.svc.journal.entries) if e["id"] >= first]
-        self.assertEqual([t for t in texts if "did not take their list" in t], [])
-        self.assertIsNone(self.kit.roster)
-
-    def test_apps_of_a_kit_before_describe(self):
-        """a WuxianKit without kit.apps and kit.app.describe: the apps are declared at every kit.ready, as before"""
-        app = {"app": "companion", "title": "语音搭子", "prompt": "companion"}
-        answer = self.kit.call_exposed
-
-        async def old(addon, name, args=None, timeout_ms=10000, shared=None):
-            if name in ("kit.apps", "kit.app.describe", "kit.app.forget"):
-                self.kit.calls.append((name, args))
-                raise ApiError(400, "call_failed", f"WuxianKit has no {name}")
-            return await answer(addon, name, args, timeout_ms, shared)
-        with mock.patch.object(self.svc, "call_exposed", old):
-            self.add(apps=[app])
-            self.assertEqual(len(self.kit.asked("kit.app.declare")), 1)
-            self.kit.emit("kit.ready", {})
-            self.assertTrue(until(lambda: len(self.kit.asked("kit.app.declare")) == 2), self.kit.calls)
 
     # --- reactions
 

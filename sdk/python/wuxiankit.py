@@ -64,10 +64,11 @@ the status again after a UI reload (kit.ready) or a restart of the daemon, catch
 10 s); `stream.state` tells why it waits.
 
 A local extension can run an app of its own (one its manifest declares with "driver": "local") instead of an agent:
-@ext.app(app_id) names the function that gets each wake, and ext.run() opens the app and feeds it (Extension.app).
+@ext.app(app_id) names the function that gets each wake. 无限工坊 keeps the app open while the extension runs and
+hands it the wakes (Extension.app); ext.report(...) tells the game how a piece of its work stands (Extension.report).
 
-Daemon: POST /api/call {addon, name, args, timeout_ms, whole?} -> {addon, name, ok, result} (whole: an answer of up to
-16 MB, workshop 0.9.15); GET /api/status -> {link: {state, ...}, ...}; POST /api/addon_events {addon,
+Daemon: POST /api/call {addon, name, args, timeout_ms, most?} -> {addon, name, ok, result} (most: the most bytes the
+answer may be, 16 MB when not given, which is also the most); GET /api/status -> {link: {state, ...}, ...}; POST /api/addon_events {addon,
 topic, since, limit, wait} -> {events: [{id, t, addon, topic, data, dropped}], next, truncated, session}; errors
 {"error": {"code", "message"}} with a 4xx / 5xx status. A workshop before 0.9.13 takes one topic (a name or a glob)
 only; the client then asks with one glob that covers all of them and keeps the ones asked for.
@@ -93,17 +94,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Union
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = ["Client", "AppStream", "WuxianError", "daemon_json_path", "read_daemon_json", "cover_glob", "FINAL",
-           "beat_rule", "Extension", "ExtensionError", "ExtensionTest", "AppDriver", "Option", "Source", "check_args",
-           "parse_spec", "check_description"]
+           "beat_rule", "Extension", "ExtensionError", "ExtensionTest", "Option", "Source", "check_args",
+           "parse_spec", "check_description", "check_report"]
 
 ADDON = "WuxianKit"
 FINAL = frozenset({"done", "failed", "declined", "expired", "undone"})     # a proposal's end states
 BACKOFF = (1.0, 2.0, 5.0, 10.0)        # seconds to wait after the 1st, 2nd, 3rd, 4th and later failure in a row
 CALL_TIMEOUT_MS = 10000
-WHOLE_WAIT = 3600                      # seconds a whole call's answer may take after its first part (16 MB is some 15
+ANSWER_WAIT = 3600                     # seconds a call's answer may take after its first part (16 MB is some 15
                                        # minutes; the daemon gives up by itself when nothing more comes)
+SHORT_ANSWER = 256 * 1024              # bytes: an answer no longer than this (Client.call's most) comes within seconds
 POLL_WAIT = 25.0                       # seconds one long-poll waits at most
 ASK_EVERY = 15.0                       # wait(): seconds it waits for kit.proposal before it asks the game itself
 LEASE = 600                            # an app's lease when its status gives none
@@ -289,20 +291,21 @@ class Client:
     # ---- capabilities and proposals
 
     def call(self, name: str, args: Optional[dict] = None, *, timeout_ms: int = CALL_TIMEOUT_MS,
-             whole: bool = False) -> Any:
+             most: Optional[int] = None) -> Any:
         """a WuxianKit capability in the game (`sense.character`, `chat.send`, ...; a local extension's is called with
         `wuxian wk` or its `wk_` tool, not from here): its result. A Send or Change answers with its
         proposal {id, state, steps}; _title, _ttl and _after in args set its title, ttl and earliest time. A capability
-        that refused (bad args, an error in the game) is WuxianError code call_failed. whole=True: an answer of up to
-        16 MB instead of 256 KB (workshop 0.9.15 with its WoWBridge); timeout_ms is then the time of its first part,
-        the rest comes for as long as it keeps coming. An older WoWBridge answers an error past 256 KB, as before"""
+        that refused (bad args, an error in the game) is WuxianError code call_failed. The answer may be up to 16 MB;
+        most: fewer bytes it may be at most (a longer one is an error of the call, and nothing of it is sent).
+        timeout_ms is the time of the answer's first part: a long one comes in parts, for as long as they keep
+        coming (so the wait here is long, unless most is 256 KB or less: such an answer comes within seconds)"""
         body: dict = {"addon": self.addon, "name": name, "timeout_ms": int(timeout_ms)}
         if args is not None:
             body["args"] = args
-        if whole:
-            body["whole"] = True
-        wait = timeout_ms / 1000 + (WHOLE_WAIT if whole else 30)
-        return self.request("/api/call", body, wait).get("result")
+        if most is not None:
+            body["most"] = int(most)
+        long = most is None or most > SHORT_ANSWER
+        return self.request("/api/call", body, timeout_ms / 1000 + (ANSWER_WAIT if long else 30)).get("result")
 
     def propose(self, steps: Iterable, title: Optional[str] = None, ttl: Optional[float] = None,
                 after: Optional[float] = None) -> dict:
@@ -319,12 +322,12 @@ class Client:
         for k, v in (("title", title), ("ttl", ttl), ("after", after)):
             if v is not None:
                 body[k] = v
-        return self.call("kit.propose", body)
+        return self.call("kit.propose", body, most=SHORT_ANSWER)
 
     def proposal(self, proposal_id: int) -> Optional[dict]:
         """a proposal as the game has it now; None when the game has no such one"""
         try:
-            p = self.call("kit.proposal", {"id": proposal_id})
+            p = self.call("kit.proposal", {"id": proposal_id}, most=SHORT_ANSWER)
         except WuxianError as e:
             if e.code == "call_failed":
                 return None
@@ -402,7 +405,7 @@ class Client:
         for k, v in (("minutes", minutes), ("lease", lease)):
             if v is not None:
                 args[k] = v
-        ans = self.call("kit.app.open", args)
+        ans = self.call("kit.app.open", args, most=SHORT_ANSWER)
         ans = ans if isinstance(ans, dict) else {}
         if ans.get("on") is False:
             raise WuxianError(str(ans.get("blocked") or ans.get("why") or f"the app {app_id} did not start"),
@@ -432,9 +435,7 @@ class AppStream:
     """the wakes of one app that runs; see Client.app. Attributes: cursor (the id of the last item given or passed
     over: pass it as since to go on later; None until the app's status was read, unless since was given); state
     ("connected" | "waiting", reason); ended (None while it listens; else why it ended: stopped, player, expired,
-    left, extension, forgotten, closed, ...); status (the last kit.app.status answer); ready_wakes (False; AppDriver
-    sets it): after a login or a UI reload (kit.ready) that the app ran through, one wake with reason "ready" (no
-    items, after and next the cursor, status the app's status then), once the status was read again"""
+    left, extension, forgotten, closed, ...); status (the last kit.app.status answer)"""
 
     def __init__(self, client: Client, app_id: str, *, since: Optional[int] = None, wait: Optional[float] = None,
                  yield_timeouts: bool = False):
@@ -458,8 +459,6 @@ class AppStream:
         self._fails = 0
         self._retry_at = 0.0
         self._pending: collections.deque = collections.deque()
-        self.ready_wakes = False
-        self._ready = False                              # a kit.ready came; the status was not read since
 
     # ---- iteration
 
@@ -491,7 +490,7 @@ class AppStream:
         """stop listening; stop=True also stops the app in the game (kit.app.stop)"""
         if stop:
             try:
-                self.client.call("kit.app.stop", {"app": self.id})
+                self.client.call("kit.app.stop", {"app": self.id}, most=SHORT_ANSWER)
             except WuxianError:
                 pass
         if self.ended is None:
@@ -565,7 +564,7 @@ class AppStream:
         c = self.client
         self._joined = False
         try:
-            ans = c.call("kit.app.status", {"app": self.id})
+            ans = c.call("kit.app.status", {"app": self.id}, most=SHORT_ANSWER)
         except WuxianError as e:
             if e.code != "call_failed":
                 raise
@@ -585,11 +584,6 @@ class AppStream:
         elif nxt is not None and nxt < self.cursor:      # the app's items end before the cursor (another character,
             self.cursor = nxt                            # saved data that started again): every wake would be a repeat
         self._joined = True
-        if self._ready:                                  # it ran through a login or a UI reload
-            self._ready = False
-            if self.ready_wakes:
-                self._pending.append(dict(app=self.id, reason="ready", items=[], skipped=0, after=self.cursor,
-                                          next=self.cursor, status=ans))
 
     @property
     def beat_every(self) -> float:
@@ -619,7 +613,8 @@ class AppStream:
         if upto is not None and upto <= self.cursor:
             return
         try:
-            res = self.client.call("kit.app.recent", {"app": self.id, "since": self.cursor, "limit": CATCHUP})
+            res = self.client.call("kit.app.recent", {"app": self.id, "since": self.cursor, "limit": CATCHUP},
+                                   most=SHORT_ANSWER)
         except WuxianError:
             self._joined = False                         # the status first, then this again
             raise
@@ -638,7 +633,7 @@ class AppStream:
     def _take(self, ev: dict) -> None:
         topic, data = ev.get("topic"), ev.get("data")
         if topic == "kit.ready":                         # a login or a UI reload: does the app still run?
-            self._joined, self._ready = False, True
+            self._joined = False
             return
         if not isinstance(data, dict):
             return
@@ -706,12 +701,6 @@ CALL_WAIT = 120.0                        # seconds ext.call waits for the worksh
 SHUTDOWN_GRACE = 3.0                     # seconds run() lets running calls finish after shutdown
 HELD_EVENTS = 100                        # events kept until initialize is answered
 APP_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")  # an app id as a manifest writes it
-APPS_FILE = "apps.json"                  # in ext.data: {app: {"next": item id}}, where each driven app got
-APP_RETRY = 5.0                          # seconds before the game or the daemon is asked again while away
-APP_REOPEN = 5.0                         # seconds before an app that ended (expired, left, ...) is opened again
-APP_REFUSED = 60.0                       # most seconds before an app WuxianKit would not open is tried again (or kit.ready):
-                                         # APP_RETRY, then twice as long each time, so one the workshop declares a moment
-                                         # after this process started opens within seconds
 
 # What a declaration may be and how a call's arguments are checked: the text 无限工坊 checks them with, copied from
 # its src/wuxianworkshop/local/validate.py by scripts/sync_sdk_validate.py (a test compares the two). Change it there,
@@ -877,7 +866,8 @@ def value_problem(opt, value):
 
 # --- the description: initialize's answer. Every finding is a problem {level: "error" | "warning", where, message, hint}
 
-PROTOCOL = 1                           # the protocol version a description is written in
+PROTOCOL = 2                           # the protocol version a description is written in
+APP_NAME = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")    # an app's id, as a manifest's apps write it
 LATER_KINDS = ("say", "do")            # proposals: a later step
 
 
@@ -891,15 +881,17 @@ def errors_in(problems):
 
 def check_description(eid, answer):
     """(description or None, problems) of an extension's answer to initialize: {capabilities: [{id, name, kind,
-    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt]}"""
+    title, doc, args, timeout}], sources: [{name, title, doc}], options: [opt], apps: [the ids of the apps its
+    program drives]}"""
     out = []
     where = "initialize"
     if not isinstance(answer, dict):
         return None, [problem("error", where, "initialize must answer a JSON object",
-                              "{protocol: 1, capabilities: [...], sources: [...], options: [...]}")]
+                              "{protocol: 2, capabilities: [...], sources: [...], options: [...], apps: [...]}")]
     if answer.get("protocol") != PROTOCOL or isinstance(answer.get("protocol"), bool):
-        out.append(problem("error", f"{where}: protocol", f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks 1",
-                           "answer protocol 1 (the Python library does)"))
+        out.append(problem("error", f"{where}: protocol",
+                           f"protocol {answer.get('protocol')!r}: this 无限工坊 speaks {PROTOCOL}",
+                           f"answer protocol {PROTOCOL} (the Python library that comes with this 无限工坊 does)"))
     caps, names = [], set()
     raw_caps = answer.get("capabilities", [])
     if not isinstance(raw_caps, list):
@@ -930,7 +922,21 @@ def check_description(eid, answer):
         if opt is not None:
             options.append(opt)
             onames.add(opt["name"])
-    desc = dict(capabilities=caps, sources=sources, options=options)
+    apps = []
+    raw_apps = answer.get("apps", [])
+    if not isinstance(raw_apps, list):
+        out.append(problem("error", f"{where}: apps", "apps is a list of app ids",
+                           '["cocreate"]: the apps of the manifest with "driver": "local", which this program drives'))
+        raw_apps = []
+    for a in raw_apps:
+        if not isinstance(a, str) or not APP_NAME.match(a):
+            out.append(problem("error", f"{where}: apps", f"{a!r} is not an app id",
+                               "lowercase letters, digits and _, a letter first, at most 24 characters"))
+        elif a in apps:
+            out.append(problem("error", f"{where}: apps", f"the app {a} is named twice", "once each"))
+        else:
+            apps.append(a)
+    desc = dict(capabilities=caps, sources=sources, options=options, apps=apps)
     return (None if errors_in(out) else desc), out
 
 
@@ -1073,6 +1079,73 @@ def check_option(o, i, names, out):
         return None
     opt["default"] = default
     return opt
+
+
+# --- a report: what an extension's program tells the game of a piece of its work (its notification report)
+
+REPORT_STATES = ("run", "done", "failed", "retry")
+REPORT_FIELDS = ("app", "key", "state", "step", "text", "done", "total", "retry", "data")
+REPORT_KEY_MAX, REPORT_TEXT_MAX, REPORT_DATA_MAX = 64, 200, 2048      # bytes of UTF-8; data: as compact JSON
+REPORT_STEP = re.compile(r"^[a-z0-9_]{1,24}\Z")
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def check_report(report):
+    """(the report as it is passed on, None), or (None, why it is none): {app, key, state, step?, text?, done?,
+    total?, retry?, data?}. app: an app id; key: the name of the piece of work, a text of at most REPORT_KEY_MAX bytes
+    without control characters; state: one of REPORT_STATES; step: the app's own name of the step (REPORT_STEP); text:
+    one line of plain text of at most REPORT_TEXT_MAX bytes (its spaces run together; an empty one counts as not
+    given); done, total: numbers; retry: a Unix time; data: an object of at most REPORT_DATA_MAX bytes as JSON. What
+    is None counts as not given and is left out"""
+    if not isinstance(report, dict):
+        return None, "a report is a JSON object {app, key, state, ...}"
+    extra = sorted(str(k) for k in report if k not in REPORT_FIELDS)
+    if extra:
+        return None, f"a report has no {', '.join(extra)}; its fields are {', '.join(REPORT_FIELDS)}"
+    app, key, state = report.get("app"), report.get("key"), report.get("state")
+    if not isinstance(app, str) or not APP_NAME.match(app):
+        return None, f"app {app!r} is not an app id"
+    try:
+        size = len(key.encode("utf-8")) if isinstance(key, str) else 0
+    except UnicodeEncodeError:
+        size = 0
+    if not size or size > REPORT_KEY_MAX or CONTROL_CHARS.search(key) or key != key.strip():
+        return None, (f"key {key!r}: the name of the piece of work, a text of 1 to {REPORT_KEY_MAX} bytes without "
+                      f"control characters or spaces around it")
+    if not isinstance(state, str) or state not in REPORT_STATES:
+        return None, f"state {state!r}: one of {', '.join(REPORT_STATES)}"
+    out = dict(app=app, key=key, state=state)
+    step = report.get("step")
+    if step is not None:
+        if not isinstance(step, str) or not REPORT_STEP.match(step):
+            return None, f"step {step!r}: lowercase letters, digits and _, at most 24 characters"
+        out["step"] = step
+    text = report.get("text")
+    if text is not None:
+        if not isinstance(text, str):
+            return None, "text: one line of plain text"
+        if text.strip():
+            line = text_of(text, REPORT_TEXT_MAX)
+            if line is None or CONTROL_CHARS.search(line):
+                return None, f"text: one line of plain text of at most {REPORT_TEXT_MAX} bytes, no control characters"
+            out["text"] = line
+    for name in ("done", "total", "retry"):
+        v = report.get(name)
+        if v is not None:
+            if not finite(v):
+                return None, f"{name} {v!r}: a number"
+            out[name] = v
+    data = report.get("data")
+    if data is not None:
+        try:
+            size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")) \
+                if isinstance(data, dict) else None
+        except (TypeError, ValueError, RecursionError):
+            size = None
+        if size is None or size > REPORT_DATA_MAX:
+            return None, f"data: a JSON object of at most {REPORT_DATA_MAX} bytes"
+        out["data"] = data
+    return out, None
 # ---- shared: end -----------------------------------------------------------------------------------------------------
 
 
@@ -1176,24 +1249,29 @@ class Extension:
     which is the extension's folder when the workshop starts it). A declaration the workshop would refuse (a bad name,
     spec, timeout, option) raises ValueError at once: the checks are the workshop's own.
 
-    The protocol, version 1 (what run() speaks on stdin / stdout; stderr is the log). JSON-RPC 2.0, UTF-8, one object
+    The protocol, version 2 (what run() speaks on stdin / stdout; stderr is the log). JSON-RPC 2.0, UTF-8, one object
     per line.
       workshop -> extension, requests:
         initialize {protocol: {min, max}, workshop, id, options: {name: value}}
-          -> {protocol: 1, capabilities: [{name, kind, title, doc, args, timeout?}], sources: [{name, title, doc}],
-              options: [{name, kind, title, default, hint?, choices?, min?, max?, step?, unit?}]}
-          (1 is not within min..max: an error, and the extension exits with 1)
+          -> {protocol: 2, capabilities: [{name, kind, title, doc, args, timeout?}], sources: [{name, title, doc}],
+              options: [{name, kind, title, default, hint?, choices?, min?, max?, step?, unit?}],
+              apps: [the ids of the apps this program drives: those of @ext.app]}
+          (2 is not within min..max: an error, and the extension exits with 1)
         call {name, args, caller: {by, id?, app?, chain?}, deadline_ms?} -> any JSON | error
           caller.by: "agent" (a tool call), "extension" (id called it with ext.call), "workshop" (a reaction, or the
           note of a wake of the app `app`), "player" (the player clicked a control of the app `app`); caller.chain: how
           the call came about, oldest first ("reaction:<id>", "wake:<app>", "ext:<id>"; the workshop refuses a fifth
           hop with the reason loop); deadline_ms: how long the workshop still waits
+        wake {app, wake} -> {} once the function of @ext.app(app) returned (the workshop sends the next wake of
+          that app only then, and waits as long as it takes); wake: {app, seq, reason, items, skipped, after, next,
+          status?, state?, notes?}
         ping {} -> {} (within 5 s, or the workshop takes the extension for hung; run() answers it by itself)
         shutdown {} -> {}, then the extension exits
       workshop -> extension, notifications:
         options {options: {name: value}} (all of them, after the player changed one)
         cancel {id} (the workshop no longer waits for the call `id`: ext.cancelled() turns True; its answer is dropped)
-      extension -> workshop, notification: event {source: name, data: {...}}
+      extension -> workshop, notifications: event {source: name, data: {...}}; report {app, key, state, step?, text?,
+        done?, total?, retry?, data?} (ext.report: how a piece of the work of an app it drives stands)
       extension -> workshop, request: call {cap: "<capability id>", args, chain?} -> its result | error
         (chain: caller.chain of the call being served, unchanged; ext.call sends it by itself)
       an error: {code, message, data: {reason}}; code -32602 bad_args, -32601 no_capability, 1 failed, 2 busy,
@@ -1234,10 +1312,7 @@ class Extension:
         self._jobs_cond = threading.Condition()
         self._local = threading.local()
         self._apps: dict = {}                            # app id -> the function its wakes go to (@ext.app)
-        self._drive = False                              # run(): drive the apps once initialize is answered
-        self._drivers: list = []                         # the AppDriver of each, while they run
-        self._apps_lock = threading.Lock()               # apps.json
-        self._app_client: Optional[Callable[[], "Client"]] = None   # makes the drivers' client (tests: a stand-in)
+        self._app_queues: dict = {}                      # app id -> the wakes that wait for its thread (_wake)
 
     # ---- declarations
 
@@ -1363,16 +1438,16 @@ class Extension:
             def wake(w):        # {app, seq, reason, items, skipped, after, next, state?, notes?}
                 ...
 
-        Once ext.run() answered initialize, a thread for each such app (AppDriver) opens it in the game (kit.app.open
-        with the declared minutes), listens (Client.app) and hands fn the wakes; besides WuxianKit's, one with reason
-        "open" (no items) each time it opened the app, one with reason "ready" (no items) after each login or UI
-        reload (kit.ready) the app ran through, and "catchup" for what came while nothing listened. What fn
-        raises goes to the log and the next wake comes all the same. Where the wakes got (their next) is kept in
-        ext.data / "apps.json": the next start goes on from there. When the app ends: the player stopped it (why
-        player, also when it was so as the extension started): opened again after the next login or UI reload
-        (kit.ready); the extension was turned off (extension): not again; any other why (expired, left, stopped, ...):
-        again after a few seconds. While the game or the daemon is away it waits. shutdown stops the threads and
-        leaves the app to the workshop.
+        The program only names the app; 无限工坊 runs it. While this extension runs and the game is online it keeps
+        the app open in the game (its heartbeat too) and sends each of its wakes here; fn gets them in a thread of
+        the app's own, and the next one comes when fn returned. Besides WuxianKit's wakes: one with reason "open" (no
+        items; status: the app's status) each time the workshop opened the app, and "catchup" with the items that
+        came while nothing read them (the workshop keeps where the wakes got: a wake fn did not return from before
+        the process ended comes again at the next start). What fn raises goes to the log and the next wake comes
+        all the same. The player's stop holds until they start the app again on its card, or the next login or UI
+        reload; any other end (its lease, an extension it needs) and the workshop opens it again. Nothing to open,
+        keep or stop here: an extension that drives an app starts with 无限工坊 (its manifest needs no start) and the
+        app stops when its process does.
         ExtensionTest(ext).wake(app_id, ...) hands fn a wake in a test"""
         if not isinstance(app_id, str) or not APP_ID.match(app_id):
             raise ValueError(f"app {app_id!r}: lowercase letters, digits and _, a letter first, at most 24 characters "
@@ -1382,7 +1457,8 @@ class Extension:
         declared = [a for a in self.manifest.get("apps") or [] if isinstance(a, dict) and a.get("app") == app_id]
         if self.manifest and not (declared and declared[0].get("driver") == "local"):
             print(f"wuxiankit: @ext.app({app_id!r}): the manifest has no app {app_id} with \"driver\": \"local\" "
-                  f"(WuxianKit opens it for an agent only)", file=sys.stderr)
+                  f"(the workshop does not start an extension whose program and manifest name other apps)",
+                  file=sys.stderr)
 
         def deco(fn: Callable[[dict], Any]) -> Callable[[dict], Any]:
             if not callable(fn):
@@ -1391,12 +1467,41 @@ class Extension:
             return fn
         return deco
 
+    def report(self, app: str, key: str, state: str, *, step: Optional[str] = None, text: Optional[str] = None,
+               done: Optional[float] = None, total: Optional[float] = None, retry: Optional[float] = None,
+               data: Optional[dict] = None) -> None:
+        """tells the game how a piece of the work of an app this extension drives stands (its card shows the text;
+        the addon that belongs to the extension hears it with ext:OnReport). app: an app of @ext.app; key: the name
+        of the piece of work (at most 64 bytes, such as "1794938824:Horde"): a new report of the same key takes the
+        place of the one before; state: "run", "done", "failed" or "retry"; step: the app's own name of the step
+        (lowercase letters, digits and _, at most 24); text: one line of plain text for the player (at most 200
+        bytes); done, total: numbers (how far it is); retry: the Unix time it tries again (with state "retry");
+        data: a small object for the addon (at most 2,048 bytes as JSON). 无限工坊 passes it on while the game is
+        online; else it keeps the newest of each key (16 keys of an app) and gives them once the game is back,
+        marked late. From any thread; before initialize is answered it is held, as events are. ValueError for a
+        report that is none (the workshop would drop it)"""
+        told, why = check_report({"app": app, "key": key, "state": state, "step": step, "text": text, "done": done,
+                                  "total": total, "retry": retry, "data": data})
+        if why:
+            raise ValueError(f"report: {why}")
+        if app not in self._apps:
+            raise ValueError(f"report: this extension drives no app {app!r} (@ext.app; it drives: "
+                             f"{', '.join(sorted(self._apps)) or 'none'})")
+        msg = {"jsonrpc": "2.0", "method": "report", "params": told}
+        with self._lock:
+            if not self._ready:
+                if len(self._held) < HELD_EVENTS:
+                    self._held.append(msg)
+                return
+        self._send(msg)
+
     def describe(self) -> dict:
-        """what initialize answers: {protocol, capabilities, sources, options}"""
+        """what initialize answers: {protocol, capabilities, sources, options, apps}"""
         return {"protocol": PROTOCOL,
                 "capabilities": [dict(c["desc"], args=dict(c["desc"]["args"])) for c in self._caps.values()],
                 "sources": [dict(s.desc) for s in self._sources.values()],
-                "options": [dict(o.desc) for o in self._options.values()]}
+                "options": [dict(o.desc) for o in self._options.values()],
+                "apps": list(self._apps)}
 
     @property
     def options(self) -> dict:
@@ -1496,15 +1601,13 @@ class Extension:
         keeps a copy of file descriptor 1 for the protocol and points 1 at stderr (os.dup / os.dup2, Windows too), and
         sys.stdout at sys.stderr: print(), C libraries writing to fd 1 and child processes all go to the log. Output
         before run() (a library imported at the top of the module) cannot be caught: import such libraries in setup.
-        A setup that raises, or a workshop that speaks another protocol, fails initialize and the process exits with 1.
-        The apps of @ext.app start to be driven once initialize is answered, and stop with shutdown"""
+        A setup that raises, or a workshop that speaks another protocol, fails initialize and the process exits with 1"""
         proto_in, proto_out = _take_stdio()
 
         def write(line: bytes) -> None:
             proto_out.write(line)
             proto_out.flush()
 
-        self._drive = True                               # the apps of @ext.app, once initialize is answered
         self._attach(write, setup)
         if self._serve(proto_in, write):
             sys.exit(1)
@@ -1604,6 +1707,8 @@ class Extension:
             return self._initialize(mid, params)
         if method == "call":
             self._call(mid, params)
+        elif method == "wake":
+            self._wake(mid, params)
         elif method == "cancel":
             self._cancel(params.get("id"))
         elif method == "ping":
@@ -1650,53 +1755,69 @@ class Extension:
             self._ready, held, self._held = True, self._held, []
         for m in held:
             self._send(m)
-        if self._drive:
-            self._start_apps()
         return None
 
     # ---- the apps it drives
 
-    def _start_apps(self) -> None:
-        """a thread for each app of @ext.app (once: a second initialize changes nothing)"""
+    def _wake(self, mid, params: dict) -> None:
+        """the workshop's request wake {app, wake}: to the thread of that app, which hands it to its function and
+        answers {} once that returned (one wake of an app at a time, in the order they came)"""
+        app_id, wake = params.get("app"), params.get("wake")
+        fn = self._apps.get(app_id) if isinstance(app_id, str) else None
+        if fn is None:
+            self._error(mid, NO_CAPABILITY, f"this extension drives no app {app_id!r} (@ext.app names the function "
+                                            f"that gets its wakes; it drives: {', '.join(sorted(self._apps)) or 'none'})")
+            return
+        if not isinstance(wake, dict):
+            self._error(mid, BAD_ARGS, "wake: the wake, an object {app, seq, reason, items, skipped, after, next}")
+            return
         with self._lock:
-            if self._drivers or not self._apps:
+            waiting = self._app_queues.get(app_id)
+            if waiting is None:
+                waiting = self._app_queues[app_id] = queue.Queue()
+                threading.Thread(target=self._run_app, args=(app_id, fn, waiting), daemon=True,
+                                 name=f"wuxiankit-app-{app_id}").start()
+        with self._jobs_cond:
+            self._jobs += 1                              # (until it is answered: settle and shutdown wait for it)
+        waiting.put((mid, wake))
+
+    def _run_app(self, app_id: str, fn: Callable[[dict], Any], waiting: "queue.Queue") -> None:
+        """(the thread of one driven app) each wake to fn, one after another; what fn raises goes to the log and the
+        wake is answered all the same"""
+        while True:
+            job = waiting.get()
+            if job is None:
                 return
-            make = self._app_client or Client
-            self._drivers = [AppDriver(self, app_id, fn, make()) for app_id, fn in self._apps.items()]
-            drivers = list(self._drivers)
-        for d in drivers:
-            d.start()
+            mid, wake = job
+            try:
+                fn(wake)
+            except Exception:
+                print(f"wuxiankit: app {app_id}: the wake ({wake.get('reason')}) failed:", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+            finally:
+                with self._jobs_cond:
+                    self._jobs -= 1
+                    self._jobs_cond.notify_all()
+            self._send({"jsonrpc": "2.0", "id": mid, "result": {}})
 
     def _stop_apps(self) -> None:
-        """the drivers told to stop (they end after the request they wait in; their threads are daemons)"""
+        """the threads of the driven apps end after the wake they are in; wakes still waiting are not answered (the
+        workshop gives their items again at the next start)"""
         with self._lock:
-            drivers = list(self._drivers)
-        for d in drivers:
-            d.stop.set()
-
-    def _cursor(self, app_id: str) -> Optional[int]:
-        """where the wakes of a driven app got, as apps.json in ext.data keeps it; None when it keeps nothing"""
-        try:
-            with self._apps_lock:
-                kept = json.loads((self.data / APPS_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        mine = kept.get(app_id) if isinstance(kept, dict) else None
-        return _id(mine.get("next")) if isinstance(mine, dict) else None
-
-    def _keep_cursor(self, app_id: str, nxt: int) -> None:
-        """apps.json in ext.data: the app's next is nxt now (the others' stay); written whole, then put in place"""
-        with self._apps_lock:
-            path = self.data / APPS_FILE
+            queues, self._app_queues = list(self._app_queues.values()), {}
+        dropped = 0
+        for waiting in queues:
             try:
-                kept = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                kept = {}
-            kept = kept if isinstance(kept, dict) else {}
-            kept[app_id] = {"next": int(nxt)}
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps(kept, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, path)
+                while True:
+                    if waiting.get_nowait() is not None:
+                        dropped += 1
+            except queue.Empty:
+                pass
+            waiting.put(None)
+        if dropped:
+            with self._jobs_cond:
+                self._jobs -= dropped
+                self._jobs_cond.notify_all()
 
     def _call(self, mid, params: dict) -> None:
         name = params.get("name")
@@ -1789,183 +1910,10 @@ class Extension:
         threading.Thread(target=job, daemon=True, name=f"wuxiankit-{fn.__name__}").start()
 
     def _settle(self, timeout: Optional[float] = None) -> bool:
-        """True once no capability or on_options handler runs (False after timeout seconds)"""
+        """True once no capability, on_options handler or wake of a driven app runs or waits (False after timeout
+        seconds)"""
         with self._jobs_cond:
             return self._jobs_cond.wait_for(lambda: self._jobs == 0, timeout)
-
-
-class AppDriver:
-    """the thread that runs one app of a local extension (Extension.app): opens it in the game, listens to its wakes
-    and hands them to the function, one after another, until stop is set. client: a Client; pause(seconds): waits,
-    and is True once stop is set (default: stop.wait). state: what it does now ("opening", "listening", "waiting",
-    "ended"), said: the last line it wrote to the log. Started by the extension; a test may run() one itself"""
-
-    def __init__(self, ext: Extension, app_id: str, fn: Callable[[dict], Any], client: "Client", *,
-                 pause: Optional[Callable[[float], Any]] = None):
-        self.ext, self.id, self.fn, self.client = ext, app_id, fn, client
-        self.stop = threading.Event()
-        self.pause = pause or self.stop.wait
-        self.state = "starting"
-        self.said: Optional[str] = None
-        self.stream: Optional[AppStream] = None
-        self.opened = 0                                   # how many times it opened the app
-        self.checked = False                              # the app's status was read once, before the first open
-        self.refused = 0                                  # WuxianKit's refusals since it last opened
-        self.thread: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        self.thread = threading.Thread(target=self.run, daemon=True, name=f"wuxiankit-app-{self.id}")
-        self.thread.start()
-
-    def say(self, text: str) -> None:
-        """a line to the log (stderr), not the same one twice in a row"""
-        if text != self.said:
-            self.said = text
-            print(f"wuxiankit: app {self.id}: {text}", file=sys.stderr, flush=True)
-
-    def run(self) -> None:
-        """open, listen until the app ends, then as its why says: the player's stop waits for kit.ready, the
-        extension's ends this, any other opens it again after APP_REOPEN seconds"""
-        try:
-            while not self.stop.is_set():
-                status = self.open()
-                if status is None:
-                    continue
-                why, mark = self.listen(status)
-                if why is None:                           # stopped
-                    break
-                if why == "extension":
-                    self.say("ended: its extension was turned off; not opened again")
-                    break
-                if why == "player":
-                    self.say("the player stopped it: opened again after the next login or UI reload")
-                    self.wait_ready(None, mark)
-                else:
-                    self.say(f"ended ({why}): opened again in {APP_REOPEN:g} s")
-                    self.pause(APP_REOPEN)
-        finally:
-            self.state = "ended"
-
-    def mark(self) -> Optional[int]:
-        """where the daemon's events are now (kit.ready from here on is heard); None when it cannot say"""
-        try:
-            return self.client.events("kit.ready", since=-1, wait=0, limit=1).get("next")
-        except WuxianError:
-            return None
-
-    def open(self) -> Optional[dict]:
-        """kit.app.open with the declared minutes: its status; None when it did not open (it waited meanwhile: the game
-        or the daemon away, APP_RETRY s; WuxianKit refused, until kit.ready or the next wait: APP_RETRY s doubled
-        with each refusal, at most APP_REFUSED). Before the first, the
-        app's status: one the player stopped (why player) waits for kit.ready, as after the player's stop"""
-        self.state = "opening"
-        mark = self.mark()
-        if not self.checked:                              # the player stopped it before this process started:
-            try:                                          # theirs until the next login or UI reload
-                was = self.client.call("kit.app.status", {"app": self.id})
-            except WuxianError as e:
-                if e.code != "call_failed":
-                    self.state = "waiting"
-                    self.say(f"waiting for the game ({e.code}: {e.reason})")
-                    self.pause(APP_RETRY)
-                    return None
-                was = None
-            self.checked = True
-            if isinstance(was, dict) and was.get("on") is False and was.get("why") == "player":
-                self.state = "waiting"
-                self.say("the player stopped it: opened again after the next login or UI reload")
-                self.wait_ready(None, mark)
-                return None
-        try:
-            status = self.client.open(self.id)
-        except WuxianError as e:
-            if e.code in ("not_started", "call_failed"):
-                self.state = "waiting"
-                wait = min(APP_REFUSED, APP_RETRY * 2 ** self.refused)
-                self.refused += 1
-                self.say(f"WuxianKit did not open it ({e.code}: {e.reason}); tried again after the next login or UI "
-                         f"reload, or in {wait:g} s")
-                self.wait_ready(wait, mark)
-            else:
-                self.state = "waiting"
-                self.say(f"waiting for the game ({e.code}: {e.reason})")
-                self.pause(APP_RETRY)
-            return None
-        self.opened += 1
-        self.refused = 0
-        self.say("open")
-        return status if isinstance(status, dict) else {}
-
-    def listen(self, status: dict) -> tuple:
-        """the wakes of the app that runs, to fn, until it ends: (why, the daemon's event id to hear kit.ready from) or
-        (None, None) once stop is set. A wake with reason "open" comes first; after each login or UI reload (kit.ready)
-        that the app ran through, one with reason "ready" (no items, the cursor stays: the game may have forgotten
-        what it was told). It goes on from the kept cursor; the first time from where the app's wakes got when it
-        opened (what came between the open and the listening comes as a catch-up)"""
-        since = self.ext._cursor(self.id) if self.ext.id else None
-        if since is None:
-            since = _id(status.get("sent")) if _id(status.get("sent")) is not None else _id(status.get("next"))
-        self.state = "listening"
-        self.handle({"app": self.id, "reason": "open", "items": [], "skipped": 0, "after": since, "next": since,
-                     "status": status})
-        stream = self.stream = self.client.app(self.id, since=since)
-        stream.ready_wakes = True
-        try:
-            while not self.stop.is_set():
-                w = stream.get(POLL_WAIT)
-                if self.stop.is_set():
-                    break
-                if w is not None:
-                    self.handle(w)
-                elif stream.ended is not None:
-                    at = stream.end_event + 1 if stream.end_event is not None else stream._at
-                    return stream.ended, (at if isinstance(at, int) and at >= 0 else None)
-        finally:
-            stream.close()
-        return None, None
-
-    def handle(self, w: dict) -> None:
-        """one wake to fn (what it raises: to the log); where the wakes got is kept, whatever fn did"""
-        try:
-            self.fn(w)
-        except Exception:
-            print(f"wuxiankit: app {self.id}: the wake ({w.get('reason')}) failed:", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-        nxt = _id(w.get("next"))
-        if nxt is not None and self.ext.id:
-            try:
-                self.ext._keep_cursor(self.id, nxt)
-            except (OSError, ValueError) as e:
-                self.say(f"where its wakes got cannot be kept ({e})")
-
-    def wait_ready(self, most: Optional[float], since: Optional[int]) -> bool:
-        """until kit.ready comes (a login, a UI reload; True), most seconds pass (None: no limit), or stop is set.
-        since: the daemon's event id it is heard from (None: from now). Another daemon (its ids start again) counts as
-        a kit.ready: the game may have come back meanwhile"""
-        c = self.client
-        deadline = None if most is None else c.clock() + most
-        daemon = c.daemon
-        while not self.stop.is_set():
-            left = None if deadline is None else deadline - c.clock()
-            if left is not None and left <= 0:
-                return False
-            try:
-                if since is None:
-                    since = c.events("kit.ready", since=-1, wait=0, limit=1).get("next")
-                    daemon = c.daemon
-                    continue
-                ans = c.events("kit.ready", since=since, wait=POLL_WAIT if left is None else min(left, POLL_WAIT))
-            except WuxianError:
-                if self.pause(APP_RETRY if left is None else min(left, APP_RETRY)):
-                    return False
-                continue
-            if daemon is not None and c.daemon != daemon:
-                return True
-            if ans.get("events"):
-                return True
-            nxt = ans.get("next")
-            since = nxt if isinstance(nxt, int) and not isinstance(nxt, bool) else since
-        return False
 
 
 def _take_stdio():
@@ -2022,6 +1970,7 @@ class ExtensionTest:
         rid = t.start("long")                          # a call that goes on: t.cancel(rid), then t.result(rid)
         t.check_description()                          # the problems the workshop would find in its description
         t.wake("cocreate", items=[{"id": 7, "source": "cocreate", "kind": "snapshot"}])   # to its @ext.app function
+        t.reports                                      # [{app, key, state, ...}] it told with ext.report, in order
         t.close()                                      # or: with ExtensionTest(...) as t:
 
     exited: None while the extension answers; 0 once its loop ended (shutdown, close), 1 after a failed initialize"""
@@ -2034,6 +1983,7 @@ class ExtensionTest:
         self.answers: dict = dict(answers or {})
         self.events: list = []                           # {source, data}, in order
         self.calls: list = []                            # {cap, args, chain?} the extension called
+        self.reports: list = []                          # {app, key, state, ...} it told with ext.report, in order
         self.described: Optional[dict] = None            # the initialize answer
         self.exited: Optional[int] = None
         self._next_event = 0
@@ -2080,6 +2030,10 @@ class ExtensionTest:
             elif method == "event":
                 with self._cond:
                     self.events.append(msg.get("params"))
+                    self._cond.notify_all()
+            elif method == "report":
+                with self._cond:
+                    self.reports.append(msg.get("params"))
                     self._cond.notify_all()
             elif method == "call":
                 self._answer(msg)
@@ -2143,7 +2097,7 @@ class ExtensionTest:
 
     def initialize(self, options: Optional[dict] = None, protocol: Optional[dict] = None) -> dict:
         """initialize (call() does it first when it has not run): the extension's description; ExtensionError when
-        setup failed or the protocol range (default {min: 1, max: 1}) leaves its version out"""
+        setup failed or the protocol range (default: the one version this file speaks) leaves its version out"""
         if options is not None:
             self.options = dict(options)
         ans = self.send("initialize", {"protocol": protocol or {"min": PROTOCOL, "max": PROTOCOL}, "workshop": "test",
@@ -2194,8 +2148,12 @@ class ExtensionTest:
     def wake(self, app_id: str, data: Optional[dict] = None, **fields) -> Any:
         """a wake of the app app_id handed straight to its @ext.app function, in this thread: what it returns (what it
         raises comes out here). The wake is {app, seq, reason: "urgent", items: [], skipped: 0, after, next} with
-        data and fields over it (next: the newest item's id, after: next minus the items); nothing is opened, kept
-        or asked of a daemon. initialize runs first when it has not"""
+        data and fields over it (next: the newest item's id, after: next minus the items): reason="open",
+        status={...} is the wake after the workshop opened the app, reason="catchup" one for what was missed.
+        Nothing is opened or asked of a daemon. initialize runs first when it has not; what the function told
+        meanwhile (ext.report, a source's emit) is in reports and events when this returns. (The request itself, as
+        the workshop sends it, is send("wake", {"app": ..., "wake": {...}}): it answers {} whatever the function
+        did)"""
         fn = self.ext._apps.get(app_id)
         if fn is None:
             raise AssertionError(f"no @ext.app({app_id!r}) (it drives: {', '.join(sorted(self.ext._apps)) or 'none'})")
@@ -2210,7 +2168,11 @@ class ExtensionTest:
         w = {"app": app_id, "seq": self._wakes, "reason": "urgent", "items": [], "skipped": 0,
              "after": max(0, nxt - len(items)), "next": nxt}
         w.update(given)
-        return fn(w)
+        try:
+            return fn(w)
+        finally:
+            if self.exited is None:                      # every line it wrote meanwhile is read: reports, events
+                self.ping()
 
     def set_options(self, options: dict) -> None:
         """the player changed the options (all of them): the options notification; waits for on_options"""

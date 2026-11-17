@@ -14,8 +14,8 @@ A spec (set):
      args?      {} the arguments
      item?      an argument name: the whole item goes as that argument
      cooldown?  seconds (default 10; 0: no cooldown) between two calls of this reaction
-     pace?      "quiet" | "normal" | "lively", or a list of them: only while the owner app's activity is one of them
-                (it needs an owner); the owner's activity not known (set_pace never told it): it calls as without pace
+     activity?  "quiet" | "normal" | "lively", or a list of them: only while the owner app's activity is one of them
+                (it needs an owner, an app with a pace: one whose activity nobody told calls nothing)
      note?      what it is for}
 
 Items (item()): an app's item as the game gives it, {source, kind, data, time, topic?, id?} (game: topic combat and kind
@@ -30,9 +30,10 @@ An app's own reactions: what a local extension's manifest declares for its app (
 without id and owner) is set while that app runs (app_started: owner the app, ids <app>.1, <app>.2, ...) and goes when
 it stops, with the reactions the agent set for that owner.
 
-Activity (pace): set_pace(app, activity) tells the engine an app's activity now (WuxianKit's quiet / normal / lively,
-from its kit.app events, its kit.option "activity" and the rows of kit.apps; the daemon calls it); app_stopped forgets
-it. A reaction with pace whose owner's activity is known and not in its list calls nothing (and spends no cooldown).
+Activity: set_activity(app, activity) tells the engine an app's activity now (WuxianKit's quiet / normal / lively,
+from the pace of its kit.app events and of the rows of kit.apps, and its kit.option "activity"; the daemon calls it);
+app_stopped forgets it. A reaction with activity calls only while its owner's activity is one of its list (else
+nothing, and no cooldown is spent).
 
 Loops: a reaction whose call is not done is not fired again meanwhile; at most MAX_RUNNING calls of all reactions run
 at once (what is heard then is dropped, no cooldown spent); a reaction calls MAX_PER_MINUTE times a minute at most
@@ -58,7 +59,7 @@ MAX_NOTE = 200
 MAX_ARGS = 4096                                 # bytes of the args as JSON, roughly
 MAX_ERROR = 300
 KINDS = ("see", "keep", "point")
-PACES = ("quiet", "normal", "lively")           # WuxianKit's activities of an app (its pace), the order of less to more
+ACTIVITIES = ("quiet", "normal", "lively")      # WuxianKit's activities of an app (of its pace), from less to more
 
 ID = re.compile(r"^[A-Za-z0-9_.-]{1,32}\Z")
 APP = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")
@@ -67,8 +68,8 @@ WHAT = re.compile(r"^(\*|[a-z0-9_]+(\.[a-z0-9_]+)*(\.\*)?)\Z")
 CAP = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+\Z")
 ARG = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}\Z")
 PATH = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){0,7}\Z")
-FIELDS = ("id", "owner", "hear", "when", "call", "args", "item", "cooldown", "pace", "note")
-DECLARED = ("hear", "when", "call", "args", "item", "cooldown", "pace", "note")   # what an app's manifest says of one
+FIELDS = ("id", "owner", "hear", "when", "call", "args", "item", "cooldown", "activity", "note")
+DECLARED = ("hear", "when", "call", "args", "item", "cooldown", "activity", "note")   # what an app's manifest says of one
 EXAMPLE = ('{"hear": "game:combat.start", "when": {"data.unit.classification": ["elite", "rareelite"]}, '
            '"call": "voice.play", "args": {"pool": "combat_start_elite"}, "owner": "companion"}')
 
@@ -186,7 +187,7 @@ class Reactions:
         self._tasks = set()                      # the calls that run now
         self._declared = {}                      # app -> the specs of its manifest that are set (as JSON text)
         self._crowded = False                    # MAX_RUNNING calls ran when something was heard (said once)
-        self._paces = {}                         # app -> its activity now (set_pace), while known
+        self._activities = {}                    # app -> its activity now (set_activity), while known
 
     # -- what is set ---------------------------------------------------------------------------------------------------
 
@@ -214,7 +215,7 @@ class Reactions:
         self._rows[clean["id"]] = clean
 
     def list(self) -> list:
-        """the reactions, in the order they were set: rows {id, owner, hear, when, call, args, item, cooldown, pace,
+        """the reactions, in the order they were set: rows {id, owner, hear, when, call, args, item, cooldown, activity,
         note, fired (calls made), failed (calls that failed), last (time of the last call), error (the last failure, why
         the game does not hear it, or that it called too often and calls nothing for the rest of a minute)}"""
         return [self._row(r) for r in self._rows.values()]
@@ -267,22 +268,22 @@ class Reactions:
         forgotten"""
         if isinstance(app, str) and app:
             self._declared.pop(app, None)
-            self._paces.pop(app, None)
+            self._activities.pop(app, None)
             await self.clear(owner=app)
 
-    def set_pace(self, app, activity) -> None:
+    def set_activity(self, app, activity) -> None:
         """an app's activity now (quiet, normal or lively), as WuxianKit says it; anything else (None) forgets it:
-        its reactions with pace call as if they had none until it is told again. Only kept: nothing is called"""
+        its reactions with activity call nothing until it is told again. Only kept: nothing is called"""
         if not isinstance(app, str) or not app:
             return
-        if isinstance(activity, str) and activity in PACES:
-            self._paces[app] = activity
+        if isinstance(activity, str) and activity in ACTIVITIES:
+            self._activities[app] = activity
         else:
-            self._paces.pop(app, None)
+            self._activities.pop(app, None)
 
-    def paces(self) -> dict:
+    def activities(self) -> dict:
         """{app: activity} of the apps whose activity is known"""
-        return dict(self._paces)
+        return dict(self._activities)
 
     async def refresh(self) -> None:
         """the sources on this computer changed (an extension added or removed): hear the new union of game entries"""
@@ -303,8 +304,8 @@ class Reactions:
             source, what = split(r["hear"])
             if not matches(what, source, item) or not holds(r["when"], item):
                 continue
-            if r["pace"] and self._paces.get(r["owner"], r["pace"][0]) not in r["pace"]:
-                continue                         # the owner's activity is known and not one of its: no cooldown spent
+            if r["activity"] and self._activities.get(r["owner"]) not in r["activity"]:
+                continue                         # the owner's activity is not one of its: no cooldown spent
             if r["running"]:                     # its last call is not done: no second one meanwhile
                 continue
             if r["last"] is not None and r["cooldown"] and now - r["last"] < r["cooldown"]:
@@ -482,10 +483,10 @@ class Reactions:
                                 f"(default {DEFAULT_COOLDOWN}; 0: every item that matches calls)")
         out["cooldown"] = cooldown
 
-        out["pace"] = self._check_pace(spec.get("pace"))
-        if out["pace"] and owner is None:
-            raise ReactionError("pace is the activity of the owner app the reaction calls in: give an owner (the app "
-                                "id, such as \"companion\"), or leave pace out")
+        out["activity"] = self._check_activity(spec.get("activity"))
+        if out["activity"] and owner is None:
+            raise ReactionError("activity is the activity of the owner app the reaction calls in: give an owner (the "
+                                "app id, such as \"companion\"), or leave activity out")
 
         note = spec.get("note")
         if note is not None and (not isinstance(note, str) or len(note) > MAX_NOTE):
@@ -494,16 +495,17 @@ class Reactions:
         return out
 
     @staticmethod
-    def _check_pace(pace):
-        """a spec's pace as kept: the activities it calls in, in the order of PACES; None when it gives none"""
-        if pace is None:
+    def _check_activity(activity):
+        """a spec's activity as kept: the activities it calls in, in the order of ACTIVITIES; None when it gives none"""
+        if activity is None:
             return None
-        values = [pace] if isinstance(pace, str) else pace
-        if not isinstance(values, list) or not values or not all(isinstance(v, str) and v in PACES for v in values):
-            raise ReactionError(f"pace is the owner app's activity the reaction calls in: one of {', '.join(PACES)}, "
-                                f"or a list of them, such as [\"normal\", \"lively\"] (not while the player chose "
-                                f"quiet)")
-        return [p for p in PACES if p in values]
+        values = [activity] if isinstance(activity, str) else activity
+        if not isinstance(values, list) or not values \
+                or not all(isinstance(v, str) and v in ACTIVITIES for v in values):
+            raise ReactionError(f"activity is the owner app's activity the reaction calls in: one of "
+                                f"{', '.join(ACTIVITIES)}, or a list of them, such as [\"normal\", \"lively\"] (not "
+                                f"while the player chose quiet)")
+        return [a for a in ACTIVITIES if a in values]
 
     @staticmethod
     def _check_when(when):
@@ -536,4 +538,4 @@ class Reactions:
     @staticmethod
     def _row(r):
         return {k: copy.deepcopy(r[k]) for k in ("id", "owner", "hear", "when", "call", "args", "item", "cooldown",
-                                                 "pace", "note", "fired", "failed", "last", "error")}
+                                                 "activity", "note", "fired", "failed", "last", "error")}

@@ -64,7 +64,7 @@ class Guide(unittest.TestCase):
                           for c in app["controls"]],
                          ["stop", ("mute", "mute", {"on": True}), ("unmute", "mute", {"on": False}),
                           ("again", "again", None)])
-        self.assertEqual((app["link"], app["reactions"][0]["pace"]), ("live", ["normal", "lively"]))
+        self.assertEqual((app["link"], app["pace"], app["reactions"][0]["activity"]), ("live", True, ["normal", "lively"]))
         m, _ = M.check_manifest(self.root / "facts")
         skill = (self.root / "facts" / "skills" / "guild-chat.md").resolve()
         self.assertEqual(m["adds"], {"guild": {"wake": {"call": "facts.lookup", "timeout": 3.0}, "skill": str(skill)}})
@@ -73,10 +73,12 @@ class Guide(unittest.TestCase):
         for word in ("needs_approval", "not_allowed", "批准运行", "`pass`", "`adds`", "`reactions`", "reaction_set",
                      "wk_kit_app_open", "wuxian listen", "deadline_ms", "`cancel", "`ping", "`loop`", '"player"',
                      '"workshop"', "extension_set", "forgotten", "`link`", "`pace`", "2,048 bytes", "`driver`",
-                     '"driver": "local"', "@ext.app", "t.wake", "apps.json", "本机选项", "whole=True",
-                     '"kit": "0.6.1"', '"start": "workshop"'):
+                     '"driver": "local"', "@ext.app", "t.wake", "本机选项", "most=None", "`activity`", "ext.report",
+                     "t.reports", "`replaces`", "--replace [Folder ...]", "{min: 2, max: 2}", "`wake {app, wake}`",
+                     "notification `report", '"start": "workshop"'):
             self.assertIn(word, self.text)
-        for word in ("annotate", "extends", "`launch`", '"program"'):        # what the fifth batch took away
+        for word in ("annotate", "extends", "`launch`", '"program"',        # what the fifth batch took away,
+                     "apps.json", "whole=", "0.9.15", "0.6.1", "standby\"", "按需", "AppDriver"):   # and 0.10.0
             self.assertNotIn(word, self.text)
         for word in M.RESERVED:
             self.assertRegex(self.text, rf"\b{word}\b")
@@ -113,7 +115,7 @@ class Guide(unittest.TestCase):
         self.assertEqual(sorted(kinds), sorted(X.KINDS))
         self.assertIn(f"at most {M.ADDONS_MOST} names", self.text)
         self.assertIn(f"at most {M.AUTHOR_MAX} bytes", self.text)
-        self.assertIn(f'{{"workshop": "0.9.13", "kit": "{self.manifests()[0]["requires"]["kit"]}"}}', self.text)
+        self.assertIn(f'{{"workshop": "0.10.0", "kit": "{self.manifests()[0]["requires"]["kit"]}"}}', self.text)
         self.assertEqual(sorted(self.manifests()[0]["requires"]), sorted(M.REQUIRES))
 
     def test_what_a_package_leaves_out(self):

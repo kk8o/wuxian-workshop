@@ -75,6 +75,8 @@ from ..paths import state_dir
 logger = logging.getLogger("wuxian.mcp")
 
 ADDON, PREFIX, PROTOCOL, URI = "WuxianKit", "wk_", 1, "wuxian://kit"
+ANSWER_MOST = 256 * 1024     # bytes an answer of WuxianKit to a tool may be (the daemon's call takes most: without
+                             # it an answer may be 16 MB, and is waited for as long)
 RECHECK, AWAY = 600, 30                     # seconds: ask the game for the revision again after; while it is away
 FIRST_WAIT = 8                              # seconds a list waits for the first answer when nothing is known yet
 GONE = re.compile(r"WuxianKit has no ")     # a call's failure that says WuxianKit (or that capability) is not running
@@ -85,7 +87,7 @@ POLL = 10                                   # seconds between the watch's asks w
 PASSIVE = contextvars.ContextVar("wuxian_kit_passive", default=False)
 # read by this module, or called by the daemon alone (kit.local.set: the extensions added here, for WuxianKit's
 # window): not tools
-INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities", "kit.local.set"}
+INTERNAL = {"kit.manifest", "kit.revision", "kit.capabilities", "kit.local.set", "kit.app.report"}   # the daemon's own
 FINAL = {"done", "failed", "declined", "expired", "undone"}
 MAX_DOC, MAX_SKILLS = 64 * 1024, 20
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True)
@@ -277,15 +279,16 @@ def topics_of(manifest):
 
 
 APP_ID = re.compile(r"^[a-z0-9_]{1,24}\Z")
-DRIVERS = ("prompt", "program")             # an older WuxianKit's driver field, passed on as it is; the docs never use it
+DRIVERS = ("local",)                        # an app's driver when it is not an agent: its local extension's program
 
 
 def apps_of(manifest):
     """the manifest's apps (WuxianKit 0.6: kit.app.open, the events app.<id>) that this module can read, their texts
     on one line; also kit.apps' rows, and a local extension's apps (kit.app.open's fields: `app` for the id). docs: the
     app's docs folder under Interface\\AddOns (an addon's declaration only; kit.apps does not give it); temp: a temporary
-    app (an agent's, not remembered). driver and launch: what an older WuxianKit said of a program driving the app (the
-    pages may still read them; nothing here does)"""
+    app (an agent's, not remembered). driver: "local" for an app its local extension's program drives (无限工坊
+    keeps it open; kit.apps says by "local" of it too), else None; launch: what an older WuxianKit said (the pages may
+    still read it; nothing here does)"""
     apps = (manifest or {}).get("apps")
     out = []
     for a in apps if isinstance(apps, list) else []:
@@ -920,7 +923,9 @@ class KitTools:
         return out
 
     async def kit(self, name, args=None, timeout_ms=20000):
-        answer = await self.backend.call_exposed(ADDON, name, args, timeout_ms)
+        cached = name in ("kit.revision", "kit.manifest")    # (the daemon's kit cache answers these: no most)
+        answer = await self.backend.call_exposed(ADDON, name, args, timeout_ms,
+                                                 **({} if cached else {"most": ANSWER_MOST}))
         return (answer or {}).get("result")
 
     async def installed(self):
@@ -1421,13 +1426,16 @@ class KitTools:
         if apps:
             lines += ["", "The apps now:", ""]
         for a in apps:
+            driven = a["driver"] == "local" or a["by"] == "local"       # its local extension's program runs it
             who = (f"from the local extension {brings[a['id']]}" if a["id"] in brings else
                    f"from the addon {a['addon']}" if a["addon"] else
+                   "from a local extension" if driven else
                    "declared by an agent" if a["by"] == "agent" else "")
             facts = ", ".join(x for x in ("temporary" if a["temp"] else "", who, f"topic `{a['topic']}`",
                                           f"hears {', '.join(a['hear'][:6])}" if a["hear"] else "",
                                           f"sees {', '.join(a['see'][:8])}" if a["see"] else "") if x)
-            how = (f"start it with its skill `{a['prompt']}`" if a["prompt"] else
+            how = ("its extension's own program runs it and 无限工坊 keeps it open: not one for you to open or listen to"
+                   if driven else f"start it with its skill `{a['prompt']}`" if a["prompt"] else
                    f"open it (wk_kit_app_open {{\"app\": \"{a['id']}\"}}), then wait with `wuxian listen {a['id']} --once`")
             lines.append(f"- `{a['id']}` ({a['title']}, {facts}): {how}")
         return lines
@@ -1708,7 +1716,7 @@ class KitTools:
                             f"{name} is not available now: its extension may be off, or the game is away. Call wk_docs "
                             "to see the extensions that are on, and status to check the link.")
         try:
-            answer = await self.backend.call_exposed(ADDON, cap, arguments, 30000)
+            answer = await self.backend.call_exposed(ADDON, cap, arguments, 30000, most=ANSWER_MOST)
         except ApiError as e:
             if e.code == "call_failed" and GONE.search(e.message or ""):    # WuxianKit (or this capability) is gone
                 self.stale = True

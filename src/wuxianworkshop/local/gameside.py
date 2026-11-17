@@ -7,12 +7,14 @@ A folder in AddOns that this put there holds a mark, the file MARK:
     {"extension": "voice", "digest": "<the source's digest when it was installed>", "version": "<its .toc's version>"}
 
 A folder of that name without the mark, or with another extension's, is someone else's addon: install() refuses it
-(409 addon_exists) unless it is told to replace it, and remove() leaves it, whatever is in it. A folder without any mark
+(409 addon_exists) unless it is told to replace that very one, and remove() leaves it, whatever is in it. What is
+replaced is said folder by folder: replace is a list [{folder, there}], and a folder is replaced only when it is in
+the list and the version its .toc says is still `there` (what whoever said yes looked at). A folder without any mark
 whose .toc says it is the same addon as the extension's (same_addon: the same ## X-WuxianKit-Extension, the same
 ## X-Website, or the same ## Title and ## Author) is most often one the player installed by hand before (from the web
-site): the player's approval replaces that one (replace="same"), unless its version is newer than the extension's; any
-other is replaced only when the player says so (replace=True: the App's 替换, `wuxian ext install <id> --replace`). A
-link or a file of the name is never replaced. state() says where an addon stands: "current" (the mark's
+site): the player's approval replaces those, unless one is newer than the extension's (replaces(): the list the
+summary shows them); any other folder of the name only when the player names it (the App's 替换, `wuxian ext install
+<id> --replace <folder>`). A link or a file of the name is never replaced. state() says where an addon stands: "current" (the mark's
 digest is the source's), "differs" (ours, another digest: the source changed since), "missing", "foreign", "broken" (the
 source cannot be installed: no folder, no .toc, a file that is no addon's kind), "listed" (its name is that of an addon
 of the catalog, which no extension can bring: it is never installed, whatever AddOns holds) and "unknown" (no game
@@ -186,26 +188,54 @@ def _toc_of(folder):
 def _foreign(src, target, version):
     """(state) what a foreign row says more of the folder in AddOns: {} for a link or a file (never replaced), else
     dict(same, there[, newer: True]): same: it has no mark and its .toc says it is the extension's addon (same_addon);
-    there: the version its .toc says, or None; newer: there is newer than the extension's version"""
+    there: the version its .toc says, or None; newer: it is the same addon and there is newer than the extension's
+    version (of another addon's version nothing is said: its numbers do not compare)"""
     if _is_link(target) or not target.is_dir():
         return {}
     theirs = _toc_of(target)
     same = not os.path.lexists(target / MARK) and same_addon(_toc_of(src), theirs)
     there = str(theirs.get("Version") or "").strip() or None
     out = dict(same=same, there=there)
-    if newer(there, version):
+    if same and newer(there, version):
         out["newer"] = True
     return out
 
 
+def replaceable(row):
+    """whether the foreign thing of this state() row can be replaced at all: a folder (a link or a file never)"""
+    return row.get("state") == "foreign" and "same" in row
+
+
+def replace_list(replace):
+    """install()'s replace as it is used: [(folder name, casefolded; there: a text or None)]; None when it is not a
+    list of {folder, there} (nothing given is the empty list)"""
+    if replace is None:
+        return []
+    if not isinstance(replace, (list, tuple)):
+        return None
+    out = []
+    for item in replace:
+        if not isinstance(item, dict) or not isinstance(item.get("folder"), str) or not item["folder"] \
+                or not (item.get("there") is None or isinstance(item["there"], str)):
+            return None
+        out.append((item["folder"].casefold(), item.get("there") or None))
+    return out
+
+
 def takes(row, replace):
-    """whether install() with `replace` puts the extension's addon in the place of the foreign one of this state() row:
-    replace True, any folder (not a link, not a file); "same", one that is the same addon and not newer"""
-    if row.get("state") != "foreign" or "same" not in row:
+    """whether install() with `replace` ([{folder, there}]) puts the extension's addon in the place of the foreign
+    folder of this state() row: the list names the folder, and the version it says is still the list's there"""
+    if not replaceable(row):
         return False
-    if replace is True:
-        return True
-    return replace == "same" and bool(row.get("same")) and not row.get("newer")
+    return (str(row.get("folder")).casefold(), row.get("there") or None) in (replace_list(replace) or [])
+
+
+def replaces(rows):
+    """what the player's approval replaces, of an extension's state() rows: [{folder, there, same, newer}] of the
+    foreign folders that are the same addon (installed by hand) and not newer than the extension's. An extension's
+    summary shows the list, and install() takes it as its replace"""
+    return [dict(folder=r["folder"], there=r.get("there"), same=True, newer=False)
+            for r in rows if replaceable(r) and r.get("same") and not r.get("newer")]
 
 
 def foreign_data(row):
@@ -239,7 +269,7 @@ def state(folder, name, addons, eid, listed=None):
     "missing" (not in AddOns), "foreign" (there, not this extension's), "current" (this extension's, of the source's
     digest), "differs" (this extension's, another digest). A foreign folder (not a link, not a file) has two more:
     same (it has no mark, and its .toc says it is the same addon: same_addon) and there (the version its .toc says, or
-    None), and newer: True when there is newer than the source's version"""
+    None), and newer: True when it is the same addon and there is newer than the source's version"""
     if _folder_problem(name):
         return dict(folder=name, version=None, state="broken")
     src = source(folder, name)
@@ -340,17 +370,17 @@ def _put(folder, name, addons, eid, interface, version, take=None):
     return kept, not there or _code(new) != before
 
 
-def install(folder, names, addons, eid, interface=None, listed=None, replace=False):
+def install(folder, names, addons, eid, interface=None, listed=None, replace=None):
     """the extension's addons `names` put into the AddOns folder `addons`: dict(addons=[dict(folder, state, was,
     version, kept)], restart). An addon that is current stays (state "current"); one that is missing or differs is
     installed (state "installed"; was: its state before; kept: the history's id of the version kept of what was there,
-    or None). replace: what of a foreign folder of the name is replaced (takes()): False none; "same" the same addon
-    (state()'s same) when it is not newer; True any (a link or a file never); one replaced has was "foreign", the
-    version that was there kept in the history first. interface: the client's Interface number for the .toc files
+    or None). replace: the foreign folders that are replaced, [{folder, there}] (None: none): one of the name is
+    replaced when the list has it and the version it says is still there (takes(); a link or a file never); one
+    replaced has was "foreign", the version that was there kept in the history first. interface: the client's Interface number for the .toc files
     (None: as they are). listed: the catalog's addon folders (extensions.listed_folders()), which an extension cannot
     have. restart: the client sees it only when the game starts again (a new folder, or the set of .lua / .toc / .xml
     files changed). GameSideError: 503 no_game_folder; 400 bad_addon (a name that cannot be, one twice, a source that
-    is broken) and 409 addon_exists (a folder of the name that is not this extension's, and not one to replace; the
+    is broken, a replace that is no list of {folder, there}) and 409 addon_exists (a folder of the name that is not this extension's, and not one to replace; the
     error's data: foreign_data), both before anything is touched; 409 addon_busy and 500 addon_failed while
     installing: that addon is as it was, the ones before it are installed (the error's done)"""
     if addons is None or not Path(addons).is_dir():
@@ -359,6 +389,9 @@ def install(folder, names, addons, eid, interface=None, listed=None, replace=Fal
     addons = Path(addons)
     if isinstance(names, str) or not isinstance(eid, str) or not eid:
         raise GameSideError(400, "bad_addon", "names: the addon folders' names; eid: the extension's id")
+    if replace_list(replace) is None:
+        raise GameSideError(400, "bad_addon", "replace: the folders in AddOns to replace, [{folder, there}] (there: "
+                                              "the version the folder says now, or null)")
     plan, seen = [], set()
     for name in names:
         why = name_problem(name, listed) or source_problem(folder, name)
@@ -405,7 +438,7 @@ def _exists(name, row, eid):
                 f"its place, the one there kept in the history")
     return (f"{name}: AddOns holds a folder of this name that is not this extension's{there}: it is left as it is. "
             f"Move it away yourself, give the extension's addon another name, or replace it (`wuxian ext install "
-            f"{eid} --replace`, the App's 替换: the one there is kept in the history)")
+            f"{eid} --replace {name}`, the App's 替换: the one there is kept in the history)")
 
 
 def marked(addons, eid):
