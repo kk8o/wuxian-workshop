@@ -91,6 +91,9 @@ class DaemonClient:
     def status(self):
         return self.get("/api/status")
 
+    def link(self, action, wait=0.0):
+        return self.post("/api/link", action=action, wait=wait)
+
     def run(self, code, timeout_ms=10000, addon=None, whole=False):
         if whole:                    # the rest comes for as long as it keeps coming (service.run_whole)
             return self.post("/api/run", code=code, timeout_ms=timeout_ms, addon=addon, whole=True,

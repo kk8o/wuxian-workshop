@@ -51,7 +51,7 @@ class Link099(unittest.TestCase):
 
     def test_a_big_job_goes_compressed(self):
         s = self.start()
-        self.assertEqual(self.session(s).features, link.POUR)
+        self.assertEqual(self.session(s).features, link.STANDBY)
         self.assertTrue(s.comp.zipping())
         job = s.comp.code(BIG, "=run")
         heads = self.heads(s)
@@ -177,6 +177,22 @@ class Link099(unittest.TestCase):
         self.assertLessEqual(sizes[-1], int(cap * 0.90))
         self.assertEqual(sum(sizes), 12000 + 1)                          # the type byte too
 
+    def test_a_hello_nobody_answers_is_flat_every_other_time(self):
+        """no app: the HELLO is an ∞ for FLAT_AFTER s, then every other one in mode 1 (an app before 0.9.9 reads only
+        those); a WELCOME without mode= (an older app) means mode 1"""
+        s = Session(self)
+        self.addCleanup(s.close)
+        s.login()
+        s.run(3)
+        hello = [sh[4] for sh in s.shapes if sh[1] == F.TYPE_CONTROL and sh[2:4] == (64, 16)]
+        self.assertTrue(hello)
+        self.assertEqual(set(hello), {3})                                # an ∞ at first
+        s.run(10)
+        hello = [sh[4] for sh in s.shapes if sh[1] == F.TYPE_CONTROL and sh[2:4] == (64, 16)]
+        self.assertEqual(set(hello), {1, 3})                             # then flat every other time
+        s.ns[b"Link"][b"Welcome"](b"v=1;s=1;hb=5")
+        self.assertEqual(s.ns[b"Link"][b"P"][b"mode"], 1)
+
     def test_an_older_companion_gets_full_parts(self):
         """mode 1 (a companion before 0.9.9): the parts fill their frames, as before"""
         s = self.start(welcome=dict(mode=1, w=64, h=16, bw=128, bh=32, win=16, show=0.25))
@@ -190,9 +206,9 @@ class Link099(unittest.TestCase):
 
     def test_frames_along_infinity(self):
         """the WELCOME says mode 3: heartbeats come 32 x 12 and data frames in mode 3, their cells laid along ∞; the
-        HELLO before it was in mode 1; everything is read as before (the mock decodes every frame with frame.py)"""
+        HELLO before it an ∞ too (0.9.14); everything is read as before (the mock decodes every frame with frame.py)"""
         s = self.start()
-        self.assertEqual({sh for sh in self.shapes(s, 0, F.TYPE_CONTROL) if sh[:2] == (64, 16)}, {(64, 16, 1)})   # HELLO
+        self.assertEqual({sh for sh in self.shapes(s, 0, F.TYPE_CONTROL) if sh[:2] == (64, 16)}, {(64, 16, 3)})   # HELLO
         t0 = s.now()
         s.lua.execute(b'print("along the curve")')
         s.run(6)

@@ -19,9 +19,11 @@
 -- frame never stopped changing). /wb flush, or the companion's "flush", drops every message waiting.
 -- A WELCOME that says mode=3 (0.9.9) has data frames, heartbeats and PONGs drawn in mode 3 (Frame.lua: the cells laid
 -- along ∞, drawn up to 1.6 times wider than its own proportions to fill the frame), each frame about as wide as its ∞
--- (heartbeat 32 x 12; data frames w3 x h and bw3 x bh, which the WELCOME may set: 56 x 16 and 128 x 32); a HELLO stays in
--- mode 1, which every companion reads. In mode 3 no frame is filled past
--- BREATH_HIGH of its room (fuller, the ∞ swells into a blob), and the parts of a long message breathe: their sizes go
+-- (heartbeat 32 x 12; data frames w3 x h and bw3 x bh, which the WELCOME may set: 56 x 16 and 128 x 32). From 0.9.14
+-- every frame is an ∞: before any WELCOME the link draws in mode 3 too (HELLO, BYE), as every app since 0.9.9 reads it;
+-- a WELCOME without mode= (an older app) means mode 1, and an addon that never heard an app that stands by draws every
+-- other HELLO in mode 1 once nobody answered for FLAT_AFTER s (an app before 0.9.9 reads only those). In mode 3 no frame
+-- is filled past BREATH_HIGH of its room (fuller, the ∞ swells into a blob), and the parts of a long message breathe: their sizes go
 -- from BREATH_LOW to BREATH_HIGH of a big frame's room and back every BREATH_PERIOD parts, so that its ∞ swells and
 -- shrinks as it goes up (each part's header says its length; the companion joins them as ever).
 -- From 0.9.6 (FEATURES, f= in HELLO and PONG) a WELCOME may also set rto (the companion then acknowledges every few
@@ -40,19 +42,42 @@
 -- still go first, and the segments go in the window in order as other messages do. With no mailbox packet for
 -- POUR_QUIET seconds (the companion does not read the screen: the game minimized, a loading screen) no new segment is
 -- queued until one comes.
+-- Standing by (FEATURES 5, 0.9.14): the frame shows only in a session, while things pass between the app and the addon;
+-- the rest of the time the link stands by, the mailbox read and nothing on the screen (the app only peeks, with GDI, at
+-- the frame's place once a second: the doorbell). Nobody above the link opens or ends a session: the link does.
+--   The app's records go in a packet stamped "at <ms>" (a COMMAND record, the app's clock in ms). Standing by, a packet
+--   stamped less than STAMP_TTL s ago opens a session (HELLO, then on as ever; its records are the session's first);
+--   one stamped earlier waited in the mailbox (the character screen, the link off), and the app has given up on it: its
+--   records are dropped, as is every request that comes while standing by unstamped or off.
+--   The addon's own data (a result, an event, a pour, the player's text; not prints and errors, which wait for the next
+--   session) rings the doorbell: the HELLO frame goes up at the frame's place, which the HELLO says (o=x,y: whole pixels
+--   from the client area's top left; the app keeps it). Nobody answering in HELLO_GIVEUP s, the addon stands by again
+--   and rings again after RING_AGAIN s, twice that the next time, at most RING_MAX. The frame unlocked (L.Hold) rings too.
+--   The addon ends the session: nothing waits to go up, the frame is locked, and nothing passed for the WELCOME's idle= s
+--   (0: never; requests and the addon's own data count; the app's heartbeats, acks, prints and errors do not; a 0.9.14 app says a few seconds: a session is
+--   over when what passes is done), nor within a "hold <s>" the app sent (it listens s more seconds for prints and errors,
+--   which do not ring): a BYE control frame ("BYE;why=idle") up for LEAVE_SHOW s, then standing by. So do the player (L.Hide: /wb hide, the panel, the key binding: why=hide; /wb off:
+--   why=off) and the app's "rest <ms>" (its 收起: why=rest).
+-- The app also says "here <ms> <app>" (it runs: at its start and every few minutes) and "bye <ms>" (it quits: no
+-- doorbell until it is back). The addon stands by only after an app said "here" or stamped a packet (db.appNew): an
+-- older app does neither, and the addon shows its HELLO as ever. Off, the mailbox is still read (no backlog builds up
+-- meanwhile) and only "here" and "bye" are heard. A session kept across /reload (db.link) shows its HELLO at once, as
+-- ever; a new app ("here" with another <app>) reads the frames of one going on and takes it over.
 local _, ns = ...
 local Codec, Mailbox = ns.Codec, ns.Mailbox
 local band, floor, char = bit.band, math.floor, string.char
 
 local L = {}
 ns.Link = L
-L.VERSION = "0.9.13"
+L.VERSION = "0.9.14"
 -- 1: takes rto and pack from a WELCOME, shows again at once what a PARTS record asks for, HB l=;
 -- 2 (0.9.7): also takes CALL records (data calls, Agent.lua);
 -- 3 (0.9.9): also inflates the CODE and CALL jobs that come compressed (Agent.lua, Inflate.lua; a client that read the
 -- .toc before Inflate.lua came, until the game restarts, does not load it);
--- 4 (0.9.13): also pours a long answer's rest (the data call "pour", TYPE_POUR messages)
-L.FEATURES = ns.Inflate and 4 or 2
+-- 4 (0.9.13): also pours a long answer's rest (the data call "pour", TYPE_POUR messages);
+-- 5 (0.9.14): also stands by: a session only while things pass (a stamped packet opens one, the addon's data rings the
+-- doorbell, idle= ends it, "hold" keeps it), "here", "bye", "rest", BYE frames, o= in HELLO
+L.FEATURES = ns.Inflate and 5 or 2
 
 -- the first byte of a message; Send's `kind` picks it
 L.TYPE_TEXT, L.TYPE_DEBUG, L.TYPE_RUN, L.TYPE_RELOAD, L.TYPE_TEST, L.TYPE_EVENT, L.TYPE_BATCH = 0, 1, 2, 3, 4, 5, 6
@@ -64,6 +89,13 @@ local URGENT = { run = true, reload = true }     -- shown before everything else
 local AGAIN_MAX = 120                            -- seconds between a message's passes nobody asked for, at most
 local POUR_AHEAD = 2                             -- segments of pours queued and not shown yet, at most
 local POUR_QUIET = 20                            -- seconds without a mailbox packet after which no segment is queued
+local STAMP_TTL = 8                              -- seconds an app's stamped packet opens a session for: the app gives up on
+                                                 -- it after 12 s (link.py WAKE_WAIT), so what came with it runs then or never
+local HELLO_GIVEUP = 30                          -- seconds of HELLO without a packet before an addon that can stand by does
+local RING_AGAIN, RING_MAX = 60, 600             -- seconds before the doorbell rings again after nobody answered it (doubling)
+local FLAT_AFTER = 4                             -- seconds of HELLO unanswered after which an addon that never heard an
+                                                 -- app that stands by draws every other HELLO in mode 1 (apps before 0.9.9)
+local LEAVE_SHOW = 0.8                           -- seconds the BYE frame stays up before the frame goes
 
 local P = {
 	helloW = 64, helloH = 16, hbW = 32, hbH = 8,
@@ -71,7 +103,7 @@ local P = {
 	dataW3 = 56, bigW3 = 128,   -- ... and the data frames' widths (WELCOME w3, bw3; heights as in mode 1)
 	dataW = 64, dataH = 16,     -- a message that fits one frame
 	bigW = 128, bigH = 32,      -- the parts of a longer one
-	cell = 4, mode = 1,
+	cell = 4, mode = 3,  -- (mode 3 until a WELCOME says otherwise: every app since 0.9.9 reads it)
 	show = 0.25,     -- a frame stays up at least this long
 	rto = 4,         -- unconfirmed parts are shown again this long after a message's last part was shown
 	win = 16,        -- messages in flight
@@ -82,11 +114,21 @@ local P = {
 	beat = 2,        -- the heartbeat frame changes this often; in HELLO a HELLO goes up this often also while messages wait
 	busy = 8,        -- online, a heartbeat frame goes up at least this often while messages wait
 	keep = 256,      -- messages kept at most; past that the oldest go (nobody acknowledges them: no companion)
+	idle = 0,        -- seconds without anything passing after which the addon ends a session (WELCOME idle=; 0: never)
 }
 L.P = P
 
 local db, Print
-local state = "off"          -- off | hello | online
+local state = "off"          -- off | standby | hello | online | leaving (the BYE frame up, then `leaving.to`)
+local helloSince             -- when the link last went to HELLO
+local helloJob               -- the agent's newest job before the wake that started this session (HELLO j=): the jobs
+                             -- of the wake's packet run in this session, and their results are on their way
+local leaving                -- { to = "standby" | "off", why, at = when the frame goes }
+local appAway                -- the app said "bye" (the panel and the minimap say so); nil: unknown or here
+local lastBusy               -- when something last passed in this session (a request, a message up): idle= counts
+local holdUntil = 0          -- the app listens until then ("hold <s>"): the session does not end idle before
+local ringAfter, ringBackoff = 0, RING_AGAIN      -- the doorbell rings again from then on; the wait after the next giveup
+local held                   -- the frame is unlocked (L.Hold): a session, that does not end idle
 local queue = {}             -- messages not acknowledged yet (see Send)
 local Squeeze                -- a block of a long message into its squeeze (defined with Shape)
 local Pouring                -- the next segments of the pours into the queue (defined with L.Pour)
@@ -95,8 +137,10 @@ local frame                  -- what the link has on the bus: { kind, since }
 local lastControl            -- when the last HELLO / HB went up
 local lastPacket, lastAck = nil, 0
 local beat, ctlId = 0, 0
+local hellos = 0              -- HELLO frames drawn (every other one flat: Control)
 local pong                   -- a ping id to answer
 local connected              -- the link was online before in this UI session: the chat says "again"
+local offlineSaid            -- the chat said the link was lost: it says when it is back
 local stats = { packets = 0, acked = 0, resent = 0, sum = 0, max = 0, draws = 0, drawSum = 0, drawMax = 0, lost = 0 }
 local burst                  -- { n, last, t0, acked, sum, max, resent0 }
 local stream                 -- { n, last, t0, acked, sum, max, resent0, ending }
@@ -141,11 +185,14 @@ local function Draw(kind, W, H, ftype, msg, payload, mode, part, parts)
 	C_Timer.After(P.show, L.Step)
 end
 
--- a HELLO in mode 1, which every companion reads; a heartbeat or PONG in mode 3 when the WELCOME said so
+-- a control frame in mode 3 (an ∞) unless the WELCOME said otherwise; a HELLO nobody answers, of an addon that never
+-- heard an app that stands by, every other time in mode 1 (an app before 0.9.9 reads only that)
 local function Control(kind, payload)
 	ctlId = ctlId % 65535 + 1
 	if kind == "hello" then
-		Draw(kind, P.helloW, P.helloH, Codec.TYPE_CONTROL, ctlId, payload)
+		hellos = hellos + 1
+		local flat = P.mode ~= 3 or (not (db and db.appNew) and GetTime() - (helloSince or 0) > FLAT_AFTER and hellos % 2 == 0)
+		Draw(kind, P.helloW, P.helloH, Codec.TYPE_CONTROL, ctlId, payload, flat and 1 or 3)
 	elseif P.mode == 3 then
 		Draw(kind, P.hbW3, P.hbH3, Codec.TYPE_CONTROL, ctlId, payload, 3)
 	else
@@ -159,13 +206,21 @@ local function Skipped(n)
 	return s and (";bad=" .. s) or ""
 end
 
+-- the frame's place, "x,y" in whole pixels from the client area's top left (Frame.Offset: kept on the screen)
+local function Place()
+	local ok, x, y = pcall(ns.Frame.Offset)
+	return ok and ("%d,%d"):format(x or 0, y or 0) or "0,0"
+end
+
 local function ControlPayload(kind)
 	if kind == "hello" then
 		local pw, ph = GetPhysicalScreenSize()
 		local version, build, _, toc = GetBuildInfo()          -- the program installs its addons with this ## Interface
-		return ("HELLO;v=%s;s=%d;k=%d;m=%d;p=%s;pw=%d;ph=%d;es=%.6g;gv=%s.%s;i=%d;f=%d;j=%s%s"):format(L.VERSION, ns.session,
-			Mailbox.Next(), Oldest(), Mailbox.Proc(), pw, ph, UIParent:GetEffectiveScale(), version or "?", build or "?",
-			tonumber(toc) or 0, L.FEATURES, ns.Agent.LastJob(), Skipped(8))
+		return ("HELLO;v=%s;s=%d;k=%d;m=%d;p=%s;pw=%d;ph=%d;es=%.6g;gv=%s.%s;i=%d;f=%d;j=%s;o=%s%s"):format(L.VERSION,
+			ns.session, Mailbox.Next(), Oldest(), Mailbox.Proc(), pw, ph, UIParent:GetEffectiveScale(), version or "?",
+			build or "?", tonumber(toc) or 0, L.FEATURES, helloJob or ns.Agent.LastJob(), Place(), Skipped(8))
+	elseif kind == "bye" then
+		return ("BYE;why=%s;k=%d;m=%d"):format(leaving and leaving.why or "hide", Mailbox.Next(), Oldest())
 	end
 	return ("HB;n=%d;k=%d;m=%d;l=%d;q=%d%s"):format(beat % 100000, Mailbox.Next(), Oldest(), ShownThrough(), #queue, Skipped(1))
 end
@@ -226,9 +281,51 @@ local function Pick(now)
 	end
 end
 
+local function Hidden()
+	frame = nil
+	if ns.HideFrame then ns.HideFrame() else ns.Frame.Hide() end
+end
+
+-- the session over: no frame, the mailbox read; the app wakes it again (db.link is kept across /reload)
+local function StandBy()
+	state, helloJob, leaving = "standby", nil, nil
+	db.link = "standby"
+	Hidden()
+end
+
+local function Off()
+	state, helloJob, leaving = "off", nil, nil
+	db.link = "standby"
+	Hidden()
+end
+
+-- a session: HELLO at once, then as ever. kept: the app's stamped packet opened it (the app reads the screen from its
+-- write on, and waits for what it asked across a /reload too); a doorbell's is kept once the app answers
+local function Open(kept)
+	state, helloSince, helloJob, lastControl, leaving = "hello", GetTime(), ns.Agent.LastJob(), nil, nil
+	lastBusy = GetTime()
+	if kept then db.link = "session" end
+	for _, m in ipairs(queue) do m.again = 0 end    -- what waited goes up within rto
+end
+
+-- the BYE frame, up for LEAVE_SHOW s; then standing by (to "standby") or off. why: idle, hide, rest or off
+local function Leave(to, why)
+	leaving = { to = to, why = why or to, at = GetTime() + LEAVE_SHOW }
+	state = "leaving"
+	beat = beat + 1
+	lastControl = GetTime()
+	Control("bye", ControlPayload("bye"))
+end
+
 -- what goes on the bus next; runs every 0.05 s, and when a frame's display time is up (Draw)
 function L.Step()
-	if state == "off" then return end
+	if state == "off" or state == "standby" then return end
+	if state == "leaving" then
+		if GetTime() >= leaving.at then
+			if leaving.to == "off" then Off() else StandBy() end
+		end
+		return
+	end
 	if pours[1] then Pouring(GetTime()) end
 	for _, m in ipairs(queue) do               -- a block of the first long message being squeezed
 		if m.squeeze then
@@ -255,6 +352,7 @@ function L.Step()
 		local i = table.remove(m.pending, 1)
 		m.firstShown = m.firstShown or now
 		Draw("data", m.W, m.H, Codec.TYPE_DATA, m.id, m.frags[i], P.mode, i - 1, #m.frags)
+		if m.kind ~= "debug" then lastBusy = now end   -- the addon's own data going up: the session is in use
 		if not m.pending[1] then m.pending, m.passEnd, m.shown = nil, now, true end
 		return
 	end
@@ -268,7 +366,7 @@ function L.Welcome(text)
 	local f = {}
 	for k, v in text:gmatch("(%w+)=([^;]*)") do f[k] = v end
 	local n = function(k) return tonumber(f[k]) end
-	if n("mode") and n("mode") >= 0 and n("mode") <= 3 then P.mode = n("mode") end
+	P.mode = n("mode") and n("mode") >= 0 and n("mode") <= 3 and n("mode") or 1   -- none: an older app, mode 1
 	if n("w") and n("h") and n("w") >= 24 and n("w") <= 255 and n("h") >= 8 and n("h") <= 255 then P.dataW, P.dataH = n("w"), n("h") end
 	if n("bw") and n("bh") and n("bw") >= 24 and n("bw") <= 255 and n("bh") >= 8 and n("bh") <= 255 then P.bigW, P.bigH = n("bw"), n("bh") end
 	if n("w3") and n("w3") >= 24 and n("w3") <= 255 then P.dataW3 = n("w3") end
@@ -278,6 +376,8 @@ function L.Welcome(text)
 	if n("hb") and n("hb") >= 1 and n("hb") <= 60 then          -- offline after three heartbeats missed
 		P.hb, P.offline = n("hb"), math.max(15, 3 * n("hb"))
 	end
+	-- an app before 0.9.14 says no idle=, and ends no session either (its addon never stands by)
+	P.idle = n("idle") and n("idle") >= 0 and n("idle") <= 86400 and n("idle") or 0
 	-- a companion before 0.9.6 says neither: it acknowledges every second and reads no batches (also when it takes over
 	-- from a newer one in this session)
 	P.rto = n("rto") and n("rto") >= 2 and n("rto") <= 60 and n("rto") or 4
@@ -311,6 +411,8 @@ function L.Command(text)
 		local age = (time() * 1000 - (tonumber(nonce) or 0)) % 1e8
 		if age > RELOAD_STALE and age < 1e8 - 60000 then return end
 		ns.UI.AskReload(reason ~= "" and reason or nil)
+	elseif cmd == "at" or cmd == "wake" or cmd == "rest" or cmd == "here" or cmd == "bye" or cmd == "hold" then
+		return                               -- the session's say, done in OnPacket
 	elseif handlers[cmd] then
 		handlers[cmd](rest)
 	else
@@ -401,22 +503,84 @@ local function Record(r, pkt)
 	end
 end
 
+-- whether an app's <ms> is recent: a packet stamped longer than STAMP_TTL ago waited in the mailbox (the clocks are this
+-- PC's)
+local function Fresh(ms)
+	local age = time() - (tonumber(ms) or 0) / 1000
+	return age > -60 and age < STAMP_TTL
+end
+
+-- the app's say about the session, before the packet's other records: "at" (the packet's stamp; "wake" in the 0.9.14
+-- test builds), "rest", "here", "bye", and "hold" (the app listens a while: prints and errors do not ring; only in a
+-- session, its own or the one the packet opened: one that came while off or too late keeps nothing). Gives whether
+-- the packet opened a session
+local function Say(pkt)
+	local opened
+	for _, r in ipairs(pkt.records) do
+		local cmd, a, b
+		if r.kind == "COMMAND" then cmd, a, b = r.data:match("^(%a+)%s*(%S*)%s*(%S*)") end
+		if (cmd == "here" or cmd == "at" or cmd == "wake") and not db.appNew then
+			Print(ns.L.MET_APP)                         -- the first app that rings and stands by: said once
+		end
+		if cmd == "here" then                           -- (another app, started anew, takes a session going on over:
+			db.appNew, appAway = true, nil              -- it reads the frames and welcomes them)
+			if b ~= "" then db.appId = b end
+		elseif cmd == "bye" then
+			appAway = true
+			if state == "hello" or state == "online" then StandBy() end
+		elseif cmd == "at" or cmd == "wake" then
+			db.appNew, appAway = true, nil
+			if Fresh(a) and (state == "standby" or (state == "leaving" and leaving.to == "standby")) then
+				opened = true                           -- (the player's hide a moment before: the app's request wins)
+				Open(true)
+			end
+		elseif cmd == "hold" and tonumber(a) and (opened or state == "hello" or state == "online") then
+			holdUntil = GetTime() + math.max(0, math.min(tonumber(a), 600))
+		elseif cmd == "rest" and Fresh(a) and (state == "hello" or state == "online") then
+			Leave("standby", "rest")
+		end
+	end
+	return opened
+end
+
+-- what makes a session busy: a request (not the app's heartbeat, its say about the session, or a ping)
+local SAY = { at = true, wake = true, rest = true, here = true, bye = true, ping = true, hold = true }
+
+local function Busy(pkt)
+	for _, r in ipairs(pkt.records) do
+		if r.kind == "CODE" or r.kind == "CALL" or r.kind == "TEXT" then return true end
+		if r.kind == "COMMAND" and not SAY[r.data:match("^(%a*)")] then return true end
+	end
+	return false
+end
+
+-- standing by, off or leaving, a packet's records are not done (the app's say aside): a stamped one opened a session,
+-- and one that did not came unasked or too late (the app has given up on it)
 local function OnPacket(pkt)
 	local now = GetTime()
 	lastPacket = now
 	stats.packets = stats.packets + 1
-	if state ~= "online" then
-		state = "online"
-		Print(connected and ns.L.RECONNECTED or ns.L.CONNECTED)
-		connected = true
+	ringAfter, ringBackoff = 0, RING_AGAIN           -- an app reads the mailbox: the doorbell may ring at once
+	local opened = Say(pkt)
+	if pkt.session == ns.session and pkt.ack > 0 then       -- also standing by: what the app has needs no session
+		lastAck = pkt.ack
+		while queue[1] and Before(queue[1].id, pkt.ack) do     -- (the idle time counts from what went up, not
+			Acked(table.remove(queue, 1), now)                  -- from its ack: done is done)
+		end
+	end
+	if state == "off" or state == "standby" or state == "leaving" then return end   -- the app's say alone
+	if Busy(pkt) then lastBusy = now end
+	if state ~= "online" and not opened then
+		state, helloJob, lastBusy = "online", nil, now
+		db.link = "session"
+		if not db.appNew then                          -- an app that does not stand by: online as ever
+			Print(connected and ns.L.RECONNECTED or ns.L.CONNECTED)
+		elseif offlineSaid then                        -- sessions come and go unsaid; a loss said is said back
+			Print(ns.L.RECONNECTED)
+		end
+		connected, offlineSaid = true, nil
 		ns.Console.Add("LINK", ns.L.CON_LINK_UP)
 		for _, m in ipairs(queue) do m.again = 0 end    -- what went up while nobody read it goes again within rto
-	end
-	if pkt.session == ns.session and pkt.ack > 0 then
-		lastAck = pkt.ack
-		while queue[1] and Before(queue[1].id, pkt.ack) do
-			Acked(table.remove(queue, 1), now)
-		end
 	end
 	for _, r in ipairs(pkt.records) do     -- one record failing does not lose the others (the slot is read once)
 		local ok, err = pcall(Record, r, pkt)
@@ -424,13 +588,49 @@ local function OnPacket(pkt)
 	end
 end
 
+-- data of the addon's own waits to go up (rings the doorbell): a message not shown yet that is not a print or an
+-- error, a pour's segments, an addon's event (API.lua keeps those while the link is not online). One shown and not
+-- acknowledged yet does not: the app most likely has it, and asks for what it misses in the next session
+local function Wanted()
+	for _, m in ipairs(queue) do
+		if m.kind ~= "debug" and not m.shown then return true end
+	end
+	return pours[1] ~= nil or (ns.EventsWaiting ~= nil and ns.EventsWaiting() > 0)
+end
+
+-- a message of the addon's own (not a print or an error) not acknowledged yet
+local function Owed()
+	for _, m in ipairs(queue) do
+		if m.kind ~= "debug" then return true end
+	end
+	return false
+end
+
+-- nothing passes, nothing of the addon's own waits and the app does not listen: the session may end once that has
+-- lasted P.idle s. Prints and errors neither ring nor keep a session (an addon printing every second would keep it for
+-- good): what is left of them goes in the next one
+local function Quiet(now)
+	return not Owed() and not pours[1] and not held and not (ns.EventsWaiting and ns.EventsWaiting() > 0)
+		and now >= holdUntil and now - (lastBusy or now) >= P.idle
+end
+
 -- runs every 0.5 s
 function L.Tick()
 	local now = GetTime()
 	if state == "online" and lastPacket and now - lastPacket > P.offline then
-		state = "hello"
-		Print(ns.L.OFFLINE:format(#queue))
+		state, helloSince = "hello", now
+		if not db.appNew or Wanted() then           -- standing by, a loading screen is no news; data waiting is
+			Print(ns.L.OFFLINE:format(#queue))
+			offlineSaid = true
+		end
 		ns.Console.Add("LINK", ns.L.CON_LINK_DOWN)
+	elseif state == "hello" and db.appNew and now - math.max(helloSince or 0, lastPacket or 0) > HELLO_GIVEUP then
+		StandBy()                            -- nobody answers: stand by rather than show HELLO; ring again later
+		ringAfter, ringBackoff = now + ringBackoff, math.min(ringBackoff * 2, RING_MAX)
+	elseif state == "online" and db.appNew and P.idle > 0 and Quiet(now) then
+		Leave("standby", "idle")
+	elseif state == "standby" and db.appNew and not appAway and now >= ringAfter and (held or Wanted()) then
+		Open(false)                          -- the doorbell
 	end
 	ns.Debug.Tick(now)
 	ns.UI.CheckSlots()
@@ -682,6 +882,53 @@ end
 
 function L.State() return state end
 
+-- the app said "bye" since it last said "here" (the panel, the minimap)
+function L.AppAway() return appAway == true end
+
+-- whether an app that wakes the addon was heard (db.appNew): /wb on stands by then, else shows HELLO
+function L.CanStandBy() return db ~= nil and db.appNew == true end
+
+-- the session ended by the player (/wb hide, the panel, the key binding): the BYE frame, then standing by. False when
+-- there is no session, or the app cannot wake the addon again (an older one: /wb off is the way)
+function L.Hide()
+	if not (db and db.appNew) or not (state == "hello" or state == "online") then return false end
+	Leave("standby", "hide")
+	ringAfter = GetTime() + RING_AGAIN       -- what still waits rings later, not at once
+	return true
+end
+
+-- the frame unlocked (on) or locked again: unlocked, a session (the frame shows where it goes, and the app follows it)
+-- that does not end idle; locked, the idle time counts from then
+function L.Hold(on)
+	held = on and true or nil
+	if held and state == "standby" and db and db.appNew and not appAway then
+		Open(false)
+	elseif not held then
+		lastBusy = GetTime()                         -- the idle time counts from now
+	end
+end
+
+-- the link off (/wb off): no session, nothing heard but "here" and "bye" (the mailbox is still read)
+function L.Off()
+	if state == "off" or (state == "leaving" and leaving.to == "off") then return end
+	if (state == "hello" or state == "online") and db.appNew then
+		Leave("off", "off")
+	elseif state == "leaving" then
+		leaving.to, leaving.why = "off", "off"
+	else
+		Off()
+	end
+end
+
+-- the link on again (/wb on): standing by when an app wakes it, else HELLO (an older app)
+function L.On()
+	if state ~= "off" then return end
+	if db.appNew then StandBy() else
+		state, helloSince, lastControl = "hello", GetTime(), nil
+		db.link = "session"
+	end
+end
+
 function L.SlotsLeft()
 	return Mailbox.Phase() == "full" and 0 or Mailbox.POOL - Mailbox.Next() + 1
 end
@@ -703,25 +950,45 @@ end
 
 -- what the settings panel shows: state, how many wait to go up, how many were acknowledged, the heartbeat
 function L.Numbers()
-	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb, packets = stats.packets }
+	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb, packets = stats.packets, away = appAway == true }
 end
 
 local tickers = {}
+local mailEvery = 0.05         -- s between looks at the mailbox (0.25 before 0.9.14; L.MailEvery)
 
-function L.Start(savedDb, print)
+-- on: false starts the link off (autoLink off: the mailbox read, nothing heard but "here" and "bye"). Stands by when an
+-- app that wakes the addon was heard and no session was going on before the /reload; else HELLO, as ever
+function L.Start(savedDb, print, on)
 	db, Print = savedDb, print
 	if #tickers > 0 then return end     -- already running
 	nextId = db.nextData or 1
-	state, lastControl = "hello", nil
+	lastControl, helloJob, leaving = nil, nil, nil
+	if on == false then
+		state = "off"
+	elseif db.appNew and db.link ~= "session" then
+		state = "standby"
+	else
+		state, helloSince = "hello", GetTime()
+	end
 	Mailbox.Start(db, OnPacket)
-	tickers = { C_Timer.NewTicker(0.25, Mailbox.Tick), C_Timer.NewTicker(0.05, L.Step), C_Timer.NewTicker(0.5, L.Tick) }
+	tickers = { C_Timer.NewTicker(mailEvery, Mailbox.Tick), C_Timer.NewTicker(0.05, L.Step), C_Timer.NewTicker(0.5, L.Tick) }
 	ns.Debug.Start()                     -- what came before the link started
 end
 
--- the link off: no frame, no mailbox reading (the companion sees the link down and waits; L.Start picks it up again)
+-- how often the mailbox is looked at (s; 0.25 from L.Start): the ticker made again. Gives the interval in use
+function L.MailEvery(seconds)
+	mailEvery = math.max(0.02, math.min(tonumber(seconds) or mailEvery, 2))
+	if tickers[1] then
+		tickers[1]:Cancel()
+		tickers[1] = C_Timer.NewTicker(mailEvery, Mailbox.Tick)
+	end
+	return mailEvery
+end
+
+-- the link stopped altogether: no frame, no mailbox reading (L.Start picks it up again: the panel's 重新连接)
 function L.Stop()
 	for _, t in ipairs(tickers) do t:Cancel() end
 	tickers = {}
-	state = "off"
-	ns.Frame.Hide()
+	state, leaving = "off", nil
+	Hidden()
 end

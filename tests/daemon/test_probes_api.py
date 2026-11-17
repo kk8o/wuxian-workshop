@@ -28,7 +28,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.svc = Service(lambda on_debug, log: Worker(), journal=Journal())
         self.sent, self.chunks, self.snaps, self.answer = [], [], [], {}
 
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             self.sent.append(code)
             self.chunks.append(chunk)
             if "RegisterEvent" in code:
@@ -69,7 +69,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         self.sent.clear()
         run = self.svc.run
 
-        async def failing(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def failing(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             if chunk == "=run":
                 raise ApiError(504, "timeout", "no answer")
             return await run(code, timeout_ms, addon, chunk)
@@ -141,7 +141,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
         pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
         keys, flight = [], dict(now=0, most=0)
 
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             self.sent.append(code)
             m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
             if m:
@@ -179,7 +179,7 @@ class Probes(unittest.IsolatedAsyncioTestCase):
                       cm.exception.message)
 
     async def test_a_piece_the_game_no_longer_keeps(self):
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             if code.startswith("local KEY, I = "):              # a /reload between the pieces
                 return dict(ok=False, error="the rest of this answer is no longer kept in the game (the UI reloaded?)",
                             stack="")
@@ -202,7 +202,7 @@ class PiecesAgain(unittest.IsolatedAsyncioTestCase):
         self.pieces = [text[i:i + 1000] for i in range(0, len(text), 1000)]
         self.asked, self.trouble = [], {}
 
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             m = re.match(r'local KEY, I = "(\w+)", (\d+)\n', code)
             i = int(m[2]) if m else 1
             self.asked.append(i)

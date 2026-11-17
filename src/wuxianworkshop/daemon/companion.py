@@ -28,6 +28,7 @@ import ctypes.wintypes as wt
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -48,7 +49,7 @@ from ..core.locate import locate
 from ..paths import logs_dir, state_dir
 from ..transport import capture
 from ..transport.capture import GdiReader, WgcSource, grab_client
-from ..transport.link import Companion
+from ..transport.link import IDLE, Companion
 
 if sys.stdout is not None:                                       # None in a detached process
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # Chinese text in logs, also when piped (cp936 otherwise)
@@ -66,6 +67,25 @@ WINDOW_SEARCH = 1.0                              # seconds between searches for 
 WGC_STALE = 5.0                                  # seconds without a new WGC picture of a window that is not minimized
                                                  # before the capture starts again (the game draws all the time)
 WGC_STALE_NOTE = f"WGC showed nothing new for {WGC_STALE:.0f} s: starting the capture again"
+STANDBY_FROM = (0, 9, 14)                        # the WoWBridge that stands by (link features STANDBY)
+DOORBELL_EVERY = 1.0                             # seconds between peeks (GDI) at the frame's place while standing by
+DOORBELL_SCAN = 5.0                              # seconds between looks over the whole window while that place is not
+DOORBELL_SCAN_KNOWN = 30.0                       # known, and once it is (the window resized, the frame moved meanwhile)
+ROOM = (520, 136)                                # the room the addon keeps on the screen for its biggest frame (pixels;
+                                                 # Frame.lua Room): it keeps the frame that far from the right and bottom
+_TOC_VERSION = re.compile(r"(?m)^## Version:\s*(\d+)\.(\d+)\.(\d+)")
+
+
+def stands_by(addons):
+    """whether the WoWBridge installed in this AddOns folder stands by until woken (0.9.14 on): its .toc's version. The
+    running game may still have an older one loaded (files replaced without a /reload): its HELLO says so then
+    (Companion.legacy)"""
+    try:
+        text = (Path(addons) / "WoWBridge" / "WoWBridge.toc").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    m = _TOC_VERSION.search(text)
+    return bool(m) and tuple(int(x) for x in m.groups()) >= STANDBY_FROM
 
 
 def log(*a):
@@ -140,6 +160,14 @@ class CompanionLoop:
         self.on_session = None                       # the daemon's: (session, its newest job) for a new session's HELLO
         self.on_pour = None                          # the daemon's: (session, key, i, m, bytes) for a segment of a pour
         self.on_up = None                            # the daemon's: (session) once it can be told things (again)
+        self.on_open_failed = None                   # the daemon's: (text) when the game did not answer an opening
+        self.on_bye = None                           # the daemon's: (why) when the player ended the session
+        self.always, self.idle = False, IDLE         # the daemon's settings: a session always; the addon's idle time
+        self.bell_file = state_dir() / "doorbell.json"
+        self.bell = self._load_bell()                # the frame's place in client pixels (x, y) for the doorbell, or None
+        self.bell_last = self.bell_scan = 0.0        # time.monotonic() of the last peek and the last look over the window
+        self.in_session = False                      # the last round read a session (the place is kept when it ends)
+        self.frame_at = None                         # where in the client area a frame was last found (its corner)
         self.comp = None
         if addons is not None:
             self._make_companion(Path(addons))
@@ -183,6 +211,106 @@ class CompanionLoop:
         self.comp.on_session = self._on_session
         self.comp.on_pour = self._on_pour
         self.comp.on_up = self._on_up
+        self.comp.on_open_failed = self._on_open_failed
+        self.comp.on_bye = self._on_bye
+        self.comp.on_place = self._on_place
+        self.comp.settings(self.always, self.idle)
+        self.comp.standby = stands_by(addons)
+
+    def _on_open_failed(self, text):
+        if self.on_open_failed is not None:
+            self.on_open_failed(text)
+
+    def _on_bye(self, why):
+        if self.on_bye is not None:
+            self.on_bye(why)
+
+    def link_settings(self, always, idle):
+        """(any thread) the daemon's settings: a session always, or one the addon ends after idle s with nothing passing;
+        the Companion takes them on the loop's thread (step)"""
+        self.always, self.idle = always, idle
+
+    def snap_source(self):
+        """(worker thread) the WGC capture a snap reads, and whether it was started for it (then the caller stops it):
+        the session's; standing by none runs (GDI would picture whatever covers the game), so one is started for this
+        picture alone (Windows shows its border meanwhile). (None, False) when WGC is not in use or cannot start"""
+        if self.wgc is not None:
+            return self.wgc, False
+        if self.capture != "wgc" or self.win is None:
+            return None, False
+        try:
+            return WgcSource(self.win.hwnd, *ROI_FULL), True
+        except Exception as e:
+            self.log(f"WGC for a snap unavailable ({e}): GDI, anything over the game is in the picture")
+            return None, False
+
+    # --- the doorbell ----------------------------------------------------------------------------------------------
+
+    def _load_bell(self):
+        try:
+            d = json.loads(self.bell_file.read_text(encoding="utf-8"))
+            return int(d["x"]), int(d["y"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _keep_bell(self, x, y, why):
+        """the frame's place (client pixels) for the doorbell, kept in state/doorbell.json"""
+        place = (max(0, int(x)), max(0, int(y)))
+        if place == self.bell:
+            return
+        self.bell = place
+        self.log(f"doorbell at ({place[0]},{place[1]}) of the client area ({why})")
+        try:
+            self.bell_file.write_text(json.dumps(dict(x=place[0], y=place[1])), encoding="utf-8")
+        except OSError as e:
+            self.log(f"could not keep the doorbell's place: {e}")
+
+    def _on_place(self, x, y, pw, ph):
+        """a HELLO said where the frame is, in the game's physical pixels: the client area's when they are its size"""
+        win = self.win
+        if win is not None and pw and ph and win.w and win.h:
+            x, y = x * win.w / pw, y * win.h / ph
+        self._keep_bell(round(x), round(y), "the HELLO says")
+
+    def _bell_at(self, win):
+        """where a peek starts: MARGIN above and left of the frame's place (the default (0, 0) when not known), kept as
+        the addon keeps the frame: on the screen with room for its biggest frame (a smaller window moved it)"""
+        x, y = self.bell or (0, 0)
+        x = min(x, max(0, win.w - ROOM[0]))
+        y = min(y, max(0, win.h - ROOM[1]))
+        return max(0, x - MARGIN), max(0, y - MARGIN)
+
+    def _doorbell(self, win, comp):
+        """standing by: no session, so no capture (WGC stopped: no border). A peek with GDI at the frame's place every
+        DOORBELL_EVERY s (a frame there is the addon ringing: on_frame takes it as a session), and a look over the
+        whole window every DOORBELL_SCAN s while the place is not known (DOORBELL_SCAN_KNOWN once it is)"""
+        if self.wgc is not None:
+            self.wgc.stop()
+            self.wgc = None
+            self.log("no session: only the doorbell is read (GDI, at the frame's place)")
+        now = time.monotonic()
+        if now - self.bell_scan >= (DOORBELL_SCAN_KNOWN if self.bell else DOORBELL_SCAN):
+            self.bell_scan = now
+            self.search_fails, self.last_search = 0, 0.0
+            self.frame_at = None
+            self._search(win)                       # found: frame_at is the frame's corner
+            if self.search_fails == 0 and self.frame_at is not None:
+                self._keep_bell(*self.frame_at, "found on the screen")
+                self.bell_last = 0.0                # peek there now
+        if now - self.bell_last >= DOORBELL_EVERY:
+            self.bell_last = now
+            at = self._bell_at(win)
+            t0 = time.perf_counter()
+            try:
+                img = grab_client(win, *ROI_SMALL, *at, reader=self.gdi)
+            except OSError:
+                img = None
+            if img is not None:
+                self.roi_at = at
+                self._frame(win, img, ROI_SMALL, t0)
+        if not comp.session:
+            self.same, self.misses = None, 0
+            self.gdi.close()
 
     def _on_up(self, sid):
         if self.on_up is not None:
@@ -272,6 +400,8 @@ class CompanionLoop:
     def step(self):
         """one round: requests, the window, the command files, one read of the frame area, the link's clock"""
         self._serve_requests()
+        if self.comp is not None and (self.comp.always, self.comp.idle) != (self.always, self.idle):
+            self.comp.settings(self.always, self.idle)
         win = self._window()
         if win is None:
             if self.win is not None:
@@ -327,6 +457,7 @@ class CompanionLoop:
         self.blocked = None
         comp = self.comp
         if (win.pid, int(start)) != self.pid:          # the start time too: Windows may give a new process the same pid
+            comp.standby = stands_by(self.addons)      # what the game loaded at its start (an install comes before it)
             comp.new_process(f"P{win.pid}-{int(start)}")
             self.pid = (win.pid, int(start))           # only once that worked: a failure is tried again next round
             self.geom = None
@@ -364,6 +495,19 @@ class CompanionLoop:
             self.moving_since, self.relock_from, self.failed_since = None, now, 0
         if self.files:
             self._file_commands(win)
+        if comp.standing_by() and not comp.session:
+            if self.in_session:                     # a session just ended: the doorbell is where its frames were
+                self.in_session = False
+                if self.frame_at is not None:
+                    self._keep_bell(*self.frame_at, "where the session's frames were")
+            self._doorbell(win, comp)
+            comp.tick()
+            self._wait(self.rate)
+            return
+        if not self.in_session:                     # a session begins: an opening's first read goes to the doorbell's
+            self.in_session, self.frame_at = True, None     # place (a doorbell's found the frame already)
+            if comp.standing_by() and comp.opening is not None and self.bell is not None:
+                self.roi_at = self._bell_at(win)
         if self.capture != self.capture_wanted:          # the settings changed, or a new window after a WGC failure
             if self.capture_wanted == "gdi" or self.wgc_failed != win.hwnd:
                 self.capture = self.capture_wanted
@@ -421,6 +565,8 @@ class CompanionLoop:
     def _rate(self):
         """seconds between reads: LOST_RATE once MISSES_BEFORE_FULL reads in a row found no frame (the addon is off,
         the link too, or the frame is somewhere else: a search finds it), the rate asked for otherwise"""
+        if self.comp is not None and self.comp.opening is not None:
+            return self.rate                        # an opening: the frame comes any moment
         return max(self.rate, LOST_RATE) if self.misses >= MISSES_BEFORE_FULL else self.rate
 
     def _search_every(self):
@@ -460,7 +606,12 @@ class CompanionLoop:
         for line in lines:
             self.log(f"command: {line}")
             if line.split()[0] == "snap":
-                text = take_snap(line, win, self.wgc)
+                wgc, started = self.snap_source()
+                try:
+                    text = take_snap(line, win, wgc)
+                finally:
+                    if started:
+                        wgc.stop()
                 comp.note(f"snap: {text}")
                 if comp.on_debug:
                     comp.on_debug("SNAP", text)
@@ -480,6 +631,7 @@ class CompanionLoop:
             self.search_fails += 1
             return
         self.search_fails = 0
+        self.frame_at = (int(lk.ox - lk.px), int(lk.oy - lk.py))      # the frame's corner in the client area
         at = (max(0, int(lk.ox - lk.px) - MARGIN), max(0, int(lk.oy - lk.py) - MARGIN))   # the quiet zone's corner
         if at != self.roi_at:
             self.log(f"frame found at ({int(lk.ox - lk.px)},{int(lk.oy - lk.py)}) of the client area: reading from there")
@@ -537,6 +689,7 @@ class CompanionLoop:
         self.same = None
         if lk is not None:
             self.search_fails = 0
+            self.frame_at = (self.roi_at[0] + int(lk.ox - lk.px), self.roi_at[1] + int(lk.oy - lk.py))
             self._follow(lk)
         if dec is None:
             return
@@ -579,6 +732,11 @@ class CompanionLoop:
                     self.log("loop error: " + traceback.format_exc().rstrip())
                     self._wait(0.5)
         finally:
+            if self.comp is not None and self.link and self.win is not None:
+                try:
+                    self.comp.farewell()            # "bye": an addon that stands by ends the session going on
+                except Exception as e:
+                    self.log(f"could not say bye: {e!r}")
             if self.wgc is not None:
                 self.wgc.stop()
                 self.wgc = None

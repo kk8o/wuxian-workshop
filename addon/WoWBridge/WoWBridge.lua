@@ -7,7 +7,8 @@
 --   /wb help [dev]               the commands (dev: the link tests and the experiments' switches)
 --   /wb log [errors|runs|output] the debug window (Console.lua): errors, prints and the agent's code as they happen
 --   /wb link                     the link to the companion: state, mailbox slot, message counters
---   /wb on | off                 show the frame and connect, or stop the link and hide the frame (kept: autoLink)
+--   /wb on | off                 the link on (standing by: a session when something has to pass; an older app: HELLO) or off (kept: autoLink)
+--   /wb hide                     end the session going on: the frame goes until something has to pass again
 --   /wb unlock | lock | reset    drag the frame elsewhere, fix it there, or put it back in the top-left corner
 --   /wb lang auto|zh|en          the language of these messages and the panel (auto: the client's)
 --   /wb send <text>              send a message to the companion (acknowledged through the font mailbox)
@@ -22,7 +23,7 @@
 local addonName, ns = ...
 local Frame, L = ns.Frame, ns.L
 
-local VERSION = "0.9.13"
+local VERSION = "0.9.14"
 local SWITCHES = { forwardDebug = true, hotLoad = true, autoLink = true, toasts = true }   -- /wb set <key> on|off
 local WAIT_SAY = 15       -- not connected this long after entering the world: the chat says what to do
 
@@ -139,6 +140,12 @@ function WB.Off()
 	current = nil
 end
 
+-- the frame gone (the link standing by, or off: Link.lua)
+function ns.HideFrame()
+	Frame.Hide()
+	current = nil
+end
+
 -- the same frame, drawn again: after a size change, or when its content is stale
 local function Redraw()
 	if not current then return end
@@ -203,16 +210,33 @@ function WB.LinkStatus()
 	Print(ns.Link.Status())
 end
 
--- the link on or off, kept for the account (autoLink): off stops it and hides the frame
+-- the mailbox's polling, for measuring the link's latency (from code the agent runs; not kept: /reload goes back to
+-- 10 meters, 1.0 s, 0.05 s). nil keeps a value. Gives meters, resetAfter, tick in use
+function WB.MailCadence(meters, resetAfter, tick)
+	local m, r = ns.Mailbox.SetCadence(meters, resetAfter)
+	return m, r, ns.Link.MailEvery(tick)
+end
+
+-- the link on or off, kept for the account (autoLink). Off: no frame, and nothing opens a session (the mailbox is still
+-- read: nothing piles up meanwhile); on: standing by when the app can stand by, else the frame as ever
 function WB.SetLink(on)
 	ns.Set("autoLink", on)
-	if on and entered and ns.Link.State() == "off" then
-		ns.Link.Start(db, Print)
-		Print(L.LINK_STARTED)
+	if not entered then return end
+	if on and ns.Link.State() == "off" then
+		ns.Link.On()
+		Print(ns.Link.CanStandBy() and L.LINK_STANDBY or L.LINK_STARTED)
 	elseif not on and ns.Link.State() ~= "off" then
-		ns.Link.Stop()
-		current = nil
+		ns.Link.Off()
 		Print(L.LINK_STOPPED)
+	end
+end
+
+-- the session going on ended (/wb hide, the panel, the key binding): the frame goes until something has to pass again
+function WB.Hide()
+	if ns.Link.Hide() then
+		Print(L.LINK_HIDDEN)
+	elseif not ns.Link.CanStandBy() then
+		Print(L.HIDE_NEEDS_APP)
 	end
 end
 
@@ -221,10 +245,7 @@ end
 function WB.Reconnect()
 	ns.Set("autoLink", true)
 	if not entered then return end
-	if ns.Link.State() ~= "off" then
-		ns.Link.Stop()
-		current = nil
-	end
+	ns.Link.Stop()
 	ns.Link.Start(db, Print)
 end
 
@@ -233,11 +254,13 @@ function WB.Unlock()
 		ns.Set("frameX", x)
 		ns.Set("frameY", y)
 	end, L.MOVER)
+	ns.Link.Hold(true)                 -- a session while it moves: the app follows the frame
 	Print(L.UNLOCKED)
 end
 
 function WB.Lock()
 	Frame.SetUnlocked(false)
+	ns.Link.Hold(false)
 	Print(L.LOCKED:format(Frame.Offset()))
 end
 
@@ -297,8 +320,8 @@ events:SetScript("OnEvent", function(_, event, arg1)
 		if not entered then
 			entered = true
 			C_Timer.NewTicker(1, Tick)
+			ns.Link.Start(db, Print, cfg.autoLink ~= false)   -- connected: the link says so in the chat
 			if cfg.autoLink ~= false then
-				ns.Link.Start(db, Print)          -- connected: the link says so in the chat
 				C_Timer.After(WAIT_SAY, function()
 					if ns.Link.State() == "hello" and ns.Link.SlotsLeft() > 0 then Print(L.WAITING_CHAT) end   -- 0: UI.lua says why
 				end)
@@ -361,6 +384,8 @@ SlashCmdList.WOWBRIDGE = function(msg)
 		end
 	elseif cmd == "on" or cmd == "off" then
 		WB.SetLink(cmd == "on")
+	elseif cmd == "hide" then
+		WB.Hide()
 	elseif cmd == "unlock" then
 		WB.Unlock()
 	elseif cmd == "lock" then

@@ -1265,7 +1265,7 @@ class KitTools:
         m = await self.current()
         await self.read_rows()                             # the local extensions' states and approvals as they are now
         if not m and not self.local_exts:
-            return ("No WuxianKit in the game right now. Call `status`: if link.state is not \"online\", the game is away; "
+            return ("No WuxianKit in the game right now. Call `status`: if link.state is \"offline\", the game is away; "
                     "call wk_docs again once it is. If the game is online, WuxianKit is not installed or is turned off: "
                     "the user can install it on the Extensions (扩展) page of the 无限工坊 App, then restart the game "
                     "fully.")

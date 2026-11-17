@@ -18,7 +18,9 @@ M.KINDS = { [1] = "WELCOME", [2] = "HEARTBEAT", [3] = "TEXT", [4] = "COMMAND", [
 local DIR = "Interface\\AddOns\\WoWBridge\\mail\\"
 local RESET_AFTER = 1.0     -- a FontString gets SetFont again this often while the slot is not readable: loading is
                             -- asynchronous, and a SetFont sooner might start the load over
-local METERS = 2            -- FontStrings that take turns, so that an empty slot is still tried every 0.5 s
+local METERS = 10           -- FontStrings that take turns, so that an empty slot is still tried every 0.1 s (0.9.14;
+                            -- 2 before: measured 2026-11-17 on 1.60.1.70938, a round trip 0.37 s in place of 0.8 s and
+                            -- no frame lost at 60 fps; both can be changed while the link runs, M.SetCadence)
 local BAD_LIMIT = 8         -- a slot whose packet keeps failing its checks is skipped after this many tries
 local SKIPPED_KEPT = 8      -- skipped slots remembered for the control frames
 
@@ -68,6 +70,20 @@ function M.Start(db, onPacket)
 	for i = 1, METERS do st.meters[i] = Font.Meter() end
 	Font.Load(st.meters[1], DIR .. "proc.ttf")
 	st.lastSet[1] = GetTime()
+end
+
+-- meters FontStrings taking turns, each set again every resetAfter s (an empty slot is tried every resetAfter / meters s);
+-- nil keeps a value. Gives the two in use. The slot being polled is asked for again at once, with the new turns.
+-- resetAfter under the time a font takes to load stalls the mailbox (each SetFont starts the load over)
+function M.SetCadence(meters, resetAfter)
+	METERS = math.max(1, math.min(math.floor(tonumber(meters) or METERS), 16))
+	RESET_AFTER = math.max(0.05, math.min(tonumber(resetAfter) or RESET_AFTER, 5))
+	if st then
+		for i = #st.meters + 1, METERS do st.meters[i] = Font.Meter() end
+		for i = #st.meters, METERS + 1, -1 do st.meters[i], st.lastSet[i] = nil, nil end
+		if st.phase == "poll" then Want(st.slot) end
+	end
+	return METERS, RESET_AFTER
 end
 
 function M.Next() return st and st.slot or (WoWBridgeDB and WoWBridgeDB.mail and WoWBridgeDB.mail.next) or 1 end

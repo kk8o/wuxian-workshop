@@ -42,7 +42,7 @@ DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 INSTRUCTIONS = """WuxianWorkshop (无限工坊) links you to the player's running World of Warcraft (retail 12.x UI, Lua 5.1) through its WoWBridge addon.
 
-First call `status`, and again when a tool fails with link_down or a timeout. Game tools need link.state "online" (not `check`, `api_search`). If not, tell the user: the game must run, in the world, not minimized. If mcp.stale is true, give the user mcp.action.
+First call `status`, and again when a tool fails with link_down or a timeout. Game tools need link.state "online"/"standby" (not `check`, `api_search`). If not, tell the user: the game must run in the world, not minimized. If mcp.stale is true, give the user mcp.action.
 
 Rules:
 1. Never let other players see what you do: no chat, mail, trade or invites from `run` or `try`. Send chat only with wk_chat_send, only when the player asks.
@@ -50,7 +50,7 @@ Rules:
 3. Only the player can reload the UI: `reload` shows a button they click. Use `load` when it is enough.
 4. Before changing an addon you did not create in this session, tell the user and `checkpoint` it.
 5. If the game shows a dialog about a blocked action or "ForceTaint_Strong", ask the player to click Ignore (忽略), never Disable (禁用): Disable turns WoWBridge off.
-6. Never open Blizzard panels from `run` or `try` (the taint lasts until a reload): ask the player to open them. Never register restricted events such as COMBAT_LOG_EVENT_UNFILTERED.
+6. Never open Blizzard panels from `run` or `try` (taint lasts until a reload): ask the player to open them. Never register restricted events (COMBAT_LOG_EVENT_UNFILTERED).
 
 Addon work: edit the files, `load` (it checks first: fix every error in its `check`), then `try` and read ok, errors, prints and blocked. `snap` shows the screen. Look APIs up in `api_search`. New files and .toc changes need a game restart; `load` works meanwhile.
 
@@ -365,9 +365,11 @@ def build_server(backend, name="wuxian"):
     async def status() -> dict[str, Any]:
         """Check the link to the game. Call it first in every session, and again whenever a tool fails with link_down or a
         timeout.
-        - link.state "online": the game answers and every tool works. Otherwise (also when game.found is false) ask the
-          user to start the game, enter the world (not the character screen or a loading screen) and keep its window
-          un-minimized, then call status again.
+        - link.state "online": the game answers and every tool works. "standby": WoWBridge waits with no frame on the
+          screen; a game tool's call connects it by itself (about half a second), so just call it. Otherwise
+          ("offline", also when game.found is false) ask the user to start the game, enter the world (not the
+          character screen or a loading screen) and keep its window un-minimized, then call status again. A game tool
+          that fails with link_down from standby says why (WoWBridge off: /wb on in the game; not in the world).
         - link.blocked "restart": the game was started before WoWBridge was installed; ask the user to exit the game
           fully and start it again.
         - link.blocked "missing": the running game's folder has no WoWBridge yet (a new client); ask the user to exit

@@ -2,4 +2,7 @@
 	<Binding name="WOWBRIDGE_CONSOLE" header="WOWBRIDGE" category="ADDONS">
 		WoWBridge.ToggleConsole()
 	</Binding>
+	<Binding name="WOWBRIDGE_HIDE" category="ADDONS">
+		WoWBridge.Hide()
+	</Binding>
 </Bindings>

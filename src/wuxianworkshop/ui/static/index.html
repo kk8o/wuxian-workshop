@@ -57,7 +57,7 @@
     <div class="tb-actions">
       <button x-t class="tbtn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found) || snap.busy" title="截一张游戏画面">
         <svg class="ico"><use href="#i-camera"/></svg><span>截图</span></button>
-      <button x-t class="tbtn" @click="requestReload()" :disabled="!linkOnline || reload.busy" title="游戏里弹出按钮，点了才会重载界面">
+      <button x-t class="tbtn" @click="requestReload()" :disabled="!linkReady || reload.busy" title="游戏里弹出按钮，点了才会重载界面">
         <svg class="ico"><use href="#i-reload"/></svg><span x-text="status && status.reload_pending ? t('等待点击重载…') : t('重载界面')"></span></button>
     </div>
     <div class="tb-right">
@@ -158,11 +158,11 @@
               <div class="wmark" x-text="stepMark('enter')"></div>
               <div class="panel wbody">
                 <h2>进入游戏</h2>
-                <p>启动游戏，选角色进入游戏世界（装完开发组件后要<b>完整退出游戏再启动</b>，/reload 不够）。连上后这里自动打勾。</p>
+                <p>启动游戏，选角色进入游戏世界（装完开发组件后要<b>完整退出游戏再启动</b>，/reload 不够）。进入世界后这里自动打勾：帧码会出现几秒再收起，之后有东西要传时才出现。</p>
                 <p class="state-line">
                   <span class="dot" :class="'d-' + linkClass"></span>
                   <b :class="linkClass + '-text'" x-text="linkText"></b>
-                  <span class="muted small" x-text="linkWhy || (linkOnline ? t('游戏里输入 /wb 可以打开开发组件的面板。') : '')"></span>
+                  <span class="muted small" x-text="linkWhy || (linkReady ? t('游戏里输入 /wb 可以打开开发组件的面板。') : '')"></span>
                 </p>
               </div>
             </li>
@@ -203,14 +203,14 @@
                   <input x-t class="input mono first-name" x-model="start.first.name" placeholder="文件夹名（英文）">
                   <input x-t class="input grow" x-model="start.first.title" placeholder="显示名称">
                   <button class="btn primary" type="submit" :disabled="start.first.busy || !start.first.name.trim() || !stepGame"
-                          x-text="start.first.busy ? t('进行中…') : (linkOnline ? t('创建并热加载') : t('创建'))"></button>
+                          x-text="start.first.busy ? t('进行中…') : (linkReady ? t('创建并热加载') : t('创建'))"></button>
                 </form>
                 <p class="small bad-text" x-show="start.first.error" x-text="start.first.error"></p>
                 <template x-if="start.first.result">
                   <div x-t class="result" :class="start.first.loaded ? 'ok' : ''">
                     <div>插件在 <span class="mono selectable" x-text="start.first.result.path"></span></div>
                     <div x-show="start.first.loaded">✓ 已热加载。<span x-show="firstOutput">游戏聊天框里出现了：<span class="mono" x-text="firstOutput"></span></span><span class="muted" x-show="!firstOutput">等它在游戏里说话…</span></div>
-                    <div class="muted" x-show="!start.first.loaded && !linkOnline">游戏连上后再点一次「创建并热加载」；或者完整重启游戏，让它自己加载。</div>
+                    <div class="muted" x-show="!start.first.loaded && !linkReady">游戏就绪后再点一次「创建并热加载」；或者完整重启游戏，让它自己加载。</div>
                     <ol class="steps">
                       <li>在游戏里输入 <code x-text="start.first.result.slash"></code> 试试。</li>
                       <li>交给 Agent：<button class="btn tiny" @click="copy(promptFor(start.first.result), t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
@@ -248,10 +248,12 @@
               <p class="ov-why" x-text="linkWhy || linkHint || t('正在读取…')"></p>
             </div>
             <div class="ov-acts" x-t>
-              <button class="btn primary" x-show="status && !linkOnline" @click="go('doctor')"><svg class="ico"><use href="#i-shield"/></svg>自检与修复</button>
+              <button x-t class="btn primary" x-show="status && val(status, 'link.state') === 'standby'" @click="linkAct('open')" title="现在就连上，不等 AI 调用"><svg class="ico"><use href="#i-bolt"/></svg>连上</button>
+              <button x-t class="btn" x-show="linkOnline && val(status, 'link.in_session') && val(status, 'link.mode') !== 'always'" @click="linkAct('rest')" title="收起会话：帧码隐藏，有东西要传时自动连上">收起</button>
+              <button class="btn primary" x-show="status && !linkReady" @click="go('doctor')"><svg class="ico"><use href="#i-shield"/></svg>自检与修复</button>
               <button class="btn" :class="{primary: linkOnline}" @click="go('dev')"><svg class="ico"><use href="#i-console"/></svg>打开开发台</button>
               <button class="btn" @click="go('dev'); devTool = 'snap'; takeSnap()" :disabled="!(status && status.game.found)"><svg class="ico"><use href="#i-camera"/></svg>截一张图</button>
-              <button class="btn" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button>
+              <button class="btn" @click="requestReload()" :disabled="!linkReady || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button>
             </div>
           </div>
           <dl class="ov-vitals">
@@ -283,8 +285,8 @@
         <section class="ov-card">
           <header>
             <svg class="ico"><use href="#i-addons"/></svg><h2 x-t>开发组件</h2>
-            <span class="pill mono" :class="status && (status.link.addon_version || linkOnline) ? 'ok' : 'off'"
-                  x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : linkOnline ? t('已连接') : t('未连接')"></span>
+            <span class="pill mono" :class="status && (status.link.addon_version || linkReady) ? 'ok' : 'off'"
+                  x-text="status && status.link.addon_version ? 'WoWBridge ' + status.link.addon_version : linkReady ? t('就绪') : t('未连接')"></span>
           </header>
           <dl class="spec">
             <div><dt x-t>插件版本</dt><dd :class="addonsUpdateText ? 'warn-text' : ''" :title="addonsUpdateText" x-text="addonsUpdateShort || t('与程序一致')"></dd></div>
@@ -410,7 +412,7 @@
             <p class="muted small tool-note" x-show="!status || !status.watch || !status.watch.length">没有在监视的文件：保存被监视的文件时自动热加载（有语法错误的不会送进游戏）。</p>
           </div>
           <div class="tool-body" x-show="devTool === 'reload'">
-            <div class="row"><button class="btn primary" @click="requestReload()" :disabled="!linkOnline || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button></div>
+            <div class="row"><button class="btn primary" @click="requestReload()" :disabled="!linkReady || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button></div>
             <p class="muted small tool-note">这个客户端只允许点击或按键触发重载：请求后游戏里会弹出按钮，点「立即重载」才会 /reload，完成时日志里出现 RELOAD done。</p>
             <p class="small" x-show="status && status.reload_pending">⏳ 等待游戏里点击「立即重载」<span class="muted mono" x-show="reload.nonce" x-text="t('（nonce {n}）', { n: reload.nonce })"></span></p>
             <pre class="mono err" x-show="reload.error" x-text="reload.error"></pre>
@@ -501,7 +503,7 @@
                   <div class="detail-title"><span x-text="selAddon.title"></span><span class="pill ok" x-show="selAddon.ours" x-text="roleText(selAddon.ours)"></span></div>
                   <div class="muted small mono" x-text="selAddon.name + (selAddon.version ? ' · ' + selAddon.version : '')"></div>
                 </div>
-                <button x-t class="btn" x-show="!selAddon.ours" @click="histLoad(selAddon.name)" :disabled="!linkOnline" title="按 toc 顺序把它的 Lua 送进游戏（先检查语法）"><svg class="ico"><use href="#i-bolt"/></svg>热加载</button>
+                <button x-t class="btn" x-show="!selAddon.ours" @click="histLoad(selAddon.name)" :disabled="!linkReady" title="按 toc 顺序把它的 Lua 送进游戏（先检查语法）"><svg class="ico"><use href="#i-bolt"/></svg>热加载</button>
                 <button class="btn" @click="reveal(selAddon.name)"><svg class="ico"><use href="#i-folder"/></svg>打开文件夹</button>
               </div>
               <div class="tabs">
@@ -592,8 +594,8 @@
                       <div class="muted small" x-show="hist.result.watched">正在监视这个插件：写回的文件已经自动热加载进游戏。</div>
                       <div class="row tight" x-show="!hist.result.watched">
                         <span class="muted small">游戏里还在跑旧代码：</span>
-                        <button class="btn tiny" @click="histLoad(selAddon.name)" :disabled="!linkOnline">热加载</button>
-                        <button class="btn tiny" @click="requestReload()" :disabled="!linkOnline || reload.busy">重载界面</button>
+                        <button class="btn tiny" @click="histLoad(selAddon.name)" :disabled="!linkReady">热加载</button>
+                        <button class="btn tiny" @click="requestReload()" :disabled="!linkReady || reload.busy">重载界面</button>
                       </div>
                     </div>
                   </template>
@@ -670,7 +672,7 @@
               <div x-t class="result ok">
                 <div>已创建 <span class="mono selectable" x-text="na.result.path"></span>：<span class="mono" x-text="na.result.files.join(t('、'))"></span></div>
                 <ol class="steps">
-                  <li>热加载进游戏（不用重启）：<button class="btn tiny" @click="naLoad()" :disabled="!linkOnline">热加载</button>，然后在游戏里输入 <code x-text="na.result.slash"></code>。</li>
+                  <li>热加载进游戏（不用重启）：<button class="btn tiny" @click="naLoad()" :disabled="!linkReady">热加载</button>，然后在游戏里输入 <code x-text="na.result.slash"></code>。</li>
                   <li>用编辑器打开它：<button class="btn tiny" @click="naReveal()">打开文件夹</button></li>
                   <li>交给 Agent：<button class="btn tiny" @click="copy(naPrompt, t('给 Agent 的第一句话'))">复制给 Agent 的第一句话</button>，把括号里换成你想要的功能。</li>
                 </ol>
@@ -786,7 +788,7 @@
           <div class="xp-note" :class="{ bad: !ext.missing }" x-show="ext.error" x-text="ext.error"></div>
           <div class="xp-note" x-show="ext.note">
             <span class="grow" x-text="ext.note"></span>
-            <button class="btn small" x-show="ext.reload && linkOnline" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
+            <button class="btn small" x-show="ext.reload && linkReady" :disabled="reload.busy" @click="requestReload(t('让扩展的改动生效')); ext.reload = false">重载界面</button>
           </div>
 
           <!-- 扩展框架、一个内置扩展或其他插件在游戏中提供的扩展 -->
@@ -1342,8 +1344,8 @@
                   <span class="detail-title grow mono" x-text="docs.sel.name"></span>
                   <span class="since big" x-show="docs.sel.since" x-text="sinceText(docs.sel.since)" :title="docs.sel.since && docs.sel.since.note"></span>
                   <button class="btn tiny" @click="copy(docs.sel.name, docs.sel.name)" x-t>复制名字</button>
-                  <button class="btn tiny" x-show="docs.sel.kind === 'function' && docs.sel.call === 'protected'" @click="docsCheck()" :disabled="!linkOnline || docs.checking"
-                          :title="t(linkOnline ? '在正在运行的游戏里 return type(...)' : '游戏连上后才能核对')" x-t>在游戏里核对</button>
+                  <button class="btn tiny" x-show="docs.sel.kind === 'function' && docs.sel.call === 'protected'" @click="docsCheck()" :disabled="!linkReady || docs.checking"
+                          :title="t(linkReady ? '在正在运行的游戏里 return type(...)' : '游戏连上后才能核对')" x-t>在游戏里核对</button>
                 </div>
                 <div class="callbox" :class="'call-' + docs.sel.call" x-show="callText(docs.sel)">
                   <div class="callbox-t"><span class="cmark"></span><b x-text="callText(docs.sel)"></b></div>
@@ -1405,7 +1407,7 @@
                 <div class="tryit" x-show="tryKind" :class="'call-' + docs.sel.call">
                   <div class="tryhead">
                     <b x-text="t(tryKind === 'event' ? '在游戏里监听' : tryKind === 'enum' ? '在游戏里对照' : '试一下')"></b>
-                    <span class="tlink" :class="linkOnline ? 'on' : 'off'" x-text="t(linkOnline ? '游戏已连接' : '游戏没连上')"></span>
+                    <span class="tlink" :class="linkReady ? 'on' : 'off'" x-text="t(linkReady ? '游戏就绪' : '游戏没连上')"></span>
                     <div class="spacer"></div>
                     <span class="muted small" x-show="tryKind === 'call' && docs.sel.call !== 'protected'" x-t>参数是按名字猜的示例，可以改</span>
                   </div>
@@ -1416,7 +1418,7 @@
                               @keydown.ctrl.enter.prevent="tryRun()"></textarea>
                     <p class="small muted" x-show="tryKind === 'event'" x-text="t('注册 {e}，记下 {s} 秒内它触发的次数和参数。', { e: docs.sel.name, s: tryit.seconds })"></p>
                     <div class="row">
-                      <button class="btn primary" @click="tryKind === 'event' ? tryTrace() : tryRun()" :disabled="!linkOnline || tryit.busy" x-text="tryButton"></button>
+                      <button class="btn primary" @click="tryKind === 'event' ? tryTrace() : tryRun()" :disabled="!linkReady || tryit.busy" x-text="tryButton"></button>
                       <button class="btn" x-show="tryKind !== 'event'" @click="tryToConsole()" x-t>在开发台打开</button>
                       <button class="btn" x-show="tryKind !== 'event' && tryit.code !== tryTemplate(docs.sel)" @click="tryit.code = tryTemplate(docs.sel)" x-t>恢复示例</button>
                       <span class="muted small" x-text="tryStatus"></span>
@@ -1708,12 +1710,20 @@
               <label class="field">
                 <span>抓图模式</span>
                 <select class="input" name="capture" x-model="form.capture">
-                  <option value="wgc">WGC：读窗口本身，被盖住也能读（Windows 10 会画黄框）</option>
+                  <option value="wgc">WGC：读窗口本身，被盖住也能读（Windows 10 连着时会画黄框）</option>
                   <option value="gdi">GDI：读屏幕，帧码所在的地方不能被盖住</option>
                 </select>
               </label>
               <p class="muted small" x-show="settings.capture_in_use && settings.capture_in_use !== settings.capture"
                  x-text="t('当前实际在用 {m}，新的抓图模式在下一次找到游戏窗口时生效。', { m: String(settings.capture_in_use).toUpperCase() })"></p>
+              <label class="field">
+                <span>链路</span>
+                <select class="input" name="link_mode" x-model="form.link_mode">
+                  <option value="demand">按需：有东西要传时才连上，传完就收起</option>
+                  <option value="always">常开：游戏进入世界就一直连着（常用语音搭子这类来回对话的扩展时选它）</option>
+                </select>
+              </label>
+              <p class="muted small">按需连接要游戏里的 WoWBridge 0.9.14 或更新；更早的版本一直连着。</p>
               <label class="field">
                 <span>游戏目录</span>
                 <input x-t class="input mono" name="game_dir" x-model="form.game_dir" placeholder="留空 = 用正在运行的游戏的目录，否则 _forever_">

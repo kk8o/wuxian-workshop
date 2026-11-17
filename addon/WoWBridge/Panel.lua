@@ -23,8 +23,8 @@ local GAP = 12                          -- between the overview's blocks
 local ROW = 18                          -- a line of small words
 local TABS = { "overview", "settings", "diag" }
 local TAB_WORDS = { overview = "TAB_OVERVIEW", settings = "TAB_SETTINGS", diag = "TAB_DIAG" }
-local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF" }
-local WHY_WORDS = { online = "WHY_ONLINE", hello = "WHY_HELLO", off = "WHY_OFF" }
+local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF", standby = "OV_STANDBY", leaving = "OV_STANDBY" }
+local WHY_WORDS = { online = "WHY_ONLINE", hello = "WHY_HELLO", off = "WHY_OFF", standby = "WHY_STANDBY", leaving = "WHY_STANDBY" }
 local TILES = { "TILE_RUNS", "TILE_FAILED", "TILE_ERRORS", "TILE_BLOCKED" }
 local KV = { "KV_STATE", "KV_SLOTS", "KV_QUEUE", "KV_HEARTBEAT", "KV_FRAME" }
 local RECENT = 3                        -- the latest lines on 概览, at most
@@ -112,8 +112,8 @@ local function BuildOverview()
 	card.why:SetWidth(INNER - 49)
 	card.act = S.Button(card, 88, 24, "primary")
 	card.act:SetPoint("TOPLEFT", card, "TOPLEFT", 35, -54)
-	card.act:SetScript("OnClick", function()
-		if ns.Link.State() == "off" then WB().SetLink(true) else WB().Reconnect() end
+	card.act:SetScript("OnClick", function(self)
+		if self.what == "on" then WB().SetLink(true) elseif self.what == "hide" then WB().Hide() else WB().Reconnect() end
 		P.Refresh()
 	end)
 	card.hint = S.Text(card, "GameFontHighlightSmall", C.muted)
@@ -338,7 +338,7 @@ end
 local function LayOutOverview(state, todo)
 	local page, y = panel.pages.overview, 0
 	local card = panel.card
-	local acting = state ~= "online"
+	local acting = card.act:IsShown()
 	card:SetHeight(acting and 90 or 54)
 	card:ClearAllPoints()
 	card:SetPoint("TOPLEFT", page, "TOPLEFT", PAD, -y)
@@ -413,9 +413,12 @@ function P.Refresh()
 	S.Tint(card.dot, C[color])
 	card.state:SetText(L[STATE_WORDS[state]])
 	S.Ink(card.state, C[color == "muted" and "fg" or color])
-	card.why:SetText(L[WHY_WORDS[state]])
-	card.act:SetShown(state ~= "online")
-	card.act:SetText(state == "off" and L.BTN_SHOW_FRAME or L.BTN_RESTART)
+	card.why:SetText(L[(state == "standby" and n.away) and "WHY_AWAY" or WHY_WORDS[state]])
+	-- off: on again; waiting for the app: start over; a session that can open again: end it; standing by: nothing
+	local act = state == "off" and "on" or state == "hello" and "restart" or (state == "online" and ns.Link.CanStandBy()) and "hide" or nil
+	card.act.what = act
+	card.act:SetShown(act ~= nil)
+	card.act:SetText(act == "on" and L.BTN_TURN_ON or act == "hide" and L.BTN_HIDE or L.BTN_RESTART)
 	card.hint:SetShown(state == "hello" and ns.Link.SlotsLeft() > 0)   -- none left: the dialog says what to do
 	local unlocked = ns.Frame.IsUnlocked()
 	local todo = unlocked and "lock" or (ns.Setting("hotLoad") == false and "hotload") or nil

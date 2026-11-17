@@ -30,6 +30,36 @@ def console_lines(s):
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
 class Link(unittest.TestCase):
+    def test_mail_cadence_can_change_while_the_link_runs(self):
+        """WoWBridge.MailCadence (a latency measurement): more meters and a quicker look keep every packet coming, in
+        order; fewer again too; the defaults are what the link had. (A resetAfter under the load time, 0.8 s in the
+        mock, would stall the slot: a SetFont sooner starts the load over)"""
+        logs = []
+        s = Session(self)
+        comp = link.Companion(s.addons, clock=s.now, log=logs.append, ping_every=4, hb_every=5, hb_lazy=5)
+        s.comp = comp
+        try:
+            comp.new_process("P1-100")
+            s.login()
+            s.run(8)
+            cadence = lambda *a: tuple(s.lua.eval(f"{{WoWBridge.MailCadence({', '.join(map(str, a)) or 'nil'})}}").values())
+            self.assertEqual(cadence(), (10, 1.0, 0.05))
+            self.assertEqual(cadence(10, 1.0, 0.1), (10, 1.0, 0.1))
+            for i in range(5):
+                comp.say(f"quick {i}")
+                s.run(1)
+            self.assertEqual(cadence(1, 1.0, 0.25), (1, 1.0, 0.25))
+            for i in range(3):
+                comp.say(f"slow {i}")
+                s.run(2)
+            s.run(4)
+            chat = s.chat()
+            got = [line.split("|r ", 1)[-1] for line in chat.splitlines() if "|r > " in line]
+            self.assertEqual(got, [f"> quick {i}" for i in range(5)] + [f"> slow {i}" for i in range(3)], chat)
+            self.assertEqual(len(s.lua.globals()[b"__errors"]), 0)
+        finally:
+            s.close()
+
     def test_link(self):
         logs = []
         s = Session(self)
@@ -877,7 +907,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual(ns[b"Link"][b"State"](), b"off")
             self.assertFalse(ns[b"Frame"][b"IsShown"]())
             self.assertIs(s.lua.globals()[b"WoWBridgeDB"][b"settings"][b"autoLink"], False)
-            self.assertIn("link stopped: the frame is hidden", s.chat())
+            self.assertIn("link off: no frame, nothing passes", s.chat())
             s.run(3)
             self.assertFalse(ns[b"Frame"][b"IsShown"]())             # nothing draws it again while off
             s.slash("on")
@@ -1139,7 +1169,7 @@ class PanelAndLanguage(unittest.TestCase):
             panel[b"link"].Click(panel[b"link"])                      # the link off from the panel
             self.assertEqual(s.ns[b"Link"][b"State"](), b"off")
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"act"][b"text"].decode(),
-                              card[b"hint"][b"shown"]), ("未连接", True, "显示帧码", False))   # 概览 offers it back
+                              card[b"hint"][b"shown"]), ("未连接", True, "打开", False))   # 概览 offers it back (turned on)
             self.assertFalse(panel[b"held"][b"shown"])               # the error before went up: nothing waits
             g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:30: attempt to index a nil value")
             s.run(1.1)

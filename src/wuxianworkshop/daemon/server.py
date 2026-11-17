@@ -299,6 +299,11 @@ def make_app(service, access, handle, mcp=None):
         return await service.status()
 
     @api
+    async def link_(request):
+        b = await body_of(request)
+        return await service.link_action(b.get("action"), b.get("wait", 0.0))
+
+    @api
     async def run(request):
         b = await body_of(request)
         whole = b.get("whole", False)
@@ -674,6 +679,7 @@ def make_app(service, access, handle, mcp=None):
 
     routes = [
         Route("/api/status", status, methods=["GET"]),
+        Route("/api/link", link_, methods=["POST"]),
         Route("/api/run", run, methods=["POST"]),
         Route("/api/load", load, methods=["POST"]),
         Route("/api/watch", watch, methods=["POST"]),

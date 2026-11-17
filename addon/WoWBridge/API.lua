@@ -247,3 +247,6 @@ function WB.Describe(addon, brief)
 end
 
 C_Timer.NewTicker(1, Flush)      -- what waited goes once the link is online
+
+-- events waiting for the link to be online (Link.lua: they ring the doorbell)
+function ns.EventsWaiting() return #waiting end

@@ -206,7 +206,7 @@ const NO_LX = Object.freeze({ id: '', title: '', state: '', enabled: false, path
                               apps: [], skills: [], adds: {}, approval: 'ok', command: null, since: null, why: null,
                               error: null, origin: '', author: null, homepage: null, requires: {}, unmet: [], addons: [],
                               where: null, game: null, player: null });
-const LINK_TEXT = { online: '在线', offline: '离线', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
+const LINK_TEXT = { online: '在线', offline: '离线', standby: '待命', waiting: '等待游戏', handshake: '握手中', connecting: '握手中' };
 
 const CLI_HELP = [                             // `wuxian` and what each command does (lined up where it is shown: cliHelp)
   ['wuxian', '打开窗口（守护进程 + 托盘）'],
@@ -540,19 +540,24 @@ function appState() {
       return g.version || g.build || '—';
     },
     get linkOnline() { return !!(this.status && this.status.link.state === 'online'); },
+    get linkReady() {                          // a call goes through: online, or standing by (it opens a session)
+      return !!(this.status && ['online', 'standby'].includes(this.status.link.state));
+    },
     get linkText() {
       if (!this.status) return '—';
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'restart') return t('等待游戏重启');
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'player') return t('未读取');
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'missing') return t('等待安装');
       const st = this.status.link.state || (this.status.game.found ? 'waiting' : 'offline');
+      if (st === 'standby') return t('就绪 · 待命');
+      if (st === 'online' && this.status.link.in_session) return t('就绪 · 正在传');
       return t(LINK_TEXT[st] || st);
     },
     get linkClass() {
       if (!this.status) return 'muted';
       const st = this.status.link.state;
       if (st !== 'online' && ['restart', 'missing'].includes(this.status.link.blocked)) return 'warn';
-      return st === 'online' ? 'ok' : (st === 'offline' || !st) ? 'muted' : 'warn';
+      return (st === 'online' || st === 'standby') ? 'ok' : (st === 'offline' || !st) ? 'muted' : 'warn';
     },
     get linkWhy() {                            // one line under 离线: why, and what to do
       const s = this.status;
@@ -560,13 +565,27 @@ function appState() {
       if (s.link.blocked === 'restart') return t('安装加入了运行中的游戏不认识的新文件：完整退出并重启游戏后才能连接（/reload 不够）。');
       if (s.link.blocked === 'player') return t('旧设置里是玩家模式，正在切回开发模式…');
       if (s.link.blocked === 'missing') return t('这个游戏目录还没有装 WoWBridge：退出游戏后程序自动装上，再启动游戏即可连接。');
+      if (s.link.state === 'standby') {
+        return s.link.opening ? t('正在连上游戏…')
+          : t('待命：游戏里不显示帧码；有东西要传时自动连上（约半秒）。');
+      }
       if (!s.game.found) return t('没有找到游戏窗口。');
       if (s.game.minimized) return t('游戏窗口最小化了：还原窗口后自动恢复。');
       return t('看不到帧码：确认 WoWBridge 已启用、已进入游戏世界（不是读取画面或角色选择）；用 GDI 抓图时帧码不能被遮住。');
     },
     get linkHint() {                           // one line under 在线: what can be done now
       if (!this.linkOnline) return '';
+      const k = this.status.link;
+      if (k.in_session && k.mode !== 'always') return t('正在传：传完几秒后自动收起，帧码随之隐藏。');
       return t('Agent 现在可以自己写插件、在游戏里试，读报错和截图来调试；你也可以在开发台里自己试。');
+    },
+    async linkAct(action) {                    // 连上 (an empty request: a session) / 收起 (the session over), now
+      try {
+        await this.api('/api/link', { body: { action, wait: action === 'open' ? 3 : 0 } });
+      } catch (e) {
+        this.say(t('操作失败：') + (e.message || e));
+      }
+      this.refreshStatus();
     },
 
     // ---- logs
@@ -2470,7 +2489,7 @@ function appState() {
     },
     async tryRun() {
       const code = (this.tryit.code || '').trim();
-      if (!code || this.tryit.busy || !this.linkOnline) return;
+      if (!code || this.tryit.busy || !this.linkReady) return;
       this.tryit.busy = true; this.tryit.result = null;
       try {
         this.tryit.result = await this.api('/api/run', { body: { code, timeout_ms: 10000 } });
@@ -2480,7 +2499,7 @@ function appState() {
     },
     async tryTrace() {
       const s = this.docs.sel;
-      if (!s || this.tryit.busy || !this.linkOnline) return;
+      if (!s || this.tryit.busy || !this.linkReady) return;
       this.tryit.busy = true; this.tryit.trace = null;
       try {
         this.tryit.trace = await this.api('/api/trace', { body: { seconds: this.tryit.seconds, events: [s.name], max_events: 50, args: 8 } });
@@ -2495,7 +2514,7 @@ function appState() {
     get tryStatus() {
       const r = this.tryit.result;
       if (r && r.ok) return t('{ms} ms · job {job}', { ms: r.ms, job: r.job });
-      if (!this.linkOnline) return t('游戏连上后才能运行');
+      if (!this.linkReady) return t('游戏连上后才能运行');
       return '';
     },
     get tryValues() {                          // a run's values by the documented return names, tables opened into their fields
@@ -2746,7 +2765,7 @@ function appState() {
       return cs.length ? cs.every(c => c.ok === true) : this.linkOnline;
     },
     get startSteps() {
-      return [['game', this.stepGame], ['install', this.stepInstall], ['enter', this.linkOnline],
+      return [['game', this.stepGame], ['install', this.stepInstall], ['enter', this.linkReady],
               ['agent', !!(this.agents.list && this.agents.list.some(h => h.state === 'ok'))], ['first', this.start.first.loaded]];
     },
     get startDone() { return this.startSteps.filter(s => s[1]).length; },
@@ -2811,7 +2830,7 @@ function appState() {
           f.result = { name, path: (this.status && this.status.addons_dir ? this.status.addons_dir + '\\' : '') + name,
                        slash: '/' + name.toLowerCase(), files: [] };
         }
-        if (this.linkOnline) {
+        if (this.linkReady) {
           f.fromId = this.lastId;
           const r = await this.api('/api/load', { body: { target: name } });
           const bad = (r.files || []).filter(x => !x.ok);
@@ -2883,7 +2902,8 @@ function appState() {
       this.form = { capture: this.settings.capture, game_dir: this.settings.game_dir,
                     language: this.settings.language || 'auto',
                     font_scale: String(this.settings.font_scale || 100),
-                    extension_approval: this.settings.extension_approval };
+                    extension_approval: this.settings.extension_approval,
+                    link_mode: this.settings.link_mode === 'always' ? 'always' : 'demand' };
       if (this.settings.extension_approval !== asked && this.lx.list !== null) this.loadLocal(true);   // the rows' 批准 follows
       this.applyLang(this.settings.language);
       this.applyScale(this.settings.font_scale);

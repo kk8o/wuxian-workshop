@@ -31,7 +31,7 @@ local function Dragging()
 	Place()
 end
 
-local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF" }
+local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF", standby = "OV_STANDBY", leaving = "OV_STANDBY" }
 
 local function Tooltip(owner)
 	local C, state = S.C, ns.Link.State()
@@ -108,6 +108,7 @@ local function Build()
 	local function Paint()
 		local state = ns.Link.State()
 		icon:SetDesaturated(state == "off")
+		icon:SetAlpha((state == "standby" or state == "leaving") and (ns.Link.AppAway() and 0.5 or 0.8) or 1)   -- dimmer: standing by
 		S.Tint(button.dot, S.C[S.StateColor(state)])
 	end
 	Paint()

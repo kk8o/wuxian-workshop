@@ -125,6 +125,29 @@ def write_proc(addons, stamp):
     atomic_write(proc_path(addons), fontpack.build(fontpack.packet(stamp.encode()), "WBProc"))
 
 
+def read_proc(addons):
+    """the stamp proc.ttf holds (write_proc), or None when it is not there or cannot be read"""
+    try:
+        ws = fontpack.widths(proc_path(addons).read_bytes())
+        payload = fontpack.unpacket(fontpack.read(ws)[0])
+    except Exception:
+        return None
+    return payload.decode("utf-8", "replace") if payload else None
+
+
+def last_written(addons):
+    """the highest slot that holds a packet (0: none): an app that starts again while the same game process runs goes
+    on after it (the addon has read every slot below the one it waits on, and the client keeps what it read)"""
+    top = 0
+    for p in mail_dir(addons).glob("[0-9]*.ttf"):
+        try:
+            if p.stem.isdigit() and int(p.stem) > top and p.stat().st_size:
+                top = int(p.stem)
+        except OSError:
+            pass
+    return top
+
+
 def write_slot(addons, slot, session, ack, records):
     """the packet as the font in its slot; returns the packet size"""
     data = encode(slot, session, ack, records)

@@ -56,7 +56,7 @@ class EndToEnd(unittest.TestCase):
         self.svc = Service(lambda **kw: None, journal=self.journal)
         s, comp, got = self.s, self.comp, self.got
 
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):        # the daemon's run, over this session
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):        # the daemon's run, over this session
             job = comp.code(code.encode("utf-8"), chunk, addon or "-")
             for _ in range(400):
                 s.run(0.25)
@@ -410,7 +410,7 @@ class BeforeDataCalls(unittest.TestCase):
         s.comp = comp
         svc = Service(lambda **kw: None, journal=journal)
 
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             job = comp.code(code.encode("utf-8"), chunk, addon or "-")
             for _ in range(400):
                 s.run(0.25)

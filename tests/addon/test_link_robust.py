@@ -160,7 +160,7 @@ class Link(unittest.TestCase):
         s.comp = comp2
         s.run(30)
         sess = comp2.sessions[comp2.current]
-        self.assertEqual(sess.features, link.POUR)
+        self.assertEqual(sess.features, link.STANDBY)
         self.assertTrue(comp2.data_calls() and comp2.pours())
         P = s.ns[b"Link"][b"P"]
         self.assertEqual((P[b"pack"], P[b"rto"], P[b"win"]), (True, 15, 64))

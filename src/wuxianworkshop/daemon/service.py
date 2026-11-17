@@ -48,6 +48,7 @@ from ..cli.mcpconfig import mcp_command
 from ..core import mailbox as MB
 from ..core.game import isolated
 from ..paths import settings_file
+from ..transport.link import IDLE
 from ..updater import Scheduler, Updater
 from .api import ApiError, chunk_file, parse_run
 from .journal import REQUEST_ID
@@ -62,6 +63,8 @@ FONT_SCALES = (90, 100, 110, 125, 150)   # the settings' font_scale: the page's 
 # the settings' extension_approval, who approves a local extension's command before its first run: "ask" the player
 # (once for each command, in the App), "auto" the workshop by itself (for developing extensions)
 EXTENSION_APPROVALS = ("ask", "auto")
+TRY_HOLD = 5                              # seconds past try's window the addon keeps the session (its end marker)
+LINK_MODES = ("demand", "always")         # the settings' link_mode: a session while things pass, or always
 MAX_TOPICS = 16              # topics one ask of addon_events may name (any one matches)
 PIECE_TRIES = 3              # times a piece of a long answer is asked for when the link lost it (a timeout, link_down)
 PIECE_WAIT = 90.0            # seconds a piece to ask for again waits for the link to come back
@@ -177,6 +180,7 @@ class Service:
         self.pending = {}            # job id -> (asyncio loop, future) of a run / load waiting for its RUN result
         self.describing = {}         # (UI session, addon, brief) -> the addon_api answer on its way: callers share it
         self.pours = {}              # key -> the Pouring of a long answer whose segments come (pour)
+        self.link_mode = "demand"        # the settings' link_mode in use
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -211,6 +215,10 @@ class Service:
             self.worker.on_session = self.session_started
             self.worker.on_up = self.link_came_up
             self.worker.on_pour = self.on_pour      # the segments of a pour (worker thread)
+            if hasattr(self.worker, "link_settings"):    # the companion loop (tests may give a stand-in)
+                self.worker.on_open_failed = self.open_failed
+                self.worker.on_bye = self.link_bye
+                self.link_settings_from(self.stored_settings())
 
     # --- the worker thread -----------------------------------------------------------------------------------------
 
@@ -478,6 +486,72 @@ class Service:
 
     # --- the operations --------------------------------------------------------------------------------------------
 
+    def link_settings_from(self, stored):
+        """the link's setting kept (link_mode) to the loop: a session always, or one while things pass (the addon ends
+        it link.IDLE s after what passes is done)"""
+        mode = stored.get("link_mode") if stored.get("link_mode") in LINK_MODES else "demand"
+        if hasattr(self.worker, "link_settings"):
+            self.worker.link_settings(mode == "always", IDLE)
+        self.link_mode = mode
+        return mode
+
+    def fail_pending(self, text):
+        """(any thread) whoever waits for a job's result hears link_down with text now"""
+        for job in list(self.pending):
+            waiter = self.pending.pop(job, None)
+            if waiter is None:
+                continue
+            loop, fut = waiter
+            try:
+                loop.call_soon_threadsafe(_fail, fut, ApiError(409, "link_down", text))
+            except RuntimeError:
+                pass
+
+    def open_failed(self, text):
+        """(worker thread) the game did not answer the packet that was to open a session: the calls in it fail now, not
+        at their timeout (the Companion's note has put the text in the journal already)"""
+        self.fail_pending(text)
+
+    def link_bye(self, why):
+        """(worker thread) the player ended the session (/wb hide, "hide") or turned the link off ("off")"""
+        text = ("the player turned the link off in the game (/wb off): nothing reaches the game until /wb on"
+                if why == "off" else
+                "the player ended the session in the game (/wb hide): the next call opens one again")
+        self.journal.add("INFO", text)
+        self.fail_pending(text)
+
+    async def link_action(self, action, wait=0.0):
+        """POST /api/link: "open" ("wake" too: a session now, an empty request to the game; wait: up to so many s for
+        its frames) or "rest" (the session over now: WoWBridge shows its BYE and stands by)"""
+        if action not in ("open", "wake", "rest"):
+            raise ApiError(400, "bad_request", 'action: "open" or "rest"')
+        if not isinstance(wait, (int, float)) or isinstance(wait, bool) or not 0 <= wait <= 10:
+            raise ApiError(400, "bad_request", "wait: seconds, 0 to 10")
+
+        def do():
+            comp = self.worker.companion()
+            if action == "rest":
+                return comp.rest("ended in the app")
+            if comp.standing_by():
+                return comp.open("连上 in the app")
+            return bool(comp.link_up)
+
+        try:
+            ok = await self.call(do)
+        except ApiError as e:
+            if e.code == "link_down":
+                ok = False
+            else:
+                raise
+        if ok and action != "rest":
+            stop = time.monotonic() + wait
+            while not self.link_is_up() and time.monotonic() < stop:
+                await asyncio.sleep(0.05)
+        comp = getattr(self.worker, "comp", None)
+        state = comp.link_state() if comp is not None and hasattr(comp, "link_state") else \
+            ("online" if self.link_is_up() else "offline")
+        return dict(action=action, ok=bool(ok), state=state)
+
     async def status(self):
         w = self.worker
         comp = w.comp
@@ -490,13 +564,19 @@ class Service:
         if comp is not None:
             s = comp.sessions.get(comp.current)
             rtts = sorted(comp.rtts[-20:])
-            link.update(state="online" if comp.link_up else "offline", session=comp.current, slot_next=comp.slot,
+            standby = getattr(comp, "standby", False) is True and comp.standing_by()   # not an older one loaded
+            link.update(state=comp.link_state() if standby else "online" if comp.link_up else "offline",
+                        standby=standby, opening=standby and comp.opening is not None,
+                        in_session=standby and bool(comp.session),
+                        rested=dict(at=round(comp.rested[0], 3), why=comp.rested[1]) if standby and comp.rested else None)
+            link.update(session=comp.current, slot_next=comp.slot,
                         slots_left=(MB.POOL - comp.slot + 1) if comp.slot is not None else None, hb=s.hb if s else None,
                         ping_p50=rtts[len(rtts) // 2] if rtts else None, last_frame=comp.last_frame,
                         addon_version=s.version_text if s else None, pour=self.can_pour(),
                         slot_rate=round(comp.slot_rate(time.time(), s) * 60, 2) if comp.slot is not None else None)
             watch = sorted(str(p) for p in list(comp.watched))      # the worker thread may change it meanwhile
             reload_pending = comp.reload_pending()
+        link["mode"] = self.link_mode
         exe, args = mcp_command()                     # what starts `wuxian mcp` here; the ui's 接入 page shows it
         return dict(daemon=dict(version=self.version, pid=os.getpid(), uptime=round(time.time() - self.started, 1),
                                 mode=self.mode, extension_approval=self.extension_approval,
@@ -1112,7 +1192,7 @@ class Service:
                 try:
                     begun = await self.probe(start, 30000)
                     t0 = time.time()
-                    action = await self.run(lua, timeout_ms, addon)
+                    action = await self.run(lua, timeout_ms, addon, hold=seconds + TRY_HOLD)
                     await asyncio.sleep(seconds)
                     data = await self.probe(probes.trace_stop(), 60000)   # also the end marker
                 except BaseException:
@@ -1122,7 +1202,7 @@ class Service:
             traced.update(registered=begun.get("tracing"), unknown=begun.get("unknown") or [])
             complete = await self.caught_up()
         else:
-            action = await self.run(lua, timeout_ms, addon)
+            action = await self.run(lua, timeout_ms, addon, hold=seconds + TRY_HOLD)
             await asyncio.sleep(seconds)
             try:
                 await self.run("return true", 15000, chunk="=probe")       # the end marker
@@ -2285,7 +2365,7 @@ class Service:
         names = lint.live_names(report)
         if live and names:
             comp = self.worker.comp
-            if comp is None or not comp.link_up:
+            if not self.takes_requests(comp):
                 if set(names) - set(report["unconfirmed"]):   # the Usage strings' names alone: nothing to say offline
                     report["live"] = dict(error="the game is not online: the unresolved names were not asked")
             else:
@@ -2359,10 +2439,10 @@ class Service:
                         note=res["note"], cut=res["cut"])
         return dict(ok=False, job=res["job"], error=res["error"], stack=res["stack"], chunk=res["chunk"])
 
-    async def run(self, code, timeout_ms=10000, addon=None, chunk="=run"):
+    async def run(self, code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
         """Lua for the addon to run; waits for the RUN result of that job. chunk: its chunk name, "=run" for the agent's
         and the user's code, "=probe" for this daemon's own (probes, the try's end marker: WoWBridge leaves those out of
-        its debug window)"""
+        its debug window). hold: seconds the daemon listens after it (try): the addon keeps the session that long"""
         if not isinstance(code, str) or not code.strip():
             raise ApiError(400, "bad_request", "code: a non-empty string of Lua")
         if addon is not None and not isinstance(addon, str):
@@ -2378,6 +2458,8 @@ class Service:
         def start():
             comp = self.worker.companion()
             self.ready(comp, "run")
+            if hold and hasattr(comp, "hold"):
+                comp.hold(hold)                   # in the code's packet: prints and errors do not ring
             job = comp.code(data, chunk, addon or "-")
             self.pending[job] = (loop, fut)       # on the worker thread, before any RUN result can come
             return job
@@ -2392,14 +2474,25 @@ class Service:
             self.pending.pop(job, None)           # also when the caller went away
         return self.run_result(res)
 
+    @staticmethod
+    def takes_requests(comp, default=False):
+        """whether a request reaches the game now (Companion.takes_requests); a stand-in without it (tests): its link_up,
+        or `default`"""
+        if comp is None:
+            return False
+        takes = getattr(comp, "takes_requests", None)
+        return takes() if takes is not None else getattr(comp, "link_up", default)
+
     def ready(self, comp, what):
         """(worker thread) the link takes `what` now, or an ApiError says why not: the mailbox of this game process is
-        full, or no frames come (the game is not running, is minimized, at the character screen, on a loading screen)"""
+        full, or no frames come (the game is not running, is minimized, at the character screen, on a loading screen).
+        A link that stands by (WoWBridge 0.9.14 on) takes it: the records open a session by themselves, and when no
+        frames come within link.OPEN_WAIT s the call fails with link_down then (open_failed)"""
         if getattr(comp, "full", False):
             raise ApiError(409, "mailbox_full", f"{what}: the mailbox of this game process is full (all {MB.POOL} slots "
                                                 f"used), nothing reaches the game until it is fully restarted (a /reload "
                                                 f"does not help)")
-        if not getattr(comp, "link_up", True):
+        if not self.takes_requests(comp, getattr(comp, "link_up", True)):
             raise ApiError(409, "link_down", f"{what}: no frames come from the game (not running, minimized, at the "
                                              f"character screen or on a loading screen); try again once `status` says "
                                              f"the link is online")
@@ -2611,10 +2704,15 @@ class Service:
                 raise ApiError(409, "no_game", "no game window: nothing to snap")
             if w.win.minimized:
                 raise ApiError(409, "minimized", "the game window is minimized: nothing is drawn")
+            # standing by no capture runs: the loop starts one for this picture (stand-ins in tests have no snap_source)
+            wgc, started = w.snap_source() if hasattr(w, "snap_source") else (w.wgc, False)
             try:
-                return capture(w.win, w.wgc), w.wgc is not None, f"{w.win.w}x{w.win.h} client area"
+                return capture(w.win, wgc), wgc is not None, f"{w.win.w}x{w.win.h} client area"
             except SnapError as e:
                 raise ApiError(409, "snap_failed", str(e)) from None
+            finally:
+                if started:
+                    wgc.stop()
 
         loop = asyncio.get_running_loop()
         until = loop.time() + self.SNAP_WAIT
@@ -2816,6 +2914,8 @@ class Service:
                 update = dict(update, font_scale=scale)
             if "game_dir" in update and update["game_dir"] is not None and not isinstance(update["game_dir"], str):
                 raise ApiError(400, "bad_request", "game_dir: the client folder, or null")
+            if "link_mode" in update and update["link_mode"] not in LINK_MODES:
+                raise ApiError(400, "bad_request", 'link_mode: "demand" or "always"')
             if "capture" in update:
                 self.worker.capture_wanted = update["capture"]
             if "mode" in update:
@@ -2825,9 +2925,10 @@ class Service:
                 self.game_dir = update["game_dir"] or None
             if "extension_approval" in update:
                 self.extension_approval = update["extension_approval"]
-            for key in ("language", "font_scale", "onboarded"):
+            for key in ("language", "font_scale", "onboarded", "link_mode"):
                 if key in update:
                     stored[key] = update[key]
+            stored.pop("idle_minutes", None)             # 0.9.14 test builds: a session ends when what passes is done
             stored.pop("autostart", None)                # 0.9.13 and before kept a 开机自启 that started nothing
             if "language" in update:                     # what the program says from now on (i18n.py)
                 i18n.set_language(update["language"])
@@ -2838,6 +2939,8 @@ class Service:
             tmp.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, path)
             self.journal.add("INFO", "settings: " + ", ".join(f"{k}={v}" for k, v in update.items()))
+            if "link_mode" in update:
+                self.link_settings_from(stored)      # 常开: the link opens a session by itself
             if self.extension_approval != approval_before:   # what is allowed changed: the rows (the page reads them
                 await asyncio.to_thread(self.local.changed)  # again) and the apps the extensions declare
                 await self.reconcile_local_apps()
@@ -2845,6 +2948,7 @@ class Service:
                       game_dir=self.game_dir, extension_approval=self.extension_approval,
                       language=stored.get("language", "auto"), onboarded=bool(stored.get("onboarded", False)),
                       font_scale=stored["font_scale"] if stored.get("font_scale") in FONT_SCALES else 100)
+        answer["link_mode"] = self.link_mode
         if update and self.mode != mode_before:
             try:
                 answer["install"] = await self.install()

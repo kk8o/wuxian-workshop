@@ -390,6 +390,9 @@ def cmd_status(client, args):
     if k["state"] == "online":
         print(f"link    online  session {k['session']}  next slot {k['slot_next']} ({k['slots_left']} left)  hb {k['hb']} s  "
               f"ping {k['ping_p50']} s  capture {k['capture']}")
+    elif k["state"] == "standby":
+        print(f"link    standby  (no frame until something has to pass{', opening' if k.get('opening') else ''})  "
+              f"next slot {k['slot_next']} ({k['slots_left']} left)  capture {k['capture']}")
     else:
         print(f"link    offline  capture {k['capture']}" + (f"  last frame {fmt_time(k['last_frame'])}" if k.get("last_frame") else ""))
     print("watch   " + (", ".join(s["watch"]) if s["watch"] else "(nothing)"))

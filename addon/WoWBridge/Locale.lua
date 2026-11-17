@@ -11,6 +11,7 @@ T.enUS = {
 	-- chat
 	CONNECTED = "connected to the app · /wb opens the panel",
 	RECONNECTED = "connected to the app again",
+	MET_APP = "the Wuxian Workshop app is here: the frame code stays hidden and shows for a few seconds when something has to pass · /wb opens the panel",
 	WAITING_CHAT = "waiting for the app: start Wuxian Workshop on this PC · /wb opens the panel",
 	OFFLINE = "lost the app: %d messages waiting",
 	FRAME_ERROR = "frame error: %s",
@@ -23,7 +24,8 @@ T.enUS = {
 	USAGE_SET = "usage: /wb set forwardDebug|hotLoad|autoLink|toasts on|off",
 	PARENT = "the frame hangs from %s",
 	SNAP = "pixel snapping: %s",
-	HELP = "/wb opens the panel · /wb log the debug output · /wb link the link · /wb on|off shows or hides the frame · "
+	HELP = "/wb opens the panel · /wb log the debug output · /wb link the link · /wb on|off the link on or off · "
+		.. "/wb hide ends the session (it comes back when something has to pass) · "
 		.. "/wb unlock|lock|reset the frame's place · /wb lang auto|zh|en the language · /wb help dev the test commands",
 	HELP_DEV = "/wb send <text> · burst [n] · long [bytes] · stream [s] · flush (drops what waits to go up) · "
 		.. "set <key> on|off · parent ui|world · snap default|on|off · diag",
@@ -33,8 +35,12 @@ T.enUS = {
 	USAGE_LANG = "usage: /wb lang auto|zh|en",
 	LANG_AUTO = "follow the client",
 	LANG_AUTO_SHORT = "Auto",
-	LINK_STOPPED = "link stopped: the frame is hidden",
+	LINK_STOPPED = "link off: no frame, nothing passes · /wb on turns it on",
 	LINK_STARTED = "link started: the frame shows again",
+	LINK_STANDBY = "link on: standing by, a session starts when something has to pass",
+	LINK_HIDDEN = "session ended: the frame is gone until the AI needs the game again",
+	HIDE_NEEDS_APP = "nothing to end: no session going on, or the app is older than 0.9.14 (/wb off hides the frame)",
+	BINDING_HIDE = "End the session (hide the frame)",
 	LINK_IS_OFF = "the link is off: /wb on starts it, then send again",
 	COMMAND = "command from the app: %s",
 	CUT = "message cut from %d to %d bytes (255 parts)",
@@ -73,8 +79,8 @@ T.enUS = {
 	OV_ONLINE = "Connected to the app",
 	OV_HELLO = "Waiting for the app",
 	OV_OFF = "Not connected",
-	WHY_ONLINE = "The agent can run code and read errors and screenshots",
-	WHY_HELLO = "Start the Wuxian Workshop app on this PC: it connects by itself",
+	WHY_ONLINE = "The agent can run code and see the game",
+	WHY_HELLO = "Open the Wuxian Workshop app to connect",
 	WHY_OFF = "The frame is hidden: the app cannot connect",
 	HELLO_HINT = "Still not connecting: run Self-check in the app",
 	BTN_SHOW_FRAME = "Show the frame",
@@ -127,6 +133,11 @@ T.enUS = {
 	STATE_ONLINE = "online",
 	STATE_HELLO = "waiting for the app",
 	STATE_OFF = "off",
+	STATE_STANDBY = "standing by",
+	OV_STANDBY = "Standing by",
+	WHY_STANDBY = "Hidden until something has to pass",
+	WHY_AWAY = "The app is closed: open it to connect",
+	BTN_HIDE = "End session",
 	-- the minimap button and Options > AddOns
 	MM_KEY_LEFT = "Left-click",
 	MM_DO_LEFT = "the panel",
@@ -191,6 +202,7 @@ T.enUS = {
 T.zhCN = {
 	CONNECTED = "已连接 App · /wb 打开面板",
 	RECONNECTED = "已重新连接 App",
+	MET_APP = "已连上无限工坊 App：帧码平时收起，有东西要传时出现几秒 · /wb 打开面板",
 	WAITING_CHAT = "等待 App：在这台电脑上打开无限工坊 App · /wb 打开面板",
 	OFFLINE = "与 App 失去连接，%d 条消息待发",
 	FRAME_ERROR = "帧码出错：%s",
@@ -203,7 +215,7 @@ T.zhCN = {
 	USAGE_SET = "用法：/wb set forwardDebug|hotLoad|autoLink|toasts on|off",
 	PARENT = "帧码挂在 %s 上",
 	SNAP = "像素对齐：%s",
-	HELP = "/wb 打开面板 · /wb log 调试输出 · /wb link 链路状态 · /wb on|off 显示或隐藏帧码 · /wb unlock|lock|reset 帧码位置 · "
+	HELP = "/wb 打开面板 · /wb log 调试输出 · /wb link 链路状态 · /wb on|off 打开或关闭链路 · /wb hide 收起会话（有东西要传时自动连上）· /wb unlock|lock|reset 帧码位置 · "
 		.. "/wb lang auto|zh|en 语言 · /wb help dev 测试命令",
 	HELP_DEV = "/wb send <文本> · burst [n] · long [字节] · stream [秒] · flush 清空待发 · set <开关> on|off · parent ui|world · "
 		.. "snap default|on|off · diag",
@@ -213,8 +225,12 @@ T.zhCN = {
 	USAGE_LANG = "用法：/wb lang auto|zh|en",
 	LANG_AUTO = "跟随客户端",
 	LANG_AUTO_SHORT = "自动",
-	LINK_STOPPED = "链路已停止，帧码已隐藏",
+	LINK_STOPPED = "链路已关闭：不显示帧码，什么也不传 · /wb on 重新打开",
 	LINK_STARTED = "链路已启动，帧码重新显示",
+	LINK_STANDBY = "链路已打开：待命中，有东西要传时自动连上",
+	LINK_HIDDEN = "会话已收起：帧码隐藏，AI 再用游戏时自动连上",
+	HIDE_NEEDS_APP = "没有可收起的会话，或 App 早于 0.9.14（/wb off 可隐藏帧码）",
+	BINDING_HIDE = "收起会话（隐藏帧码）",
 	LINK_IS_OFF = "链路未开启：先输入 /wb on 再发",
 	COMMAND = "App 发来的命令：%s",
 	CUT = "消息从 %d 字节截到 %d 字节（最多 255 段）",
@@ -248,7 +264,7 @@ T.zhCN = {
 	OV_HELLO = "等待 App",
 	OV_OFF = "未连接",
 	WHY_ONLINE = "Agent 可以运行代码、读取报错和截图",
-	WHY_HELLO = "在这台电脑上打开无限工坊 App，它会自动连上",
+	WHY_HELLO = "打开无限工坊 App，它会自动连上",
 	WHY_OFF = "帧码已隐藏，App 连不上",
 	HELLO_HINT = "还连不上：打开 App 的「自检与修复」",
 	BTN_SHOW_FRAME = "显示帧码",
@@ -301,6 +317,11 @@ T.zhCN = {
 	STATE_ONLINE = "在线",
 	STATE_HELLO = "等待 App",
 	STATE_OFF = "已关闭",
+	STATE_STANDBY = "待命",
+	OV_STANDBY = "待命",
+	WHY_STANDBY = "帧码已收起，有东西要传时自动出现",
+	WHY_AWAY = "App 没开：打开 App 后自动连上",
+	BTN_HIDE = "收起",
 	MM_KEY_LEFT = "左键",
 	MM_DO_LEFT = "打开面板",
 	MM_KEY_RIGHT = "右键",
@@ -381,9 +402,10 @@ function ns.LanguageName(setting, short)
 	return short and L.LANG_AUTO_SHORT or L.LANG_AUTO
 end
 
--- the link's state ("online", "hello", "off") in words
+-- the link's state ("online", "standby", "hello", "off"; "leaving" is the moment before standing by or off) in words
 function ns.StateName(state)
 	if state == "online" then return L.STATE_ONLINE elseif state == "off" then return L.STATE_OFF end
+	if state == "standby" or state == "leaving" then return L.STATE_STANDBY end
 	return L.STATE_HELLO
 end
 

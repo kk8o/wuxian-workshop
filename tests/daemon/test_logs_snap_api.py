@@ -127,7 +127,7 @@ class SnapFormats(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.exception.status, 400)
 
     async def test_try_and_inspect_pass_it_on(self):
-        async def run(code, timeout_ms=10000, addon=None, chunk="=run"):
+        async def run(code, timeout_ms=10000, addon=None, chunk="=run", hold=0):
             if "probe" in chunk:
                 return dict(ok=True, values=["1/1\n" + json.dumps({"screen": [320, 200], "frames": [
                     {"name": "Win", "rect": [60, 50, 200, 100]}]})])

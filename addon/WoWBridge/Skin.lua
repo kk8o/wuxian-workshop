@@ -30,9 +30,10 @@ function S.Fill(t, c) t:SetColorTexture(c[1], c[2], c[3], c[4]) end
 function S.Tint(t, c) t:SetVertexColor(c[1], c[2], c[3], c[4]) end
 function S.Ink(fs, c) fs:SetTextColor(c[1], c[2], c[3], c[4]) end
 
--- the link's state ("online", "hello", "off") as a colour name of C / HEX: online green, waiting blue, off grey
+-- the link's state ("online", "standby", "hello", "off") as a colour name of C / HEX: online green, waiting blue, standing
+-- by and off grey (the minimap's icon tells those two apart)
 function S.StateColor(state)
-	return state == "online" and "ok" or state == "off" and "muted" or "sky"
+	return state == "online" and "ok" or (state == "off" or state == "standby" or state == "leaving") and "muted" or "sky"
 end
 
 -- from c1 to c2 ("VERTICAL": bottom to top, "HORIZONTAL": left to right); a client without colour gradients gets the

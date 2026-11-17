@@ -238,7 +238,7 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
 
 ## 开发循环
 
-1. `status`：`link.state` 是 `online` 才继续（游戏在跑、开发组件 WoWBridge 连着）；不是的话请用户启动游戏、进入游戏世界
+1. `status`：`link.state` 是 `online` 或 `standby`（待命：第一个调用会自动连上）才继续；是 `offline` 的话请用户启动游戏、进入游戏世界
    （不是角色选择界面），别最小化窗口，再查一次。
 2. 改 `{name}.lua`（新文件记得写进 `{name}.toc`）。
 3. `check`，target `{name}`：不进游戏就找出会出错的地方——Lua 5.1 语法（客户端就是 5.1：没有 `//`、`goto`、位运算符）、
@@ -363,8 +363,8 @@ own API manual before you fix and try again.
 
 ## The development loop
 
-1. `status`: go on only when `link.state` is `online` (the game runs, the developer addon WoWBridge is connected);
-   otherwise ask the user to start the game, enter the world (not the character screen) and keep its window
+1. `status`: go on only when `link.state` is `online` or `standby` (standing by: the first call connects by itself);
+   when it is `offline` ask the user to start the game, enter the world (not the character screen) and keep its window
    un-minimized, then call it again.
 2. Change `{name}.lua` (a new file goes into `{name}.toc` too).
 3. `check`, target `{name}`: finds what would fail without the game: Lua 5.1 syntax (the client is 5.1: no `//`, `goto`,

@@ -54,7 +54,23 @@ From 0.9.13 an addon with link features POUR (f=4) answers the data call "pour" 
 answer) with TYPE_POUR messages, one per segment: "<key> <i>/<m>\n" and the segment's bytes as they are (TYPE_ZIP when
 long, as any message). They go to on_pour(session, key, i, m, bytes) undecoded, and are acknowledged within POUR_ACK
 seconds rather than ack_lazy: the addon queues the next segments only while packets come (Link.lua POUR_QUIET).
+From 0.9.14 an addon with link features STANDBY (f=5) stands by: a frame on the screen only in a session, while things
+pass. Neither the daemon nor its callers open or end one: the link does. Records for the game that wait while there is
+no session go at once in a packet stamped "at <ms>" (open: this PC's clock in ms; the addon opens a session for one
+less than 8 s old, and drops what came later), and frames must come within OPEN_WAIT s, else the callers hear so
+(on_open_failed) and the records are dropped. Every packet that carries requests is stamped while the addon stands by
+(one written as its session ends opens the next). The addon's own data rings the doorbell: its HELLO shows at the
+frame's place (o=x,y in the HELLO: place, on_place), and the daemon, which peeks there now and then (daemon/companion.py),
+takes a frame seen while standing by as a session. The addon ends a session after the WELCOME's idle= s without
+anything passing (IDLE: what passes is done; 0: never, always) and past a "hold <s>" (hold: the daemon listens s seconds
+more for prints and errors, which do not ring), or when the player ends it, or on "rest <ms>" (rest: the app's 收起): a BYE control
+frame ("BYE;why=idle|hide|off|rest"), on_bye. A session whose frames stopped for SESSION_LOST s is taken as over too (a
+covered window: the BYE was not seen). The companion also writes "here <ms> <app>" (present: at the start, and every
+PRESENCE_EVERY seconds while there is no session) and "bye <ms>" (farewell: it quits), whether frames come or not
+(_direct). Whether the addon stands by (standby) comes from outside (the daemon reads the installed WoWBridge's
+version); a HELLO with less than STANDBY says it does not (legacy, until the game process ends).
 """
+import os
 import re
 import time
 import zlib
@@ -65,7 +81,7 @@ from ..core import frame as F
 from ..core import mailbox as MB
 from ..core import squeeze
 
-VERSION = "0.9.13"
+VERSION = "0.9.14"
 LEGACY_HB = 5.0                 # heartbeat for addons before 0.7.0: they go offline after 15 s without a packet
 SLOT_WARN = (400, 100)          # mailbox slots left: tell the agent (debug.log) and the log
 WRAP = 65535                    # message ids run 1..WRAP, then start over at 1
@@ -79,7 +95,21 @@ ZIP = 3                         # ... from which it inflates compressed CODE and
                                 # (0.9.9)
 POUR = 4                        # ... from which it pours the rest of a long answer (the data call "pour", TYPE_POUR)
                                 # (0.9.13)
+STANDBY = 5                     # ... from which it stands by: a session only while things pass (a stamped packet opens
+                                # one, its data rings the doorbell, idle= ends it); "here", "bye", "rest"; BYE frames
+                                # (0.9.14)
 POUR_ACK = 4.0                  # seconds within which a segment of a pour is acknowledged
+OPEN_WAIT = 12.0                # seconds after a stamped packet within which frames must come, else the opening failed:
+                                # longer than the addon's STAMP_TTL (8 s, up to 9 by its whole-second clock) and the
+                                # frames after it, so what rode with a failed opening never runs
+SESSION_LOST = 15.0             # seconds without frames after which a session is taken as over (its BYE not seen)
+REST_SETTLE = 3.0               # seconds after a rest in which the addon's frames are its last ones, not a doorbell
+PRESENCE_EVERY = 600.0          # seconds between "here" packets while there is no session
+STANDBY_ACK = 2.0               # seconds within which a session that may end soon acknowledges (lazy: ack_lazy)
+IDLE = 3.0                      # seconds after the last thing passed that the addon ends a session (what passes is done)
+ALWAYS_AGAIN = 60.0             # seconds between openings while the settings want a session always and none comes
+APP_ID = f"{os.getpid():x}{int(time.time()) % 1000000:x}"   # this program run: a new one ends the session going on
+SAY = (b"ping", b"here", b"bye", b"rest", b"at", b"hold")   # commands that are not requests (no stamp, no session)
 _POUR_HEAD = re.compile(rb"(\S{1,64}) (\d{1,6})/(\d{1,6})")
 UNPACK_FAILED = "could not be unpacked"   # in a RUN result: a compressed job did not come out whole in the game
 STEADY = 10.0                   # seconds the link has been up (and the session online) before a frame asked for again
@@ -330,6 +360,23 @@ class Companion(AgentCommands):
         self.on_pour = None           # (session, key, segment, segments, its bytes) -> None, for a segment of a pour
         self.client = None            # (client version, Interface) as the last HELLO said them
         self.dispatching = None       # (session, message id) while a message is handed on
+        # standing by (STANDBY, 0.9.14): see the module docstring
+        self.standby = False          # the addon stands by (the daemon says so: the installed WoWBridge's version)
+        self.legacy = False           # ... but a HELLO said it does not (an older one still loaded): till the process ends
+        self.session = False          # a session is on (frames seen and no BYE yet) or opening: the frames are read
+        self.opening = None           # when a stamped packet opened one, until frames come or OPEN_WAIT runs out
+        self.open_slot = None         # ... its slot
+        self.stamped = None           # (slot, when) of the last stamped packet
+        self.said_here = False        # "here" said in this game process (once at its start, also in a session)
+        self.floor = 1                # the lowest slot this program may write in this game process
+        self.resting = None           # when the app ended the session (rest): REST_SETTLE
+        self.idle, self.always = IDLE, False   # the addon ends a session after idle s with nothing passing; always: never
+        self.always_tried = None      # when the last opening for always went
+        self.on_open_failed = None    # (text) -> None: no frames came after an opening
+        self.on_bye = None            # (why) -> None: the player ended the session ("hide") or turned the link off
+        self.rested = None            # (when, why) the last session ended
+        self.place = None             # (x, y, physical width, height): where the addon's frame is, as its HELLO said
+        self.on_place = None          # (x, y, pw, ph) -> None: a HELLO said where the frame is
 
     def note(self, text, echo=True):
         self.events.append((round(self.clock(), 3), text))
@@ -348,13 +395,25 @@ class Companion(AgentCommands):
         self.slot, self.addon_slot, self.sessions, self.current, self.full = None, None, {}, None, False
         self.written, self.written_at, self.written_as, self.slots_warned = {}, {}, {}, set()
         self.pings, self.reload_sent, self.reload_later, self.watch_jobs = {}, None, False, {}
+        self.legacy, self.session, self.opening, self.stamped, self.link_up = False, False, None, None, False
+        self.said_here = False                      # "here" once at the start of each game process (also in a session)
+        self.floor = 1                              # slots below were written by an earlier program in this process
         return len([r for r in stale if r[0] != MB.WELCOME])
 
     def new_process(self, stamp):
-        """a game process this companion has not seen: the slots it wrote before are free again"""
+        """a game process this companion has not seen: the slots it wrote before are free again. For an addon that
+        stands by, a stamp proc.ttf already holds is the same process with this program started again: the slots stay as
+        they are and the writing goes on after the last one written (the addon read them all, or reads them first)"""
+        same = self.standby and MB.read_proc(self.addons) == stamp
+        dropped = self._forget()
+        if same:
+            self.slot = self.floor = MB.last_written(self.addons) + 1
+            self.note(f"game process {stamp} goes on: writing from mailbox slot {self.slot}")
+            return
         n = MB.reset(self.addons)
         MB.write_proc(self.addons, stamp)
-        dropped = self._forget()
+        if self.standby:
+            self.slot = 1          # its addon reads from slot 1 once it has read the new stamp (it shows no HELLO to say)
         self.note(f"game process {stamp}: {n} used mailbox slots emptied, proc.ttf written"
                   + (f", {dropped} commands / code parts for the last one dropped" if dropped else ""))
 
@@ -392,6 +451,13 @@ class Companion(AgentCommands):
 
     def on_frame(self, ftype, sid, msg, payload, part=0, parts=1):
         now = self.clock()
+        if self.standing_by() and not self.session:
+            if ftype == F.TYPE_CONTROL and bytes(payload[:3]) == b"BYE":
+                return                              # the BYE of a session already over, read again
+            if self.resting is not None and 0 <= now - self.resting < REST_SETTLE:
+                return                              # the last frames before the addon read the rest
+            self.session = True                     # the doorbell: the addon has something to send
+            self.note("the doorbell: a frame while standing by, a session")
         self.stats["frames"] += 1
         self.last_frame = now
         if not self.link_up:
@@ -423,8 +489,9 @@ class Companion(AgentCommands):
             elif k > self.slot:                     # nothing unread waits below the slot the addon reads
                 self._skipped(range(self.slot, k), f"it reads slot {k}, the next to write was {self.slot}")
                 self.slot = k
-            elif k < self.slot and k not in self.written:
-                self._start_over(s, k)
+            elif self.floor <= k < self.slot and k not in self.written:
+                self._start_over(s, k)              # (below floor: another program's, which the addon reads first;
+                                                    # written again, the client's cached font would hide the new one)
         bad = _ints(f, "bad")
         if bad:
             self._skipped(bad, "damaged, as its control frame says")
@@ -441,6 +508,14 @@ class Companion(AgentCommands):
         features = _int(f, "f") or 0
         if kind == "PONG" and s.version_text is None and f.get("v"):
             s.version_text = f["v"]                 # which addon, for status only (a session seen without its HELLO)
+        if kind == "HELLO" and self.standby and not self.legacy and features < STANDBY:
+            self.legacy, self.session, self.opening = True, True, None   # an older addon loaded: on as ever
+            self.note(f"session {s.sid}: addon {f.get('v')} does not stand by: the link stays up (until the game restarts)")
+        if kind == "BYE":
+            self._bye(s, f.get("why") or "hide", k, now)
+            return
+        if kind == "HELLO" and f.get("o"):
+            self._place(f)
         if kind == "HELLO" and s.hello_at is None:
             s.hello_at = now
             s.version = _version(f.get("v", ""))
@@ -494,6 +569,214 @@ class Companion(AgentCommands):
                 del self.rtts[:-500]
                 self.note(f"ping {f.get('id')}: {now - sent:.2f} s round trip")
 
+    # --- standing by (STANDBY) ---------------------------------------------------------------------------------------
+
+    def standing_by(self):
+        """whether the addon of this game process stands by: frames only in a session"""
+        return self.standby and not self.legacy
+
+    def can_open(self):
+        """whether records for the game open a session by themselves: the addon stands by, and the mailbox takes them"""
+        return self.standing_by() and self.slot is not None and not self.full
+
+    def takes_requests(self):
+        """whether a request reaches the game now: an addon that stands by takes it in a session going on or one it
+        opens; any other (an older one, also one still loaded after the files were replaced) only while frames come"""
+        if self.standing_by():
+            return self.session or self.can_open()
+        return self.link_up
+
+    @staticmethod
+    def _request(record):
+        """whether a record asks the addon something (code, a call, a command, a text): what opens a session"""
+        kind, data = record
+        if kind in (MB.CODE, MB.CALL, MB.TEXT):
+            return True
+        return kind == MB.COMMAND and data.split(b" ", 1)[0] not in SAY
+
+    @staticmethod
+    def _hold(record):
+        """whether a record is a "hold <s>" (it belongs to the request after it)"""
+        return record[0] == MB.COMMAND and record[1].startswith(b"hold ")
+
+    @staticmethod
+    def _kind(record):
+        """a record for the log: its kind, and a command's word"""
+        kind, data = record
+        name = MB.NAMES.get(kind, f"kind {kind}").lower()
+        return f"{name} {data.split(b' ', 1)[0].decode(errors='replace')[:16]}" if kind == MB.COMMAND else name
+
+    def _stamp(self, now):
+        return (MB.COMMAND, f"at {int(now * 1000)}".encode())
+
+    def open(self, why="records wait"):
+        """a session now: a packet stamped "at <ms>" goes at once with what waits in the outbox (as much as fits; a
+        stamp alone when nothing waits: the app's 连上), and frames are read from now on. True when a session is on or
+        opening, False when the addon does not stand by or the mailbox cannot be written"""
+        now = self.clock()
+        if self.session or self.opening is not None:
+            return True
+        if not self.can_open():
+            return False
+        self._drop_oversized()
+        stamp = self._stamp(now)
+        records, size = [stamp], MB.HEAD.size + 4 + 3 + len(stamp[1])
+        while self.outbox and size + 3 + len(self.outbox[0][1]) <= MB.MAX_PACKET:
+            size += 3 + len(self.outbox[0][1])
+            records.append(self.outbox.pop(0))
+        slot = self._direct(records, now)
+        if slot is None:                            # no slot to write (full, or a file held open)
+            self.outbox = records[1:] + self.outbox
+            self._open_failed(now, "the mailbox could not be written")
+            return False
+        self.session, self.opening, self.open_slot, self.stamped = True, now, slot, (slot, now)
+        kinds = ", ".join(self._kind(r) for r in records[1:])
+        self.note(f"opening a session ({why}): slot {slot}" + (f", with {kinds}" if kinds else ""))
+        return True
+
+    def rest(self, why="ended in the app"):
+        """the session over now (the app's 收起): a "rest" packet (the addon shows its BYE and stands by), frames no
+        longer taken"""
+        now = self.clock()
+        if not self.standing_by() or not self.session:
+            return False
+        if self.slot is not None and not self.full:
+            self._direct([(MB.COMMAND, f"rest {int(now * 1000)}".encode())], now)
+        self.resting = now
+        self._session_over(now, why)
+        return True
+
+    def _session_over(self, now, why):
+        self.session, self.opening = False, None
+        s = self.sessions.get(self.current)
+        if s is not None:
+            s.welcomed = False                      # the next session's HELLO gets a WELCOME: that puts it online
+        if self.link_up:
+            self.link_up, self.up_told = False, None
+        self.rested = (now, why)
+        self.note(f"session over ({why}): the link stands by")
+
+    def _place(self, f):
+        """where the frame is (o=x,y of a HELLO, with its pw and ph): kept for the doorbell"""
+        try:
+            x, y = (int(v) for v in f["o"].split(",", 1))
+        except (ValueError, TypeError):
+            return
+        place = (x, y, _int(f, "pw") or 0, _int(f, "ph") or 0)
+        if place != self.place:
+            self.place = place
+            if self.on_place is not None:
+                try:
+                    self.on_place(*place)
+                except Exception as e:
+                    self.note(f"could not keep the frame's place: {e!r}")
+
+    def present(self):
+        """ "here": this program runs (at its start, and every PRESENCE_EVERY s while there is no session)"""
+        now = self.clock()
+        if self.standing_by() and self.slot is not None and not self.full:
+            self._direct([(MB.COMMAND, f"here {int(now * 1000)} {APP_ID}".encode())], now)
+            self.said_here = True
+
+    def farewell(self):
+        """ "bye": this program quits; a session going on ends"""
+        now = self.clock()
+        if self.standing_by() and self.slot is not None and not self.full:
+            self._direct([(MB.COMMAND, f"bye {int(now * 1000)}".encode())], now)
+
+    def _bye(self, s, why, k, now):
+        """a BYE frame: the addon ended the session (why "idle"), the player did ("hide") or turned the link off ("off"),
+        or the app's rest came ("rest"). A stamped packet the addon had not read yet (k: the slot it reads next) opens
+        the next session: the frames are read on"""
+        if not self.session:
+            return
+        if why != "off" and self.stamped is not None and k is not None and k <= self.stamped[0] \
+                and now - self.stamped[1] < OPEN_WAIT:
+            self.link_up, self.up_told = False, None
+            self.opening, self.open_slot = self.stamped[1], self.stamped[0]
+            self.note(f"BYE ({why}) before the addon read slot {self.stamped[0]}: that opens the next session")
+            return
+        self._session_over(now, {"idle": "the addon's idle time", "rest": "ended in the app",
+                                 "off": "the player turned the link off"}.get(why, "the player ended the session"))
+        if why in ("hide", "off") and self.on_bye is not None:
+            try:
+                self.on_bye(why)
+            except Exception as e:
+                self.note(f"BYE: {e!r}")
+
+    def _direct(self, records, now):
+        """a packet written now, whether frames come or not (standing by: the addon reads its mailbox all the same);
+        the slot it went into, or None"""
+        if self.slot is None or self.slot > MB.POOL:
+            return None
+        s = self.sessions.get(self.current)
+        sid, ack = (s.sid, s.ack) if s is not None else (0, 0)
+        try:
+            n = MB.write_slot(self.addons, self.slot, sid, ack, records)
+        except OSError as e:
+            self.note(f"could not write mailbox slot {self.slot} ({e})")
+            return None
+        slot = self.slot
+        self.written[slot], self.written_at[slot], self.written_as[slot] = records, now, (sid, ack)
+        if s is not None:
+            s.ack_sent, s.unacked_at = ack, None
+        self.stats["packets"] += 1
+        self.stats["bytes"] += n
+        self.stats["first_slot"] = self.stats["first_slot"] or slot
+        self.stats["last_slot"] = slot
+        for t, _ in records:
+            self.stats["records"][MB.NAMES.get(t, str(t))] += 1
+        self.slot += 1
+        self.last_packet = now
+        self.packet_times.append(now)
+        if self.slot > MB.POOL:
+            self.full = True
+        return slot
+
+    def _stand_by(self, now):
+        """the session's comings and goings as the link sees them: an opening on its way (frames, or a failure), a
+        session whose frames stopped, records that wait with no session (they open one), always, "here" now and then"""
+        if not self.standing_by():
+            return
+        if not self.said_here and self.slot is not None:
+            self.present()                          # "here" first: the addon learns the app stands by (and that a
+                                                    # session going on is this program's now)
+        if self.opening is not None:
+            if self.link_up:
+                self.note(f"session open: frames {now - self.opening:.2f} s after the stamped packet")
+                self.opening = None
+            elif now - self.opening >= OPEN_WAIT:
+                self._open_failed(now, f"no frames came within {OPEN_WAIT:.0f} s of the request")
+            return
+        if self.session:
+            if not self.link_up and now - (self.last_frame or 0) >= SESSION_LOST:
+                self._session_over(now, f"no frames for {SESSION_LOST:.0f} s")
+            return
+        if any(self._request(r) for r in self.outbox):
+            self.open()
+        elif self.always and self.can_open() and (self.always_tried is None or now - self.always_tried >= ALWAYS_AGAIN):
+            self.always_tried = now
+            self.open("the settings want a session always")
+        elif self.slot is not None and (self.last_packet is None or now - self.last_packet >= PRESENCE_EVERY):
+            self.present()
+
+    def _open_failed(self, now, why):
+        """no frames after an opening: no session; what rode with it is not sent again (the addon drops it once the
+        stamp is old), nor are the requests that waited behind it, and whoever waits on them hears so"""
+        self.session, self.opening = False, None
+        if self.open_slot in self.written:
+            self.written[self.open_slot] = [r for r in self.written[self.open_slot]
+                                            if not self._request(r) and not self._hold(r)]
+        self.outbox = [r for r in self.outbox if not self._request(r) and not self._hold(r)]
+        text = (f"the game did not answer ({why}): WoWBridge may be off (/wb on in the game), or the game is not in "
+                f"the world (the character screen, a loading screen, minimized)")
+        self.note(text)
+        if self.on_open_failed is not None:
+            try:
+                self.on_open_failed(text)
+            except Exception as e:
+                self.note(f"opening failed: {e!r}")
+
     def _welcome(self, s, now):
         """the session's WELCOME at the head of the outbox (one waits at a time): frame sizes, mode, window, display time
         and heartbeat; for an addon with LAZY features also rto and pack, and its own window, display time and heartbeat"""
@@ -503,6 +786,8 @@ class Companion(AgentCommands):
             if s.show is None:
                 s.show = self.show_lazy
             params.update(win=self.win_lazy, show=s.show, rto=self.rto_lazy, pack=1, **({"z": 1} if self.squeeze else {}))
+        if s.features >= STANDBY:                   # the addon ends the session after so long with nothing passing
+            params["idle"] = 0 if self.always else int(self.idle)
         text = f"v={VERSION};s={s.sid};" + ";".join(f"{a}={b}" for a, b in params.items())
         self.outbox = [r for r in self.outbox if r[0] != MB.WELCOME]
         self.outbox.insert(0, (MB.WELCOME, text.encode()))
@@ -840,6 +1125,7 @@ class Companion(AgentCommands):
             self.link_up, self.up_told = False, None
             self.note(f"link down: no frame for {self.down_after:.0f} s (covered, minimized, a loading screen, or the addon is off)")
         self._check_watch(now)
+        self._stand_by(now)
         s = self.sessions.get(self.current)
         if self.slot is None or s is None or not s.welcomed:
             return
@@ -863,6 +1149,8 @@ class Companion(AgentCommands):
             self._give_up(s, now)
             asks, sacks = self._asks(s, now), self._sacks(s, now)
             wait = self.ack_every if s.ack_soon else min(POUR_ACK, self.ack_lazy) if s.pour_soon else self.ack_lazy
+            if s.features >= STANDBY and self.standing_by() and not self.always:
+                wait = min(wait, STANDBY_ACK)       # the addon ends the session once all is acknowledged
             ack_due = s.ack != s.ack_sent and s.unacked_at is not None and now - s.unacked_at >= wait
             due = (free and (bool(self.outbox) or bool(asks) or bool(sacks) or ack_due)) or since is None or since >= s.hb
         else:
@@ -898,9 +1186,16 @@ class Companion(AgentCommands):
                 records.append(rec)
                 size += 3 + len(rec[1])
                 said.append(msg)
+        stamp = self._stamp(now) if self.standing_by() and any(self._request(r) for r in self.outbox) else None
+        if stamp is not None:                       # a request while the addon may end the session: it opens the next
+            size += 3 + len(stamp[1])
+        start = len(records)
         while self.outbox and size + 3 + len(self.outbox[0][1]) <= MB.MAX_PACKET:
             size += 3 + len(self.outbox[0][1])
             records.append(self.outbox.pop(0))
+        if stamp is not None and any(self._request(r) for r in records[start:]):
+            records.insert(start, stamp)
+            self.stamped = (self.slot, now)
         if not records:
             records = [(MB.HEARTBEAT, f"t={int(now * 1000)}".encode())]
         try:
@@ -983,6 +1278,29 @@ class Companion(AgentCommands):
         s.show = self.show_safe
         self.note(f"session {s.sid}: a frame shown {self.show_lazy} s was missed; frames stay up {self.show_safe} s from now on")
         self._welcome(s, now)
+
+    def hold(self, seconds):
+        """the daemon listens `seconds` more for what the game prints (try's window): the addon keeps the session that
+        long (prints and errors do not ring the doorbell). Goes with the next packet, before the request it is for"""
+        if self.standing_by() and seconds > 0:
+            self.outbox.append((MB.COMMAND, f"hold {min(600, int(seconds + 0.999))}".encode()))
+
+    def settings(self, always, idle=IDLE):
+        """the daemon's settings: a session that never ends idle (always), or ends after idle s with nothing passing;
+        a session going on hears so (a new WELCOME)"""
+        if (always, idle) == (self.always, self.idle):
+            return
+        self.always, self.idle, self.always_tried = always, idle, None
+        s = self.sessions.get(self.current)
+        if s is not None and s.welcomed and s.features >= STANDBY:
+            self._welcome(s, self.clock())
+
+    def link_state(self):
+        """what status says of the link: "online" (frames come), "standby" (the addon stands by: a call opens a session)
+        or "offline" """
+        if self.link_up:
+            return "online"
+        return "standby" if self.can_open() else "offline"
 
     def data_calls(self):
         """whether the addon of the current session takes data calls (CALL records: link features DATA, 0.9.7 on)"""
