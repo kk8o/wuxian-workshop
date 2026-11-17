@@ -482,6 +482,28 @@ class LiveDaemon(unittest.TestCase):
             DaemonClient({"port": 1, "token": "t"}).addon_events(topic=("one", "two"))
         self.assertEqual(sent, ["one", ["one", "two"]])
 
+    def test_a_whole_call(self):
+        """POST /api/call passes whole on to the service (a bad one is 400 bad_request); `wuxian call --whole` asks
+        with it; without it nothing changes"""
+        svc = self.handle.service
+        status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "whole": "yes"})
+        self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
+        seen = []
+
+        async def call_exposed(addon, name, args=None, timeout_ms=10000, shared=None, whole=False):
+            seen.append((addon, name, args, timeout_ms, shared, whole))
+            return dict(addon=addon, name=name, ok=True, result="长" * 3, **({"whole": True} if whole else {}))
+        with mock.patch.object(svc, "call_exposed", call_exposed):
+            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big", "whole": True,
+                                                          "timeout_ms": 3000})
+            self.assertEqual((status, res["result"], res["whole"]), (200, "长长长", True))
+            code, out, err = self.run_cli("call", "Foo", "big", "--whole")
+            self.assertEqual((code, json.loads(out), err), (0, "长长长", ""))
+            status, res = self.call("POST", "/api/call", {"addon": "Foo", "name": "big"})
+            self.assertEqual((status, "whole" in res), (200, False))
+        self.assertEqual(seen, [("Foo", "big", None, 3000, False, True), ("Foo", "big", None, 10000, False, True),
+                                ("Foo", "big", None, 10000, False, False)])
+
     def test_doctor_install_settings(self):
         status, res = self.call("GET", "/api/doctor")
         self.assertEqual(status, 200)

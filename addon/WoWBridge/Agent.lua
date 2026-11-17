@@ -338,7 +338,11 @@ end
 -- them itself and compiles nothing: they work with hot loading off, and the addon's function runs as any addon code
 -- does, without the taint the client gives code loaded at run time. The answer goes back as a RUN result whose one value is "<i>/<n>\n<piece i>",
 -- as a probe's does (src/wuxianworkshop/agent/probes.py): PIECE bytes a piece, the rest kept ANSWER_KEPT seconds, or
--- ANSWER_AGAIN more once every piece went (the daemon asks for a piece again when the link lost it).
+-- ANSWER_AGAIN more once every piece went (the daemon asks for a piece again when the link lost it; each piece asked
+-- for keeps it ANSWER_KEPT seconds from then). An answer is at most ANSWER_MOST bytes, else an {error}; a request with
+-- "w": true (0.9.15: `call` with whole, the daemon's call_exposed) up to WHOLE_MOST, as `run` with whole
+-- (agent/probes.py WHOLE_MOST): the daemon then takes the rest for as long as it keeps coming. An older WoWBridge
+-- ignores "w" and answers past ANSWER_MOST with the {error}.
 -- "pour" {"k": key, "g": true|false, "only": [segment, ...]} (link features 4, 0.9.13) sends the rest of a long answer,
 -- all that follows its first piece, in one go: cut into segments of SEGMENT bytes (between two UTF-8 characters, by the
 -- text alone, so that a pour asked again numbers them the same), each a TYPE_POUR message "<key> <i>/<m>\n<segment>"
@@ -347,16 +351,17 @@ end
 -- RUN result's one value is "<m> <bytes of the rest>". While its segments go the answer is kept ANSWER_KEPT seconds
 -- from the last one handed to the link or acknowledged, never cut off halfway; once every one is acknowledged,
 -- ANSWER_AGAIN more. A reload takes it, as it takes every answer.
-local PIECE, ANSWER_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 300, 60
+local PIECE, ANSWER_MOST, WHOLE_MOST, ANSWER_KEPT, ANSWER_AGAIN = 3900, 256 * 1024, 16 * 1024 * 1024, 300, 60
 local SEGMENT = 32 * 1024
 local CHUNK = { call = "=call", reply = "=respond", describe = "=describe", piece = "=piece", pour = "=pour" }
 local answers = {}                    -- job id -> { s, cuts, left, at, served }: answers longer than a piece
 
--- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece)
-local function Pieces(s)
-	if #s > ANSWER_MOST then
+-- an answer cut into pieces between two UTF-8 characters: (the text, the end of each piece); one over `most` bytes is
+-- an {error} that says so
+local function Pieces(s, most)
+	if #s > most then
 		s = ns.Json.Encode({ error = ("the answer is %d KB, more than the %d KB a call brings back"):format(
-			math.ceil(#s / 1024), ANSWER_MOST / 1024) })
+			math.ceil(#s / 1024), most / 1024) })
 	end
 	local cuts, from = {}, 1
 	repeat
@@ -461,6 +466,7 @@ local function Answer(verb, req)
 		return nil, "the rest of this answer is no longer kept in the game (the UI reloaded?)"
 	end
 	if not a.served[i] then a.served[i], a.left = true, a.left - 1 end     -- a piece asked again counts once
+	a.at = GetTime()                                    -- a long answer (whole: up to 16 MB) is kept while it is asked for
 	if a.left <= 0 then a.at = math.min(a.at, GetTime() - ANSWER_KEPT + ANSWER_AGAIN) end
 	return ("%d/%d\n%s"):format(i, #a.cuts, a.s:sub(a.cuts[i - 1] + 1, a.cuts[i]))
 end
@@ -486,7 +492,7 @@ local function RunCall(id, job)
 		end
 	end
 	if text and job.verb ~= "piece" and job.verb ~= "pour" then
-		local s, cuts = Pieces(text)
+		local s, cuts = Pieces(text, type(req) == "table" and req.w == true and WHOLE_MOST or ANSWER_MOST)
 		if #cuts > 1 then
 			Sweep(answers)                              -- the ones left by a daemon that never asked
 			answers[id] = { s = s, cuts = cuts, left = #cuts - 1, at = GetTime(), served = {} }

@@ -182,6 +182,8 @@ def build_parser():
     p.add_argument("name", help="the name it exposed")
     p.add_argument("args", nargs="?", help="""its arguments as JSON ('{"n": 2}'; @<file> or - for the input)""")
     p.add_argument("--timeout-ms", type=int, default=10000, help="how long to wait for the game (default 10000)")
+    p.add_argument("--whole", action="store_true", help="bring back an answer up to 16 MB (else 256 KB); --timeout-ms "
+                                                       "is for the call's own result")
     p = sub.add_parser("respond", help="answer an addon's question (WoWBridge's Request: an event with a request id)")
     p.add_argument("request", help="the request id the event carries (5974.3)")
     p.add_argument("data", nargs="?", help="""the answer as JSON ('{"text": "..."}'; @<file> or - for the input)""")
@@ -947,7 +949,11 @@ def cmd_call(client, args):
     except ValueError as e:
         say_error(str(e))
         return 2
-    res = client.call_exposed(args.addon, args.name, call_args, args.timeout_ms)
+    whole = getattr(args, "whole", False)
+    res = client.call_exposed(args.addon, args.name, call_args, args.timeout_ms, **({"whole": True} if whole else {}))
+    if whole and not res.get("whole"):
+        print("the daemon is older than 0.9.15: this call brought back 256 KB at most (restart the program)",
+              file=sys.stderr)
     print(json.dumps(res.get("result"), ensure_ascii=False, indent=2))
     return 0
 

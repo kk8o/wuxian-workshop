@@ -139,10 +139,12 @@ class DaemonClient:
         return self.post("/api/addon_events", addon=addon, topic=topic, since=since, limit=limit, wait=wait,
                          timeout=wait + 30)
 
-    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False):
-        # shared: an ask of WuxianKit's view (daemon/kitcache.py), said only then (a daemon before it reads no such field)
+    def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=False, whole=False):
+        # shared: an ask of WuxianKit's view (daemon/kitcache.py), said only then (a daemon before it reads no such
+        # field); whole: an answer up to 16 MB, whose rest comes for as long as it keeps coming (service.call_exposed)
         return self.post("/api/call", addon=addon, name=name, args=args, timeout_ms=timeout_ms,
-                         timeout=timeout_ms / 1000 + 30 + AGAIN, **({"shared": True} if shared else {}))
+                         timeout=timeout_ms / 1000 + (WHOLE_WAIT if whole else 30 + AGAIN),
+                         **({"shared": True} if shared else {}), **({"whole": True} if whole else {}))
 
     def respond(self, request, data=None, timeout_ms=10000):
         return self.post("/api/respond", request=request, data=data, timeout_ms=timeout_ms, timeout=timeout_ms / 1000 + 30)

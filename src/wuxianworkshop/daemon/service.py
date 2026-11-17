@@ -738,13 +738,14 @@ class Service:
             res, lambda i: self.run(probes.piece_chunk(key, i), timeout_ms=timeout_ms, chunk="=probe"),
             lambda: (key, True), timeout_ms, "probe", refresh=True))
 
-    async def data_probe(self, verb, payload, timeout_ms, what):
+    async def data_probe(self, verb, payload, timeout_ms, what, refresh=False):
         """a data call (agent/commands.py data_call: what the agent asks of an addon's API, sent as data) answered in
-        pieces as a probe is; its JSON answer, or the ApiError that says why there is none"""
+        pieces as a probe is; its JSON answer, or the ApiError that says why there is none. refresh: the game keeps the
+        answer from the latest piece asked for (WoWBridge 0.9.15 on; a whole call's answer may take that long)"""
         job, res = await self.data(verb, payload, timeout_ms, what)
         return self.answer_json(await self.whole_text(
             res, lambda i: self.data_result("piece", {"k": str(job), "i": i}, timeout_ms, what),
-            lambda: (str(job), False), timeout_ms, what))
+            lambda: (str(job), False), timeout_ms, what, refresh=refresh))
 
     async def run_whole(self, code, timeout_ms=10000, addon=None):
         """run, with the whole of what the code returned first (as tostring makes it, up to probes.WHOLE_MOST bytes)
@@ -1129,11 +1130,16 @@ class Service:
         comp = getattr(self.worker, "comp", None)          # the UI session: another one may run another WuxianKit
         return dict(events=events, next=next_id, truncated=truncated, session=getattr(comp, "current", None))
 
-    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None):
+    async def call_exposed(self, addon, name, args=None, timeout_ms=10000, shared=None, whole=False):
         """call a function an addon exposed with WoWBridge's Expose: args (JSON) go to it as a Lua table, its first
         return value comes back as `result`. A function that is not there, or that raised, is an ApiError call_failed
         with the message (and the stack). shared: an ask of WuxianKit's views (kitcache.SHARED; shared over HTTP), for
-        which what the daemon knows of WuxianKit answers kit.revision and kit.manifest (daemon/kitcache.py)"""
+        which what the daemon knows of WuxianKit answers kit.revision and kit.manifest (daemon/kitcache.py). whole: an
+        answer up to probes.WHOLE_MOST bytes instead of probes.MOST (the data call's "w"; WoWBridge 0.9.15 on, an older
+        one still refuses past MOST), with `whole: true` in what comes back; timeout_ms is then for the call's own
+        result, the rest comes for as long as it keeps coming (as run_whole's)"""
+        if whole is not True and whole is not False and whole is not None:
+            raise ApiError(400, "bad_request", "whole: true (an answer up to 16 MB) or false")
         if not isinstance(addon, str) or not self.ADDON_NAME.match(addon):
             raise ApiError(400, "bad_request", "addon: the addon's folder name")
         if not isinstance(name, str) or not self.CALL_NAME.match(name):
@@ -1143,27 +1149,35 @@ class Service:
         except ValueError as e:
             raise ApiError(400, "bad_request", str(e)) from None
         own = addon == KIT and name in OWN_READS and args is None and (SHARED.get() if shared is None else shared)
-        if own and name in ("kit.revision", "kit.manifest"):
+        if own and not whole and name in ("kit.revision", "kit.manifest"):
             return await self.kit_cache.call(name, lambda: self.call_game(addon, name, args, timeout_ms, code, own))
-        return await self.call_game(addon, name, args, timeout_ms, code, own)
+        return await self.call_game(addon, name, args, timeout_ms, code, own, **({"whole": True} if whole else {}))
 
-    async def call_game(self, addon, name, args, timeout_ms, code, own=False):
-        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7.
-        own: a read of WuxianKit's views, not the agent's call: the game neither counts it nor lists it (q; 0.9.9)"""
+    async def call_game(self, addon, name, args, timeout_ms, code, own=False, whole=False):
+        """call_exposed's call in the game: as data (CALL records), or as the chunk `code` for a WoWBridge before 0.9.7
+        (whole or not: probes.MOST at most). own: a read of WuxianKit's views, not the agent's call: the game neither
+        counts it nor lists it (q; 0.9.9). whole: "w", an answer up to probes.WHOLE_MOST bytes (0.9.15)"""
         t0 = time.time()
         try:
             if self.data_calls():
-                req = {"a": addon, "n": name, "d": args, **({"q": True} if own else {})}
-                data = await self.data_probe("call", req, timeout_ms, "call")
+                req = {"a": addon, "n": name, "d": args, **({"q": True} if own else {}),
+                       **({"w": True} if whole else {})}
+                data = await self.data_probe("call", req, timeout_ms, "call", refresh=whole)
             else:
                 data = await self.probe(code, timeout_ms, chunk="=call")
         except ApiError as e:
             if e.code != "probe_failed":
                 raise
             self.journal.add("INFO", f"call {addon}.{name}: failed: {e.message.splitlines()[0][:200]}", addon=addon)
-            raise ApiError(400, "call_failed", e.message) from None
+            message = e.message
+            if whole and f"more than the {probes.MOST // 1024} KB a" in message:
+                message += (f" (the WoWBridge in the game is older than 0.9.15: it brings back "
+                            f"{probes.MOST // 1024} KB at most, whole or not; update it, or have the function answer "
+                            f"in parts)")
+            raise ApiError(400, "call_failed", message) from None
         self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
-        return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
+        return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None,
+                    **({"whole": True} if whole else {}))
 
     REQUEST_ID = REQUEST_ID
 

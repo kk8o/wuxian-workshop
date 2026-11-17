@@ -2,8 +2,10 @@
 (0.9.13), one data call "pour" and its segments joined in order, whatever order they come in; a segment that never
 comes asked for again alone; a link down in the middle waited for; another UI session, a quiet link, a game that says
 another size, an error in the game: errors; a pour whose own result is lost goes on with its segments. From an older
-addon, the pieces asked for eight at a time, one more as one comes back. run with whole, and status's link.pour."""
+addon, the pieces asked for eight at a time, one more as one comes back. run with whole, call with whole (0.9.15: the
+data call's "w"), and status's link.pour."""
 import asyncio
+import json
 import re
 import unittest
 from types import SimpleNamespace
@@ -206,6 +208,61 @@ class Pour(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["result"], "长" * 130)
         self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}}), ("pour", {"k": "7", "g": False})])
 
+    async def test_a_whole_call(self):
+        """call with whole: "w" goes with the data call, the rest is poured, `whole: true` comes back; WuxianKit's own
+        reads with whole go to the game, not its cache"""
+        self.svc.data_calls = lambda: True
+        text = '{"result":"' + "长" * 30
+        rest = ('长' * 100 + '"}').encode()
+        self.segments, self.rest, self.order = [rest[:150], rest[150:]], rest, [2, 1]
+
+        async def data(verb, payload, timeout_ms, what):
+            self.asked.append((verb, payload))
+            if verb == "pour":
+                asyncio.get_running_loop().create_task(self.send([2, 1], key="7"))
+                return 7, dict(ok=True, values=[f"2 {len(rest)}"])
+            return 7, dict(ok=True, values=[f"1/3\n{text}"])
+        self.svc.data = data
+        res = await self.svc.call_exposed("Foo", "long", {"n": 1}, whole=True)
+        self.assertEqual(res, dict(addon="Foo", name="long", ok=True, result="长" * 130, whole=True))
+        self.assertEqual(self.asked, [("call", {"a": "Foo", "n": "long", "d": {"n": 1}, "w": True}),
+                                      ("pour", {"k": "7", "g": False})])
+        self.asked.clear()
+
+        async def cached(name, ask):
+            raise AssertionError("a whole read went to the cache")
+        self.svc.kit_cache.call = cached
+        res = await self.svc.call_exposed("WuxianKit", "kit.manifest", whole=True, shared=True)
+        self.assertEqual(res["result"], "长" * 130)
+        self.assertEqual(self.asked[0], ("call", {"a": "WuxianKit", "n": "kit.manifest", "d": None, "q": True,
+                                                  "w": True}))
+
+    async def test_a_whole_call_refused(self):
+        """a bad whole is a bad request; an older WoWBridge (it ignores "w") refuses past 256 KB, and with whole the
+        error says why; past 16 MB the game's error as it is"""
+        self.svc.data_calls = lambda: True
+        for bad in ("yes", 1, [True]):
+            with self.assertRaises(ApiError) as cm:
+                await self.svc.call_exposed("Foo", "long", whole=bad)
+            self.assertEqual((cm.exception.status, cm.exception.code), (400, "bad_request"))
+        self.assertEqual(self.asked, [])
+        said = ["the answer is 300 KB, more than the 256 KB a call brings back"]
+
+        async def data(verb, payload, timeout_ms, what):
+            self.asked.append((verb, payload))
+            return 7, dict(ok=True, values=["1/1\n" + json.dumps({"error": said[0]})])
+        self.svc.data = data
+        for whole, hint in ((True, True), (False, False)):
+            with self.assertRaises(ApiError) as cm:
+                await self.svc.call_exposed("Foo", "long", whole=whole)
+            self.assertEqual((cm.exception.status, cm.exception.code), (400, "call_failed"))
+            self.assertTrue(cm.exception.message.startswith(said[0]), cm.exception.message)
+            self.assertEqual("older than 0.9.15" in cm.exception.message, hint)
+        said[0] = "the answer is 17000 KB, more than the 16384 KB a call brings back"
+        with self.assertRaises(ApiError) as cm:
+            await self.svc.call_exposed("Foo", "long", whole=True)
+        self.assertEqual(cm.exception.message, said[0])
+
     async def test_run_whole_refuses_and_passes_errors_on(self):
         with self.assertRaises(ApiError) as cm:
             await self.svc.run_whole("  ")
@@ -258,6 +315,39 @@ class Window(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([i for i, _ in self.started], list(range(1, 21)))
         later = dict(self.started)
         self.assertIn(3, later[12])                         # 12 went while 3 was still out: no batch waits for its slowest
+
+
+class WholeCallPieces(unittest.IsolatedAsyncioTestCase):
+    """call with whole from an addon that does not pour: 2 MB in some 1,600 pieces, eight asked for at a time, the game
+    keeping the answer from the latest piece asked for (refresh)"""
+
+    async def test_2_mb_piece_by_piece(self):
+        svc = Service(lambda on_debug, log: Worker(), journal=Journal())
+        svc.worker.comp = SimpleNamespace(link_up=True, current=5, pours=lambda: False)
+        svc.data_calls = lambda: True
+        value = "无限\t物品 " * (2_100_000 // 15)
+        text = json.dumps({"result": value}, ensure_ascii=False)
+        pieces = [text[i:i + 1300] for i in range(0, len(text), 1300)]
+        asked, refreshed = [], []
+
+        async def data(verb, payload, timeout_ms, what):
+            asked.append((verb, payload))
+            i = payload["i"] if verb == "piece" else 1
+            await asyncio.sleep(0)
+            return 7, dict(ok=True, values=[f"{i}/{len(pieces)}\n{pieces[i - 1]}"])
+        window = svc.window
+
+        async def spy(n, more, session, refresh, what):
+            refreshed.append(refresh)
+            return await window(n, more, session, refresh, what)
+        svc.data, svc.window = data, spy
+        res = await svc.call_exposed("Foo", "big", whole=True, timeout_ms=3000)
+        self.assertEqual((res["result"], res["whole"]), (value, True))
+        self.assertGreater(len(text.encode()), 2_000_000)
+        self.assertEqual(asked[0], ("call", {"a": "Foo", "n": "big", "d": None, "w": True}))
+        self.assertEqual(sorted(p["i"] for v, p in asked[1:]), list(range(2, len(pieces) + 1)))
+        self.assertEqual({p["k"] for v, p in asked[1:]}, {"7"})
+        self.assertEqual(refreshed, [True])
 
 
 class Status(unittest.TestCase):
