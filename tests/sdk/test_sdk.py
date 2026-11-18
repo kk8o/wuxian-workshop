@@ -97,7 +97,7 @@ class FakeDaemon:
                 if auth != f"Bearer {TOKEN}":
                     return self.answer(401, {"error": {"code": "unauthorized", "message": "bad token"}})
                 if self.path == "/api/status" and fake.link_state is not None:
-                    return self.answer(200, {"link": {"state": fake.link_state}, "version": "0.9.15"})
+                    return self.answer(200, {"link": {"state": fake.link_state}, "version": "0.10.0"})
                 self.answer(404, {"error": {"code": "not_found", "message": self.path}})
 
             def answer(self, status, obj):

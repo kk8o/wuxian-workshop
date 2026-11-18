@@ -25,8 +25,8 @@ START_TIMEOUT = 30.0         # the desktop program takes longer than `serve` to 
 START_WAIT = 200    # seconds a call of a local extension may wait for it to start (initialize: 180 s) on top of its own
 LOAD_WAIT = 330     # seconds extension_load / extension_check may take: a start (180 s) and its tests (120 s)
 PACK_WAIT = 180     # seconds a package may take: packing a folder, unpacking one (64 MB, 8000 files), a game addon
-AGAIN = 180         # seconds more for what comes in pieces: the daemon asks for a piece again once the link is back
-                    # (service.POUR_WAIT), and a piece may wait out its timeout before that
+AGAIN = 180         # seconds more for an answer longer than one piece: the daemon has the rest poured, waits for
+                    # the link while it is down (service.POUR_WAIT) and asks again for the segments that are missing
 LOAD_MOST = 600     # seconds a load may take in the daemon however small its timeout_ms (service.MAX_TIMEOUT_MS: a big
                     # addon gets 5 s + 1 s per 2.5 KB), and its check and kept version before that
 WHOLE_WAIT = 3600   # seconds a whole run's answer may take after its own result (16 MB is some 15 minutes; the daemon
