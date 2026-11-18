@@ -18,7 +18,7 @@ S.STUD, S.INF, S.CROSS = MEDIA .. "stud", MEDIA .. "inf", MEDIA .. "cross"
 -- the site's colours (app.css :root; ink: text on gold); C: r, g, b, a in 0..1, HEX: for |cff colour codes
 S.HEX = { panel = "23242a", panel2 = "2b2f37", field = "1b1c21", line = "35363d", fg = "e8e4d8", muted = "9c9ea6",
 	gold = "d8a85a", goldL = "f1c97a", goldD = "8a6424", goldSoft = "3a3120", sky = "7fb3e0", ok = "6fcf97", bad = "f28b82",
-	ink = "1b1c21" }
+	ink = "1b1c21", rest = "4f9a74" }             -- rest: standing by (linked, nothing passing): ok's green, dimmed
 local C = {}
 for k, hex in pairs(S.HEX) do
 	C[k] = { tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255, 1 }
@@ -30,10 +30,11 @@ function S.Fill(t, c) t:SetColorTexture(c[1], c[2], c[3], c[4]) end
 function S.Tint(t, c) t:SetVertexColor(c[1], c[2], c[3], c[4]) end
 function S.Ink(fs, c) fs:SetTextColor(c[1], c[2], c[3], c[4]) end
 
--- the link's state ("online", "standby", "hello", "off") as a colour name of C / HEX: online green, waiting blue, standing
--- by and off grey (the minimap's icon tells those two apart)
+-- the link's state ("online", "standby", "hello", "off") as a colour name of C / HEX: online green, standing by a dimmed
+-- green (it is linked too: the panel's card says 已连接 for both), waiting blue, off grey
 function S.StateColor(state)
-	return state == "online" and "ok" or (state == "off" or state == "standby" or state == "leaving") and "muted" or "sky"
+	return state == "online" and "ok" or state == "standby" and "rest"
+		or (state == "off" or state == "leaving") and "muted" or "sky"
 end
 
 -- from c1 to c2 ("VERTICAL": bottom to top, "HORIZONTAL": left to right); a client without colour gradients gets the
