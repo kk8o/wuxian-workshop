@@ -8,7 +8,7 @@
 
 从无限工坊仓库的 `sdk/python/wuxiankit.py` 复制一份到自己的项目，直接 `import wuxiankit`。MIT 许可，文件头里有许可证全文。本机扩展不用复制：工坊启动它时把这个文件所在的文件夹放进 `PYTHONPATH`。
 
-前提：无限工坊在运行，游戏里装了 WuxianKit 0.6 或更新版本。守护进程的地址和令牌在 `%WUXIAN_HOME%\state\daemon.json`，没设 `WUXIAN_HOME` 时在 `%LOCALAPPDATA%\WuxianWorkshop\state\daemon.json`；`Client("路径")` 可以另指。
+前提：无限工坊在运行，游戏里装了 WuxianKit 0.7.0 或更新版本。守护进程的地址和令牌在 `%WUXIAN_HOME%\state\daemon.json`，没设 `WUXIAN_HOME` 时在 `%LOCALAPPDATA%\WuxianWorkshop\state\daemon.json`；`Client("路径")` 可以另指。
 
 ## 基本用法
 
