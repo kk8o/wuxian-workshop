@@ -455,7 +455,6 @@ class AppStream:
         self._held: list = []                            # wakes that wait for a catch-up that failed
         self._beat_at = 0.0                              # when the next heartbeat is due
         self._beaten: Optional[float] = None             # when the last one went
-        self.end_event: Optional[int] = None             # the daemon's id of the kit.app event that ended it, if one did
         self._fails = 0
         self._retry_at = 0.0
         self._pending: collections.deque = collections.deque()
@@ -642,7 +641,6 @@ class AppStream:
                 self._joined = False
             elif data.get("why") != "replaced":
                 self.ended = str(data.get("why") or "stopped")
-                self.end_event = _id(ev.get("id"))
             return
         if topic == self.topic:
             self._wake(data)
@@ -700,7 +698,6 @@ PARSE_ERROR, BAD_REQUEST = -32700, -32600
 CALL_WAIT = 120.0                        # seconds ext.call waits for the workshop's answer
 SHUTDOWN_GRACE = 3.0                     # seconds run() lets running calls finish after shutdown
 HELD_EVENTS = 100                        # events kept until initialize is answered
-APP_ID = re.compile(r"^[a-z][a-z0-9_]{0,23}\Z")  # an app id as a manifest writes it
 
 # What a declaration may be and how a call's arguments are checked: the text 无限工坊 checks them with, copied from
 # its src/wuxianworkshop/local/validate.py by scripts/sync_sdk_validate.py (a test compares the two). Change it there,
@@ -1449,7 +1446,7 @@ class Extension:
         keep or stop here: an extension that drives an app starts with 无限工坊 (its manifest needs no start) and the
         app stops when its process does.
         ExtensionTest(ext).wake(app_id, ...) hands fn a wake in a test"""
-        if not isinstance(app_id, str) or not APP_ID.match(app_id):
+        if not isinstance(app_id, str) or not APP_NAME.match(app_id):
             raise ValueError(f"app {app_id!r}: lowercase letters, digits and _, a letter first, at most 24 characters "
                              f"(an app id of the manifest)")
         if app_id in self._apps:

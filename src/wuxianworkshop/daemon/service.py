@@ -3197,7 +3197,6 @@ class Service:
             for key in ("language", "font_scale", "onboarded", "link_mode"):
                 if key in update:
                     stored[key] = update[key]
-            stored.pop("link_mode_v", None)              # 0.9.15 test builds marked the player's choice of a third mode
             stored.pop("idle_minutes", None)             # 0.9.14 test builds: a session ends when what passes is done
             stored.pop("autostart", None)                # 0.9.13 and before kept a 开机自启 that started nothing
             if "language" in update:                     # what the program says from now on (i18n.py)

@@ -6,7 +6,6 @@ ExtensionTest.wake, and ext.report with ExtensionTest.reports."""
 import contextlib
 import io
 import json
-import os
 import tempfile
 import threading
 import time

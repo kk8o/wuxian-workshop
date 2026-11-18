@@ -38,7 +38,6 @@ class Settings(unittest.IsolatedAsyncioTestCase):
     def test_the_kept_mode(self):
         for stored, mode in (({}, "auto"),
                              ({"link_mode": "demand"}, "auto"),                       # 0.9.14's default
-                             ({"link_mode": "demand", "link_mode_v": 2}, "auto"),     # a 0.9.15 test build's third mode
                              ({"link_mode": "always"}, "always"),
                              ({"link_mode": "auto"}, "auto"),
                              ({"link_mode": "sometimes"}, "auto")):
@@ -47,12 +46,12 @@ class Settings(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(svc.worker.settings, [(mode == "always", link.IDLE)], stored)
 
     async def test_two_modes(self):
-        svc = self.service({"link_mode": "demand", "link_mode_v": 2, "language": "en"})
+        svc = self.service({"link_mode": "demand", "language": "en"})
         self.assertEqual((await svc.settings())["link_mode"], "auto")
         res = await svc.settings(dict(link_mode="always"))
         self.assertEqual(res["link_mode"], "always")
         kept = json.loads(settings_file().read_text(encoding="utf-8"))
-        self.assertEqual((kept["link_mode"], kept["language"], "link_mode_v" in kept), ("always", "en", False))
+        self.assertEqual((kept["link_mode"], kept["language"]), ("always", "en"))
         self.assertEqual(self.service().link_mode, "always")                    # the next start keeps it
         await svc.settings(dict(language="zh-CN"))                              # other settings leave it be
         self.assertEqual(self.service().link_mode, "always")
