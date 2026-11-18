@@ -7,6 +7,7 @@ meter of the app messages used, in three tiers. 诊断 has the counts and the la
 as one line, and its tab carries the errors' count. The window is opaque, as high as 概览 needs (470 at most, and for
 the other tabs) and hangs by its top left corner; the minimap button's tooltip says the card's line and, from 80 per
 cent on, the meter's warning."""
+import locale
 import unittest
 
 from tests.addon.test_pour import Pour
@@ -613,3 +614,30 @@ class Meter(unittest.TestCase):
         kids = self.panel.p[b"meter"][b"__kids"]                        # the meter is words and a bar: nothing to press
         self.assertIsNone(kids)
         self.assertEqual(self.panel.p[b"card"][b"hint"][b"shown"], False)
+
+
+def latin_locale(case):
+    """the C library's character classes of a Western Windows (the CI runner's): Lua's %c and %s follow them, and some
+    bytes of UTF-8 text are control characters there; the locale this process had comes back after the test"""
+    was = locale.setlocale(locale.LC_CTYPE)
+    try:
+        locale.setlocale(locale.LC_CTYPE, "English_United States.1252")
+    except locale.Error:
+        case.skipTest("no English_United States.1252 locale here")
+    case.addCleanup(locale.setlocale, locale.LC_CTYPE, was)
+
+
+class ConclusionLatinLocale(Conclusion):
+    """Conclusion again where Lua's %c takes bytes of UTF-8 for control characters: an app's name stays itself"""
+
+    def setUp(self):
+        latin_locale(self)
+        super().setUp()
+
+
+class OverviewLatinLocale(Overview):
+    """Overview again there: an addon's Chinese rows stay themselves"""
+
+    def setUp(self):
+        latin_locale(self)
+        super().setUp()

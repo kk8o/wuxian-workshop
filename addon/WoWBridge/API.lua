@@ -209,8 +209,10 @@ end
 
 -- somebody else's words (an addon's line, an app's title) as plain text for a font string: a | shows as itself (doubled:
 -- it starts no colour, link or texture) and a control character (a line break, a tab) is a space
+-- (the classes spelled out: %c and %s follow the C library's locale, which can take bytes of UTF-8 text for them)
+local CONTROL, BLANK = "[%z\1-\31\127]", "[%z\1-\32\127]"
 function ns.Plain(s)
-	return (tostring(s):gsub("%c", " "):gsub("|", "||"))
+	return (tostring(s):gsub(CONTROL, " "):gsub("|", "||"))
 end
 
 local function Overview(self, rows)
@@ -226,7 +228,7 @@ local function Overview(self, rows)
 		local row = rows[i]
 		if type(row) ~= "table" then error(("Overview(rows): row %d is a table { text, note, tone, click }"):format(i), 2) end
 		local text, note, tone, click = row.text, row.note, row.tone, row.click
-		if type(text) ~= "string" or #text < 1 or #text > OVERVIEW_TEXT or not text:find("[^%s%c]") then
+		if type(text) ~= "string" or #text < 1 or #text > OVERVIEW_TEXT or not text:find("[^" .. BLANK:sub(2)) then
 			error(("Overview(rows): row %d: text is a string of 1 to %d bytes"):format(i, OVERVIEW_TEXT), 2)
 		end
 		if note ~= nil and (type(note) ~= "string" or #note > OVERVIEW_NOTE) then
