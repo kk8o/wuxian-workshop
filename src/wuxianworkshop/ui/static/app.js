@@ -1728,7 +1728,7 @@ function appState() {
     },
     // 批准: the workshop runs an extension's command only once the player has allowed it (and again after the command
     // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask).
-    // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动批准)
+    // Nothing is asked where the row says its command may run anyway (allowed: the setting 扩展批准 is 自动批准)
     lxUnapproved(r) { return !!r && r.allowed !== true && (r.approval === 'needed' || r.approval === 'changed'); },
     lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
     lxApprovalTitle(r) {

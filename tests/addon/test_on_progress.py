@@ -3,8 +3,7 @@ end: the real API.lua, Agent.lua and Link.lua under Lua 5.1 (tests/support/wowmo
 Service's call_exposed (tests/addon/test_pour.py). fn(info) once as the answer starts to go up and once for every
 segment that is in, info = {id, sent, size, seconds}: sent counts the whole answer, only grows (a segment sent again
 adds nothing) and equals size at the end; registering again replaces the fn, nil removes it; an fn that raises goes to
-the error handler and the answer goes on; an answer that fits in one piece, or a probe's, calls nothing. There is no
-OnPour any more."""
+the error handler and the answer goes on; an answer that fits in one piece, or a probe's, calls nothing."""
 import unittest
 
 from tests.addon.test_pour import Pour, text_of
@@ -80,7 +79,6 @@ class OnProgress(Pour):
         self.assertIn("OnProgress(name, fn): fn is a function, or nil", bad)
         bad = self.s.lua.eval(b'select(2, pcall(FooWB.OnProgress, FooWB, "a b", print))').decode()
         self.assertIn("OnProgress(name, fn): the name is", bad)
-        self.assertTrue(self.s.lua.eval(b"FooWB.OnPour == nil"))              # no alias of the 0.9.15 name
 
     def test_an_fn_that_raises_goes_to_the_error_handler_and_the_answer_goes_on(self):
         g = self.s.lua.globals()

@@ -422,7 +422,7 @@ local function Pour(req)
 	end
 	local p = { key = key }
 	a.pour, a.out = p, a.out or 0
-	-- its line in the debug log and the panel's 最近 (a pour is no RUN result): how many segments are in, then the sum
+	-- its line in the debug log and the panel's 诊断 (a pour is no RUN result): how many segments are in, then the sum
 	local n, done, bytes, t0 = #list, 0, 0, GetTime()
 	local ok, line = false, nil
 	if n > 0 and ns.Console then ok, line = pcall(ns.Console.Add, "LINK", ns.L.CON_POURING:format(0, n)) end

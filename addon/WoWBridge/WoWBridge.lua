@@ -231,7 +231,7 @@ function WB.SetLink(on)
 	end
 end
 
--- the session going on ended (/wb hide, the panel, the key binding): the frame goes until something has to pass again
+-- the session going on ended (/wb hide, the key binding): the frame goes until something has to pass again
 function WB.Hide()
 	if ns.Link.Hide() then
 		Print(L.LINK_HIDDEN)
