@@ -287,8 +287,7 @@ def apps_of(manifest):
     on one line; also kit.apps' rows, and a local extension's apps (kit.app.open's fields: `app` for the id). docs: the
     app's docs folder under Interface\\AddOns (an addon's declaration only; kit.apps does not give it); temp: a temporary
     app (an agent's, not remembered). driver: "local" for an app its local extension's program drives (无限工坊
-    keeps it open; kit.apps says by "local" of it too), else None; launch: what an older WuxianKit said (the pages may
-    still read it; nothing here does)"""
+    keeps it open; kit.apps says by "local" of it too), else None"""
     apps = (manifest or {}).get("apps")
     out = []
     for a in apps if isinstance(apps, list) else []:
@@ -306,7 +305,7 @@ def apps_of(manifest):
                         extension=a["extension"] if isinstance(a.get("extension"), str) else None,
                         driver=a["driver"] if a.get("driver") in DRIVERS else None,
                         docs=a["docs"] if isinstance(a.get("docs"), str) and a["docs"] else None,
-                        temp=a.get("temp") is True, launch=a.get("launch") is True,
+                        temp=a.get("temp") is True,
                         see=[one_line(f) for f in a["see"] if isinstance(f, str)] if isinstance(a.get("see"), list)
                         else []))
     return out

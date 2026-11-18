@@ -1,7 +1,6 @@
 """The probes' Lua (agent/probes.py) under Lua 5.1 with stand-ins for the client's frames: the JSON the game answers
 with, a trace of fired events (the chattiest counted only, unknown names reported, restricted ones refused before they
 reach the game), frames described with their rectangles in client pixels, and the frames under the mouse."""
-import json
 import unittest
 
 try:

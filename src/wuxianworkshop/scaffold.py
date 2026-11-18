@@ -536,7 +536,6 @@ def create(addons, name, title=None, notes="", template="basic", interface=INTER
 EXT_ID = M.ID                                     # the manifest's own (local/manifest.py): one list of reserved ids
 EXT_RESERVED = M.RESERVED
 EXT_TITLE_MAX = M.TITLE_MAX                       # bytes
-EXT_FILES = ("wuxian-extension.json", "main.py", "AGENT.md", "tests/test_main.py")
 EXT_KIT = "0.7.0"                                 # the WuxianKit the game half is written for (Kit:Requires)
 EXT_GAME = "_game"                                # the game half's extension id: <id>_game
 EXT_WHERE = ("game", "local", "both")             # where a new extension is (local/manifest.py where_of)

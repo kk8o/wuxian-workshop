@@ -25,7 +25,6 @@ import socket
 import sys
 import threading
 import time
-from pathlib import Path
 from urllib.parse import parse_qs
 
 import uvicorn

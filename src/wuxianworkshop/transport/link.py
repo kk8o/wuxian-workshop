@@ -375,7 +375,6 @@ class Companion(AgentCommands):
         self.up_told = None           # be told things (again); up_told: the session on_up was last called for
         self.on_pour = None           # (session, key, segment, segments, its bytes) -> None, for a segment of a pour
         self.client = None            # (client version, Interface) as the last HELLO said them
-        self.dispatching = None       # (session, message id) while a message is handed on
         # standing by (STANDBY, 0.9.14): see the module docstring
         self.standby = False          # the addon stands by (the daemon says so: the installed WoWBridge's version)
         self.legacy = False           # ... but a HELLO said it does not (an older one still loaded): till the process ends
@@ -870,7 +869,6 @@ class Companion(AgentCommands):
         mtype, body = self._split(s, data)
         if mtype is not None and mtype not in URGENT_TYPES:
             s.top = newer(s.top, msg)                      # it went up after every lower id
-        self.dispatching = (s.sid, msg)
         try:
             if mtype == TYPE_BATCH:
                 self.stats["batches"] += 1
@@ -880,8 +878,6 @@ class Companion(AgentCommands):
                 self._message(s, msg, mtype, body, p, now)
         except Exception as e:                             # handed on wrong: said, and the link goes on
             self.note(f"message {msg} of session {s.sid} could not be handed on: {e!r}")
-        finally:
-            self.dispatching = None
 
     def _message(self, s, msg, mtype, data, p, now):
         """one message (or one of a batch), handed on by its type"""

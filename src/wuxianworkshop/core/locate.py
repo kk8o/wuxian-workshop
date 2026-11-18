@@ -17,12 +17,6 @@ class Lock:
     W: int
     H: int
 
-    def center(self, x, y):
-        return self.ox + (x + 0.5) * self.px, self.oy + (y + 0.5) * self.py
-
-    def shifted(self, dx, dy):
-        return Lock(self.ox + dx, self.oy + dy, self.px, self.py, self.W, self.H)
-
 
 def components(mask):
     """4-connected components of a boolean mask as (x0, y0, x1, y1, pixels), x1 / y1 exclusive (run-length union-find)"""

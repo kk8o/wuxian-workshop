@@ -2,7 +2,6 @@
 import ctypes
 import ctypes.wintypes as wt
 import os
-import struct
 import time
 from pathlib import Path
 
@@ -11,14 +10,6 @@ from pathlib import Path
 DEFAULT_GAME_DIRS = [r"C:\Program Files (x86)\World of Warcraft\_forever_", r"C:\Program Files (x86)\World of Warcraft\_cn_",
                      r"C:\Program Files (x86)\World of Warcraft\_cn_beta_", r"C:\Program Files (x86)\World of Warcraft\_classic_beta_"]
 CLIENT_MARKS = (".flavor.info", "Interface")          # what a client folder holds once the launcher has installed it
-
-
-def silent_wav(ms=10):
-    """a valid silent WAV (8 kHz, 8-bit mono PCM) of `ms` milliseconds"""
-    rate = 8000
-    samples = rate * ms // 1000
-    head = b"RIFF" + struct.pack("<I", 36 + samples) + b"WAVE" + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate, 1, 8)
-    return head + b"data" + struct.pack("<I", samples) + bytes([128]) * samples
 
 
 def isolated():
