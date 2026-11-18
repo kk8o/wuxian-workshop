@@ -437,7 +437,7 @@ function L.Command(text)
 		local age = (time() * 1000 - (tonumber(nonce) or 0)) % 1e8
 		if age > RELOAD_STALE and age < 1e8 - 60000 then return end
 		ns.UI.AskReload(reason ~= "" and reason or nil)
-	elseif cmd == "at" or cmd == "wake" or cmd == "rest" or cmd == "here" or cmd == "bye" or cmd == "hold" then
+	elseif cmd == "at" or cmd == "rest" or cmd == "here" or cmd == "bye" or cmd == "hold" then
 		return                               -- the session's say, done in OnPacket
 	elseif handlers[cmd] then
 		handlers[cmd](rest)
@@ -536,8 +536,8 @@ local function Fresh(ms)
 	return age > -60 and age < STAMP_TTL
 end
 
--- the app's say about the session, before the packet's other records: "at" (the packet's stamp; "wake" in the 0.9.14
--- test builds), "rest", "here", "bye", and "hold" (the app listens a while: prints and errors do not ring; only in a
+-- the app's say about the session, before the packet's other records: "at" (the packet's stamp),
+-- "rest", "here", "bye", and "hold" (the app listens a while: prints and errors do not ring; only in a
 -- session, its own or the one the packet opened: one that came while off or too late keeps nothing). Gives whether
 -- the packet opened a session
 local function Say(pkt)
@@ -545,17 +545,17 @@ local function Say(pkt)
 	for _, r in ipairs(pkt.records) do
 		local cmd, a, b
 		if r.kind == "COMMAND" then cmd, a, b = r.data:match("^(%a+)%s*(%S*)%s*(%S*)") end
-		if (cmd == "here" or cmd == "at" or cmd == "wake") and not db.appNew then
+		if (cmd == "here" or cmd == "at") and not db.appNew then
 			Print(ns.L.MET_APP)                         -- the first app that rings and stands by: said once
 		end
-		if cmd == "here" or cmd == "at" or cmd == "wake" then heardApp = true end
+		if cmd == "here" or cmd == "at" then heardApp = true end
 		if cmd == "here" then                           -- (another app, started anew, takes a session going on over:
 			db.appNew, appAway = true, nil              -- it reads the frames and welcomes them)
 			if b ~= "" then db.appId = b end
 		elseif cmd == "bye" then
 			appAway, kept = true, nil
 			if state == "hello" or state == "online" then StandBy() end
-		elseif cmd == "at" or cmd == "wake" then
+		elseif cmd == "at" then
 			db.appNew, appAway = true, nil
 			if Fresh(a) and (state == "standby" or (state == "leaving" and leaving.to == "standby")) then
 				opened = true                           -- (the player's hide a moment before: the app's request wins)
@@ -571,7 +571,7 @@ local function Say(pkt)
 end
 
 -- what makes a session busy: a request (not the app's heartbeat, its say about the session, or a ping)
-local SAY = { at = true, wake = true, rest = true, here = true, bye = true, ping = true, hold = true }
+local SAY = { at = true, rest = true, here = true, bye = true, ping = true, hold = true }
 
 local function Busy(pkt)
 	for _, r in ipairs(pkt.records) do

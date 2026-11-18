@@ -145,7 +145,7 @@ class Feeding(Case):
         self.assertTrue(await self.until(lambda: len(self.program.wakes) == 2))
         got = self.program.wakes[1]
         self.assertEqual((got["reason"], [i["id"] for i in got["items"]], got["notes"]), ("item", [11, 12], {"fx": {"n": 1}}))
-        self.assertTrue(await self.until(lambda: a.cursor == 12 and self.path.exists()))
+        self.assertTrue(await self.until(lambda: a.cursor == 12 and self.kept()["cursors"] == {"fx": {"cocreate": 12}}))
         self.assertEqual(self.kept(), {"cursors": {"fx": {"cocreate": 12}}, "reports": {}})
         self.assertEqual(self.drive.view(), [dict(app="cocreate", extension="fx", state="running", why=None, cursor=12,
                                                   opened=1)])

@@ -3,8 +3,7 @@ draws it): static\wuxian.ico (16, 20 and 24 px from logo-small.svg, the mark sim
 from logo.svg) and static\icon.png (256 px); and the addons' textures (TGA, power-of-two sizes; Skin.lua uses them):
 WoWBridge\Media\logo (128 px, the panel's head), logo-small (32 px, the AddOns list and the addon compartment), mark
 (64 px, the ‹∞› alone from mark.svg: the minimap button), mark-wide (64 x 32, the same cut to its width: the chat
-prefix), and white ones the addon tints: stud (32 px, the diamond of the corners and the check boxes), inf (64 x 32, the
-line-art ∞ of the ornament, as the app's #inf-line), cross (32 px, the close button); !WuxianWorkshop\Media\logo-small
+prefix), and white ones the addon tints: stud (32 px, the diamond of the corners and the check boxes), cross (32 px, the close button); !WuxianWorkshop\Media\logo-small
 and mark-wide. Run it after changing an SVG (from PowerShell: Edge does not start under the Bash tool); the build takes
 the files as they are.
 
@@ -89,9 +88,7 @@ def stud(size=32, scale=8):
     return big.resize((size, size), Image.LANCZOS)
 
 
-# white, for the addon to tint: the app's #inf-line (index.html) cut to 2 : 1, and the close button's cross
-INF = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 48 24"><path d="M32,20 C40,8 54,8 54,20 C54,32 40,32 32,20 '
-       'C24,8 10,8 10,20 C10,32 24,32 32,20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>')
+# white, for the addon to tint: the close button's cross
 CROSS = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4.5,4.5 L11.5,11.5 M11.5,4.5 L4.5,11.5" '
          'fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg>')
 
@@ -99,14 +96,14 @@ CROSS = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M
 def addon_textures():
     """the addons' textures (TGA, which the client reads; power-of-two sizes): the panel's logo, the small tile for the
     AddOns list and the addon compartment, the mark alone for the minimap button and, cut to its width, the chat prefix;
-    the white stud, ornament and cross"""
+    the white stud and cross"""
     mark = (STATIC / "mark.svg").read_text(encoding="utf-8")
     assert 'viewBox="0 0 64 64"' in mark, "mark.svg: the viewBox changed; cut mark-wide anew"
     wide = mark.replace('viewBox="0 0 64 64"', 'viewBox="-4 14 72 36"')       # the brackets' tips included, 2 : 1
-    logo, small, mark, wide, inf, cross = render([(STATIC / "logo.svg", 128), (STATIC / "logo-small.svg", 32),
-                                                  (STATIC / "mark.svg", 64), (wide, (64, 32)), (INF, (64, 32)), (CROSS, 32)])
+    logo, small, mark, wide, cross = render([(STATIC / "logo.svg", 128), (STATIC / "logo-small.svg", 32),
+                                             (STATIC / "mark.svg", 64), (wide, (64, 32)), (CROSS, 32)])
     out = {ROOT / "addon" / "WoWBridge" / "Media": {"logo": logo, "logo-small": small, "mark": mark, "mark-wide": wide,
-                                                   "stud": stud(), "inf": inf, "cross": cross},
+                                                   "stud": stud(), "cross": cross},
            ROOT / "addon" / "!WuxianWorkshop" / "Media": {"logo-small": small, "mark-wide": wide}}
     for folder, files in out.items():
         folder.mkdir(parents=True, exist_ok=True)
