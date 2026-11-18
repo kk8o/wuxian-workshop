@@ -45,7 +45,6 @@ local batch                                     -- a whole addon's hot-load unde
 K.unseen = 0                                    -- errors since the window was last open: the minimap button's count
 
 local function Shown() return window ~= nil and window:IsShown() end
-K.IsShown = Shown
 
 local function FirstLine(s) return (tostring(s or ""):match("^[^\n]*")) end
 

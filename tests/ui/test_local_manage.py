@@ -1062,7 +1062,7 @@ class Page(unittest.TestCase):
             self.assertIn(call, self.js)
 
     def test_the_menu_has_its_style(self):
-        for rule in (".menu-wrap {", ".menu {", ".menu.right {", ".menu-item {", ".menu-item.bad {", ".mgroup-note {",
+        for rule in (".menu-wrap {", ".menu {", ".menu.right {", ".menu-item {", ".menu-item.bad {",
                      ".lx-risk {", ".lx-packed {", ".lx-replace p {",
                      ".lx-empty {", ".lx-addon {", ".lx-path {", ".lx-lead {", "textarea.lx-idea {", ".lx-samples {", ".lx-more {",
                      "pre.lx-prompt {", ".lx-hint {", "textarea.lx-task {"):
@@ -1083,7 +1083,7 @@ class Page(unittest.TestCase):
                      "变更", "新扩展包", "替换后需重新批准；现有版本移入回收区。", "替换",
                      "游戏插件在游戏中运行，受游戏对插件的限制，不能访问这台电脑上的文件。",
                      "本机端在这台电脑上运行，权限与你相同，可读写文件、访问网络。请只批准来源可信的扩展。",
-                     "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识", "在本机运行",
+                     "文件夹移入回收区。", "仅解除链接，文件夹保留。", "已打包", "打开所在文件夹", "文件夹路径", "标识",
                      "标识已被占用，请先移除同名扩展", "文件夹被占用，请关闭占用它的程序后重试", "未找到游戏目录",
                      "游戏中已有同名插件，未替换", "没有游戏插件", "扩展包过大", "扩展包无效", "游戏插件无效", "清单有误",
                      "目标文件夹已有其他内容", "游戏插件被占用，请退出游戏后重试", "游戏插件写入失败",

@@ -50,7 +50,7 @@ local function Print(msg)
 end
 ns.Print = Print
 
--- a setting: what /wb set or /wb parent / snap / mode kept for the account, else Config.lua
+-- a setting: what /wb set or /wb parent / snap kept for the account, else Config.lua
 function ns.Setting(key)
 	local v = cfg[key]
 	if v == nil then v = (WoWBridge_Config or {})[key] end
@@ -231,7 +231,7 @@ function WB.SetLink(on)
 	end
 end
 
--- the session going on ended (/wb hide, the panel, the key binding): the frame goes until something has to pass again
+-- the session going on ended (/wb hide, the key binding): the frame goes until something has to pass again
 function WB.Hide()
 	if ns.Link.Hide() then
 		Print(L.LINK_HIDDEN)

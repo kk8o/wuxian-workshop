@@ -132,7 +132,6 @@ class Endpoints(unittest.TestCase):
         status = self.client.get("/api/status", headers=AUTH).json()
         link = status["link"]
         self.assertEqual(link["mode"], "auto")
-        self.assertNotIn("held_titles", link)
         self.assertTrue(all(set(h) == {"id", "title"} for h in link["held_by"]))
         self.assertNotIn("outdated", status["kit"])              # (--old-kit: {needs, has})
         self.assertEqual(self.client.post("/api/settings", json={"link_mode": "always"}, headers=AUTH).json()["link_mode"],

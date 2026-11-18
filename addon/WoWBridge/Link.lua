@@ -56,7 +56,7 @@
 --   The addon ends the session: nothing waits to go up, the frame is locked, and nothing passed for the WELCOME's idle= s
 --   (0: never; requests and the addon's own data count; the app's heartbeats, acks, prints and errors do not; a 0.9.14 app says a few seconds: a session is
 --   over when what passes is done), nor within a "hold <s>" the app sent (it listens s more seconds for prints and errors,
---   which do not ring): a BYE control frame ("BYE;why=idle") up for LEAVE_SHOW s, then standing by. So do the player (L.Hide: /wb hide, the panel, the key binding: why=hide; /wb off:
+--   which do not ring): a BYE control frame ("BYE;why=idle") up for LEAVE_SHOW s, then standing by. So do the player (L.Hide: /wb hide, the key binding: why=hide; /wb off:
 --   why=off) and the app's "rest <ms>" (its 收起: why=rest).
 -- The app also says "here <ms> <app>" (it runs: at its start and every few minutes) and "bye <ms>" (it quits: no
 -- doorbell until it is back). The addon stands by only after an app said "here" or stamped a packet (db.appNew): an
@@ -94,7 +94,7 @@ local AGAIN_MAX = 120                            -- seconds between a message's 
 local POUR_AHEAD = 2                             -- segments of pours queued and not shown yet, at most
 local POUR_QUIET = 20                            -- seconds without a mailbox packet after which no segment is queued
 local STAMP_TTL = 8                              -- seconds an app's stamped packet opens a session for: the app gives up on
-                                                 -- it after 12 s (link.py WAKE_WAIT), so what came with it runs then or never
+                                                 -- it after 12 s (link.py OPEN_WAIT), so what came with it runs then or never
 local HELLO_GIVEUP = 30                          -- seconds of HELLO without a packet before an addon that can stand by does
 local RING_AGAIN, RING_MAX = 60, 600             -- seconds before the doorbell rings again after nobody answered it (doubling)
 local FLAT_AFTER = 4                             -- seconds of HELLO unanswered after which an addon that never heard an
@@ -935,7 +935,7 @@ end
 -- whether an app that wakes the addon was heard (db.appNew): /wb on stands by then, else shows HELLO
 function L.CanStandBy() return db ~= nil and db.appNew == true end
 
--- the session ended by the player (/wb hide, the panel, the key binding): the BYE frame, then standing by. False when
+-- the session ended by the player (/wb hide, the key binding): the BYE frame, then standing by. False when
 -- there is no session, or the app cannot wake the addon again (an older one: /wb off is the way)
 function L.Hide()
 	if not (db and db.appNew) or not (state == "hello" or state == "online") then return false end
@@ -1010,7 +1010,7 @@ end
 
 -- what the settings panel shows: state, how many wait to go up, how many were acknowledged, the heartbeat
 function L.Numbers()
-	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb, packets = stats.packets, away = appAway == true }
+	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb }
 end
 
 local tickers = {}

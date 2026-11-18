@@ -1270,11 +1270,6 @@ function appState() {
         this.addons.busy = false;
       }
     },
-    async toggleErrors(name) {
-      if (this.addons.open === name) { this.addons.open = null; return; }
-      this.addons.open = name;
-      await this.loadErrors(name);
-    },
     async loadErrors(name) {
       this.addons.entriesBusy = true;
       this.addons.entries = [];
@@ -1313,10 +1308,6 @@ function appState() {
     },
 
     // ---- the checks before the game (/api/check): 检查 on the 插件 page
-    async toggleCheck(name) {
-      if (this.chk.open === name && !this.chk.busy) { this.chk.open = null; return; }
-      await this.runCheck(name);
-    },
     async runCheck(name) {
       Object.assign(this.chk, { open: name, busy: true, data: null, error: '' });
       try {
@@ -1349,11 +1340,6 @@ function appState() {
     },
 
     // ---- kept versions (/api/history): 历史 on the 插件 page
-    async toggleHistory(name) {
-      if (this.hist.open === name) { this.hist.open = null; return; }
-      Object.assign(this.hist, { open: name, data: null, diff: null, diffKey: '', confirm: '', result: null });
-      await this.loadHistory(name);
-    },
     async loadHistory(name) {
       this.hist.busy = true;
       this.hist.note = '';
@@ -1742,7 +1728,7 @@ function appState() {
     },
     // 批准: the workshop runs an extension's command only once the player has allowed it (and again after the command
     // changed). The row says so (approval: needed | changed), or a start was refused with 403 needs_approval (lx.ask).
-    // Nothing is asked where the row says its command may run anyway (allowed: the setting 本机扩展批准 is 自动批准)
+    // Nothing is asked where the row says its command may run anyway (allowed: the setting 扩展批准 is 自动批准)
     lxUnapproved(r) { return !!r && r.allowed !== true && (r.approval === 'needed' || r.approval === 'changed'); },
     lxNeeds(r) { return this.lxUnapproved(r) || (!!r && !!r.id && this.lx.ask === r.id); },
     lxApprovalTitle(r) {
