@@ -39,7 +39,6 @@ p { margin: 6px 0 0; }
 .pad { padding: 10px 12px; }
 .grow { flex: 1; min-width: 0; }
 .spacer { flex: 1; }
-.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ok-text { color: var(--ok); }
 .warn-text { color: var(--gold-l); }
 .bad-text { color: var(--bad); }
@@ -146,15 +145,12 @@ textarea.lx-task { display: block; margin: 6px 0; min-height: 50px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .panel-head { flex: none; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--line);
               font-size: 12.5px; font-weight: 600; color: var(--gold); letter-spacing: .04em; white-space: nowrap; }
-.head-state { margin-left: auto; font-weight: 500; color: var(--fg); letter-spacing: 0; font-family: var(--mono); font-size: 12px; }
 .head-link { font-weight: 400; letter-spacing: 0; font-size: 12px; }
 .panel-body { padding: 10px 12px; min-width: 0; }
-.panel-scroll { flex: 1; min-height: 0; overflow: auto; }
 dl { margin: 0; }
 .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 16px; font-size: 12.5px; align-content: start; }
 .kv dt { color: var(--muted); white-space: nowrap; }
 .kv dd { margin: 0; overflow-wrap: anywhere; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
-.kv dd.ellipsis { display: block; }
 
 /* controls ---------------------------------------------------------------------------------------------------------- */
 .btn { font: inherit; font-size: 12.5px; color: var(--fg); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 4px 11px;
@@ -295,13 +291,11 @@ progress { accent-color: var(--gold); width: 180px; height: 8px; }
 
 /* the logs */
 .loglist { font-family: var(--mono); font-size: 12px; }
-.loglist.compact .logline { padding: 3px 12px; }
 .logline { display: grid; grid-template-columns: 62px 64px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 3px 12px;
            border-bottom: 1px solid var(--line2); }
 .logline:last-child { border-bottom: 0; }
 .logline .t { color: var(--faint); }
 .logline .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; min-width: 0; }
-.loglist.compact .logline .text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .logline .meta { color: var(--muted); font-size: 11px; }
 .logline.k-ERR { background: rgba(242, 139, 130, .06); }
 .kind { font-size: 10px; font-weight: 500; border-radius: 3px; padding: 0 4px; text-align: center; line-height: 16px; color: var(--muted); border: 1px solid var(--line); }
@@ -378,10 +372,8 @@ pre.stack { color: var(--muted); margin: 6px 0 0; white-space: pre-wrap; overflo
 .api-results li:hover { background: var(--panel2); }
 .api-results li.active { background: var(--gold-soft); border-color: var(--gold-d); }
 .api-results .sig { font-size: 11.5px; overflow-wrap: anywhere; }
-.topics-head { padding: 12px 14px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: .06em; }
 .kindtag { display: inline-block; font-family: var(--body); font-size: 10px; color: var(--gold); border: 1px solid var(--gold-d); border-radius: 3px; padding: 0 4px;
            margin-right: 6px; line-height: 15px; vertical-align: 1px; }
-.flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .api-detail .detail-title { font-family: var(--mono); font-size: 15px; color: var(--gold-l); }
 pre.sigline { margin: 4px 0 8px; }
 .api-detail h2 { margin-top: 16px; }
@@ -610,7 +602,6 @@ p.lx-wait { margin: 0 0 10px; }
 .menu-item:disabled { opacity: .45; cursor: default; }
 .menu-item.bad { color: var(--bad); }
 .lx-why { margin: 0; overflow-wrap: anywhere; }
-.mgroup-note { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mgroup .btn { align-self: stretch; display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .mgroup .btn svg.ico { width: 11px; height: 11px; }
 .lx-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

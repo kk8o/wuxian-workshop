@@ -1010,7 +1010,7 @@ end
 
 -- what the settings panel shows: state, how many wait to go up, how many were acknowledged, the heartbeat
 function L.Numbers()
-	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb, packets = stats.packets, away = appAway == true }
+	return { state = state, waiting = Unsent(), acked = stats.acked, hb = P.hb }
 end
 
 local tickers = {}

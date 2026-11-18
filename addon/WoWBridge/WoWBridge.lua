@@ -50,7 +50,7 @@ local function Print(msg)
 end
 ns.Print = Print
 
--- a setting: what /wb set or /wb parent / snap / mode kept for the account, else Config.lua
+-- a setting: what /wb set or /wb parent / snap kept for the account, else Config.lua
 function ns.Setting(key)
 	local v = cfg[key]
 	if v == nil then v = (WoWBridge_Config or {})[key] end

@@ -86,8 +86,8 @@ local function Check(page, y, key, onClick, tipKey)
 	return cb
 end
 
-local function Button(page, x, y, width, key, onClick, kind)
-	local b = S.Button(page, width, 24, kind)
+local function Button(page, x, y, width, key, onClick)
+	local b = S.Button(page, width, 24)
 	b:SetPoint("TOPLEFT", page, "TOPLEFT", x, y)
 	b:SetScript("OnClick", onClick)
 	if key then labels[#labels + 1] = { b, key } end

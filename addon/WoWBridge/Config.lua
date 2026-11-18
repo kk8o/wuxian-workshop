@@ -6,7 +6,6 @@ WoWBridge_Config = {
 	                       -- companion, which writes them to debug.log (%LOCALAPPDATA%\WuxianWorkshop\logs)
 	hotLoad = true,        -- run Lua the companion sends (an agent's run / load); each run shows one line in the chat
 	cell = 4,              -- cell size in physical pixels
-	mode = 1,              -- data frames: 0 = black/white, 1 = 8 colours, 2 = 4 levels per channel (/wb mode)
 	parent = "UIParent",   -- "UIParent" or "WorldFrame" (the latter may stay visible when Alt+Z hides the UI)
 	snap = "default",      -- texture pixel snapping: "default", "on" or "off"
 }

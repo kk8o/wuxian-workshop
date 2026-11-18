@@ -1,7 +1,7 @@
 -- 无限工坊's look inside the game, the same as the app's and wuxianwow.com's (app.css): a dark panel with a gold-brown
 -- hairline and a gold diamond on each corner, the logo at its head, gold section headings with a hairline after them,
 -- quiet buttons that turn gold under the mouse (the one to press is gold), check boxes ticked with the diamond, tabs
--- marked with a gold bar (the app's navigation), the ∞ ornament. Plain frames and textures, none of the client's
+-- marked with a gold bar (the app's navigation). Plain frames and textures, none of the client's
 -- templates: it looks the same whatever the client's own skin.
 -- The textures are Media's TGAs (scripts/make_icons.py draws them from the app's SVGs; the white ones are tinted here);
 -- the client sees a new texture file only after a full restart of the game.
@@ -13,7 +13,7 @@ ns.Skin = S
 local MEDIA = "Interface\\AddOns\\WoWBridge\\Media\\"
 S.WEBSITE = "https://wuxianwow.com/workshop"     -- 无限工坊's site: the download, the guides, the agents' setup
 S.LOGO, S.LOGO_SMALL, S.MARK, S.MARK_WIDE = MEDIA .. "logo", MEDIA .. "logo-small", MEDIA .. "mark", MEDIA .. "mark-wide"
-S.STUD, S.INF, S.CROSS = MEDIA .. "stud", MEDIA .. "inf", MEDIA .. "cross"
+S.STUD, S.CROSS = MEDIA .. "stud", MEDIA .. "cross"
 
 -- the site's colours (app.css :root; ink: text on gold); C: r, g, b, a in 0..1, HEX: for |cff colour codes
 S.HEX = { panel = "23242a", panel2 = "2b2f37", field = "1b1c21", line = "35363d", fg = "e8e4d8", muted = "9c9ea6",
@@ -142,16 +142,6 @@ function S.Close(frame)
 	return b
 end
 
--- a hairline across a frame, y down from its top, inset from both sides
-function S.Rule(frame, y, inset)
-	local t = frame:CreateTexture(nil, "ARTWORK")
-	t:SetPoint("TOPLEFT", frame, "TOPLEFT", inset, y)
-	t:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -inset, y)
-	t:SetHeight(S.Pixel(frame))
-	S.Fill(t, S.Alpha(C.goldD, 0.6))
-	return t
-end
-
 -- a section heading at x, y of the parent, w wide: gold words, then a hairline to the end (in a row of its own, so both
 -- ends of the line sit on the words' middle); returns the words
 function S.Heading(parent, x, y, w)
@@ -166,29 +156,6 @@ function S.Heading(parent, x, y, w)
 	line:SetHeight(S.Pixel(parent))
 	S.Fill(line, S.Alpha(C.goldD, 0.55))
 	return fs
-end
-
--- the ornament (the app's .orn): hairlines fading out to both sides of a line-art ∞
-function S.Orn(parent, x, y, w)
-	local row = CreateFrame("Frame", nil, parent)
-	row:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
-	row:SetSize(w, 14)
-	local inf = row:CreateTexture(nil, "ARTWORK")
-	inf:SetTexture(S.INF)
-	inf:SetSize(28, 14)
-	inf:SetPoint("CENTER", row, "CENTER")
-	S.Tint(inf, C.goldD)
-	local p = S.Pixel(parent)
-	local left, right = row:CreateTexture(nil, "ARTWORK"), row:CreateTexture(nil, "ARTWORK")
-	left:SetPoint("LEFT", row, "LEFT")
-	left:SetPoint("RIGHT", inf, "LEFT", -10, 0)
-	left:SetHeight(p)
-	right:SetPoint("LEFT", inf, "RIGHT", 10, 0)
-	right:SetPoint("RIGHT", row, "RIGHT")
-	right:SetHeight(p)
-	S.Gradient(left, "HORIZONTAL", S.Alpha(C.goldD, 0), C.goldD, S.Alpha(C.goldD, 0.6))
-	S.Gradient(right, "HORIZONTAL", C.goldD, S.Alpha(C.goldD, 0), S.Alpha(C.goldD, 0.6))
-	return row
 end
 
 -- the diamond in a line of text (a tooltip, the chat), size high, in a colour of C

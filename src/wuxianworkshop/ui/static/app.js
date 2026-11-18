@@ -1270,11 +1270,6 @@ function appState() {
         this.addons.busy = false;
       }
     },
-    async toggleErrors(name) {
-      if (this.addons.open === name) { this.addons.open = null; return; }
-      this.addons.open = name;
-      await this.loadErrors(name);
-    },
     async loadErrors(name) {
       this.addons.entriesBusy = true;
       this.addons.entries = [];
@@ -1313,10 +1308,6 @@ function appState() {
     },
 
     // ---- the checks before the game (/api/check): 检查 on the 插件 page
-    async toggleCheck(name) {
-      if (this.chk.open === name && !this.chk.busy) { this.chk.open = null; return; }
-      await this.runCheck(name);
-    },
     async runCheck(name) {
       Object.assign(this.chk, { open: name, busy: true, data: null, error: '' });
       try {
@@ -1349,11 +1340,6 @@ function appState() {
     },
 
     // ---- kept versions (/api/history): 历史 on the 插件 page
-    async toggleHistory(name) {
-      if (this.hist.open === name) { this.hist.open = null; return; }
-      Object.assign(this.hist, { open: name, data: null, diff: null, diffKey: '', confirm: '', result: null });
-      await this.loadHistory(name);
-    },
     async loadHistory(name) {
       this.hist.busy = true;
       this.hist.note = '';

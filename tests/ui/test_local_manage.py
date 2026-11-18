@@ -1062,7 +1062,7 @@ class Page(unittest.TestCase):
             self.assertIn(call, self.js)
 
     def test_the_menu_has_its_style(self):
-        for rule in (".menu-wrap {", ".menu {", ".menu.right {", ".menu-item {", ".menu-item.bad {", ".mgroup-note {",
+        for rule in (".menu-wrap {", ".menu {", ".menu.right {", ".menu-item {", ".menu-item.bad {",
                      ".lx-risk {", ".lx-packed {", ".lx-replace p {",
                      ".lx-empty {", ".lx-addon {", ".lx-path {", ".lx-lead {", "textarea.lx-idea {", ".lx-samples {", ".lx-more {",
                      "pre.lx-prompt {", ".lx-hint {", "textarea.lx-task {"):
