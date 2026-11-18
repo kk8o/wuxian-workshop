@@ -4,7 +4,8 @@
 -- that came while the debug window was closed show as a red count on the button (M.Badge). Its place
 -- (minimapAngle, degrees) and whether it shows (minimapHide) are kept for this character. The icon is 无限工坊's mark
 -- (Skin.lua), grey while the link is off, with the link's state as a diamond in its colour at its foot; the tooltip says
--- the state in words and lists what the mouse does, in two columns.
+-- what the panel's first line says (Panel.Conclusion: connected or not, and who keeps the link), from 80 per cent of the
+-- app messages used on also the meter's warning (Panel.Usage), and lists what the mouse does, in two columns.
 local _, ns = ...
 local L, S = ns.L, ns.Skin
 
@@ -31,14 +32,17 @@ local function Dragging()
 	Place()
 end
 
-local STATE_WORDS = { online = "OV_ONLINE", hello = "OV_HELLO", off = "OV_OFF", standby = "OV_STANDBY", leaving = "OV_STANDBY" }
-
 local function Tooltip(owner)
-	local C, state = S.C, ns.Link.State()
-	local c = C[S.StateColor(state)]
+	local C = S.C
+	local _, words, color = ns.Panel.Conclusion()
+	local c = C[color]
 	GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
 	GameTooltip:AddLine(L.PANEL_TITLE, C.goldL[1], C.goldL[2], C.goldL[3])
-	GameTooltip:AddLine(S.InlineDot(c) .. " " .. L[STATE_WORDS[state] or "OV_HELLO"], c[1], c[2], c[3])
+	GameTooltip:AddLine(S.InlineDot(c) .. " " .. words, c[1], c[2], c[3])
+	local _, _, _, tier = ns.Panel.Usage()
+	if tier ~= "sky" then                                -- the app messages run low, or are gone: the meter's words
+		GameTooltip:AddLine(ns.Panel.UsageNote(tier), C[tier][1], C[tier][2], C[tier][3])
+	end
 	if ns.Console.unseen > 0 then GameTooltip:AddLine(L.MM_ERRORS:format(ns.Console.unseen), C.bad[1], C.bad[2], C.bad[3]) end
 	GameTooltip:AddLine(" ")
 	local keys = { "LEFT", "RIGHT", "DRAG" }

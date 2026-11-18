@@ -4,12 +4,15 @@
 --        with its button when something needs doing (the frame unlocked, hot loading off), 正在使用 (the lines addons
 --        pushed with handle:Overview, API.lua: what uses 无限工坊 now; not there when nobody pushed any), 本次会话 (quiet
 --        when nothing is wrong: one line; else the Lua errors with the way to them and the newest one, the agent's runs
---        that failed, the blocked actions) and, at the foot, the meter of the app messages left;
+--        that failed, the blocked actions) and, after it, the meter of the app messages left;
 --   设置 (settings): 帧码 (the link's switch, the frame's place), Agent (hot loading, what goes to the app, the notice),
 --        界面 (the minimap button, the language), the website;
 --   诊断 (diagnostics): the link's numbers, the link tests, dropping what waits to go up, the diagnostics in a box to
 --        copy (for a bug report), and this session: its counts, the way to the debug window and its latest lines
 --        (Console.lua; the mouse wheel goes through them, a line's whole text shows under the mouse).
+-- The window is as high as what 概览 shows (HEIGHT at most; the other tabs are HEIGHT), and hangs by its top left corner:
+-- its top edge stays where it is whatever the tab and whatever comes and goes on 概览. The first line of 概览 is also the
+-- minimap button's (P.Conclusion), as is the meter's warning (P.Usage, P.UsageNote).
 -- It opens on 概览, or on the tab it showed last since the last reload. Everything it changes is kept for the account (every character)
 -- in WoWBridgeDB.settings, the same as the /wb commands do; the words are Locale.lua's and change with the language.
 local _, ns = ...
@@ -22,12 +25,13 @@ ns.Panel = P
 local WIDTH, HEIGHT, PAD = 400, 470, 20
 local INNER = WIDTH - 2 * PAD
 local TOP, BOTTOM = 106, 18             -- the pages' area: below the tabs, above the window's edge
-local PAGE = HEIGHT - TOP - BOTTOM      -- its height
-local GAP = 12                          -- between the overview's blocks
+local PAGE = HEIGHT - TOP - BOTTOM      -- its height, at most
+local GAP = 14                          -- under a box of 概览 (the card, the notice), before what comes next
+local LEAD = 10                         -- ... and under a section's last line (a line has some air of its own)
 local ROW = 18                          -- a line of small words
 local USE_ROW = 20                      -- a line of 正在使用
 local HEAD = 22                         -- a section heading and the space under it
-local METER = 26                        -- the meter at 概览's foot: a line of words over a thin bar
+local METER = 26                        -- the meter at 概览's end: a line of words over a thin bar
 local BAR = 4                           -- ... the bar's height
 local LOW = 80                          -- per cent of the app messages used from which the meter warns
 local TABS = { "overview", "settings", "diag" }
@@ -40,6 +44,7 @@ local labels = {}         -- what Refresh relabels: { object, key }
 local headings = {}       -- section headings: { words, key }
 local shown = "overview"  -- the tab in front
 local scrolled = 0        -- lines of 诊断's latest the mouse wheel went back
+local tall = HEIGHT       -- the window's height while 概览 is in front: what it shows needs (Refresh)
 
 local function WB() return _G.WoWBridge end
 
@@ -127,6 +132,17 @@ local function Usage()
 	local used = math.max(0, pool - left)
 	local pct = left == 0 and 100 or used == 0 and 0 or math.max(1, math.min(99, math.floor(used * 100 / pool + 0.5)))
 	return used, pool, pct, left == 0 and "bad" or pct >= LOW and "gold" or "sky"
+end
+P.Usage = Usage
+
+-- the small words that go with a tier: what resets the count, and from LOW per cent on that it runs low or is gone
+function P.UsageNote(tier)
+	return tier == "bad" and L.METER_GONE or tier == "gold" and L.METER_LOW or L.METER_RESET
+end
+
+-- a text's own width (GetStringWidth stops at the width its line was given)
+local function Wide(fs)
+	return fs.GetUnboundedStringWidth and fs:GetUnboundedStringWidth() or fs:GetStringWidth()
 end
 
 -- the meter's tooltip: how many are used and, when the pace says so, how long the rest lasts
@@ -233,7 +249,6 @@ local function BuildOverview()
 	-- the app messages left, as a meter of what is used: its name, what resets it, the per cent; under them the bar
 	local meter = CreateFrame("Frame", nil, page)
 	meter:SetSize(INNER, METER)
-	meter:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", PAD, 0)
 	meter:EnableMouse(true)
 	meter.label = S.Text(meter, "GameFontHighlightSmall")
 	meter.label:SetPoint("TOPLEFT", meter, "TOPLEFT")
@@ -351,7 +366,7 @@ local function BuildDiagnostics()
 		ns.Console.Show(ns.Debug.stats.errors > 0 and "errors" or nil)
 	end)
 	panel.console:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAD, y2 + 1)
-	panel.counts = Line(page, PAD, y2 - HEAD, C.muted, INNER - 80)
+	panel.counts = Line(page, PAD, y2 - HEAD, C.muted, INNER)        -- (the whole line: the range gives way to it)
 	panel.counts:SetWordWrap(false)
 	panel.range = RightLine(page, C.muted)
 	panel.range:SetPoint("TOPRIGHT", page, "TOPRIGHT", -PAD, y2 - HEAD)
@@ -392,7 +407,8 @@ local function BuildDiagnostics()
 end
 
 -- the frame is drawn above everything (the app has to see it), so a panel over its room would lose that corner:
--- centred on the screen unless that overlaps the room, else right of the room, or under it when the screen is too narrow
+-- centred on the screen (as it is at its highest) unless that overlaps the room, else right of the room, or under it
+-- when the screen is too narrow. By its top left corner: a height that follows 概览 moves the bottom edge alone
 local function Place()
 	panel:ClearAllPoints()
 	local px = S.Pixel(UIParent)                       -- a pixel in UIParent's units (the frame's place is in pixels)
@@ -402,7 +418,7 @@ local function Place()
 	local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
 	local left, top = (sw - WIDTH) / 2, (sh - HEIGHT) / 2 - 40
 	if left >= right or top >= bottom then
-		panel:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
+		panel:SetPoint("TOPLEFT", UIParent, "TOPLEFT", math.max(left, 0), -math.max(top, 0))
 	elseif right + WIDTH <= sw then
 		panel:SetPoint("TOPLEFT", UIParent, "TOPLEFT", right, -math.max(top, 0))
 	else
@@ -410,17 +426,32 @@ local function Place()
 	end
 end
 
--- one tab in front
+-- where the player dragged it (or the client put it back, at whatever corner it kept): by its top left corner again,
+-- and still the player's
+local function Pin()
+	local left, top = panel:GetLeft(), panel:GetTop()
+	if not (left and top) then return end
+	panel:ClearAllPoints()
+	panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+	if panel.SetUserPlaced then panel:SetUserPlaced(true) end
+end
+
+-- one tab in front, the window as high as it needs
 function P.Select(id)
 	if not panel or not panel.pages[id] then return end
 	shown = id
 	for key, page in pairs(panel.pages) do page:SetShown(key == id) end
 	panel.tabs.Select(id)
+	panel:SetHeight(id == "overview" and tall or HEIGHT)
 end
 
 local function Build()
 	panel = S.Window("WoWBridgePanel", WIDTH, HEIGHT)
 	panel:Hide()
+	panel:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		Pin()
+	end)
 	tinsert(UISpecialFrames, "WoWBridgePanel")        -- Escape closes it
 	S.Close(panel)
 
@@ -459,40 +490,37 @@ local function Build()
 	end)
 end
 
--- the first line: what it is ("off", "waiting": the frame is up and nobody answers, "away", "on": an app that does not
--- stand by, "auto", "always", "held"), its words (none for "held": Keepers writes them) and the dot's colour
-local function Conclusion(state)
+-- the conclusion, for the card's first line and the minimap button's tooltip: connected or not, and who keeps the link.
+-- Gives what it is ("off", "waiting": the frame is up and nobody answers, "away", "on": an app that does not stand by,
+-- "auto", "always", "held"), its words and the dot's colour (a name of Skin's C). Kept by apps, the words name the first
+-- two, or one when fits(words) says two take too much room, and how many there are when that is more (their titles came
+-- from the app: plain text)
+function P.Conclusion(fits)
 	local link = ns.Link
+	local state = link.State()
 	if state == "off" then return "off", L.CARD_OFF, "muted" end
 	if not link.Reachable() then
 		if state == "hello" then return "waiting", L.CARD_AWAY, "sky" end
 		return "away", L.CARD_AWAY, "muted"
 	end
 	if not link.CanStandBy() then return "on", L.CARD_ON, "ok" end
-	local always, by = link.Kept()
-	if always and by[1] then return "held", nil, "ok" end
-	if always then return "always", L.CARD_ALWAYS, "ok" end
-	return "auto", L.CARD_AUTO, "ok"
-end
-
--- who keeps the link always, in the card's line: the first two apps, or one when two do not fit the line, and how many
--- there are when that is more (their titles came from the app: plain text)
-local function Keepers(fs, by, n)
+	local always, by, n = link.Kept()
+	if not always then return "auto", L.CARD_AUTO, "ok" end
+	if not by[1] then return "always", L.CARD_ALWAYS, "ok" end
 	local function Words(k)
 		local names = {}
 		for i = 1, k do names[i] = ns.Plain(by[i]) end
 		local who = table.concat(names, L.HELD_SEP)
 		return L.CARD_HELD:format(n > k and L.HELD_MORE:format(who, n) or who)
 	end
-	local k = math.min(#by, 2)
-	fs:SetText(Words(k))
-	-- (the words' own width: GetStringWidth stops at the line's)
-	local wide = fs.GetUnboundedStringWidth and fs:GetUnboundedStringWidth() or fs:GetStringWidth()
-	if k > 1 and wide > fs:GetWidth() then fs:SetText(Words(1)) end
+	local words = Words(math.min(#by, 2))
+	if by[2] and fits and not fits(words) then words = Words(1) end
+	return "held", words, "ok"
 end
 
--- 概览's blocks one under another from the top of the page: the card, the notice, 正在使用 (as many lines as there is
--- room for above 本次会话 and the meter; then how many more there are), 本次会话. s: what 本次会话 shows
+-- 概览's blocks one under another from the top of the page: the card, the notice, 正在使用 (as many lines as a window of
+-- HEIGHT has room for above 本次会话 and the meter; then how many more there are), 本次会话, the meter. s: what 本次会话
+-- shows. Gives the height of it all
 local function LayOutOverview(acting, todo, rows, s)
 	local page, y = panel.pages.overview, 0
 	local function At(region, x, dy)
@@ -511,7 +539,7 @@ local function LayOutOverview(acting, todo, rows, s)
 
 	local tail = HEAD + USE_ROW + (s.errors > 0 and ((s.last and ROW or 0) + ROW) or 0) + (s.failed > 0 and ROW or 0)
 		+ (s.blocked > 0 and ROW or 0)
-	local room = math.floor((PAGE - METER - GAP - tail - GAP - HEAD - y) / USE_ROW)
+	local room = math.floor((PAGE - METER - LEAD - tail - LEAD - HEAD - y) / USE_ROW)
 	local show = #rows
 	if show > room then show = math.max(0, room - 1) end        -- the last line says how many more there are
 	panel.using:GetParent():SetShown(#rows > 0)
@@ -534,7 +562,7 @@ local function LayOutOverview(acting, todo, rows, s)
 			At(panel.more, PAD, 2)
 			y = y + USE_ROW
 		end
-		y = y + GAP - 2
+		y = y + LEAD
 	end
 	for i = show + 1, #panel.rows do panel.rows[i]:Hide() end
 
@@ -554,6 +582,9 @@ local function LayOutOverview(acting, todo, rows, s)
 			y = y + ROW
 		end
 	end
+	y = y + LEAD
+	At(panel.meter)
+	return y + METER
 end
 
 -- every word and every state, again: on show, every second while shown, after a change of language
@@ -574,16 +605,14 @@ function P.Refresh()
 
 	-- 概览
 	local n = ns.Link.Numbers()
-	local what, words, color = Conclusion(n.state)
 	local card = panel.card
+	local what, words, color = P.Conclusion(function(text)       -- (two names only when the line has room for them)
+		card.state:SetText(text)
+		return Wide(card.state) <= card.state:GetWidth()
+	end)
 	card.what = what
 	S.Tint(card.dot, C[color])
-	if words then
-		card.state:SetText(words)
-	else
-		local _, by, count = ns.Link.Kept()
-		Keepers(card.state, by, count)
-	end
+	card.state:SetText(words)
 	-- off: on again; the frame up and nobody answering: start over; else nothing to do
 	local act = what == "off" and "on" or what == "waiting" and "restart" or nil
 	card.act.what = act
@@ -612,15 +641,16 @@ function P.Refresh()
 	panel.forwarded:SetText(ns.Setting("forwardDebug") == false and L.SESSION_KEPT or waits and L.SESSION_HELD or L.SESSION_SENT)
 	panel.failed:SetText(L.SESSION_FAILED:format(agent.failed))
 	panel.blocked:SetText(L.SESSION_BLOCKED:format(debug.blocked))
-	LayOutOverview(act ~= nil, todo, ns.OverviewRows(),
-		{ errors = debug.errors, last = last, failed = agent.failed, blocked = debug.blocked })
+	tall = math.min(HEIGHT, TOP + BOTTOM + LayOutOverview(act ~= nil, todo, ns.OverviewRows(),
+		{ errors = debug.errors, last = last, failed = agent.failed, blocked = debug.blocked }))
+	panel:SetHeight(shown == "overview" and tall or HEIGHT)      -- as high as 概览 needs; the other tabs as ever
 	-- the meter
 	local used, pool, pct, tier = Usage()
 	local meter = panel.meter
 	meter.tier = tier
 	meter.pct:SetText(pct .. "%")
 	S.Ink(meter.pct, tier == "sky" and C.fg or C[tier])
-	meter.note:SetText(tier == "bad" and L.METER_GONE or tier == "gold" and L.METER_LOW or L.METER_RESET)
+	meter.note:SetText(P.UsageNote(tier))
 	S.Ink(meter.note, tier == "sky" and C.muted or C[tier])
 	meter.fill:SetShown(used > 0)
 	meter.fill:SetWidth(math.max(1, INNER * math.min(1, used / pool)))
@@ -663,8 +693,9 @@ function P.Refresh()
 	scrolled = math.max(0, math.min(scrolled, total - RECENT))
 	local lines = ns.Console.Digest(RECENT, scrolled)
 	panel.recentNone:SetShown(total == 0)
-	panel.range:SetShown(total > RECENT)
 	panel.range:SetText(L.RANGE:format(scrolled + 1, scrolled + #lines, total))
+	-- (the counts come first: the range shows only with 12 px between the two)
+	panel.range:SetShown(total > RECENT and Wide(panel.counts) + 12 + Wide(panel.range) <= INNER)
 	for i, row in ipairs(panel.recent) do
 		local e = lines[i]
 		row:SetShown(e ~= nil)
@@ -686,7 +717,7 @@ end
 -- tab: the one to show ("overview", "settings", "diag"); else the one shown last
 function P.Show(tab)
 	if not panel then Build() end
-	if not (panel.IsUserPlaced and panel:IsUserPlaced()) then Place() end   -- dragged by the player: theirs
+	if panel.IsUserPlaced and panel:IsUserPlaced() then Pin() else Place() end   -- dragged by the player: theirs
 	P.Select(tab or shown)
 	panel:Raise()                                  -- in front of the debug window, if that is open there
 	panel:Show()

@@ -1069,13 +1069,13 @@ class PanelAndLanguage(unittest.TestCase):
             tip = [t.decode() for t in g[b"GameTooltip"][b"lines"].values()]
             self.assertEqual(tip[0], "Wuxian Workshop · WoWBridge")
             self.assertEqual(tip[1], "|TInterface\\AddOns\\WoWBridge\\Media\\stud:8:8:0:0:32:32:0:32:0:32:111:207:151|t "
-                                     "Connected to the app")         # the diamond in the state's colour
+                                     "Connected")                    # the panel's first line, the diamond in its colour
             self.assertEqual(tip[2:], [" ", "Left-click\tthe panel", "Right-click\tthe debug output", "Drag\tmove this button"])
 
             button.Click(button, "LeftButton")                       # left-click: the panel, on 概览
             panel = g[b"WoWBridgePanel"]
             self.assertTrue(panel[b"shown"])
-            self.assertEqual((panel[b"w"], panel[b"h"]), (400, 470))
+            self.assertEqual((panel[b"w"], panel[b"h"]), (400, 258))   # as high as a quiet 概览 needs
             pages = panel[b"pages"]
             tabs = list(panel[b"tabs"][b"tabs"].values())
             self.assertEqual([t[b"id"] for t in tabs], [b"overview", b"settings", b"diag"])
@@ -1110,6 +1110,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual(text("failed"), "Failed runs: 1")       # a failed run: a line in amber; no blocked action, no line
             self.assertEqual(tuple(panel[b"failed"][b"textColor"].values())[:3], amber)
             self.assertEqual(tabs[2][b"label"][b"text"], b"Diagnostics |cfff28b821|r")   # 诊断 carries the errors' count
+            self.assertEqual(panel[b"h"], 312)                       # the window grew with what 本次会话 has to say
             panel[b"view"].Click(panel[b"view"])                      # 查看: the debug window on the errors
             console = g[b"WoWBridgeConsole"]
             self.assertTrue(console[b"shown"])
@@ -1118,6 +1119,7 @@ class PanelAndLanguage(unittest.TestCase):
 
             tabs[2].Click(tabs[2])                                    # 诊断: the link's numbers
             self.assertEqual([pages[t[b"id"]][b"shown"] for t in tabs], [False, False, True])
+            self.assertEqual(panel[b"h"], 470)                       # the other tabs: the whole height
             kv = [r[b"text"].decode() for r in panel[b"kv"].values()]
             self.assertRegex(kv[0], r"^\|cff6fcf97online\|r · session \d+$")   # the state in its colour
             self.assertRegex(kv[1], r"^\d+ \(about \d+ h idle\)$")
@@ -1173,8 +1175,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual(card[b"state"][b"text"].decode(), "已连接")
             self.assertEqual((text("errors"), text("failed"), text("forwarded"), panel[b"view"][b"text"].decode()),
                              ("1 个 Lua 报错", "运行失败 1 次", "已转给 Agent", "查看"))
-            self.assertEqual(text("counts"), "Agent 运行 |cffe8e4d83|r · 运行失败 |cfff28b821|r · Lua 报错 |cfff28b821|r · "
-                                             "被拦截 |cff9c9ea60|r")
+            self.assertEqual(text("counts"), "运行 |cffe8e4d83|r · 失败 |cfff28b821|r · 报错 |cfff28b821|r · 拦截 |cff9c9ea60|r")
             self.assertEqual(auto[b"text"].decode(), "自动")
             self.assertFalse(zh[b"enabled"])                          # the one in force: marked, not clickable
             self.assertTrue(zh[b"selected"])

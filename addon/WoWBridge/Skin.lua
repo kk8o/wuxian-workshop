@@ -99,7 +99,8 @@ function S.Text(parent, font, c, layer)
 end
 
 -- a window: the panel's gradient, the gold-brown hairline, the studs; dragged by any free spot, kept on the screen
--- (strata: "DIALOG" unless given; the dialogs take "FULLSCREEN_DIALOG", above the panel)
+-- (strata: "DIALOG" unless given; the dialogs take "FULLSCREEN_DIALOG", above the panel). Opaque: a flat fill under the
+-- gradient, both without any alpha, so that nothing behind it (the chat, names in the world) shows through its content
 function S.Window(name, w, h, strata)
 	local f = CreateFrame("Frame", name, UIParent)
 	f:SetSize(w, h)
@@ -111,9 +112,12 @@ function S.Window(name, w, h, strata)
 	f:RegisterForDrag("LeftButton")
 	f:SetScript("OnDragStart", f.StartMoving)
 	f:SetScript("OnDragStop", f.StopMovingOrSizing)
-	f.bg = f:CreateTexture(nil, "BACKGROUND")
+	f.base = f:CreateTexture(nil, "BACKGROUND", nil, -8)
+	f.base:SetAllPoints()
+	S.Fill(f.base, C.panel)
+	f.bg = f:CreateTexture(nil, "BACKGROUND", nil, -7)
 	f.bg:SetAllPoints()
-	S.Gradient(f.bg, "VERTICAL", S.Alpha(C.panel, 0.97), S.Alpha(C.panel2, 0.97))
+	S.Gradient(f.bg, "VERTICAL", C.panel, C.panel2)
 	f.edges = S.Border(f)
 	S.Edges(f.edges, C.goldD)
 	S.Studs(f)

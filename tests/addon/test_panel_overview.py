@@ -2,9 +2,11 @@
 Lua 5.1 (tests/support/wowmock.py) with the real companion (transport/link.py). Its first line is the conclusion:
 connected (auto), always on by the settings, always on and kept by the apps the WELCOME names (by=, byn=), or not
 connected; 正在使用 lists what addons pushed with handle:Overview (checked at the caller, shown as plain text, in the
-order the addons bound, a click through pcall); 本次会话 is one quiet line until something is wrong; at the foot the
+order the addons bound, a click through pcall); 本次会话 is one quiet line until something is wrong; after it the
 meter of the app messages used, in three tiers. 诊断 has the counts and the latest lines, the app's housekeeping calls
-as one line, and its tab carries the errors' count."""
+as one line, and its tab carries the errors' count. The window is opaque, as high as 概览 needs (470 at most, and for
+the other tabs) and hangs by its top left corner; the minimap button's tooltip says the card's line and, from 80 per
+cent on, the meter's warning."""
 import unittest
 
 from tests.addon.test_pour import Pour
@@ -20,6 +22,16 @@ def rgb(hexed):
 
 def colour(region, key=b"textColor"):
     return tuple(region[key].values())[:3]
+
+
+def tooltip(s):
+    """the minimap button's tooltip: its lines, the state's without the diamond before it"""
+    g = s.lua.globals()
+    button = g[b"WoWBridgeMinimapButton"]
+    button[b"scripts"][b"OnEnter"](button)
+    lines = [t.decode() for t in g[b"GameTooltip"][b"lines"].values()]
+    button[b"scripts"][b"OnLeave"](button)
+    return [lines[0], lines[1].split("|t ", 1)[1]] + lines[2:]
 
 
 class Panel:
@@ -55,6 +67,12 @@ class Panel:
                             "%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))))
         return out
 
+    def widths(self, counts, of_range=50):
+        """how wide the counts and the range of 诊断 measure (the mock's own widths count a colour code's bytes too)"""
+        self.s.lua.execute(f"WoWBridgePanel.counts.GetStringWidth = function() return {counts} end "
+                           f"WoWBridgePanel.range.GetStringWidth = function() return {of_range} end".encode())
+        self.refresh()
+
     def recent(self):
         """诊断's latest lines in view: (tag, text)"""
         return [(r[b"tag"][b"text"].decode(), r[b"text"][b"text"].decode()) for r in self.p[b"recent"].values()
@@ -83,6 +101,7 @@ class Conclusion(unittest.TestCase):
         panel = Panel(s)
         card = panel.p[b"card"]
         self.assertEqual(panel.card(), "已连接 · 自动")
+        self.assertEqual(tooltip(s)[:3], ["无限工坊 · 开发组件", "已连接 · 自动", " "])   # the minimap button says the same
         self.assertEqual(colour(card[b"dot"], b"vertex"), rgb(OK))
         self.assertEqual((card[b"what"], card[b"act"][b"shown"], card[b"hint"][b"shown"], card[b"h"]),
                          (b"auto", False, False, 42))                 # one line: nothing for the player to do
@@ -93,25 +112,34 @@ class Conclusion(unittest.TestCase):
         comp.farewell()                                               # the app quits
         s.run(2)
         self.assertEqual(panel.card(), "未连接 · 请打开无限工坊 App")
+        self.assertEqual(tooltip(s)[1], "未连接 · 请打开无限工坊 App")
         self.assertEqual(colour(card[b"dot"], b"vertex"), rgb(MUTED))
         self.assertEqual((card[b"what"], card[b"act"][b"shown"], card[b"h"]), (b"away", False, 42))
         comp.present()                                                # and is back
         s.run(2)
         self.assertEqual(panel.card(), "已连接 · 自动")
         s.slash("lang en")
-        self.assertEqual(panel.card(), "Connected · auto")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("Connected · auto",) * 2)
         comp.farewell()
         s.run(2)
-        self.assertEqual(panel.card(), "Not connected · open the Wuxian Workshop app")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("Not connected · open the Wuxian Workshop app",) * 2)
+        comp.present()
+        s.run(2)
+        s.slash("off")                                                # the link off: both say so
+        panel.refresh()
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("Not connected · the link is off",) * 2)
+        s.slash("lang zh")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("未连接 · 链路已关闭",) * 2)
 
     def test_always_on_by_the_settings(self):
         s, comp = self.start(always=True)
         self.assertEqual(s.ns[b"Link"][b"State"](), b"online")
         panel = Panel(s)
         self.assertEqual((panel.card(), panel.p[b"card"][b"what"]), ("常开", b"always"))
+        self.assertEqual(tooltip(s)[1], "常开")
         self.assertEqual(panel.p[b"card"][b"act"][b"shown"], False)
         s.slash("lang en")
-        self.assertEqual(panel.card(), "Always on")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("Always on",) * 2)
         comp.settings(False, 300.0)                                   # auto again: the session's new WELCOME says so
         s.run(3)
         self.assertEqual(panel.card(), "Connected · auto")
@@ -120,11 +148,12 @@ class Conclusion(unittest.TestCase):
         s, comp = self.start(always=True, by=("语音搭子",))
         panel = Panel(s)
         self.assertEqual((panel.card(), panel.p[b"card"][b"what"]), ("常开 · 由 语音搭子 保持", b"held"))
+        self.assertEqual(tooltip(s)[1], "常开 · 由 语音搭子 保持")
         self.assertEqual(colour(panel.p[b"card"][b"dot"], b"vertex"), rgb(OK))
         always, by, n = s.ns[b"Link"][b"Kept"]()
         self.assertEqual((always, [t.decode() for t in by.values()], n), (True, ["语音搭子"], 1))
         s.slash("lang en")
-        self.assertEqual(panel.card(), "Always on · kept by 语音搭子")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("Always on · kept by 语音搭子",) * 2)
         comp.settings(False, 300.0)                                   # the app stopped: nobody keeps it
         s.run(3)
         self.assertEqual(panel.card(), "Connected · auto")
@@ -136,11 +165,12 @@ class Conclusion(unittest.TestCase):
         always, by, n = s.ns[b"Link"][b"Kept"]()                      # the first two by name, and how many in all
         self.assertEqual(([t.decode() for t in by.values()], n), (["Voice", "Guild"], 3))
         self.assertEqual(panel.card(), "Always on · kept by Voice, 3 in all")   # (the mock's line is narrow: one name)
+        self.assertEqual(tooltip(s)[1], "Always on · kept by Voice, Guild, 3 in all")   # (a tooltip has the room)
         panel.p[b"card"][b"state"][b"w"] = 2000                       # room for two
         panel.refresh()
         self.assertEqual(panel.card(), "Always on · kept by Voice, Guild, 3 in all")
         s.slash("lang zh")
-        self.assertEqual(panel.card(), "常开 · 由 Voice、Guild 等 3 个 保持")
+        self.assertEqual((panel.card(), tooltip(s)[1]), ("常开 · 由 Voice、Guild 等 3 个 保持",) * 2)
         comp.settings(True, 300.0, ("Voice", "Guild"))                # one let go: both named, no count
         s.run(3)
         self.assertEqual(panel.card(), "常开 · 由 Voice、Guild 保持")
@@ -273,12 +303,14 @@ class Overview(unittest.TestCase):
         for name in ("A", "B", "C", "D"):
             self.lua(f'{name} = {name} or WoWBridge.Bind("{name}") {name}:Overview({{ {six} }})')
         rows = panel.rows()
-        self.assertEqual(len(rows), 7)                                  # what fits above 本次会话 and the meter ...
-        self.assertEqual((panel.shown("more"), panel.text("more")), (True, "17 more"))   # ... and how many more
+        self.assertEqual(len(rows), 8)                                  # what a window of 470 has room for ...
+        self.assertEqual((panel.shown("more"), panel.text("more")), (True, "16 more"))   # ... and how many more
+        self.assertEqual(panel.p[b"h"], 470)                            # no higher than that
         self.s.slash("lang zh")
-        self.assertEqual(panel.text("more"), "另有 17 行")
+        self.assertEqual(panel.text("more"), "另有 16 行")
         self.lua("C:Overview() D:Overview() B:Overview()")
         self.assertEqual((len(panel.rows()), panel.shown("more")), (6, False))
+        self.assertEqual(panel.p[b"h"], 258 + 22 + 6 * 20 + 10)         # and as high as its six lines need
 
     def test_a_hot_load_of_wowbridge_keeps_the_rows(self):
         self.lua('A:Overview({ { text = "before", click = function() Clicked[#Clicked + 1] = "old" end } })')
@@ -387,7 +419,18 @@ class ThisSession(Pour):
             g[b"print"](f"line {i}".encode())
         s.run(1.1)
         self.assertEqual([t for _, t in panel.recent()], ["line 7", "line 6", "line 5", "line 4"])
+        self.assertEqual(panel.text("counts"), "Runs |cff9c9ea60|r · Failed |cff9c9ea60|r · Errors |cff9c9ea60|r · "
+                                               "Blocked |cff9c9ea60|r")
+        self.assertEqual(panel.p[b"counts"][b"w"], 360)                 # the counts have the whole line ...
+        panel.widths(298, 50)                                           # ... and the range the rest, 12 px away
         self.assertEqual((panel.shown("range"), panel.text("range")), (True, "1-4 / 8"))
+        panel.widths(299, 50)                                           # no room for both: the counts stay
+        self.assertEqual((panel.shown("range"), panel.shown("counts")), (False, True))
+        panel.widths(200, 50)
+        s.slash("lang zh")
+        self.assertEqual(panel.text("counts"), "运行 |cff9c9ea60|r · 失败 |cff9c9ea60|r · 报错 |cff9c9ea60|r · "
+                                               "拦截 |cff9c9ea60|r")
+        s.slash("lang en")
         page = panel.p[b"pages"][b"diag"]
         wheel = page[b"scripts"][b"OnMouseWheel"]
         wheel(page, -1)                                                 # down: older lines
@@ -404,6 +447,76 @@ class ThisSession(Pour):
         s.ns[b"Console"][b"Clear"]()
         panel.refresh()
         self.assertEqual((panel.recent(), panel.shown("recentNone"), panel.shown("range")), ([], True, False))
+
+
+@unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
+class Window(unittest.TestCase):
+    """the window itself: opaque, as high as 概览 needs, hanging by its top left corner"""
+
+    def setUp(self):
+        self.s = s = Session(self)
+        self.addCleanup(s.close)
+        s.comp = link.Companion(s.addons, clock=s.now, log=lambda text: None)
+        s.comp.new_process("P1-100")
+        s.login()
+        s.run(8)
+        s.lua.execute(b'A = WoWBridge.Bind("Alpha")')
+
+    def test_nothing_shows_through(self):
+        s, g = self.s, self.s.lua.globals()
+        panel = Panel(s)
+        s.slash("log")
+        for window in (panel.p, g[b"WoWBridgeConsole"]):
+            self.assertEqual((tuple(window[b"base"][b"rgb"].values()), window[b"base"][b"fillAlpha"]),
+                             (rgb("23242a"), 1))                        # a flat fill under the gradient ...
+            orientation, low, high = window[b"bg"][b"gradient"].values()
+            self.assertEqual((orientation, tuple(low.values()), tuple(high.values())),
+                             (b"VERTICAL", rgb("23242a") + (1,), rgb("2b2f37") + (1,)))   # ... which has no alpha either
+        card = panel.p[b"card"]                                         # and the card on it is a fill of its own
+        self.assertEqual((tuple(card[b"bg"][b"rgb"].values()), card[b"bg"][b"fillAlpha"]), (rgb("1b1c21"), 1))
+
+    def test_as_high_as_the_overview_needs(self):
+        s, g = self.s, self.s.lua.globals()
+        panel = Panel(s)
+        tabs = list(panel.p[b"tabs"][b"tabs"].values())
+        height = lambda: panel.p[b"h"]
+        place = lambda: [v.decode() if isinstance(v, bytes) else v for v in panel.p[b"point"].values()][:1] + \
+            list(panel.p[b"point"].values())[3:]
+        self.assertEqual(height(), 258)                                 # nothing going on: the card, one line, the meter
+        at = place()
+        self.assertEqual(at[0], "TOPLEFT")                              # by its top left corner: the bottom edge moves
+        meter, session = panel.p[b"meter"], panel.p[b"errors"]
+        self.assertEqual(session[b"point"][5] - meter[b"point"][5], 28)   # the meter follows 本次会话's line, 10 px under it
+        s.lua.execute(b'A:Overview({ { text = "Voice", note = "local" }, { text = "Guild chat", note = "Agent" } })')
+        self.assertEqual(height(), 330)                                 # two lines in use, at once: 72 more
+        tabs[1].Click(tabs[1])                                          # 设置 and 诊断: the whole height
+        self.assertEqual(height(), 470)
+        tabs[2].Click(tabs[2])
+        self.assertEqual(height(), 470)
+        s.lua.execute(b"A:Overview()")                                  # (what 概览 shows changes behind the other tab)
+        self.assertEqual(height(), 470)
+        tabs[0].Click(tabs[0])
+        self.assertEqual(height(), 258)
+        g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:12: boom")         # an error while it is open: the next refresh
+        s.run(1.1)
+        self.assertEqual(height(), 294)                                 # the newest error and where it went: 36 more
+        s.lua.execute(b'A:Overview({ { text = "Voice" }, { text = "Guild chat" } })')
+        self.assertEqual(height(), 366)
+        self.assertEqual(place(), at)                                   # the top edge never moved
+        s.slash("")
+        s.slash("")                                                     # closed and open again: the same height
+        self.assertEqual((height(), place()), (366, at))
+
+    def test_a_drag_keeps_the_top_left_corner(self):
+        panel = Panel(self.s)
+        p = panel.p
+        p[b"scripts"][b"OnDragStart"](p)
+        p[b"left"], p[b"top"] = 300, 700                                # where the player let go of it
+        p[b"scripts"][b"OnDragStop"](p)
+        self.assertFalse(p[b"moving"])
+        point = list(p[b"point"].values())
+        self.assertEqual((point[0], point[2], point[3], point[4]), (b"TOPLEFT", b"BOTTOMLEFT", 300, 700))
+        self.assertTrue(self.s.lua.eval(b"WoWBridgePanel.point[2] == UIParent"))
 
 
 @unittest.skipIf(lupa is None, "lupa (Lua 5.1 for Python) is not installed")
@@ -461,6 +574,22 @@ class Meter(unittest.TestCase):
         self.assertEqual(self.meter(0)[1], "已用完 · 退出游戏后恢复")
         self.assertEqual(self.meter(500)[1], "余量不足 · 退出游戏后重置")
         self.assertEqual(self.meter(3400)[1], "退出游戏后重置")
+
+    def test_the_minimap_button_warns_from_80_per_cent(self):
+        s = self.s
+        self.meter(4096 - 3256)                                         # 79 per cent: the state and what the mouse does
+        self.assertEqual(tooltip(s)[1:3], ["Connected", " "])
+        self.meter(4096 - 3257)                                         # 80: the meter's small words under the state
+        self.assertEqual(tooltip(s)[1:4], ["Connected", "running low · resets when the game exits", " "])
+        self.assertEqual(tooltip(s)[4:], ["Left-click\tthe panel", "Right-click\tthe debug output", "Drag\tmove this button"])
+        self.meter(0)
+        self.assertEqual(tooltip(s)[1:4], ["Connected", "none left · back after the game exits", " "])
+        s.slash("lang zh")
+        self.assertEqual(tooltip(s)[1:4], ["已连接", "已用完 · 退出游戏后恢复", " "])
+        self.meter(500)
+        self.assertEqual(tooltip(s)[1:4], ["已连接", "余量不足 · 退出游戏后重置", " "])
+        self.meter(3400)
+        self.assertEqual(tooltip(s)[1:3], ["已连接", " "])
 
     def test_the_tooltip_says_how_many_and_how_long(self):
         self.meter(4096 - 696)

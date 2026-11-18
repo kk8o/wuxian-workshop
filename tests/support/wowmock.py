@@ -129,7 +129,9 @@ function Region:IsVisible() return self.shown and (self.parent == nil or self.pa
 function Region:RegisterEvent(e) self.events[e] = true end
 function Region:SetScript(k, fn) self.scripts[k] = fn end
 function Region:CreateTexture() return new("Texture", self) end
-function Region:SetColorTexture(r, g, b) self.rgb = { r, g, b } end
+function Region:SetColorTexture(r, g, b, a) self.rgb, self.fillAlpha = { r, g, b }, a == nil and 1 or a end
+-- a colour gradient (Skin.lua's window): kept as given, { orientation, from, to } with the colours as { r, g, b, a }
+function Region:SetGradient(orientation, from, to) self.gradient = { orientation, from, to } end
 function Region:IsSnappingToPixelGrid() return false end
 function Region:GetTexelSnappingBias() return 0 end
 function Region:SetSnapToPixelGrid() end
@@ -258,6 +260,7 @@ function Region:GetStringWidth()
 	return math.floor(py.font_width(self.font.key, self.font.size, self.text) * px + 0.5) / px
 end
 
+function CreateColor(r, g, b, a) return { r, g, b, a == nil and 1 or a } end
 UIParent = new("Frame")
 UIParent.scale = 0.888889
 WorldFrame = new("Frame")
