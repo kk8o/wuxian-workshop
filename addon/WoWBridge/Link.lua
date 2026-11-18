@@ -64,6 +64,9 @@
 -- heard within LOGIN_QUIET s (an app started after the addon read the mailbox, or an older one) shows it LOGIN_SHOW s. Off, the mailbox is still read (no backlog builds up
 -- meanwhile) and only "here" and "bye" are heard. A session kept across /reload (db.link) shows its HELLO at once, as
 -- ever; a new app ("here" with another <app>) reads the frames of one going on and takes it over.
+-- Who keeps a session (0.10.0, for the panel's first line: L.Kept): a WELCOME with idle=0 means a session always, by the
+-- app's settings, or, when it also says by=<title>,<title> (the first few) and byn=<how many>, by the apps that hold the
+-- link while they run. The titles are data: the panel shows them as plain text.
 local _, ns = ...
 local Codec, Mailbox = ns.Codec, ns.Mailbox
 local band, floor, char = bit.band, math.floor, string.char
@@ -140,6 +143,9 @@ local held                   -- the frame is unlocked (L.Hold): a session, that 
 local heardApp               -- an app that stands by said "here" or stamped a packet since this UI loaded
 local loginCheck             -- when to show the HELLO if no app was heard by then (LOGIN_QUIET)
 local helloLimit             -- seconds this HELLO shows unanswered before standing by again (nil: HELLO_GIVEUP)
+local kept                   -- who keeps the session, as the last WELCOME of an app that stands by said: { always, by =
+                             -- { titles }, n = how many hold it }; nil: not heard since the UI loaded, or the app is gone
+local slots0                 -- { left, at }: the app messages left when the link started (L.SlotsPace)
 local queue = {}             -- messages not acknowledged yet (see Send)
 local Squeeze                -- a block of a long message into its squeeze (defined with Shape)
 local Pouring                -- the next segments of the pours into the queue (defined with L.Pour)
@@ -390,6 +396,14 @@ function L.Welcome(text)
 	end
 	-- an app before 0.9.14 says no idle=, and ends no session either (its addon never stands by)
 	P.idle = n("idle") and n("idle") >= 0 and n("idle") <= 86400 and n("idle") or 0
+	kept = nil
+	if f.idle then                      -- (0.10.0) who keeps it: the settings, or the apps the WELCOME names
+		local by = {}
+		for title in (f.by or ""):gmatch("[^,]+") do
+			if #by < 4 then by[#by + 1] = title end
+		end
+		kept = { always = P.idle == 0, by = by, n = math.max(#by, math.floor(n("byn") or 0)) }
+	end
 	-- a companion before 0.9.6 says neither: it acknowledges every second and reads no batches (also when it takes over
 	-- from a newer one in this session)
 	P.rto = n("rto") and n("rto") >= 2 and n("rto") <= 60 and n("rto") or 4
@@ -539,7 +553,7 @@ local function Say(pkt)
 			db.appNew, appAway = true, nil              -- it reads the frames and welcomes them)
 			if b ~= "" then db.appId = b end
 		elseif cmd == "bye" then
-			appAway = true
+			appAway, kept = true, nil
 			if state == "hello" or state == "online" then StandBy() end
 		elseif cmd == "at" or cmd == "wake" then
 			db.appNew, appAway = true, nil
@@ -912,6 +926,12 @@ function L.Reachable()
 	return time() - (db.heardAt or 0) < REACH
 end
 
+-- who keeps the session, as the app last said (the panel's first line): whether it is there always, the titles of the
+-- apps that hold it (none: the app's settings do) and how many they are; nothing while that is not known
+function L.Kept()
+	if kept then return kept.always, kept.by, kept.n end
+end
+
 -- whether an app that wakes the addon was heard (db.appNew): /wb on stands by then, else shows HELLO
 function L.CanStandBy() return db ~= nil and db.appNew == true end
 
@@ -960,6 +980,19 @@ function L.SlotsLeft()
 	return Mailbox.Phase() == "full" and 0 or Mailbox.POOL - Mailbox.Next() + 1
 end
 
+-- the hours the app messages left last at the pace they went since the link started (the panel's meter); nil while that
+-- says nothing: less than PACE_AFTER s, or fewer than PACE_SLOTS of them gone
+local PACE_AFTER, PACE_SLOTS = 120, 3
+
+function L.SlotsPace()
+	if not slots0 then return nil end
+	local left = L.SlotsLeft()
+	if left > slots0.left then slots0 = { left = left, at = GetTime() } end   -- a new game process: every slot unread again
+	local seconds, gone = GetTime() - slots0.at, slots0.left - left
+	if left <= 0 or seconds < PACE_AFTER or gone < PACE_SLOTS then return nil end
+	return left / (gone / seconds) / 3600
+end
+
 -- messages not shown yet
 local function Unsent()
 	local n = 0
@@ -1000,6 +1033,7 @@ function L.Start(savedDb, print, on, initial)
 		state, helloSince = "hello", GetTime()
 	end
 	Mailbox.Start(db, OnPacket)
+	slots0 = slots0 or { left = L.SlotsLeft(), at = GetTime() }
 	tickers = { C_Timer.NewTicker(mailEvery, Mailbox.Tick), C_Timer.NewTicker(0.05, L.Step), C_Timer.NewTicker(0.5, L.Tick) }
 	ns.Debug.Start()                     -- what came before the link started
 end

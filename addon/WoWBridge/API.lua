@@ -17,6 +17,16 @@
 --                                  one piece, nor when the link goes down and it stops (an addon judges a stall by how
 --                                  long no news came). One fn a name: registering again replaces it, nil removes it; an
 --                                  fn that raises goes to the error handler and the answer goes on
+--   handle:Overview(rows)          (0.10.0) the lines the addon shows on the panel's 概览, under 正在使用 (what uses 无限工坊
+--                                  now): pushed whole, again whenever they change; nil or {} takes them away. rows: an
+--                                  array of at most OVERVIEW_ROWS rows { text = a string of 1..OVERVIEW_TEXT bytes, note
+--                                  = a string of at most OVERVIEW_NOTE bytes (small words at the line's end) or nil,
+--                                  tone = "ok" | "warn" | "bad" or nil (the line's dot: green, amber, red, else grey),
+--                                  click = a function or nil (a click on the line: pcall(click)) }; anything else is an
+--                                  error at the caller. text and note are plain text: the panel shows them as they are
+--                                  (a | starts no colour or link). The addons' lines come in the order the addons first
+--                                  bound, each addon's in the order given; an open panel shows them at once. They last
+--                                  until the UI reloads (a hot load of WoWBridge itself keeps them)
 -- An event's data is written to WoWBridge.EVENT_DEPTH levels of tables (8; a table past them goes as the text "<table>"),
 -- a call's answer to one more (its result is one level in). An addon that sizes what it sends reads the number
 -- (WuxianKit does: a wake carries its items' data five levels down); a WoWBridge before 0.9.13 wrote 6 and said none.
@@ -49,6 +59,13 @@ local addons = {}     -- addon -> { exposed = { name -> { fn, doc } }, order = {
 local waiting = {}    -- events from before the link was online, oldest first: { text, entry, request, deadline }
 local pending = {}    -- request id -> { addon, topic, callback }, until answered or timed out
 local asked = 0       -- requests made in this UI session (the ids: "<WoWBridge session>.<n>")
+local OVERVIEW_ROWS, OVERVIEW_TEXT, OVERVIEW_NOTE = 6, 60, 30
+local TONES = { ok = true, warn = true, bad = true }
+-- the panel's 正在使用: order = { addon -> the turn it first bound in }, n = the turns given, rows = { addon -> its rows
+-- as the panel shows them }. On the namespace: a hot load of WoWBridge runs this file again, and the handles the addons
+-- hold (the code before it) and the panel (the code after it) keep the one table
+ns.overview = ns.overview or { order = {}, n = 0, rows = {} }
+local overview = ns.overview
 
 local function Entry(addon)
 	local e = addons[addon]
@@ -190,13 +207,71 @@ local function OnProgress(self, name, fn)
 	return true
 end
 
-local Handle = { Emit = Emit, Expose = Expose, Request = Request, OnProgress = OnProgress }
+-- somebody else's words (an addon's line, an app's title) as plain text for a font string: a | shows as itself (doubled:
+-- it starts no colour, link or texture) and a control character (a line break, a tab) is a space
+function ns.Plain(s)
+	return (tostring(s):gsub("%c", " "):gsub("|", "||"))
+end
+
+local function Overview(self, rows)
+	if rows ~= nil and type(rows) ~= "table" then error("Overview(rows): rows is an array of rows, or nil for none", 2) end
+	rows = rows or {}
+	local n = 0
+	for _ in pairs(rows) do n = n + 1 end
+	if n ~= #rows or n > OVERVIEW_ROWS then
+		error(("Overview(rows): rows is an array of at most %d rows"):format(OVERVIEW_ROWS), 2)
+	end
+	local list = {}
+	for i = 1, n do
+		local row = rows[i]
+		if type(row) ~= "table" then error(("Overview(rows): row %d is a table { text, note, tone, click }"):format(i), 2) end
+		local text, note, tone, click = row.text, row.note, row.tone, row.click
+		if type(text) ~= "string" or #text < 1 or #text > OVERVIEW_TEXT or not text:find("[^%s%c]") then
+			error(("Overview(rows): row %d: text is a string of 1 to %d bytes"):format(i, OVERVIEW_TEXT), 2)
+		end
+		if note ~= nil and (type(note) ~= "string" or #note > OVERVIEW_NOTE) then
+			error(("Overview(rows): row %d: note is a string of at most %d bytes, or nil"):format(i, OVERVIEW_NOTE), 2)
+		end
+		if tone ~= nil and not TONES[tone] then
+			error(('Overview(rows): row %d: tone is "ok", "warn", "bad" or nil'):format(i), 2)
+		end
+		if click ~= nil and type(click) ~= "function" then
+			error(("Overview(rows): row %d: click is a function, or nil"):format(i), 2)
+		end
+		list[i] = { addon = self.addon, text = ns.Plain(text), note = note and note ~= "" and ns.Plain(note) or nil,
+			tone = tone, click = click }
+	end
+	if not overview.order[self.addon] then              -- (a handle from before a hot load of WoWBridge: bound already)
+		overview.n = overview.n + 1
+		overview.order[self.addon] = overview.n
+	end
+	overview.rows[self.addon] = n > 0 and list or nil
+	if ns.Panel and ns.Panel.Changed then ns.Panel.Changed() end
+	return true
+end
+
+-- every addon's rows for the panel, the addons in the order they first bound: { { addon, text, note, tone, click }, ... }
+function ns.OverviewRows()
+	local names, out = {}, {}
+	for addon in pairs(overview.rows) do names[#names + 1] = addon end
+	table.sort(names, function(a, b) return overview.order[a] < overview.order[b] end)
+	for _, addon in ipairs(names) do
+		for _, row in ipairs(overview.rows[addon]) do out[#out + 1] = row end
+	end
+	return out
+end
+
+local Handle = { Emit = Emit, Expose = Expose, Request = Request, OnProgress = OnProgress, Overview = Overview }
 Handle.__index = Handle
 
 -- the handle of an addon (its name: the first ... of its files)
 function WB.Bind(addon)
 	if type(addon) ~= "string" or addon == "" or #addon > NAME_MAX then
 		error(("WoWBridge.Bind(addonName): the addon's name (at most %d bytes)"):format(NAME_MAX), 2)
+	end
+	if not overview.order[addon] then                   -- the panel lists the addons' lines in this order
+		overview.n = overview.n + 1
+		overview.order[addon] = overview.n
 	end
 	return setmetatable({ addon = addon }, Handle)
 end

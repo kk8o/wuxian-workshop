@@ -1,12 +1,14 @@
 -- WoWBridge's debug window and its notice.
--- The window (/wb log, the minimap button's right click, a key binding, the panel's 调试输出) lists what happens in this UI
+-- The window (/wb log, the minimap button's right click, a key binding, the panel's 查看 and 调试输出) lists what happens in this UI
 -- session as it happens, the newest at the bottom: Lua errors with their stack (the same error stays one line, counted),
 -- warnings, blocked actions, print() output, the agent's code (each file it hot-loads, each snippet it runs: ok or the
 -- error, the time, what it returned), reload requests, the link going up and down. MAX lines, kept while it is closed
 -- too. Tabs keep one kind in view (全部 / 报错 / 运行 / 输出); a line's [详情] puts its whole text in a box below, selected
 -- for Ctrl+C (the game gives addons no clipboard), and 复制 puts every line in view there. Its place and size are kept
 -- for this character (consoleX / consoleY / consoleW / consoleH). Errors that come while it is closed show as a count on
--- the minimap button until it opens.
+-- the minimap button until it opens. The panel reads it too: the newest error for 概览 (K.LastError) and the lines for
+-- 诊断 (K.Digest), where the app's own housekeeping calls (BEATS: the heartbeat of an app it keeps running, what it reads
+-- of WuxianKit by itself) are one line with their count instead of a line each.
 -- The notice: a hot-load (an addon's files together) or the agent's code failing shows for a few seconds at the top of
 -- the screen, green or red; a click opens the window. The setting toasts (/wb set toasts off, the panel) turns it off,
 -- and the agent's code is then told in the chat as before.
@@ -29,7 +31,13 @@ local KIND = {                                  -- a kind's tag (a word of Local
 	RUN = { "CON_RUN", "sky" }, RELOAD = { "CON_RELOAD", "sky" }, LINK = { "CON_LINK", "muted" },
 }
 
+-- calls of an addon's exposed functions that are the app's housekeeping, by the function's name (K.Digest)
+local BEATS = { ["kit.app.status"] = true, ["kit.app.describe"] = true, ["kit.revision"] = true, ["kit.manifest"] = true,
+	["kit.apps"] = true, ["kit.capabilities"] = true }
+
 local entries, merged, nextId = {}, {}, 0       -- the lines, oldest first; an error's key -> its line; the last id given
+local beatLines = 0                             -- housekeeping calls since the lines were last cleared
+K.beats = 0                                     -- ... and in this UI session (the panel counts the agent's runs without them)
 local tab = "all"
 local window, log, pane, ticker, toast
 local full, dirty, drawnId = true, false, 0     -- the log to be drawn again whole; something new; the last id drawn
@@ -119,7 +127,7 @@ function K.Add(kind, text, detail, failed)
 	return e
 end
 
--- a line whose text moves on (a pour's progress: Agent.lua): the panel's 最近 shows it at its next refresh, the window
+-- a line whose text moves on (a pour's progress: Agent.lua): the panel's 诊断 shows it at its next refresh, the window
 -- draws its lines again at most once a second
 local redrawDue
 function K.Update(e, text)
@@ -138,21 +146,49 @@ function K.Has(kind, text)
 	return merged[kind .. "\0" .. tostring(text or "")] ~= nil
 end
 
--- the latest n lines, newest first (the panel's 概览): the time, the kind's tag and colour (a name of Skin's C), the
--- text's first line, the tab that keeps the kind
-function K.Recent(n)
-	local out = {}
-	for i = #entries, math.max(1, #entries - n + 1), -1 do
+-- the lines for the panel's 诊断, newest first: n of them after the first `skip`, and how many there are in all. Each:
+-- the time, the kind's tag and colour (a name of Skin's C), the text's first line, the whole text (the row's tooltip),
+-- the tab that keeps the kind. The housekeeping calls are one line, where the newest of them is, with their count
+function K.Digest(n, skip)
+	local out, total, beat = {}, 0, false
+	skip = skip or 0
+	for i = #entries, 1, -1 do
 		local e = entries[i]
-		local k = KIND[e.kind] or KIND.LINK
-		local tabOf = "all"
-		for id, keep in pairs(KEEP) do
-			if keep[e.kind] then tabOf = id end
+		local line
+		if e.beat then
+			if not beat then
+				beat = true
+				line = { t = e.t, tag = L.CON_RUN, color = "muted", text = L.CON_BEATS:format(beatLines), tab = "runs" }
+				line.full = line.text
+			end
+		else
+			local k = KIND[e.kind] or KIND.LINK
+			local tabOf = "all"
+			for id, keep in pairs(KEEP) do
+				if keep[e.kind] then tabOf = id end
+			end
+			local times = e.n > 1 and ("  ×%d"):format(e.n) or ""
+			line = { t = e.t, tag = L[k[1]], color = (e.kind == "RUN" and e.failed) and "bad" or k[2],
+				text = FirstLine(e.text) .. times, full = Cut(e.text, 600) .. times, tab = tabOf }
 		end
-		out[#out + 1] = { t = e.t, tag = L[k[1]], color = (e.kind == "RUN" and e.failed) and "bad" or k[2],
-			text = FirstLine(e.text) .. (e.n > 1 and ("  ×%d"):format(e.n) or ""), tab = tabOf }
+		if line then
+			total = total + 1
+			if total > skip and #out < n then out[#out + 1] = line end
+		end
 	end
-	return out
+	return out, total
+end
+
+-- the newest Lua error for the panel's 概览: { t = when, addon = whose (the folder under AddOns its text names), file =
+-- the file there, text = its first line }, or nil when the lines hold none
+function K.LastError()
+	for i = #entries, 1, -1 do
+		local e = entries[i]
+		if e.kind == "ERR" then
+			local addon, path = e.text:match("AddOns[/\\]([^/\\:\"%]]+)[/\\]([^:\"%]]+)")
+			return { t = e.t, addon = addon, file = path and path:match("([^/\\]+)$"), text = FirstLine(e.text) }
+		end
+	end
 end
 
 -- the lines in view, as plain text (the copy box; tests)
@@ -214,15 +250,20 @@ function K.Job(name, addon, flag, ok, ms, values, failure)
 		K.Add("RUN", ok and L.CON_LOADED:format(short, ms) or L.CON_LOAD_FAILED:format(short, FirstLine(failure)), failure, not ok)
 	else
 		local got = values and values ~= "" and ("  → " .. Cut(FirstLine(values), 120)) or ""
-		local line
+		local line, beat
 		if name == "=call" then                     -- a data call: an addon's exposed function (addon is "Addon.name")
 			line = ok and L.CON_CALLED:format(addon, ms, got) or L.CON_CALL_FAILED:format(addon, FirstLine(failure))
+			beat = ok and BEATS[tostring(addon):match("^[^.]*%.(.+)$") or ""]
 		elseif name == "=respond" then              -- the answer to an addon's request (Agent.lua CHUNK.reply)
 			line = ok and L.CON_REPLIED:format(ms, got) or L.CON_REPLY_FAILED:format(FirstLine(failure))
 		else
 			line = ok and L.CON_RAN:format(ms, got) or L.CON_RUN_FAILED:format(FirstLine(failure))
 		end
-		K.Add("RUN", line, ok and values ~= "" and values or failure, not ok)
+		local e = K.Add("RUN", line, ok and values ~= "" and values or failure, not ok)
+		if beat then                                -- housekeeping: the panel counts it, and lists it as one line
+			e.beat = true
+			K.beats, beatLines = K.beats + 1, beatLines + 1
+		end
 		if not ok then Toast(L.TOAST_RUN_FAILED:format(Cut(FirstLine(failure))), true) end
 		return
 	end
@@ -472,7 +513,7 @@ function K.Toggle(which)
 end
 
 function K.Clear()
-	entries, merged, batch = {}, {}, nil
+	entries, merged, batch, beatLines = {}, {}, nil, 0
 	full, dirty = true, true
 	K.unseen = 0
 	if ns.MinimapButton and ns.MinimapButton.Badge then ns.MinimapButton.Badge(0) end

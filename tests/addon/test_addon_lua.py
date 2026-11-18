@@ -493,7 +493,7 @@ class DebugWindow(unittest.TestCase):
             self.assertEqual(len(console_lines(s)), 1)
             s.slash("log")                                              # and closed again
             self.assertFalse(g[b"WoWBridgeConsole"][b"shown"])
-            s.slash("")                                                 # the panel, and its 调试输出 button: the window
+            s.slash("")                                                 # the panel, and 诊断's 调试输出: the window
             panel, console = g[b"WoWBridgePanel"], g[b"WoWBridgeConsole"]   # comes up in front of the panel
             panel[b"console"].Click(panel[b"console"])
             self.assertTrue(console[b"shown"])
@@ -1025,7 +1025,7 @@ class PanelAndLanguage(unittest.TestCase):
             button.Click(button, "LeftButton")
             s.run(1.1)                                                # the panel's next refresh
             self.assertTrue(panel[b"kit"][b"shown"])
-            self.assertEqual(panel[b"kit"][b"text"], b"WuxianKit")
+            self.assertEqual(panel[b"kit"][b"text"], b"Extensions")
             self.assertTrue(s.lua.eval(self.FITS))                       # the button as wide as its name
             panel[b"kit"].Click(panel[b"kit"])
             self.assertFalse(panel[b"shown"])                         # the panel gives way to it
@@ -1041,7 +1041,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertIn(" · /wb kit [page] WuxianKit", s.chat().splitlines()[-1])
             s.slash("lang zh")
             button.Click(button, "LeftButton")
-            self.assertEqual(panel[b"kit"][b"text"].decode(), "扩展框架")
+            self.assertEqual(panel[b"kit"][b"text"].decode(), "扩展")
             self.assertTrue(s.lua.eval(self.FITS))
             s.lua.execute(b"WuxianKit.Window = function() error('kit broke') end")
             n = len(g[b"__errors"])
@@ -1052,14 +1052,16 @@ class PanelAndLanguage(unittest.TestCase):
             s.close()
 
     def test_panel_and_minimap_button(self):
-        """the panel as designed: 概览 with the link's state (and what to do while the app is not there), a notice when
-        something needs doing, this session's numbers and its latest lines; 设置 with the frame, the agent's switches and
-        the interface; 诊断 with the link's numbers, its tests and the diagnostics to copy; both languages. The minimap
-        button shows the state at its foot, its tooltip what the mouse does in two columns"""
+        """the panel as designed: 概览 with one line on the link (and what to do while the app is not there), a notice when
+        something needs doing, and this session, quiet until something is wrong; 设置 with the frame, the agent's
+        switches, the interface and the website; 诊断 with the link's numbers, its tests, the diagnostics to copy and
+        this session's counts and latest lines; both languages. The minimap button shows the state at its foot, its
+        tooltip what the mouse does in two columns"""
         s = self.start()
         try:
             g = s.lua.globals()
             green, red = (0x6f / 255, 0xcf / 255, 0x97 / 255), (0xf2 / 255, 0x8b / 255, 0x82 / 255)
+            amber = (0xd8 / 255, 0xa8 / 255, 0x5a / 255)
             button = g[b"WoWBridgeMinimapButton"]
             self.assertTrue(button[b"shown"])
             self.assertEqual(tuple(button[b"dot"][b"vertex"].values())[:3], green)
@@ -1073,6 +1075,7 @@ class PanelAndLanguage(unittest.TestCase):
             button.Click(button, "LeftButton")                       # left-click: the panel, on 概览
             panel = g[b"WoWBridgePanel"]
             self.assertTrue(panel[b"shown"])
+            self.assertEqual((panel[b"w"], panel[b"h"]), (400, 470))
             pages = panel[b"pages"]
             tabs = list(panel[b"tabs"][b"tabs"].values())
             self.assertEqual([t[b"id"] for t in tabs], [b"overview", b"settings", b"diag"])
@@ -1080,41 +1083,37 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual([pages[t[b"id"]][b"shown"] for t in tabs], [True, False, False])
             self.assertEqual([t[b"mark"][b"shown"] for t in tabs], [True, False, False])   # the gold bar under 概览
             self.assertEqual(panel[b"titleText"][b"text"], b"Wuxian Workshop")
-            self.assertEqual(panel[b"version"][b"text"].decode(), f"Developer addon {link.VERSION}")
+            self.assertEqual(panel[b"version"][b"text"].decode(), link.VERSION)   # the name and its version, no more
             card, notice = panel[b"card"], panel[b"notice"]
-            self.assertEqual(card[b"state"][b"text"], b"Connected to the app")
+            self.assertEqual(card[b"state"][b"text"], b"Connected")  # (an app that does not stand by: no modes to name)
             self.assertEqual(tuple(card[b"dot"][b"vertex"].values())[:3], green)
-            self.assertEqual((card[b"act"][b"shown"], card[b"hint"][b"shown"], card[b"h"]), (False, False, 54))   # nothing to do
+            self.assertEqual((card[b"act"][b"shown"], card[b"hint"][b"shown"], card[b"h"]), (False, False, 42))   # nothing to do
             self.assertFalse(notice[b"shown"])
-            tiles = list(panel[b"tiles"].values())
-            self.assertEqual([t[b"label"][b"text"] for t in tiles], [b"Agent runs", b"Failed", b"Lua errors", b"Blocked"])
-            self.assertEqual([t[b"num"][b"text"] for t in tiles], [b"0", b"0", b"0", b"0"])
-            self.assertFalse(panel[b"held"][b"shown"])
-            rows = list(panel[b"recent"].values())                   # the debug window's latest lines
-            self.assertEqual((rows[0][b"shown"], rows[0][b"tag"][b"text"], rows[0][b"text"][b"text"], rows[0][b"tab"]),
-                             (True, b"link", b"connected to the app", b"runs"))
-            self.assertFalse(rows[1][b"shown"])
-            self.assertFalse(panel[b"recentNone"][b"shown"])
+            shown = lambda *names: [bool(panel[n.encode()][b"shown"]) for n in names]
+            text = lambda name: panel[name.encode()][b"text"].decode()
+            self.assertFalse(panel[b"using"][b"parent"][b"shown"])  # nobody pushed a line: no 正在使用
+            self.assertEqual(text("errors"), "No errors")            # nothing wrong: one quiet line
+            self.assertEqual(shown("view", "runs", "lastError", "forwarded", "failed", "blocked"), [False] * 6)
 
             s.ns[b"Agent"][b"stats"][b"runs"] = 3
+            s.run(1.1)                                                # the panel's next refresh
+            self.assertEqual((text("errors"), shown("runs"), text("runs")), ("No errors", [True], "Agent runs: 3"))
             s.ns[b"Agent"][b"stats"][b"failed"] = 1
             g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value")
-            s.run(1.1)                                                # the panel's next refresh
-            self.assertEqual([t[b"num"][b"text"] for t in tiles], [b"3", b"1", b"1", b"0"])
-            self.assertEqual(tuple(tiles[1][b"num"][b"textColor"].values())[:3], red)   # failures and errors count red
-            self.assertEqual(tuple(tiles[2][b"num"][b"textColor"].values())[:3], red)
-            self.assertNotEqual(tuple(tiles[0][b"num"][b"textColor"].values())[:3], red)
-            self.assertEqual((rows[0][b"tag"][b"text"], rows[0][b"tab"]), (b"error", b"errors"))   # the newest first
-            self.assertIn(b"attempt to call a nil value", rows[0][b"text"][b"text"])
-            self.assertEqual(rows[1][b"text"][b"text"], b"connected to the app")
-            rows[0].Click(rows[0])                                    # a line opens the debug window on its kind
+            s.run(1.1)
+            self.assertEqual(text("errors"), "Lua errors: 1")        # the errors in red, with the way to them ...
+            self.assertEqual(tuple(panel[b"errors"][b"textColor"].values())[:3], red)
+            self.assertEqual(shown("view", "runs", "lastError", "forwarded", "failed", "blocked"),
+                             [True, False, True, True, True, False])
+            self.assertRegex(text("lastError"), r"^\d\d:\d\d · Foo · Foo\.lua$")   # ... the newest: when, whose, where
+            self.assertEqual(text("forwarded"), "Passed on to the agent")
+            self.assertEqual(text("failed"), "Failed runs: 1")       # a failed run: a line in amber; no blocked action, no line
+            self.assertEqual(tuple(panel[b"failed"][b"textColor"].values())[:3], amber)
+            self.assertEqual(tabs[2][b"label"][b"text"], b"Diagnostics |cfff28b821|r")   # 诊断 carries the errors' count
+            panel[b"view"].Click(panel[b"view"])                      # 查看: the debug window on the errors
             console = g[b"WoWBridgeConsole"]
             self.assertTrue(console[b"shown"])
             self.assertEqual(console[b"tabs"][b"selected"], b"errors")
-            console[b"close"].Click(console[b"close"])
-            self.assertEqual(panel[b"console"][b"label"][b"text"].decode(), "Debug output →")
-            panel[b"console"].Click(panel[b"console"])                # 调试输出 ›: the window again
-            self.assertTrue(console[b"shown"])
             console[b"close"].Click(console[b"close"])
 
             tabs[2].Click(tabs[2])                                    # 诊断: the link's numbers
@@ -1125,6 +1124,28 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertRegex(kv[2], r"^0 / \d+$")
             self.assertEqual(kv[3], "every 30 s")
             self.assertRegex(kv[4], r"^mode 3 · 0\.\d\d s a frame$")
+            self.assertEqual(text("counts"), "Runs |cffe8e4d83|r · Failed |cfff28b821|r · Errors |cfff28b821|r · "
+                                             "Blocked |cff9c9ea60|r")   # this session's counts: the bad ones red
+            rows = list(panel[b"recent"].values())                   # the debug window's latest lines, the newest first
+            self.assertEqual((rows[0][b"shown"], rows[0][b"tag"][b"text"], rows[0][b"tab"]), (True, b"error", b"errors"))
+            self.assertIn(b"attempt to call a nil value", rows[0][b"text"][b"text"])
+            self.assertEqual((rows[1][b"tag"][b"text"], rows[1][b"text"][b"text"], rows[1][b"tab"]),
+                             (b"link", b"connected to the app", b"runs"))
+            self.assertEqual((rows[2][b"shown"], panel[b"recentNone"][b"shown"], panel[b"range"][b"shown"]),
+                             (False, False, False))
+            rows[0][b"scripts"][b"OnEnter"](rows[0])                  # the whole text under the mouse
+            self.assertEqual(list(g[b"GameTooltip"][b"lines"].values()),
+                             [b"Interface/AddOns/Foo/Foo.lua:12: attempt to call a nil value"])
+            rows[0][b"scripts"][b"OnLeave"](rows[0])
+            rows[1].Click(rows[1])                                    # a line opens the debug window on its kind
+            self.assertTrue(console[b"shown"])
+            self.assertEqual(console[b"tabs"][b"selected"], b"runs")
+            console[b"close"].Click(console[b"close"])
+            self.assertEqual(panel[b"console"][b"label"][b"text"].decode(), "Debug output →")
+            panel[b"console"].Click(panel[b"console"])                # 调试输出: the window again, on the errors
+            self.assertTrue(console[b"shown"])
+            self.assertEqual(console[b"tabs"][b"selected"], b"errors")
+            console[b"close"].Click(console[b"close"])
             box = panel[b"diagBox"]
             panel[b"copyDiag"].Click(panel[b"copyDiag"])              # the diagnostics in a box, selected, for a report
             self.assertEqual((box[b"shown"], box[b"highlighted"], panel[b"diagNote"][b"shown"]), (True, True, False))
@@ -1147,10 +1168,13 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertTrue(auto[b"selected"])
             zh.Click(zh)                                              # the language buttons
             self.assertEqual(panel[b"titleText"][b"text"].decode(), "无限工坊")
-            self.assertEqual(panel[b"version"][b"text"].decode(), f"开发组件 {link.VERSION}")
-            self.assertEqual([t[b"label"][b"text"].decode() for t in tabs], ["概览", "设置", "诊断"])
-            self.assertEqual(card[b"state"][b"text"].decode(), "已连接 App")
-            self.assertEqual([t[b"label"][b"text"].decode() for t in tiles], ["Agent 运行", "运行失败", "Lua 报错", "被拦截"])
+            self.assertEqual(panel[b"version"][b"text"].decode(), link.VERSION)
+            self.assertEqual([t[b"label"][b"text"].decode() for t in tabs], ["概览", "设置", "诊断 |cfff28b821|r"])
+            self.assertEqual(card[b"state"][b"text"].decode(), "已连接")
+            self.assertEqual((text("errors"), text("failed"), text("forwarded"), panel[b"view"][b"text"].decode()),
+                             ("1 个 Lua 报错", "运行失败 1 次", "已转给 Agent", "查看"))
+            self.assertEqual(text("counts"), "Agent 运行 |cffe8e4d83|r · 运行失败 |cfff28b821|r · Lua 报错 |cfff28b821|r · "
+                                             "被拦截 |cff9c9ea60|r")
             self.assertEqual(auto[b"text"].decode(), "自动")
             self.assertFalse(zh[b"enabled"])                          # the one in force: marked, not clickable
             self.assertTrue(zh[b"selected"])
@@ -1180,25 +1204,26 @@ class PanelAndLanguage(unittest.TestCase):
             panel[b"link"].Click(panel[b"link"])                      # the link off from the panel
             self.assertEqual(s.ns[b"Link"][b"State"](), b"off")
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"act"][b"text"].decode(),
-                              card[b"hint"][b"shown"]), ("未连接", True, "打开", False))   # 概览 offers it back (turned on)
-            self.assertFalse(panel[b"held"][b"shown"])               # the error before went up: nothing waits
+                              card[b"hint"][b"shown"]), ("未连接 · 链路已关闭", True, "打开", False))   # 概览 offers it back
+            self.assertEqual(text("forwarded"), "已转给 Agent")       # the error before went up: nothing waits
             g[b"__error"](b"Interface/AddOns/Foo/Foo.lua:30: attempt to index a nil value")
             s.run(1.1)
-            self.assertTrue(panel[b"held"][b"shown"])                # this one waits in the game meanwhile
-            card[b"act"].Click(card[b"act"])
+            self.assertEqual((text("errors"), text("forwarded")), ("2 个 Lua 报错", "连上 App 后转给 Agent"))   # this one
+            card[b"act"].Click(card[b"act"])                                                  # waits in the game meanwhile
             self.assertEqual(s.ns[b"Link"][b"State"](), b"hello")
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"text"].decode(), card[b"hint"][b"shown"],
-                              card[b"h"]), ("等待 App", "重新连接", True, 90))
+                              card[b"h"]), ("未连接 · 请打开无限工坊 App", "重新连接", True, 74))
             s.run(8)
             self.assertIn("已重新连接 App", s.chat())
-            self.assertEqual(card[b"state"][b"text"].decode(), "已连接 App")
+            self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"h"]), ("已连接", False, 42))
             s.slash("")                                               # /wb alone: the panel again (closes it)
             self.assertFalse(panel[b"shown"])
             s.slash("")                                               # and opens it on the tab shown last
             self.assertTrue(panel[b"shown"])
             self.assertTrue(pages[b"settings"][b"shown"])
             self.assertEqual((panel[b"siteLabel"][b"text"].decode(), panel[b"site"][b"text"]),
-                             ("官网", b"wuxianwow.com/workshop"))            # the website, under every tab
+                             ("官网", b"wuxianwow.com/workshop"))            # the website, at the foot of 设置
+            self.assertTrue(s.lua.eval(b"WoWBridgePanel.siteLabel:GetParent() == WoWBridgePanel.pages.settings"))
             box = panel[b"copyBox"]
             panel[b"copy"].Click(panel[b"copy"])                      # 复制网址: the address in a box, selected
             self.assertEqual((box[b"shown"], box[b"text"], box[b"highlighted"], box[b"focused"]),

@@ -62,7 +62,10 @@ less than 8 s old, and drops what came later), and frames must come within OPEN_
 (one written as its session ends opens the next). The addon's own data rings the doorbell: its HELLO shows at the
 frame's place (o=x,y in the HELLO: place, on_place), and the daemon, which peeks there now and then (daemon/companion.py),
 takes a frame seen while standing by as a session. The addon ends a session after the WELCOME's idle= s without
-anything passing (IDLE: what passes is done; 0: never, always) and past a "hold <s>" (hold: the daemon listens s seconds
+anything passing (IDLE: what passes is done; 0: never, always; with idle=0 the WELCOME of 0.10.0 also says who keeps
+the session when apps do: by=<title>,<title> (the first BY_MOST of them, each BY_BYTES at most, cleaned of what the
+record's own syntax and the game's text markup use) and byn=<how many hold it>; the addon's panel says so, an older
+addon reads past them) and past a "hold <s>" (hold: the daemon listens s seconds
 more for prints and errors, which do not ring), or when the player ends it, or on "rest <ms>" (rest: the app's 收起): a BYE control
 frame ("BYE;why=idle|hide|off|rest"), on_bye. A session whose frames stopped for SESSION_LOST s is taken as over too (a
 covered window: the BYE was not seen). The companion also writes "here <ms> <app>" (present: at the start, and every
@@ -111,9 +114,19 @@ OLD_ROOM = 512                  # mailbox slots that must be left to go on after
 STANDBY_ACK = 2.0               # seconds within which a session that may end soon acknowledges (lazy: ack_lazy)
 IDLE = 3.0                      # seconds after the last thing passed that the addon ends a session (what passes is done)
 ALWAYS_AGAIN = 60.0             # seconds between openings while the settings want a session always and none comes
+BY_MOST = 2                     # titles of the apps that keep a session always that a WELCOME names (by=) ...
+BY_BYTES = 24                   # ... and the bytes of each, at most (UTF-8, cut at a character)
 APP_ID = f"{os.getpid():x}{int(time.time()) % 1000000:x}"   # this program run: a new one ends the session going on
 SAY = (b"ping", b"here", b"bye", b"rest", b"at", b"hold")   # commands that are not requests (no stamp, no session)
 _POUR_HEAD = re.compile(rb"(\S{1,64}) (\d{1,6})/(\d{1,6})")
+_BY_DROP = re.compile(r"[\x00-\x1f\x7f;,|]")   # in a title of by=: the WELCOME's and the list's separators, the game's
+                                              # escape character, control characters
+
+
+def by_title(title):
+    """an app's title as a WELCOME's by= carries it: one line of plain text, BY_BYTES of UTF-8 at most"""
+    text = " ".join(_BY_DROP.sub(" ", str(title)).split())
+    return text.encode("utf-8")[:BY_BYTES].decode("utf-8", "ignore").strip()
 UNPACK_FAILED = "could not be unpacked"   # in a RUN result: a compressed job did not come out whole in the game
 STEADY = 10.0                   # seconds the link has been up (and the session online) before a frame asked for again
                                 # counts against the short display time (a covered window, a loading screen and the
@@ -375,6 +388,7 @@ class Companion(AgentCommands):
         self.floor = 1                # the lowest slot this program may write in this game process
         self.resting = None           # when the app ended the session (rest): REST_SETTLE
         self.idle, self.always = IDLE, False   # the addon ends a session after idle s with nothing passing; always: never
+        self.by = ()                  # the titles of the apps that keep it always (none: the settings do): the WELCOME's by=
         self.always_tried = None      # when the last opening for always went
         self.on_open_failed = None    # (text) -> None: no frames came after an opening
         self.on_bye = None            # (why) -> None: the player ended the session ("hide") or turned the link off
@@ -816,6 +830,9 @@ class Companion(AgentCommands):
             params.update(win=self.win_lazy, show=s.show, rto=self.rto_lazy, pack=1, **({"z": 1} if self.squeeze else {}))
         if s.features >= STANDBY:                   # the addon ends the session after so long with nothing passing
             params["idle"] = 0 if self.always else int(self.idle)
+            names = [t for t in map(by_title, self.by) if t][:BY_MOST] if self.always else []
+            if names:                               # (0.10.0) the apps that keep it: the addon's panel says who
+                params.update(by=",".join(names), byn=len(self.by))
         text = f"v={VERSION};s={s.sid};" + ";".join(f"{a}={b}" for a, b in params.items())
         self.outbox = [r for r in self.outbox if r[0] != MB.WELCOME]
         self.outbox.insert(0, (MB.WELCOME, text.encode()))
@@ -1313,12 +1330,16 @@ class Companion(AgentCommands):
         if self.standing_by() and seconds > 0:
             self.outbox.append((MB.COMMAND, f"hold {min(600, int(seconds + 0.999))}".encode()))
 
-    def settings(self, always, idle=IDLE):
+    def settings(self, always, idle=IDLE, by=()):
         """the daemon's settings: a session that never ends idle (always), or ends after idle s with nothing passing;
-        a session going on hears so (a new WELCOME)"""
-        if (always, idle) == (self.always, self.idle):
+        by: the titles of the apps that keep it always (none: the settings themselves do). A session going on hears so
+        (a new WELCOME)"""
+        by = tuple(by)
+        if (always, idle, by) == (self.always, self.idle, self.by):
             return
-        self.always, self.idle, self.always_tried = always, idle, None
+        if (always, idle) != (self.always, self.idle):
+            self.always_tried = None
+        self.always, self.idle, self.by = always, idle, by
         s = self.sessions.get(self.current)
         if s is not None and s.welcomed and s.features >= STANDBY:
             self._welcome(s, self.clock())

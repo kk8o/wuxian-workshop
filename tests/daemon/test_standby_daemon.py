@@ -187,7 +187,13 @@ class Loop(Home):
         loop = self.make()
         loop.link_settings(False, 60.0)
         self.rounds(1)
-        self.assertEqual((loop.comp.always, loop.comp.idle), (False, 60.0))
+        self.assertEqual((loop.comp.always, loop.comp.idle, loop.comp.by), (False, 60.0, ()))
+        loop.link_settings(True, 60.0, ["语音搭子"])                   # ... and who keeps the session always
+        self.rounds(1)
+        self.assertEqual((loop.comp.always, loop.comp.by), (True, ("语音搭子",)))
+        loop.link_settings(True, 60.0, ["语音搭子", "数据共创"])        # another app with it: the same setting, told too
+        self.rounds(1)
+        self.assertEqual(loop.comp.by, ("语音搭子", "数据共创"))
 
     def test_bye_when_the_loop_ends(self):
         loop = self.make()
@@ -273,7 +279,8 @@ class Worker:
     def __init__(self):
         self.comp, self.capture, self.addons, self.blocked, self.link = None, "gdi", None, None, True
         self.capture_wanted = "gdi"
-        self.settings = []
+        self.settings = []                   # what the Service told it: (always, idle) ...
+        self.kept = []                       # ... and the titles of the apps that keep the link, each time
 
     def request(self, fn, *args):
         fut = concurrent.futures.Future()
@@ -286,8 +293,9 @@ class Worker:
     def companion(self):
         return self.comp
 
-    def link_settings(self, always, idle):
+    def link_settings(self, always, idle, by=()):
         self.settings.append((always, idle))
+        self.kept.append(tuple(by))
 
     def game_status(self):
         return dict(found=True)

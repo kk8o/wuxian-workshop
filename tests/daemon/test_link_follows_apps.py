@@ -183,6 +183,36 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         await self.svc.holders_from([{"id": "companion", "on": False}])     # it stopped meanwhile
         self.assertEqual((await self.held(), self.told[-1]), ([], (False, link.IDLE)))
 
+    async def test_the_loop_hears_who_keeps_the_link(self):
+        """the titles of the apps that hold the link go to the loop with the setting (the addon's panel names them:
+        the WELCOME's by=), by id as held_by gives them, again when one comes, goes or its title is learned; none
+        when nobody holds it, and none with link_mode always (the settings keep it then)"""
+        kept = self.svc.worker.kept
+        self.assertEqual(kept, [()])
+        self.emit("kit.app", {"app": "voice", "on": True, "link": "live"})   # its title is not known yet: its id
+        await self.settle()
+        self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ("voice",)))
+        rows = [{"id": "voice", "title": "语音搭子", "on": True, "link": "live"},
+                {"id": "cocreate", "title": "数据共创", "on": True, "link": "live"},
+                {"id": "guild", "title": "公会聊天", "on": True}]
+        await self.svc.holders_from(rows)
+        self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ("数据共创", "语音搭子")))
+        n = len(kept)
+        await self.svc.holders_from(rows)                                    # read again, nothing new: not told again
+        self.assertEqual(len(kept), n)
+        rows[0]["title"] = "语音搭子 2"                                       # the same holders, one renamed
+        await self.svc.holders_from(rows)
+        self.assertEqual(kept[-1], ("数据共创", "语音搭子 2"))
+        await self.svc.settings(dict(link_mode="always"))
+        self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ()))
+        await self.svc.settings(dict(link_mode="auto"))
+        self.assertEqual(kept[-1], ("数据共创", "语音搭子 2"))
+        self.emit("kit.app", {"app": "cocreate", "on": False, "why": "stopped"})
+        await self.settle()
+        self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ("语音搭子 2",)))
+        self.svc.game_gone()
+        self.assertEqual((self.told[-1], kept[-1]), ((False, link.IDLE), ()))
+
     async def test_kit_ready_reads_kit_apps(self):
         rows = [{"id": "companion", "title": "语音搭子", "on": True, "link": "live", "pace": "normal"}]
         asked = []

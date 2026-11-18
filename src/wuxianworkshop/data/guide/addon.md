@@ -47,6 +47,11 @@ stand-in for players without 无限工坊, so the addon works for everyone):
 - `WB:OnProgress(name, fn)` (0.10.0): when the answer of an exposed `name` does not fit in one piece (some 4 KB),
   `fn(info)` as it starts to go up and as each segment is in: `info = {id, sent, size, seconds}`, bytes of the whole
   answer; `sent` only grows, `sent == size`: all of it is in. Check `WB.OnProgress` first: the stand-in has none.
+- `WB:Overview(rows)` (0.10.0): the addon's own lines on WoWBridge's panel (`/wb`, 概览, under 正在使用), for the
+  player: what of it is running now. Push all of them again whenever they change; `nil` or `{}` takes them away.
+  At most 6 rows `{text = "1–60 bytes", note = "at most 30 bytes, small, at the line's end", tone = "ok" | "warn" |
+  "bad", click = function() end}`; only `text` is needed. Plain text: colour codes and links show as typed. A wrong
+  shape is an error at the call. Check `WB.Overview` first: the stand-in and an older WoWBridge have none.
 
 `addon_api {"addon": "MyAddon"}` lists what an addon offers. The `.toc` says `## OptionalDeps: WoWBridge`.
 

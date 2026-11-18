@@ -164,6 +164,7 @@ class CompanionLoop:
         self.on_bye = None                           # the daemon's: (why) when the player ended the session
         self.on_game_gone = None                     # the daemon's: () when the game process exited or another runs
         self.always, self.idle = False, IDLE         # the daemon's settings: a session always; the addon's idle time
+        self.by = ()                                 # ... and the titles of the apps that keep it always
         self.bell_file = state_dir() / "doorbell.json"
         self.bell = self._load_bell()                # the frame's place in client pixels (x, y) for the doorbell, or None
         self.bell_last = self.bell_scan = 0.0        # time.monotonic() of the last peek and the last look over the window
@@ -215,7 +216,7 @@ class CompanionLoop:
         self.comp.on_open_failed = self._on_open_failed
         self.comp.on_bye = self._on_bye
         self.comp.on_place = self._on_place
-        self.comp.settings(self.always, self.idle)
+        self.comp.settings(self.always, self.idle, self.by)
         self.comp.standby = stands_by(addons)
 
     def _on_open_failed(self, text):
@@ -226,10 +227,11 @@ class CompanionLoop:
         if self.on_bye is not None:
             self.on_bye(why)
 
-    def link_settings(self, always, idle):
+    def link_settings(self, always, idle, by=()):
         """(any thread) the daemon's settings: a session always, or one the addon ends after idle s with nothing passing;
-        the Companion takes them on the loop's thread (step)"""
-        self.always, self.idle = always, idle
+        by: the titles of the apps that keep it always (the addon's panel names them). The Companion takes them on the
+        loop's thread (step)"""
+        self.always, self.idle, self.by = always, idle, tuple(by)
 
     def snap_source(self):
         """(worker thread) the WGC capture a snap reads, and whether it was started for it (then the caller stops it):
@@ -401,8 +403,8 @@ class CompanionLoop:
     def step(self):
         """one round: requests, the window, the command files, one read of the frame area, the link's clock"""
         self._serve_requests()
-        if self.comp is not None and (self.comp.always, self.comp.idle) != (self.always, self.idle):
-            self.comp.settings(self.always, self.idle)
+        if self.comp is not None and (self.comp.always, self.comp.idle, self.comp.by) != (self.always, self.idle, self.by):
+            self.comp.settings(self.always, self.idle, self.by)
         win = self._window()
         if win is None:
             if self.win is not None:

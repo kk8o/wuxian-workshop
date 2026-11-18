@@ -191,7 +191,8 @@ class Service:
         self.holding = threading.Lock()  # the holders and what the loop was told of them
         self.holders = set()             # the apps that run and want the link live (link_mode auto: a session always)
         self.app_titles = {}             # app -> its title as kit.apps or a local declaration said it (status)
-        self.link_always = None          # what the loop was last told: a session always
+        self.link_always = None          # what the loop was last told: a session always ...
+        self.link_by = ()                # ... and the titles of the apps that keep it (the game's panel names them)
         self.kit_seen = None             # the version of the WuxianKit in the game as this game process said it (its
                                          # kit.ready, else its manifest read when the link came up); None: not known
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
@@ -528,10 +529,13 @@ class Service:
 
     def apply_link(self, force=False):
         """(under self.holding) the loop told whether a session is to be there always: link_mode always, or auto with
-        an app that holds the link; only when that changed (force: anyway)"""
+        an app that holds the link, and then the titles of the apps that do (by id, as held_by gives them: the addon's
+        panel names them); only when that changed (force: anyway)"""
         always = self.link_mode == "always" or self.link_mode == "auto" and bool(self.holders)
-        if (force or always != self.link_always) and hasattr(self.worker, "link_settings"):
-            self.worker.link_settings(always, IDLE)
+        by = tuple(self.app_titles.get(app) or app for app in sorted(self.holders)) if self.link_mode == "auto" else ()
+        if (force or (always, by) != (self.link_always, self.link_by)) and hasattr(self.worker, "link_settings"):
+            self.worker.link_settings(always, IDLE, by)
+        self.link_by = by
         if self.link_always is not None and always != self.link_always:
             self.journal.add("INFO", "link: a session always, kept by the app " + ", ".join(sorted(self.holders))
                              if always and self.link_mode == "auto" else
@@ -551,10 +555,9 @@ class Service:
             self.apply_link()
 
     def holders_are(self, apps):
-        """(any thread) the apps that hold the link now, all of them (kit.apps read again; none: the game exited)"""
+        """(any thread) the apps that hold the link now, all of them (kit.apps read again; none: the game exited). The
+        loop hears of it when they, or their titles, changed"""
         with self.holding:
-            if set(apps) == self.holders:
-                return
             self.holders = set(apps)
             self.apply_link()
 

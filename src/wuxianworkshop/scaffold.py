@@ -282,6 +282,10 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
   一段再调一次：`info = {{id, sent, size, seconds}}`，`id` 是这次调用的编号，`size` 是整份回答的字节数，`sent` 是已送达的字节数
   （只增不减），`seconds` 是开始到现在的秒数；sent 等于 size 就是传完了。给大块数据做进度条用；先判断 `WB.OnProgress` 在不在
   （空壳没有）。
+- `WB:Overview(行)`（WoWBridge 0.10.0）：在 WoWBridge 面板（`/wb`）概览的「正在使用」里显示插件自己的几行，给玩家看“它现在
+  在做什么”。变了就整份再推一次，`nil` 或空表是清掉。最多 6 行，每行 `{{text = "1–60 字节", note = "行尾小字，最多 30 字节",
+  tone = "ok" | "warn" | "bad", click = function() end}}`，只有 `text` 必填；文字按纯文本显示（颜色代码、链接不生效），
+  形状不对会在调用处报错。先判断 `WB.Overview` 在不在（空壳和旧版 WoWBridge 没有）。
 - `addon_api`：插件公开了哪些函数（带说明）、发过哪些事件、有几个提问在等回答。
 - 只传数据，不传代码；玩家没装无限工坊时 `WB` 是空壳：发事件、公开函数什么也不做，提问马上回调 `(nil, "unavailable")`，
   插件照常运行。
@@ -427,6 +431,12 @@ The template has a handle `WB` already (also in `ns.WB`): the addon and you exch
   call's, `size` the bytes of the whole answer, `sent` the bytes that are in (it only grows), `seconds` since it
   started; sent == size: all of it is in. For a progress bar on a big transfer; check `WB.OnProgress` first (the
   empty shell has none).
+- `WB:Overview(rows)` (WoWBridge 0.10.0): the addon's own lines on WoWBridge's panel (`/wb`), under "In use" on its
+  overview, telling the player what it is doing now. Push all of them again whenever they change; `nil` or an empty
+  table takes them away. At most 6 rows `{{text = "1–60 bytes", note = "small, at the line's end, at most 30 bytes",
+  tone = "ok" | "warn" | "bad", click = function() end}}`, of which only `text` is needed; the words show as plain
+  text (colour codes and links do nothing), and a wrong shape is an error at the call. Check `WB.Overview` first (the
+  empty shell and an older WoWBridge have none).
 - `addon_api`: the functions the addon exposed (with what they do), the events it sent and how many questions wait.
 - Only data crosses, never code; for players without Wuxian Workshop `WB` is an empty shell: events and exposed
   functions do nothing, a question calls back `(nil, "unavailable")` at once, and the addon runs as it is.
