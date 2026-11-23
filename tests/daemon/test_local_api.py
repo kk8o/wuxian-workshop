@@ -7,6 +7,7 @@ temporary app, a local source directly), new_extension, the MCP tools over /mcp 
 the game half of an extension (/api/local/pack, /api/local/install, a .zip given to /api/local/add), whose game addons
 go into the FakeGame's AddOns folder."""
 import asyncio
+import concurrent.futures
 import contextlib
 import io
 import json
@@ -621,7 +622,11 @@ class LocalApi(LocalDaemon, unittest.TestCase):
     # --- reactions
 
     def test_reactions(self):
-        self.add()
+        held = concurrent.futures.Future()
+        held.set_result(None)
+        with mock.patch.object(self.svc.local, "describe", return_value=held) as probe:
+            self.add()               # (auto approval starts it once in the background to describe itself: held here,
+        probe.assert_called_once_with("fx")     # else it may have described itself before the reaction is set)
         self.fails("POST", "/api/reactions/set", {"hear": "game:combat", "call": "fx.echo"}, 400, "bad_args")
         self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": ""}})   # described: its kinds known
         game = self.ok("POST", "/api/reactions/set", {"id": "g", "owner": "companion", "hear": "game:combat",
