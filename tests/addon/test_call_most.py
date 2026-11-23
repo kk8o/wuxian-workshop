@@ -6,7 +6,7 @@ whose WoWBridge is older than the program says so, by the version of its HELLO."
 import unittest
 
 from tests.addon.test_pour import Pour, text_of
-from wuxianworkshop import __version__
+from wuxianworkshop import __version__, compat
 from wuxianworkshop.agent import probes
 from wuxianworkshop.daemon.api import ApiError
 
@@ -117,11 +117,10 @@ class Behind(Most):
 
     def test_a_failed_call_says_the_game_runs_an_older_wowbridge(self):
         """whatever failed (that WoWBridge may know less: before 0.10.0 it read no "m" and stopped at 256 KB), the
-        error says the version its HELLO gave and that the new one needs a restart of the game; a call that works
-        says nothing"""
-        note = (f" (the WoWBridge in the game is 0.9.14, older than this 无限工坊 {__version__}: the new one takes "
-                f"effect once the game is restarted)")
-        self.assertEqual(self.svc.bridge_behind(), "0.9.14")
+        error ends with the judge's step: the version its HELLO gave and that the new one needs a restart of the
+        game; a call that works says nothing"""
+        note = f". 无限工坊 {__version__} brings WoWBridge {__version__} but the game still runs 0.9.14: {compat.CLOSE}"
+        self.assertEqual(self.svc.bridge_running(), "0.9.14")
         message = self.refused(self.call_coro(text_of(20_000), most=4096))
         self.assertTrue(message.startswith("the answer is ") and message.endswith(note), message)
         message = self.refused(self.svc.call_exposed("Foo", "boom"))

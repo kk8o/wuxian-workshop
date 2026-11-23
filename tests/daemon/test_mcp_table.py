@@ -147,6 +147,23 @@ class Table(unittest.TestCase):
         listed(bare)
         self.assertEqual([r["state"] for r in bare.table if r["where"] == "local"], ["on"])
 
+    def test_a_loaded_gated_extension_keeps_its_tools(self):
+        """WuxianKit 0.10.0: an extension it gates but that is loaded (not LoadOnDemand) keeps state on with `gate`
+        (outdated / too_old): its capabilities stay tools; one not loaded has state outdated / too_old: none"""
+        def ext(eid, state, **more):
+            return dict({"id": eid, "title": eid, "addon": eid.title(), "docs": eid.title(), "state": state,
+                         "capabilities": [{"id": f"{eid}.look", "kind": "see", "title": "Look", "doc": "", "args": {}}]},
+                        **more)
+        backend = Rows(game(ext("gated", "on", gate="outdated", unmet=[{"name": "WuxianKit", "needs": "9.0.0",
+                                                                        "has": "0.10.0"}]),
+                            ext("aged", "on", gate="too_old", built="0.5.0", floor="0.6.0"),
+                            ext("shut", "outdated", gate="outdated"), ext("old", "too_old", gate="too_old")))
+        names = listed(tools_of(backend))
+        self.assertIn("wk_gated_look", names)
+        self.assertIn("wk_aged_look", names)
+        self.assertNotIn("wk_shut_look", names)
+        self.assertNotIn("wk_old_look", names)
+
     def test_a_name_is_one_rows_or_nobodys(self):
         """no row hides another: a local extension with a game extension's id (the game's counts), a tool name of more
         than 48 characters, two capabilities of one extension that make one tool name, a local tool name the game has:

@@ -9,6 +9,9 @@ own, not the program's.
 
 An entry may name another as its "parent" (older catalogs do: kept as read, and the page no longer nests by it)
 and the addon folders it needs "requires" (["WuxianKit", "EllesmereUI"]): while one of them is missing it is not installed.
+"needs" ({"workshop": "0.10.0", "WuxianKit": "0.7.0"}: its .toc's X-Wuxian-Requires, compat.py) are the lowest versions
+it works with; "min_app" is needs.workshop for older programs (older catalogs have only that). It is not installed
+while this program (needs_app) or the WuxianKit in the game (needs_kit) is too old.
 
 The files sit beside the catalog (a versioned name is never given other contents). An install downloads the zip (its size
 and SHA-256 those of the catalog), checks every member (inside the addon's folder, no "..", only the kinds of file an
@@ -32,7 +35,7 @@ import urllib.parse
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from . import __version__
+from . import __version__, compat
 from .agent import history
 from .content import fetch, version_key
 from .installer.addons import find_toc, read_toc, toc_with_interface
@@ -95,6 +98,8 @@ def entries(data):
             if "requires" in e:
                 needs = e["requires"]
                 e["requires"] = [f for f in needs if isinstance(f, str) and FOLDER.match(f)] if isinstance(needs, list) else []
+            if "needs" in e:
+                e["needs"] = compat.clean_needs(e["needs"])
             out.append(e)
     return out
 
@@ -183,11 +188,17 @@ def missing(addons, entry):
     return [f for f in entry.get("requires") or [] if not installed(addons, f)[0]]
 
 
-def state_of(entry, there, version):
-    """what the page offers: needs_app (a newer program first), available, update, current, newer (the folder holds a
-    later version than the catalog's: a developer's), installed (a version it cannot tell)"""
+def state_of(entry, there, version, kit=None):
+    """what the page offers: needs_app (a newer program first: its needs.workshop, or the older catalogs' min_app),
+    needs_kit (a newer WuxianKit first: its needs.WuxianKit against `kit`, the WuxianKit to judge by; None: not
+    judged), available, update, current, newer (the folder holds a later version than the catalog's: a developer's),
+    installed (a version it cannot tell)"""
     if entry.get("min_app") and version_key(entry["min_app"]) > version_key(app_version()):
         return "needs_app"
+    if not compat.met(compat.need_of(compat.needs_of(entry), compat.WORKSHOP), app_version()):
+        return "needs_app"
+    if compat.kit_state(entry, kit):
+        return "needs_kit"
     if not there:
         return "available"
     if not version:

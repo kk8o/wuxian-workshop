@@ -29,7 +29,7 @@ from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
-from .. import __version__, apidocs, guide as guides
+from .. import __version__, apidocs, compat, guide as guides
 from . import kit as kit_tools
 from .changes import ListChanges, advertise
 from .presence import Presence
@@ -379,10 +379,19 @@ def build_server(backend, name="wuxian"):
         - link.slots_left: messages this game process can still receive; at 0 nothing reaches the game until a restart.
         - reload_pending true: a reload button waits for the player's click. watch: the files hot-loaded on every save.
         - mcp.stale true (only when this server runs on stdio): it runs old code and may lack tools. You cannot fix that:
-          tell the user mcp.action."""
+          tell the user mcp.action.
+        - versions.next: the one version step to take first. Severity "blocked" or "pending": tell the user
+          versions.next.text. Severity "update" (a newer version is available): mention it once per session, not after
+          every status call."""
         res = await call(backend.status())
+        mine = False                                  # this very server is stale: its own agent item stays in
         if isinstance(backend, HttpBackend) and isinstance(res, dict):
             res["mcp"] = freshness((res.get("daemon") or {}).get("version"))
+            if res["mcp"].get("stale") and isinstance(res.get("versions"), dict):
+                res["versions"] = compat.agent_stale(res["versions"], res["mcp"].get("action"))
+                mine = True
+        if isinstance(res, dict) and isinstance(res.get("versions"), dict):
+            res["versions"] = compat.brief(res["versions"], mine)  # next, and what is not ok (of this agent)
         return res
 
     @mcp.tool(annotations=WRITES)

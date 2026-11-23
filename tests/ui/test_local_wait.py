@@ -382,7 +382,8 @@ class Page(unittest.TestCase):
 
     def test_the_banner(self):
         p = self.page
-        start = p.index('<div class="xp-note xp-top" role="status" x-show="kitOutdated">')
+        # an older daemon's notice: with status.versions the version strip (test_versions) takes its place
+        start = p.index('<div class="xp-note xp-top" role="status" x-show="kitOutdated && !vers">')
         self.assertLess(p.index('<div class="pagebar">'), start)
         self.assertLess(start, p.index('<div class="pagebody fill master-detail xp">'))             # at the page's top
         banner = p[start:p.index("</div>", start)]

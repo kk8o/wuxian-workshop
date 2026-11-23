@@ -203,6 +203,7 @@ T.enUS = {
 	TOAST_LOADED_ONE = "Hot-loaded %s · %.1f ms",
 	TOAST_FAILED = "Hot-load failed: %s",
 	TOAST_RUN_FAILED = "The agent's code failed: %s",
+	TOAST_CALL_FAILED = "%s did not complete: %s",
 	USAGE_LOG = "usage: /wb log [errors|runs|output]",
 	-- WuxianKit (the extension framework, an optional addon), while the game runs it
 	BTN_KIT = "Extensions",
@@ -394,6 +395,7 @@ T.zhCN = {
 	TOAST_LOADED_ONE = "已热加载 %s · %.1f ms",
 	TOAST_FAILED = "热加载出错：%s",
 	TOAST_RUN_FAILED = "Agent 的代码出错：%s",
+	TOAST_CALL_FAILED = "%s 未完成：%s",
 	USAGE_LOG = "用法：/wb log [errors|runs|output]",
 	BTN_KIT = "扩展",
 	KIT_TIP = "打开扩展框架窗口 /wk",

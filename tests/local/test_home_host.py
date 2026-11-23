@@ -432,13 +432,14 @@ class Requires(HomeCase):
         row = self.host.add(str(folder))
         short = dict(what="workshop", needs="99.0", has="9.9.9")
         self.assertEqual((row["requires"], row["unmet"], row["state"]), ({"workshop": "99.0"}, [short], "stopped"))
-        self.assertIn("old needs WuxianWorkshop 99.0 or newer, this is 9.9.9", row["error"])
+        self.assertEqual("nothing of old runs in this 无限工坊 9.9.9. old needs 无限工坊 99.0: update 无限工坊",
+                         row["error"])
         self.assertEqual(row["why"], row["error"])
         for _ in range(3):                                                       # refused each time, never backed off
             error = self.host.ensure("old").exception(5)
             self.assertIsInstance(error, ApiError)
             self.assertEqual((error.status, error.code, error.extra), (409, "requires_unmet", dict(unmet=[short])))
-            self.assertIn("update the workshop", error.message)
+            self.assertTrue(error.message.endswith(": update 无限工坊"), error.message)   # the judge's step
         for run in (lambda: self.host.call_sync("old.echo", {"text": "a"}), lambda: self.host.load_("old")):
             with self.assertRaises(ApiError) as e:
                 run()
@@ -446,7 +447,7 @@ class Requires(HomeCase):
         res = self.host.check("old")
         self.assertFalse(res["ok"])
         self.assertEqual([(p["level"], p["where"]) for p in res["problems"]], [("error", f"{M.MANIFEST}: requires")])
-        self.assertIn("needs WuxianWorkshop 99.0", res["problems"][0]["message"])
+        self.assertIn("old needs 无限工坊 99.0", res["problems"][0]["message"])
         self.assertNotIn("tests", res)                                           # not even its tests run
         self.assertEqual((res["capabilities"], self.pids("old")), ([], []))
         row = self.host.get("old")
@@ -462,7 +463,7 @@ class Requires(HomeCase):
         self.assertEqual((row["state"], row["pid"]), ("stopped", None))
         self.host.autostart()
         (note,) = self.said("not started with the workshop")
-        self.assertIn("ws needs WuxianWorkshop 10 or newer, this is 9.9.9", note)
+        self.assertIn("nothing of ws runs in this 无限工坊 9.9.9. ws needs 无限工坊 10: update 无限工坊", note)
         self.assertEqual((self.host.get("ws")["state"], self.pids("ws")), ("stopped", []))
 
     def test_the_kit_it_needs_is_only_told(self):

@@ -516,6 +516,17 @@ pre.diff .hunk { color: var(--sky); }
 .xp-note.bad { border-color: rgba(242, 139, 130, .45); background: var(--bad-soft); }
 .xp-note.xp-top { margin-bottom: 10px; }   /* over the list and the detail: the framework is too old for this workshop */
 .xp-note.xp-top b { font-weight: 600; color: var(--gold-l); }
+/* the version strip (status.versions.next): the one thing to do first, in 概览's band and over 扩展's list; blocked bad,
+   pending warn, an update neutral */
+.vs-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 20px 14px; padding: 8px 12px; border-radius: 6px;
+  font-size: 12.5px; border: 1px solid var(--line); background: var(--field); color: var(--fg); }
+.vs-strip.vs-page { flex: none; margin: 10px 16px; }
+.vs-strip b { font-weight: 600; }
+.vs-strip .vs-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--sky); }
+.vs-strip.warn { border-color: var(--gold-d); background: var(--gold-soft); }
+.vs-strip.warn .vs-dot { background: var(--gold-l); }
+.vs-strip.bad { border-color: rgba(242, 139, 130, .45); background: var(--bad-soft); }
+.vs-strip.bad .vs-dot { background: var(--bad); }
 /* beside buttons that are off: why (an action that runs, here or of another extension; idle: a reason that stays) */
 .lx-wait { flex: none; font-size: 12px; color: var(--gold-l); }
 .lx-wait.idle { color: var(--muted); }

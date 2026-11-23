@@ -73,7 +73,7 @@ import time
 from concurrent.futures import Future
 from pathlib import Path
 
-from .. import __version__
+from .. import __version__, compat
 from .. import extensions as X
 from ..daemon.api import ApiError
 from ..paths import extensions_home, state_dir
@@ -476,9 +476,10 @@ class Host:
         short = next((u for u in self.unmet(m) if u["what"] == "workshop"), None)
         if short is None:
             return None
+        step = compat.fix_text({"app": {"version": self.version}}, m["id"],
+                               dict(name=compat.WORKSHOP, needs=short["needs"]))
         return ApiError(409, "requires_unmet",
-                        f"{m['id']} needs WuxianWorkshop {short['needs']} or newer, this is {short['has']}: update the "
-                        f"workshop (the WuxianWorkshop App does it); nothing of it runs before that", unmet=[short])
+                        f"nothing of {m['id']} runs in this 无限工坊 {short['has']}. {step}", unmet=[short])
 
     def require(self, m):
         """the gate beside allow(): nothing of an extension runs in a workshop older than its manifest's
@@ -630,6 +631,22 @@ class Host:
         side = self.side()
         with self.lock:
             return [self.row(e, side) for e in self.load()["extensions"]]
+
+    def version_rows(self):
+        """[{id, title, version, requires, addons}] of the registered extensions, from their manifests alone (the
+        version report's: no process, no game side, no approval). One whose manifest cannot be read (or says another
+        id) has its id as its title and nothing else"""
+        with self.lock:
+            entries = [dict(e) for e in self.load()["extensions"]]
+        out = []
+        for e in entries:
+            m, _ = M.check_manifest(e["path"])
+            if m is None or m.get("id") != e["id"]:
+                m = {}
+            out.append(dict(id=e["id"], title=m.get("title") or e["id"], version=m.get("version"),
+                            requires=dict(m.get("requires") or {}),
+                            addons=[a for a in m.get("addons") or [] if isinstance(a, str)]))
+        return out
 
     def get(self, eid):
         with self.lock:

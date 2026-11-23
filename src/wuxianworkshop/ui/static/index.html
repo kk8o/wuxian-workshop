@@ -256,6 +256,15 @@
               <button class="btn" @click="requestReload()" :disabled="!linkReady || reload.busy"><svg class="ico"><use href="#i-reload"/></svg>请求重载</button>
             </div>
           </div>
+          <!-- 版本：守护进程的判断（status.versions.next）里最先要做的一件事，一句话加一个按钮；旧守护进程没有它，这里什么也不显示 -->
+          <div class="vs-strip" role="status" :class="versCls" x-show="versNext">
+            <span class="vs-dot" aria-hidden="true"></span>
+            <b x-text="versNext ? versTitle(versNext.it) : ''"></b>
+            <span x-text="versWhat"></span>
+            <span class="muted grow" x-text="versStep"></span>
+            <a href="#" class="head-link" x-show="versMore" @click.prevent="go('extensions')" x-text="t('另有 {n} 项', { n: versMore })"></a>
+            <button class="btn small primary" x-show="versBtn" :disabled="!versBtn || versBtn.off" @click="versAct()" x-text="versBtn ? versBtn.text : ''"></button>
+          </div>
           <dl class="ov-vitals">
             <template x-for="v in ovVitals" :key="v.label">
               <div class="vital" :title="v.tip">
@@ -690,7 +699,8 @@
          扩展与它合成一行，行上写在哪里运行：游戏 / 本机 / 游戏 · 本机）。游戏没开时，游戏插件文件夹里的也读得出来。「添加」与扩展文件夹的
          按钮在页面顶栏。底部是连着无限工坊的 Agent 会话；右边是选中的那一项：概况与安装 / 更新 / 卸载（标题右边）、给 Agent 的 wk_ 工具、
          更新内容，或会话表。本机扩展另有「扩展摘要」：详情、批准、替换扩展包、打包后看到的是同一份。扩展的版本跟程序的分开。
-         扩展框架比这个工坊要的旧（status.kit.outdated）时，页面顶上一条提示带更新入口。按钮禁用时旁边写原因（lxWait、extWait） -->
+         扩展框架比这个工坊要的旧（status.kit.outdated）时，页面顶上一条提示带更新入口；守护进程判断版本（status.versions）时，
+         换成与概览相同的版本提示，各行的标签与状态也读它。按钮禁用时旁边写原因（lxWait、extWait） -->
     <section class="page" x-t x-show="page === 'extensions'">
       <div class="pagebar">
         <h1>扩展</h1>
@@ -709,7 +719,16 @@
         <button class="btn" @click="loadExtensions(true); loadAccess(true); loadLocal()" :disabled="ext.busy !== '' || access.busy"><svg class="ico"><use href="#i-refresh"/></svg><span x-text="extRefreshText"></span></button>
       </div>
       <!-- 扩展框架过旧：这个工坊在它更新之前不向它声明应用；更新入口就是扩展框架那一项的「更新」 -->
-      <div class="xp-note xp-top" role="status" x-show="kitOutdated">
+      <!-- 版本：守护进程判断时（status.versions），概览的同一条版本提示代替下面的旧提示；两项以上可更新时多一个「全部更新」 -->
+      <div class="vs-strip vs-page" role="status" :class="versCls" x-show="versNext">
+        <span class="vs-dot" aria-hidden="true"></span>
+        <b x-text="versNext ? versTitle(versNext.it) : ''"></b>
+        <span x-text="versWhat"></span>
+        <span class="muted grow" x-text="versStep"></span>
+        <button class="btn small primary" x-show="versBtn" :disabled="!versBtn || versBtn.off" @click="versAct()" x-text="versBtn ? versBtn.text : ''"></button>
+        <button class="btn small" x-show="versUpdates.length > 1" :disabled="ext.busy !== ''" @click="xpUpdateAll()">全部更新</button>
+      </div>
+      <div class="xp-note xp-top" role="status" x-show="kitOutdated && !vers">
         <b x-text="kitOutdatedLine"></b>
         <span class="muted grow" x-text="kitOutdated && kitOutdated.has ? t('当前 {has}', { has: kitOutdated.has }) : ''"></span>
         <span class="lx-wait" x-show="kitUpdatePkg && extWait(kitUpdatePkg)" x-text="kitUpdatePkg ? extWait(kitUpdatePkg) : ''"></span>

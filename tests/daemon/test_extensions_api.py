@@ -82,6 +82,61 @@ class ExtensionsApi(unittest.TestCase):
             (site / "extensions.json").write_text(before, encoding="utf-8")
             request(self.handle, "GET", "/api/extensions?refresh=1")
 
+    def refusal(self, body):
+        """(status, error) of an install the daemon refuses"""
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            request(self.handle, "POST", "/api/extensions", body)
+        with cm.exception:
+            return cm.exception.code, json.loads(cm.exception.read())["error"]
+
+    def test_needs_gate_the_install_and_show_in_the_report(self):
+        """an entry's needs (its .toc's X-Wuxian-Requires, as the packer writes them): a WuxianKit too old (its .toc in
+        AddOns) is needs_kit, a 无限工坊 too old needs_app, in the listing and as the install's refusal, whose message is
+        the judge's step; /api/status's versions judges what is installed"""
+        site = Path(os.environ["WUXIAN_EXTENSIONS_FEED"]).parent
+        before = (site / "extensions.json").read_text(encoding="utf-8")
+        raw = make_zip("Child")
+        (site / "Child-1.0.0.zip").write_bytes(raw)
+        sums = dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        (self.addons / "WuxianKit").mkdir()
+        (self.addons / "WuxianKit" / "WuxianKit.toc").write_text(
+            "## Interface: 16001\n## Version: 0.7.0\n## X-Wuxian-Requires: workshop 0.1.0\n", encoding="utf-8")
+        try:
+            (site / "extensions.json").write_text(json.dumps({"format": 1, "addons": [
+                {"id": "child", "folder": "Child", "version": "1.0.0", "file": "Child-1.0.0.zip",
+                 "needs": {"WuxianKit": "9.0", "workshop": "0.1.0"}, "min_app": "0.1.0", **sums},
+                {"id": "later", "folder": "Later", "version": "1.0.0", "file": "Child-1.0.0.zip",
+                 "needs": {"workshop": "99.0"}, "min_app": "99.0", **sums}]}), encoding="utf-8")
+            listing = request(self.handle, "GET", "/api/extensions?refresh=1")["addons"]
+            self.assertEqual([(a["id"], a["state"], a["needs"]) for a in listing],
+                             [("child", "needs_kit", {"WuxianKit": "9.0.0", "workshop": "0.1.0"}),
+                              ("later", "needs_app", {"workshop": "99.0.0"})])
+            status, error = self.refusal({"action": "install", "id": "child"})
+            self.assertEqual((status, error["code"], error["unmet"]),
+                             (409, "needs_kit", [{"name": "WuxianKit", "needs": "9.0.0", "has": "0.7.0"}]))
+            self.assertEqual(error["message"], "Child 1.0.0 needs WuxianKit 9.0.0: no WuxianKit 9.0.0 or newer is "
+                                               "known: update WuxianKit yourself")
+            status, error = self.refusal({"action": "install", "id": "later"})
+            self.assertEqual((status, error["code"], error["message"]),
+                             (409, "needs_app", "Later 1.0.0 needs 无限工坊 99.0.0: update 无限工坊"))
+            self.assertFalse((self.addons / "Child").exists())
+            (self.addons / "Child").mkdir()                       # put there by hand: blocked in the report
+            (self.addons / "Child" / "Child.toc").write_text("## Version: 1.0.0\n## X-Wuxian-Requires: WuxianKit 9.0\n",
+                                                             encoding="utf-8")
+            versions = request(self.handle, "GET", "/api/status")["versions"]
+            items = {i["id"]: i for i in versions["items"]}
+            self.assertEqual((items["wuxiankit"]["kind"], items["wuxiankit"]["installed"], items["wuxiankit"]["state"]),
+                             ("kit", "0.7.0", "ok"))
+            self.assertEqual((items["child"]["state"], items["child"]["unmet"], items["child"]["action"]),
+                             ("blocked", [{"name": "WuxianKit", "needs": "9.0.0", "has": "0.7.0"}], "none"))
+            self.assertEqual((versions["next"]["id"], versions["next"]["severity"]), ("child", "blocked"))
+            self.assertEqual(items["mcp"]["kind"], "agent")
+        finally:
+            (site / "extensions.json").write_text(before, encoding="utf-8")
+            for name in ("WuxianKit", "Child"):
+                shutil.rmtree(self.addons / name, ignore_errors=True)
+            request(self.handle, "GET", "/api/extensions?refresh=1")
+
     def test_the_extensions_found_in_the_game(self):
         """detected: the addons with X-WuxianKit-Extension that are no catalog entry's folder and that no local
         extension put there, each as its summary with official (one of WuxianKit's own ids)"""

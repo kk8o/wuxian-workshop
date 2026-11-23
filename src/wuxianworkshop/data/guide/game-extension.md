@@ -71,6 +71,16 @@ The addon's `.toc` says `## Dependencies: WuxianKit`. If no `wk_` tools are list
 player adds it on the Extensions (扩展) page of the 无限工坊 App. Without it, the idea is an addon
 (`guide {"topic": "addon"}`).
 
+When it needs a WuxianKit (or 无限工坊) of some version on, say so in the `.toc`: `## X-Wuxian-Requires: WuxianKit
+0.10.0` (comma separated `<name> <version>`, name `workshop` or an addon folder). An older one does not load it and
+`status`'s `versions.next.text` tells the player what to update. `new_extension` writes the WuxianKit generation of
+the day (`## X-Wuxian-Requires: WuxianKit 0.10.0`): what the extension is made for.
+
+The other way round, WuxianKit's `.toc` says `## X-WuxianKit-Floor: 0.6.0`: the oldest WuxianKit an extension may
+have been made for and still load. The `WuxianKit` item of `X-Wuxian-Requires` is what the extension was made for;
+without one it counts as made for 0.7.0, so declare it. One made for a WuxianKit older than the floor is not loaded
+(LoadOnDemand) until the extension is updated.
+
 ## Turning it off, taking it away
 
 In the game it is the player's switch: they turn an extension off in `/wk`, and its tools go until they turn it on

@@ -164,6 +164,8 @@ class EndToEnd(unittest.TestCase):
             asyncio.run(svc.call_exposed("Foo", "boom"))
         self.assertEqual(cm.exception.code, "call_failed")
         self.assertIn("broken on purpose", cm.exception.message)
+        toast = self.s.ns[b"Console"][b"lastToast"].decode()      # the addon's failure, not "the agent's code"
+        self.assertRegex(toast, r"^boom did not complete: .*broken on purpose$")
         with self.assertRaises(ApiError) as cm:
             asyncio.run(svc.call_exposed("Foo", "nope"))
         self.assertIn("Foo has no nope (it exposes double, boom)", cm.exception.message)

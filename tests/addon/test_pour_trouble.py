@@ -5,7 +5,7 @@ import re
 import unittest
 
 from tests.addon.test_pour import Pour, text_of
-from wuxianworkshop import __version__
+from wuxianworkshop import __version__, compat
 from wuxianworkshop.daemon.api import ApiError
 
 
@@ -70,8 +70,8 @@ class Older(Pour):
             self.assertEqual((cm.exception.status, cm.exception.code), (409, "addon_outdated"), what)
             self.assertEqual(cm.exception.message,
                              f"{what}: its answer is longer than one piece, which the WoWBridge in the game cannot bring "
-                             f"back (the WoWBridge in the game is 0.9.12, older than this 无限工坊 {__version__}: the new "
-                             f"one takes effect once the game is restarted)")
+                             f"back. 无限工坊 {__version__} brings WoWBridge {__version__} but the game still runs 0.9.12: "
+                             f"{compat.CLOSE}")
         self.assertEqual((self.segments, self.calls("pour"), self.calls("piece")), ([], [], []))
         self.s.lua.globals()[b"BIG"] = b"short"
         self.assertEqual(self.drive(self.svc.run_whole("return BIG"))["values"], ["short"])

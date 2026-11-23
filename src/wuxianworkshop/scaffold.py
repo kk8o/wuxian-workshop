@@ -536,7 +536,8 @@ def create(addons, name, title=None, notes="", template="basic", interface=INTER
 EXT_ID = M.ID                                     # the manifest's own (local/manifest.py): one list of reserved ids
 EXT_RESERVED = M.RESERVED
 EXT_TITLE_MAX = M.TITLE_MAX                       # bytes
-EXT_KIT = "0.7.0"                                 # the WuxianKit the game half is written for (Kit:Requires)
+EXT_KIT = "0.10.0"                                # the WuxianKit generation the game half is made for (its .toc's
+                                                  # X-Wuxian-Requires, Kit:Requires, the manifest's requires.kit)
 EXT_GAME = "_game"                                # the game half's extension id: <id>_game
 EXT_WHERE = ("game", "local", "both")             # where a new extension is (local/manifest.py where_of)
 
@@ -748,6 +749,7 @@ EXT_TOC = """## Interface: {{interface}}
 ## OptionalDeps: WoWBridge
 ## LoadOnDemand: 1
 ## X-WuxianKit-Extension: {{gid}}
+## X-Wuxian-Requires: WuxianKit {{kit}}
 ## X-Made-With: {{made_with}}
 
 {{addon}}.lua

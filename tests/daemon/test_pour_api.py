@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from wuxianworkshop import __version__
+from wuxianworkshop import __version__, compat
 from wuxianworkshop.agent import probes
 from wuxianworkshop.daemon import service as service_mod
 from wuxianworkshop.daemon.api import ApiError
@@ -273,8 +273,7 @@ class Pour(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await refused(), said[0])                # the program's own WoWBridge
         self.comp.sessions = {5: SimpleNamespace(version_text="99.0.0")}
         self.assertEqual(await refused(), said[0])                # a newer one
-        note = (f" (the WoWBridge in the game is 0.9.14, older than this 无限工坊 {__version__}: the new one takes effect "
-                f"once the game is restarted)")
+        note = f". 无限工坊 {__version__} brings WoWBridge {__version__} but the game still runs 0.9.14: {compat.CLOSE}"
         self.comp.sessions = {5: SimpleNamespace(version_text="0.9.14")}
         for text in ("the answer is 300 KB, more than the 256 KB a call brings back",     # what 0.9.14 says past 256 KB
                      "Foo has no long (it exposes nothing)"):
@@ -323,8 +322,7 @@ class NoPour(unittest.IsolatedAsyncioTestCase):
         self.svc.run, self.svc.data = run, data
 
     async def test_a_long_answer_is_refused_by_the_version(self):
-        note = (f"(the WoWBridge in the game is 0.9.12, older than this 无限工坊 {__version__}: the new one takes effect "
-                f"once the game is restarted)")
+        note = f"无限工坊 {__version__} brings WoWBridge {__version__} but the game still runs 0.9.12: {compat.CLOSE}"
         for what, ask in (("run", lambda: self.svc.run_whole("return BIG")),
                           ("call", lambda: self.svc.call_exposed("Foo", "big")),
                           ("probe", lambda: self.svc.probe("return BIG", 10000))):
@@ -332,7 +330,7 @@ class NoPour(unittest.IsolatedAsyncioTestCase):
                 await ask()
             self.assertEqual((cm.exception.status, cm.exception.code), (409, "addon_outdated"), what)
             self.assertEqual(cm.exception.message, f"{what}: its answer is longer than one piece, which the WoWBridge in "
-                                                   f"the game cannot bring back {note}")
+                                                   f"the game cannot bring back. {note}")
         self.assertEqual(self.asked, ["=run", "call", "=probe"])  # each asked once, and nothing after it
         self.assertEqual(self.svc.pours, {})
         self.comp.sessions = {}                                   # a session seen without its HELLO: no version

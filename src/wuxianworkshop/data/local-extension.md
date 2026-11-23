@@ -71,7 +71,7 @@ it.
   "notes": "Speaks lines aloud with a local TTS model.",
   "author": "Thrall",
   "homepage": "https://example.com/voice",
-  "requires": {"workshop": "0.10.0", "kit": "0.7.0"},
+  "requires": {"workshop": "0.10.0", "kit": "0.10.0"},
   "addons": ["WuxianVoice"],
   "pack": {"exclude": ["models/*"]},
   "run": ["python", "main.py"],
@@ -374,13 +374,32 @@ A package is an extension's folder as one `.zip`: how it gets to another player 
 
 ### `requires`
 
-`requires` names the lowest versions the extension runs with: `{"workshop": "0.10.0", "kit": "0.7.0"}`. A row's
+`requires` names the lowest versions the extension runs with: `{"workshop": "0.10.0", "kit": "0.10.0"}`. A row's
 `unmet` lists what is not met: `[{what, needs, has}]`. With an older workshop the extension does not start
 (`requires_unmet`; the row's `error` says which version): the player updates 无限工坊. An older WuxianKit only shows
 in `unmet`: the extension starts, and what it asks of the game may fail. A version nobody knows yet (the game has not
 been seen) is not judged. (The workshop itself tells a WuxianKit older than 0.7.0 nothing of the local extensions:
-no list, no apps, no reports; the App says that it needs the update.) `new_extension` writes the workshop's version of the day; raise it when the extension comes
-to need a newer one.
+no list, no apps, no reports; the App says that it needs the update.) `new_extension` writes the workshop's version of
+the day, and with a game half the WuxianKit generation it is made for (`kit` 0.10.0, and the same in its addon's
+`.toc`); raise them when the extension comes to need a newer one.
+
+An addon says the same in its `.toc`: `## X-Wuxian-Requires: workshop 0.10.0, WuxianKit 0.10.0` (comma separated
+`<name> <version>`; name `workshop` or an addon folder; version 1 to 3 dot-separated numbers). Minimum versions only,
+judged when the named addon is there: whether it must be there is `## Dependencies`. WuxianKit (0.10.0 on) does not
+load an extension addon whose requirement is not met (`outdated` in `/wk`). The App judges both, an extension's
+`requires` and its addons' field, in `status`'s `versions`: `versions.next.text` is the one step to take first
+(update 无限工坊, update an addon on the Extensions page, restart the game); tell the player.
+
+The other direction is WuxianKit's floor: its `.toc` says `## X-WuxianKit-Floor: 0.6.0`, the oldest WuxianKit an
+extension may have been made for and still run on it. What an extension was made for is its `requires.kit` (else its
+addons' `WuxianKit` item); one that declares neither counts as made for 0.7.0, so declare it. An extension made for an
+older WuxianKit than the floor is too old: WuxianKit does not load its addon (LoadOnDemand), and `versions` says to update the
+extension itself.
+
+A local extension is work in progress, so neither of these stops it in 无限工坊: one that needs a newer WuxianKit, or
+is too old for the floor, shows `blocked` in `versions`, but the workshop still adds, starts, loads and installs it
+(what WuxianKit in the game then does with its addon is WuxianKit's). Only a too-old 无限工坊 stops it
+(`requires_unmet`).
 
 ### The game half
 

@@ -37,7 +37,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .. import __version__, agents, apidocs, content, extensions, i18n, scaffold
+from .. import __version__, agents, apidocs, compat, content, extensions, i18n, scaffold
 from ..local import drive as local_drive
 from ..local import gameside as local_gameside
 from ..local import manifest as local_manifest
@@ -95,6 +95,8 @@ MAX_CHAIN = 4                # hops of a call's caller.chain: one more is a loop
 CALL_TIMEOUT = 30.0          # seconds a capability has that declares no timeout (and a call of the game's)
 WAIT_MAX = 600.0             # seconds extension_wait waits at most
 WAIT_STEP = 2.0              # seconds between its looks at the extension's row
+LOCAL_KEPT = 30.0            # seconds the local extensions read for status's versions stand at most (a change of
+                             # theirs, local_changed, forgets them at once)
 
 
 def short_list(numbers, most=12):
@@ -199,6 +201,8 @@ class Service:
         self.link_by = ()                # ... and the titles of the apps that keep it (the game's panel names them)
         self.kit_seen = None             # the version of the WuxianKit in the game as this game process said it (its
                                          # kit.ready, else its manifest read when the link came up); None: not known
+        self.versions_local = None       # (time.monotonic(), [what versions_snapshot needs of each local extension])
+        self.versions_failed = None      # the message of versions()'s last failure: said once in the journal
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
         self.worker = worker_factory(on_debug=self.on_debug, log=self.on_log)
         self.thread = None
@@ -703,7 +707,7 @@ class Service:
                     addons_dir=str(w.addons) if w.addons else None,
                     update=self.updater.status() if self.updater is not None else None,
                     content=self.content.status() if self.content is not None else None,
-                    addons_update=self.addons_pending)
+                    addons_update=self.addons_pending, versions=await asyncio.to_thread(self.versions))
 
     async def apidocs(self, q=None, kind=None, limit=20, name=None, manual=None, call=None, lang=None, systems=False,
                       system=None, offset=0):
@@ -811,8 +815,9 @@ class Service:
         if n == 1:
             return text
         if not self.can_pour():
-            raise ApiError(409, "addon_outdated", f"{what}: its answer is longer than one piece, which the WoWBridge in "
-                                                  f"the game cannot bring back{self.bridge_note() or ' (it is too old)'}")
+            said = f"{what}: its answer is longer than one piece, which the WoWBridge in the game cannot bring back"
+            hint = await self.version_hint("wowbridge")
+            raise ApiError(409, "addon_outdated", compat.hinted(said, hint) if hint else said + " (it is too old)")
         return text + (await self.pour(key, kept, self.ui_session(), timeout_ms, what)).decode("utf-8", "replace")
 
     def can_pour(self):
@@ -823,21 +828,131 @@ class Service:
         except AttributeError:
             return False
 
-    def bridge_behind(self):
-        """the version of the WoWBridge in the game ("0.9.14") when it is older than this program, by what its HELLO said
-        (the newer one's files are in place and take effect once the game restarts); else None, also while no HELLO
-        said one, or when either version is not dot-separated numbers (a development build: not judged)"""
+    def bridge_running(self):
+        """the version of the WoWBridge the game runs, as its HELLO in the current session said it; None: none said"""
         comp = getattr(self.worker, "comp", None)
         s = (getattr(comp, "sessions", None) or {}).get(getattr(comp, "current", None))
         has = getattr(s, "version_text", None)
-        there, here = local_manifest.version_tuple(has), local_manifest.version_tuple(self.version)
-        return has if there and here and there < here else None
+        return has if isinstance(has, str) and has else None
 
-    def bridge_note(self):
-        """what an error adds when the WoWBridge in the game is older than this program (bridge_behind), else """""
-        has = self.bridge_behind()
-        return (f" (the WoWBridge in the game is {has}, older than this 无限工坊 {self.version}: the new one takes effect "
-                f"once the game is restarted)") if has else ""
+    # --- versions (compat.py): what runs, what is installed, what is needed, and the one step to take first ----------
+
+    def versions_snapshot(self, light=False):
+        """(compat.judge's input) what the daemon knows now: this program and its update feed, WoWBridge (its HELLO
+        against its .toc), WuxianKit (kit_seen against its .toc; its floor: the running one's manifest's, else its
+        .toc's X-WuxianKit-Floor), the extension addons the game's WuxianKit reports
+        (their rows' toc / needs / unmet, WuxianKit 0.10.0 on; only from the manifest of the WuxianKit this game process
+        runs), the catalog's addons, the local extensions and the agents' MCP servers (light: none of these three, for
+        an error's hint of WoWBridge). Reads .toc files (compat.toc_facts keeps them till they change): call it off
+        the loop"""
+        addons = self.game_addons_known()
+        up = self.updater.status() if self.updater is not None else {}
+        folders = {}
+
+        def look(name, running=None):
+            key = name.lower()
+            if key not in folders:
+                facts = compat.toc_facts(Path(addons) / name) if addons and extensions.FOLDER.match(name) else None
+                folders[key] = (name, dict(there=facts is not None, installed=(facts or {}).get("version"),
+                                           running=None, needs=(facts or {}).get("needs") or {},
+                                           title=(facts or {}).get("title"),
+                                           extension=bool((facts or {}).get("extension"))))
+                if key == compat.KIT.lower():
+                    folders[key][1]["floor"] = (facts or {}).get("floor")
+            f = folders[key][1]
+            if f["running"] is None and isinstance(running, str) and running:
+                f["running"] = running
+            return f
+
+        look(compat.BRIDGE, self.bridge_running())
+        kit = look(compat.KIT, self.kit_seen)
+        found = []                           # the extension addons the game's WuxianKit reports
+        manifest = self.kit_manifest_known() if self.kit_seen else None
+        if isinstance(manifest, dict) and manifest.get("kit") == self.kit_seen:
+            kit["floor"] = compat.needs_version(manifest.get("floor"))   # the running one's (None: it has none)
+            for row in manifest.get("extensions") or []:
+                folder = row.get("addon") if isinstance(row, dict) else None
+                if not isinstance(folder, str) or not folder or folder.lower() == compat.KIT.lower():
+                    continue
+                f = look(folder, row.get("toc"))
+                if not f["there"] and not f["needs"]:
+                    f["needs"] = compat.clean_needs(row.get("needs"))
+                for u in row.get("unmet") or []:              # what the game read of the folders it needs
+                    if isinstance(u, dict) and isinstance(u.get("name"), str) and u["name"].lower() != compat.WORKSHOP:
+                        look(u["name"], u.get("has"))
+                if folder not in found:
+                    found.append(folder)
+        catalog, local = [], []
+        if not light:
+            catalog = [dict(id=e["id"], folder=e["folder"], version=e["version"], title=e.get("title"),
+                            needs=compat.needs_of(e)) for e in self.ext_catalog.addons]
+            for e in catalog:
+                look(e["folder"])
+            local = self.versions_local_rows()
+            for x in local:
+                for folder in x["addons"]:
+                    look(folder)
+        for _, f in list(folders.values()):                   # the folders that are needed: what is there of them
+            for name in list(f["needs"]):
+                if name.lower() != compat.WORKSHOP:
+                    look(name)
+        return dict(app=dict(version=self.version, latest=(up or {}).get("latest")), kit_needs=KIT_NEEDS,
+                    folders=dict(folders.values()), catalog=catalog, extensions=found, local=local,
+                    agents=None if light else self.agents_seen())
+
+    def agents_seen(self):
+        """{seen, stale}: the agents of the MCP servers that serve them now, and how many of the stdio ones run older
+        code than this program (as access_row says stale)"""
+        stale = seen = 0
+        now = time.time()
+        for record in list(self.mcp_reports.values()):
+            if now - record.get("seen", now) > self.MCP_GONE:
+                continue
+            seen += max(1, len(record.get("agents") or []))
+            older = compat.compare(record.get("version"), self.version)
+            if record.get("version") is None or (older is not None and older < 0) or record.get("source_changed"):
+                stale += 1
+        presence = getattr(self.local_mcp, "presence", None)
+        if presence is not None:
+            try:
+                seen += len(presence.view())
+            except Exception:
+                pass
+        return dict(seen=seen, stale=stale)
+
+    def versions_local_rows(self):
+        """the local extensions as versions_snapshot needs them: [{id, title, version, requires, addons}]
+        (Host.version_rows: a light read of their manifests), kept till they change (local_changed) or LOCAL_KEPT s at
+        most"""
+        kept = self.versions_local
+        if kept is not None and 0 <= time.monotonic() - kept[0] < LOCAL_KEPT:
+            return kept[1]
+        try:
+            out = self.local.version_rows()   # the manifests alone, not Host.rows() (no game side, no checks)
+        except Exception:                     # (an extensions.json that cannot be read: its own error says so)
+            out = []
+        self.versions_local = (time.monotonic(), out)
+        return out
+
+    def versions(self, focus=None, light=False):
+        """status's versions: compat.judge over versions_snapshot (blocking: it reads .toc files). focus: one item's
+        step alone in next"""
+        try:
+            report = compat.judge(self.versions_snapshot(light=light), focus)
+        except Exception as e:                # never status's failure: said in the journal (once), the report empty
+            said = f"versions: {type(e).__name__}: {e}"
+            if said != self.versions_failed:
+                self.versions_failed = said
+                self.journal.add("INFO", said)
+            return dict(next=None, items=[])
+        self.versions_failed = None
+        return report
+
+    async def version_hint(self, item):
+        """the judge's sentence for one item ("wowbridge"): what a version-related error about it ends with; None
+        while that item is fine. Off the loop: the judge reads .toc files"""
+        step = (await asyncio.to_thread(self.versions, item, True))["next"]
+        return step["text"] if step else None
 
     def link_is_up(self):
         return getattr(getattr(self.worker, "comp", None), "link_up", False)
@@ -1156,9 +1271,9 @@ class Service:
     async def call_game(self, addon, name, args, timeout_ms, code, own=False, most=probes.WHOLE_MOST):
         """call_exposed's call in the game: as data (CALL records; "m": most, the bytes its answer may be), or as the
         chunk `code` for a WoWBridge before 0.9.7 (probes.MOST at most). own: a read of WuxianKit's views, not the
-        agent's call: the game neither counts it nor lists it (q; 0.9.9). A call that fails in a game whose WoWBridge
-        is older than this program says so (bridge_note: by the version of its HELLO; that one may know less, a
-        smaller `most` for one), whatever the failure was"""
+        agent's call: the game neither counts it nor lists it (q; 0.9.9). A call that fails while the game runs
+        another WoWBridge than the one installed ends with the judge's step for it (version_hint: by the version of its
+        HELLO; that one may know less, a smaller `most` for one), whatever the failure was"""
         t0 = time.time()
         try:
             if self.data_calls():
@@ -1170,7 +1285,7 @@ class Service:
             if e.code != "probe_failed":
                 raise
             self.journal.add("INFO", f"call {addon}.{name}: failed: {e.message.splitlines()[0][:200]}", addon=addon)
-            raise ApiError(400, "call_failed", e.message + self.bridge_note()) from None
+            raise ApiError(400, "call_failed", compat.hinted(e.message, await self.version_hint("wowbridge"))) from None
         self.journal.add("INFO", f"call {addon}.{name}: ok in {time.time() - t0:.1f} s", addon=addon)
         return dict(addon=addon, name=name, ok=True, result=data.get("result") if isinstance(data, dict) else None)
 
@@ -1414,10 +1529,10 @@ class Service:
             addons = None
 
         def look():
-            out = []
+            out, kit = [], self.kit_judged(addons)
             for e in cat.addons:
                 there, version = extensions.installed(addons, e["folder"]) if addons else (False, None)
-                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version),
+                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version, kit),
                                 missing=extensions.missing(addons, e) if addons else []))
             return out
 
@@ -1445,7 +1560,10 @@ class Service:
             raise ApiError(404, "no_such_extension", f"{ext_id!r} is not in the extension catalog")
         addons = self.addons_dir()
         if action == "install":
-            if extensions.state_of(entry, False, None) == "needs_app":
+            gate = await asyncio.to_thread(self.install_gate, entry)
+            if gate is not None:                  # needs_app: a newer 无限工坊 first; needs_kit: a newer WuxianKit
+                raise ApiError(409, gate["code"], gate["text"], unmet=gate["unmet"])
+            if extensions.state_of(entry, False, None) == "needs_app":      # a min_app the judge cannot read
                 raise ApiError(409, "needs_app", f"{entry['id']} {entry['version']} needs 无限工坊 {entry['min_app']} or later")
             need = extensions.missing(addons, entry)
             if need:
@@ -1472,10 +1590,26 @@ class Service:
             forget_cached()                        # its tools go with it, in every agent's session
         if entry["folder"] == "WuxianKit":
             self.kit_changed()
+        self.versions_local = None
         self.journal.add("INFO", f"extension {entry['id']}: {action} {entry['version'] if action == 'install' else ''}"
                                  f" ({entry['folder']}, kept #{result.get('kept')})")
         listing = await self.extensions()
         return dict(action=action, result=result, addon=next((a for a in listing["addons"] if a["id"] == ext_id), None))
+
+    def kit_judged(self, addons=None):
+        """the WuxianKit a catalog entry's needs are judged by: the newer of the one this game process runs and the one
+        installed (an update in place counts: the game loads both at its next start), a development build of either
+        when there is one (compat.gate_has: not judged); None: neither known"""
+        if addons is None:
+            addons = self.game_addons_known()
+        installed = extensions.installed(addons, compat.KIT)[1] if addons else None
+        return compat.gate_has(self.kit_seen, installed)
+
+    def install_gate(self, entry):
+        """(blocking) whether the catalog entry may be installed: None, or compat.install_gate's {code, text, unmet}"""
+        if compat.needs_of(entry) == {}:
+            return None
+        return compat.install_gate(self.versions_snapshot(), entry)
 
     # --- Agent 接入 (the 扩展 page): WuxianKit's tools as agents get them, and the MCP servers that serve agents ----------
 
@@ -2085,6 +2219,7 @@ class Service:
         of their sources are the game's, WuxianKit's window is told their list when it is another, and the drive
         which apps their programs drive now"""
         self.journal.add("EVENT", json.dumps({"a": LOCAL, "t": "local.changed", "d": {"revision": revision}}))
+        self.versions_local = None            # status's versions read their manifests again
         self.soon(self.reactor.refresh())
         self.roster_again()
         self.soon(self.drive_sync())          # a process started or stopped: the apps it drives

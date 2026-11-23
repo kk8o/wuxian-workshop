@@ -631,6 +631,224 @@ function appState() {
       const p = this.xpPkg;
       return p && ['available', 'update', 'installed'].includes(p.state) ? p : null;
     },
+
+    // ---- versions: the daemon's judge (status.versions, compat.py) says per item what runs with what, and the one thing
+    //      to do first (next). The page words it from the structured fields (never next.text, which is for agents). An
+    //      older daemon has no versions: the separate notices (kitOutdated, the catalog's states) stand instead
+    get vers() {                               // status.versions {next, items} when the daemon judges, else null (also when
+      const v = this.status && this.status.versions;   // its judge failed: no items, no workshop item)
+      return v && typeof v === 'object' && Array.isArray(v.items) && v.items.some((x) => x && x.kind === 'workshop') ? v : null;
+    },
+    versItem(id) {                             // an item by its id
+      const v = this.vers;
+      return (v && id && v.items.find((x) => x && x.id === id)) || null;
+    },
+    versFor(id, folder, local) {               // the item of a row: a local extension by its id (or 'local:' + id, when another
+      const v = this.vers;                     //   item has its id); else by the catalog id or the addon folder (folders
+      if (!v) return null;                     //   compare case-insensitively)
+      const f = folder ? String(folder).toLowerCase() : '';
+      return v.items.find((x) => x && (x.kind === 'local') === !!local
+        && ((id && (x.id === id || (local && x.id === 'local:' + id)))
+          || (f && x.folder && String(x.folder).toLowerCase() === f))) || null;
+    },
+    get versKitNeed() {                        // what the workshop needs of WuxianKit and the game's lacks ({needs, has}), or null
+      const w = this.vers && this.vers.items.find((x) => x && x.kind === 'workshop');
+      return ((w && w.unmet) || []).find((u) => u && u.needs && String(u.name || '').toLowerCase() === 'wuxiankit') || null;
+    },
+    pkgNeeds(p) {                              // a catalog package the App cannot install yet (state needs_app / needs_kit):
+      if (!p) return null;                     //   {app: the program's, text: the reason}, else null
+      const needs = p.needs || {};
+      if (p.state === 'needs_app') {
+        const v = needs.workshop || p.min_app;
+        return { app: true, text: v ? t('需要无限工坊 {v} 以上', { v }) : t('需更新无限工坊') };
+      }
+      if (p.state === 'needs_kit') {
+        const v = needs.WuxianKit;
+        return { app: false, text: v ? t('需要扩展框架 {v} 以上', { v }) : t('需更新扩展框架') };
+      }
+      return null;
+    },
+    versCantUpdate(p, it) {                    // the catalog's package needs a newer App or framework first, and the judge
+      return !!this.pkgNeeds(p) && (!p.there || !it || it.state === 'update');   // offers it (or it is not installed)
+    },
+    pkgNeedsBadge(p) {                         // the pill of a package that needs a newer App or framework first, or null
+      const n = this.pkgNeeds(p);
+      return n ? { text: n.app ? t('需更新无限工坊') : t('需更新扩展框架'), cls: 'bad' } : null;
+    },
+    get versKit() { return this.versFor('wuxiankit', 'WuxianKit'); },
+    versTitle(it) {                            // an item's name in the language in force (the daemon's title is Chinese)
+      if (!it) return '';
+      if (it.kind === 'workshop') return t('无限工坊');
+      if (it.kind === 'kit') return t('扩展框架');
+      if (it.kind === 'bridge') return 'WoWBridge';
+      if (it.kind === 'agent') return t('Agent 连接');
+      const r = it.kind === 'local' && (this.lx.list || []).find((x) => x.id === it.id);
+      if (r) return this.lxTitle(r);
+      const p = (this.ext.list || []).find((a) => a.id === it.id);
+      return (p && this.loc(p.title)) || it.title || it.folder || it.id || '';
+    },
+    versUnmet(u) {                             // one unmet {name, needs, has} as a line
+      if (!u || !u.needs) return '';
+      const n = String(u.name || '').toLowerCase();
+      if (n === 'workshop') return t('需要无限工坊 {v} 以上', { v: u.needs });
+      if (n === 'wuxiankit') return t('需要扩展框架 {v} 以上', { v: u.needs });
+      return t('需要 {name} {v} 以上', { name: u.name, v: u.needs });
+    },
+    versUnmetLine(it) { return ((it && it.unmet) || []).map((u) => this.versUnmet(u)).filter(Boolean).join(t('；')); },
+    versOldLine(it) {                          // an extension made for a framework older than its floor (old {built, floor})
+      const o = it && it.old;
+      return o && o.built && o.floor ? t('扩展版本过旧：按扩展框架 {built} 制作，当前框架支持 {floor} 及以上的扩展', { built: o.built, floor: o.floor }) : '';
+    },
+    versBadge(it) {                            // a row's pill from its item: what to do, or null when it is ok (how it runs)
+      if (!it) return null;
+      if (it.state === 'blocked') {
+        const u = (it.unmet || []).find((x) => x && x.needs) || {}, n = String(u.name || '').toLowerCase();
+        if (n === 'workshop') return { text: t('需更新无限工坊'), cls: 'bad' };
+        if (n === 'wuxiankit') return { text: t('需更新扩展框架'), cls: 'bad' };
+        if (!u.name && it.old) return { text: t('需更新扩展'), cls: 'bad' };
+        return { text: u.name ? t('需要 {name} {v} 以上', { name: u.name, v: u.needs }) : t('版本不足'), cls: 'bad' };
+      }
+      if (it.state === 'pending') return { text: t('重启游戏后生效'), cls: 'warn' };
+      if (it.state === 'update') return { text: t('可更新'), cls: 'warn' };
+      if (it.state === 'ahead') return { text: t('版本较新'), cls: 'off' };
+      return null;
+    },
+    versStateLine(it) {                        // a row's 状态 from its item when the version decides it, else null
+      if (!it) return null;
+      if (it.state === 'blocked') return { cls: 'bad', text: this.versUnmetLine(it) || this.versOldLine(it) || t('版本不足') };
+      if (it.state === 'pending') {
+        return { cls: 'warn', text: it.installed ? t('已安装 {v}，完整重启游戏后生效', { v: it.installed }) : t('完整重启游戏后生效') };
+      }
+      return null;
+    },
+    get versOpen() {                           // the items with something to do (blocked, pending, update)
+      const v = this.vers;
+      return v ? v.items.filter((x) => x && ['blocked', 'pending', 'update'].includes(x.state)) : [];
+    },
+    get versNext() {                           // the next step: {sev, action, it (the item it is for), target (the item an
+      const v = this.vers, n = v && v.next;    //   update installs)}, or null when there is none
+      if (!n || typeof n !== 'object' || !n.action) return null;
+      const it = this.versItem(n.id) || { id: n.id, kind: n.action === 'restart_agent' ? 'agent' : '', state: n.severity };
+      const tid = n.action === 'update' ? (n.via || it.via || it.id) : null;
+      const sev = ['blocked', 'pending', 'update'].includes(n.severity) ? n.severity : it.state;
+      return { sev, action: n.action, it, target: tid ? (this.versItem(tid) || { id: tid }) : null };
+    },
+    get versCls() {                            // the strip's colour: blocked bad, pending warn, an update neutral
+      const n = this.versNext;
+      return !n ? '' : n.sev === 'blocked' ? 'bad' : n.sev === 'pending' ? 'warn' : '';
+    },
+    get versWhat() {                           // the strip: what is the matter with the item
+      const n = this.versNext;
+      if (!n) return '';
+      const it = n.it;
+      if (n.sev === 'blocked') return this.versUnmetLine(it) || this.versOldLine(it) || t('版本不足');
+      if (n.sev === 'pending') {
+        if (it.kind === 'agent') return t('运行的是旧版本');
+        return it.installed && it.running ? t('已安装 {v}，游戏中仍是 {r}', { v: it.installed, r: it.running }) : t('已安装新版本');
+      }
+      return it.latest ? (it.running || it.installed ? t('可更新到 {v}，当前 {c}', { v: it.latest, c: it.running || it.installed })
+        : t('可更新到 {v}', { v: it.latest })) : t('可更新');
+    },
+    get versStep() {                           // the strip: what to do about it, as the button does not say
+      const n = this.versNext;
+      if (!n) return '';
+      switch (n.action) {
+        case 'update_app': return n.it.kind === 'workshop' ? '' : t('请先更新无限工坊');
+        case 'update': return n.target && n.target.id !== n.it.id ? t('请先更新{name}', { name: this.versTitle(n.target) }) : '';
+        case 'restart_game': return t('完整重启游戏后生效');
+        case 'restart_agent': return t('请在 Agent 中重启会话');
+        case 'none': return !this.versUnmetLine(n.it) && this.versOldLine(n.it) ? t('需由扩展作者更新') : t('暂无满足要求的版本');
+        default: return '';
+      }
+    },
+    versPkg(it) {                              // the catalog package an item stands for (null before the catalog is read)
+      if (!it) return null;
+      const list = this.ext.list || [], f = it.folder ? String(it.folder).toLowerCase() : '';
+      return list.find((a) => a.id === it.id) || (f && list.find((a) => String(a.folder || '').toLowerCase() === f)) || null;
+    },
+    get versBtn() {                            // the strip's button {text, off}, or null (a restart is the player's)
+      const n = this.versNext;
+      if (!n) return null;
+      if (n.action === 'update_app') {
+        const u = this.upd;
+        if (u && u.state === 'downloading') return { text: t('下载中 {p}%', { p: u.progress }), off: true };
+        if (u && u.state === 'ready') return { text: t('重启并更新'), off: this.updBusy };
+        return { text: t('更新无限工坊'), off: this.updBusy || !!(u && u.state === 'checking') };
+      }
+      if (n.action === 'update') {
+        const p = this.versPkg(n.target), v = (p && p.version) || n.target.latest;
+        if (p && this.ext.busy === p.id) return { text: t('更新中…'), off: true };
+        return { text: v ? t('更新到 {v}', { v }) : t('更新'), off: this.ext.busy !== '' };
+      }
+      return null;
+    },
+    get versMore() {                           // how many other items 扩展 lists have something to do (概览 links there for
+      const n = this.versNext;                 //   them): the framework, the addons and the local extensions
+      return n ? this.versOpen.filter((x) => x.id !== n.it.id && ['kit', 'addon', 'local'].includes(x.kind)).length : 0;
+    },
+    async versAct() {                          // the strip's button: the App's own updater, or the catalog's install
+      const n = this.versNext;
+      if (!n) return;
+      if (n.action === 'update_app') {
+        const u = this.upd;
+        if (u && u.supported && u.state === 'available') return this.downloadUpdate();
+        if (u && u.supported && u.state === 'ready') return this.applyUpdate();
+        return this.go('settings');            // no update known here yet: the 关于 part checks and says
+      }
+      if (n.action !== 'update' || this.ext.busy) return;
+      if (this.ext.list === null) await this.loadExtensions();
+      const p = this.versPkg(n.target);
+      if (!p) return this.go('extensions');
+      await this.extAct(p, 'install');
+      if (this.page !== 'extensions' && this.ext.note) this.say(this.ext.note);
+      this.refreshStatus();
+    },
+    get versUpdates() {                        // 全部更新: the packages the items with action update install, the framework
+      const v = this.vers;                     //   first; one the App cannot install left out: it needs a newer App
+      if (!v) return [];                       //   (needs_app), a newer framework than this plan brings (needs_kit), or
+      const picked = [];                       //   addons that none of these brings
+      for (const it of v.items) {
+        if (!it || it.action !== 'update') continue;
+        const target = (it.via ? this.versItem(it.via) || { id: it.via } : it), p = this.versPkg(target);
+        if (!p || picked.some((x) => x.p === p) || p.state === 'needs_app') continue;
+        picked.push({ p, first: target.kind === 'kit' || p.id === 'wuxiankit' });
+      }
+      const kit = picked.find((x) => x.first), brought = new Set(picked.map((x) => String(x.p.folder || '').toLowerCase()));
+      return picked.filter((x) => (x.p.missing || []).every((m) => brought.has(String(m).toLowerCase()))
+        && (x.p.state !== 'needs_kit' || (!!kit && kit.p.state !== 'needs_kit' && kit.p.state !== 'needs_app'
+          && verMeets(kit.p.version, (x.p.needs || {}).WuxianKit))))
+        .sort((a, b) => (b.first ? 1 : 0) - (a.first ? 1 : 0)).map((x) => x.p);
+    },
+    async xpUpdateAll() {                      // 全部更新: each in turn with the catalog's install, then one line for all
+      const plan = this.versUpdates;
+      if (this.ext.busy || plan.length < 2) return;
+      this.ext.confirm = '';
+      this.ext.note = '';
+      this.ext.reload = false;
+      this.ext.doing = 'install';
+      let done = 0;
+      const failed = [];
+      try {
+        for (const p of plan) {
+          this.ext.busy = p.id;
+          try {
+            const d = await this.api('/api/extensions', { body: { action: 'install', id: p.id } });
+            if (d && d.addon) this.ext.list = (this.ext.list || []).map((x) => (x.id === d.addon.id ? d.addon : x));
+            done++;
+          } catch (e) {
+            failed.push((this.loc(p.title) || p.folder) + t('：') + e.message);
+          }
+        }
+      } finally {
+        this.ext.busy = '';
+      }
+      this.ext.note = !done ? t('未能更新：{why}', { why: failed.join(t('；')) })
+        : failed.length ? t('已更新 {n} 项，完整重启游戏后生效；{m} 项未能更新：{why}', { n: done, m: failed.length, why: failed.join(t('；')) })
+        : t('已更新 {n} 项，完整重启游戏后生效', { n: done });
+      await this.loadExtensions();
+      this.loadAccess();
+      this.refreshStatus();
+    },
     get linkHint() {                           // one line under 在线: what can be done now
       if (!this.linkOnline) return '';
       const k = this.status.link;
@@ -961,11 +1179,19 @@ function appState() {
       return p ? this.xpVersion(p) : (k ? k.version : '');
     },
     get xpKitBadge() {                         // the framework in the list: what to do first, else how it runs
-      const p = this.xpPkg, d = this.access.data, k = this.xpRunning;
-      if (p && p.state === 'needs_app') return { text: t('需更新无限工坊'), cls: 'bad' };
-      if (p && !p.there) return { text: t('未安装'), cls: 'off' };
-      if (this.kitOutdated) return { text: t('需更新'), cls: 'bad' };
-      if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
+      const p = this.xpPkg, d = this.access.data, k = this.xpRunning, it = this.versKit;
+      if (this.vers) {                         // the judge's word on versions (status.versions), its running states after;
+        if (it && ['blocked', 'pending'].includes(it.state)) return this.versBadge(it);   // the workshop needing a newer
+        if (this.versKitNeed) return { text: t('需更新'), cls: 'bad' };                  // one, and an update the App
+        if (this.versCantUpdate(p, it)) return this.pkgNeedsBadge(p);                    // cannot install yet, before
+        if (p && !p.there) return { text: t('未安装'), cls: 'off' };                       // it is updatable
+        if (this.versBadge(it)) return this.versBadge(it);
+      } else {
+        if (this.pkgNeedsBadge(p)) return this.pkgNeedsBadge(p);
+        if (p && !p.there) return { text: t('未安装'), cls: 'off' };
+        if (this.kitOutdated) return { text: t('需更新'), cls: 'bad' };
+        if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
+      }
       if (this.access.error) return { text: t('读取失败'), cls: 'bad' };
       if (k && k.newer) return { text: t('需更新无限工坊'), cls: 'warn' };
       if (k) return k.source === 'game' ? { text: t('运行中'), cls: 'ok' } : { text: t('游戏未连接'), cls: 'off' };
@@ -975,8 +1201,11 @@ function appState() {
     },
     get xpKitState() {                         // the framework in the game, its 状态: { cls, text }
       const p = this.xpPkg, d = this.access.data, k = this.xpRunning;
+      const vs = this.vers ? this.versStateLine(this.versKit) : null, need = this.versKitNeed;
+      if (vs) return vs;
+      if (need) return { cls: 'bad', text: t('扩展框架需要更新到 {needs}', { needs: need.needs }) };
       if (this.access.error) return { cls: 'bad', text: this.access.error };
-      if (this.kitOutdated) return { cls: 'bad', text: this.kitOutdatedLine };
+      if (!this.vers && this.kitOutdated) return { cls: 'bad', text: this.kitOutdatedLine };
       if (!d) return { cls: '', text: t('读取运行状态…') };
       if (k && k.newer) return { cls: 'warn', text: t('游戏中的扩展框架版本较新，Agent 仅能使用 wk_docs：请更新无限工坊') };
       if (k) return k.source === 'game' ? { cls: 'ok', text: t('运行中') } : { cls: '', text: t('游戏未连接 · 显示上次读取的结果') };
@@ -986,11 +1215,24 @@ function appState() {
     },
     xpBadge(c) {                               // a custom extension in the list: what its package needs, else how it runs
       const p = c.pkg;
-      if (p && p.state === 'needs_app') return { text: t('需更新无限工坊'), cls: 'bad' };
-      if (p && !p.there) return { text: t('未安装'), cls: 'off' };
-      if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
+      if (this.vers) {                         // the judge's word on versions (status.versions), its running state after
+        const it = this.xpVersItem(c);         // an update the App cannot install yet says what comes first
+        if (it && ['blocked', 'pending'].includes(it.state)) return this.versBadge(it);
+        if (this.versCantUpdate(p, it)) return this.pkgNeedsBadge(p);
+        if (p && !p.there) return { text: t('未安装'), cls: 'off' };
+        if (this.versBadge(it)) return this.versBadge(it);
+      } else {
+        if (this.pkgNeedsBadge(p)) return this.pkgNeedsBadge(p);
+        if (p && !p.there) return { text: t('未安装'), cls: 'off' };
+        if (p && p.state === 'update') return { text: t('可更新'), cls: 'warn' };
+      }
       if (c.mod && c.mod.state && c.mod.state !== 'on') return { text: t('未启用'), cls: 'off' };
       return null;
+    },
+    xpVersItem(c) {                            // a custom row's item in status.versions: its package's, else its addon's
+      if (!c) return null;
+      const folder = c.pkg ? c.pkg.folder : c.mod ? c.mod.addon : c.det ? xpFolder(c.det) : '';
+      return this.versFor(c.pkg ? c.pkg.id : null, folder);
     },
     xpVersionOf(c) {
       return c.pkg ? this.xpVersion(c.pkg) : (c.mod && c.mod.version) || (c.det && c.det.version) || '';
@@ -1049,7 +1291,10 @@ function appState() {
       const sel = this.xpSel;
       if (sel.kind !== 'custom') return this.xpKitState;
       const p = sel.pkg, m = sel.mod, d = this.access.data, k = this.xpRunning;
+      const it = this.vers ? this.xpVersItem(this.xpCustom.find((r) => r.key === this.xp.sel)) : null;
+      if (it && it.state === 'blocked') return this.versStateLine(it);
       if (p && !p.there) return { cls: '', text: t('未安装') };
+      if (this.versStateLine(it)) return this.versStateLine(it);   // pending: in place, the game runs the one before
       const lacks = !!sel.det && (sel.det.game[0].needs || []).some((n) => n.installed === false);
       if (lacks && !m) return { cls: 'warn', text: t('缺少需要的插件，游戏不会加载它') };
       if (this.access.error) return { cls: 'bad', text: this.access.error };
@@ -1068,8 +1313,13 @@ function appState() {
     get xpVer() {                              // the 版本 of the one selected: { text, pill, cls }
       const sel = this.xpSel, p = sel.pkg;
       if (!p) return { text: (sel.mod && sel.mod.version) || (sel.det ? sel.det.version : this.xpKitVersion) || '—', pill: '', cls: '' };
-      const pill = { update: t('可更新到 {v}', { v: p.version }), current: t('已是最新'), installed: t('已安装'),
-        newer: t('已安装的版本较新'), needs_app: t('需要无限工坊 {v} 以上', { v: p.min_app }) }[p.state] || '';
+      const it = !this.vers ? null : sel.kind === 'kit' ? this.versKit                 // the judge's update / ahead
+        : this.xpVersItem(this.xpCustom.find((r) => r.key === this.xp.sel));
+      const cant = this.pkgNeeds(p);           // needs_app / needs_kit: what it needs first, not the judge's update
+      if (it && it.state === 'update' && p.there && !cant) return { text: this.xpVersion(p), pill: t('可更新到 {v}', { v: it.latest || p.version }), cls: 'warn' };
+      if (it && it.state === 'ahead') return { text: this.xpVersion(p), pill: t('已安装的版本较新'), cls: 'off' };
+      const pill = cant ? cant.text : { update: t('可更新到 {v}', { v: p.version }), current: t('已是最新'), installed: t('已安装'),
+        newer: t('已安装的版本较新') }[p.state] || '';
       return { text: this.xpVersion(p), pill, cls: this.extPill(p) };   // not installed: the catalog's (状态 says so)
     },
     get xpExtLine() {                          // the framework's 扩展
@@ -1147,7 +1397,7 @@ function appState() {
       return (this.lang === 'en' ? (o.en || o.zh) : (o.zh || o.en)) || '';
     },
     extPill(a) {
-      return { available: 'off', update: 'warn', installed: 'warn', current: 'ok', needs_app: 'bad' }[a.state] || '';
+      return { available: 'off', update: 'warn', installed: 'warn', current: 'ok', needs_app: 'bad', needs_kit: 'bad' }[a.state] || '';
     },
     get extSummary() {                         // the page bar: the framework, how it runs, what it gives agents
       if (this.ext.list === null) return '';
@@ -1172,6 +1422,8 @@ function appState() {
         const name = x ? this.loc(x.title) || x.folder : b;
         return remove ? t('{name} 正在卸载', { name }) : t('{name} 正在安装', { name });
       }
+      const cant = this.pkgNeeds(p);           // a newer App or framework first: no 安装 / 更新 button, this says why
+      if (cant) return cant.text;
       const missing = (p && p.missing) || [];
       return missing.length ? t('需要先安装 {names}', { names: missing.join(t('、')) }) : '';
     },
@@ -1196,6 +1448,8 @@ function appState() {
           this.ext.reload = !!r.removed;
         } else if (r.restart) {
           this.ext.note = t('已安装 {name} {v}，重启游戏后生效。', { name, v: r.version });
+        } else if (a.folder) {                 // a new version is a new .toc: the game reads it only when it starts
+          this.ext.note = t('已更新 {name} 到 {v}，完整重启游戏后生效', { name, v: r.version });
         } else {
           this.ext.note = t('已更新 {name} 到 {v}，重载界面后生效。', { name, v: r.version });
           this.ext.reload = true;
@@ -1681,9 +1935,12 @@ function appState() {
       if (r.state === 'backoff') return { key: 'backoff', cls: 'warn', text: t('等待重试') };
       if (r.state === 'exited') return r.exit_code ? { key: 'crashed', cls: 'bad', text: t('异常退出') }
         : { key: 'exited', cls: '', text: t('已退出') };
-      if (this.lxBlocked(r)) return { key: 'unmet', cls: 'bad', text: t('版本不足') };
+      const it = this.versFor(r.id, null, true);   // the judge's word on versions (status.versions), when there is one
+      if (it && it.state === 'blocked') return { key: 'unmet', cls: 'bad', text: short ? this.versBadge(it).text : this.versUnmetLine(it) || this.versOldLine(it) || t('版本不足') };
+      if (!it && this.lxBlocked(r)) return { key: 'unmet', cls: 'bad', text: t('版本不足') };
       if (r.error) return { key: 'invalid', cls: 'bad', text: t('清单有误') };
       if (this.lxUnapproved(r)) return { key: 'approval', cls: 'warn', text: t('待批准') };
+      if (it && it.state === 'pending') return { key: 'pending', cls: 'warn', text: t('重启游戏后生效') };
       if (r.state === 'game') return this.lxGameState(r, short);
       return { key: 'stopped', cls: '', text: t('未运行') };
     },
@@ -1978,8 +2235,16 @@ function appState() {
     },
     lxOrigin(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('链接') : t('扩展文件夹'); },   // where its folder is
     lxOriginTip(r) { return !r || !r.id ? '' : r.origin === 'linked' ? t('文件夹留在原处，工坊不改动其中的文件；改完重新载入即可，适合开发') : t('由扩展包导入或放进扩展文件夹；移除时移入回收区'); },
-    lxBlocked(r) { return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop'); },    // this workshop is too old for it
+    lxBlocked(r) {                             // this workshop is too old for it: what the daemon refuses to load (the judge's
+      const it = r && this.versFor(r.id, null, true);   // blocked by workshop, when it says); the framework, other addons
+      if (it) {                                // or the floor are said (lxUnmet) and do not stop 载入
+        return it.state === 'blocked' && (it.unmet || []).some((u) => u && String(u.name || '').toLowerCase() === 'workshop');
+      }
+      return !!r && (r.unmet || []).some((u) => u && u.what === 'workshop');
+    },
     lxUnmet(r) {                               // what it requires and is not there, as one line ('' when all is)
+      const it = r && this.versFor(r.id, null, true);
+      if (it) return this.versUnmetLine(it) || this.versOldLine(it);
       return ((r && r.unmet) || []).map((u) => {
         if (!u || !u.needs) return '';
         return u.what === 'workshop' ? t('需要无限工坊 {v} 以上', { v: u.needs })
@@ -3334,6 +3599,15 @@ function lxInside(folder, file) {                // a file of the extension by i
   const base = String(folder || '').replace(/[\\/]+$/, '');
   const rest = base && file.toLowerCase().startsWith(base.toLowerCase()) ? file.slice(base.length) : '';
   return /^[\\/]/.test(rest) ? rest.replace(/^[\\/]+/, '') : file;
+}
+function verMeets(has, needs) {                  // version has (its leading numbers) is needs or later (compat.met's way)
+  const a = /^\s*v?(\d+(?:\.\d+)*)/.exec(String(has || '')), b = /^\d+(?:\.\d+)*$/.exec(String(needs || ''));
+  if (!a || !b) return true;                    // one that does not parse is not judged
+  const x = a[1].split('.').map(Number), y = b[0].split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  }
+  return true;
 }
 function xpFolder(d) {                         // a summary read from the game folder: its addon's folder
   return d && Array.isArray(d.game) && d.game[0] ? d.game[0].folder || '' : '';

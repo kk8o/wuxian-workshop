@@ -249,10 +249,13 @@ function K.Job(name, addon, flag, ok, ms, values, failure)
 		K.Add("RUN", ok and L.CON_LOADED:format(short, ms) or L.CON_LOAD_FAILED:format(short, FirstLine(failure)), failure, not ok)
 	else
 		local got = values and values ~= "" and ("  → " .. Cut(FirstLine(values), 120)) or ""
-		local line, beat
+		local line, beat, toast
 		if name == "=call" then                     -- a data call: an addon's exposed function (addon is "Addon.name")
 			line = ok and L.CON_CALLED:format(addon, ms, got) or L.CON_CALL_FAILED:format(addon, FirstLine(failure))
 			beat = ok and BEATS[tostring(addon):match("^[^.]*%.(.+)$") or ""]
+			-- a failed call is the addon's own refusal or bug, not the agent's code: name the function
+			toast = not ok and L.TOAST_CALL_FAILED:format(tostring(addon):match("^[^.]*%.(.+)$") or tostring(addon),
+				Cut(FirstLine(failure)))
 		elseif name == "=respond" then              -- the answer to an addon's request (Agent.lua CHUNK.reply)
 			line = ok and L.CON_REPLIED:format(ms, got) or L.CON_REPLY_FAILED:format(FirstLine(failure))
 		else
@@ -263,7 +266,7 @@ function K.Job(name, addon, flag, ok, ms, values, failure)
 			e.beat = true
 			K.beats, beatLines = K.beats + 1, beatLines + 1
 		end
-		if not ok then Toast(L.TOAST_RUN_FAILED:format(Cut(FirstLine(failure))), true) end
+		if not ok then Toast(toast or L.TOAST_RUN_FAILED:format(Cut(FirstLine(failure))), true) end
 		return
 	end
 	if flag == "unload" then batch = { addon = addon, files = 0, ms = 0 } end

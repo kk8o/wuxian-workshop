@@ -357,8 +357,8 @@ class LiveDaemon(unittest.TestCase):
         status, res = self.call("POST", "/api/run", {"code": "return BIG", "whole": True})   # an addon that does not pour
         self.assertEqual((status, res["error"]["code"]), (409, "addon_outdated"))            # (0.7.0) has no way to
         self.assertIn("run: its answer is longer than one piece", res["error"]["message"])   # bring back the rest
-        self.assertRegex(res["error"]["message"], r"\(the WoWBridge in the game is 0\.7\.0, older than this 无限工坊 "
-                                                  r"[\d.]+: the new one takes effect once the game is restarted\)$")
+        self.assertRegex(res["error"]["message"], r"back\. WoWBridge [\d.]+ is installed but the game still runs "
+                                                  r"0\.7\.0: restart the game fully \(not /reload")
         status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": "yes"})
         self.assertEqual((status, res["error"]["code"]), (400, "bad_request"))
         status, res = self.call("POST", "/api/run", {"code": "return 1", "whole": False})
