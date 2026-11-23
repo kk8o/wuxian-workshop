@@ -77,6 +77,25 @@ class LocalSeams(LocalDaemon, unittest.TestCase):
         self.assertEqual((self.kit.asked("kit.app.declare"), self.kit.apps), ([], {}))    # nothing of it is there
         self.assertEqual(self.ok("GET", "/api/reactions")["reactions"], [])
 
+    def test_an_app_that_hears_its_disabled_addon_is_not_declared(self):
+        """its own source comes from its game addon: while that addon is not loaded (disabled in the addon list, ...)
+        WuxianKit would refuse the declaration (and the game show the failure): it is declared once the addon is"""
+        app = {"app": "snapper", "title": "快照", "hear": ["fx:snapshot"]}
+        held = {"fx": ("disabled", {"fx"})}
+        with mock.patch.object(self.svc.local, "held_games", side_effect=lambda: dict(held)):
+            self.add(apps=[app, dict(APP, hear=["game:quest"])])
+            self.kit.emit("kit.ready", {})
+            self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
+            time.sleep(0.2)
+            self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["companion"])
+            self.assertEqual(self.svc.app_held, {"snapper": "disabled"})
+            held.clear()                                                       # enabled, the UI reloaded
+            self.kit.calls.clear()
+            self.kit.emit("kit.ready", {})
+            self.assertTrue(until(lambda: self.kit.asked("kit.app.declare")), self.kit.calls)
+            self.assertEqual([d["app"] for d in self.kit.asked("kit.app.declare")], ["snapper"])
+            self.assertEqual(self.svc.app_held, {})
+
     def test_turned_off_while_the_game_is_away(self):
         self.add(apps=[APP])
         self.assertEqual(list(self.kit.apps), ["companion"])

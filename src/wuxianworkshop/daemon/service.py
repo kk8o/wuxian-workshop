@@ -242,6 +242,7 @@ class Service:
         self.loop = None                     # the server's asyncio loop (set before start()): what kit events start
         self.declaring = None                # an asyncio.Lock: one round of reconciling the local apps at a time
         self.app_memory = {}                 # app -> (our declaration, WuxianKit's of it) as JSON when they last agreed
+        self.app_held = {}                   # app -> the game state of its extension's addon that keeps it undeclared
         self.roster_told = None              # (UI session, the roster as JSON) WuxianKit was last told (tell_roster)
         self.roster_sent = 0                 # how many times it was told (local_option: once for a change)
         self.roster_lock = None              # an asyncio.Lock: one telling at a time
@@ -2152,7 +2153,17 @@ class Service:
                     await self.app_runs(row["id"], False)
                 for app in [a for a in self.app_memory if a not in want]:
                     del self.app_memory[app]
+                held = await asyncio.to_thread(self.local.held_games)
                 for app, (eid, decl) in want.items():
+                    state, names = held.get(eid) or (None, ())
+                    if any(isinstance(h, str) and h.partition(":")[0] in names for h in decl.get("hear") or []):
+                        if self.app_held.get(app) != state:      # said once: its row tells the player what to do
+                            self.journal.add("INFO", f"local extension {eid}: its app {app} hears its own game "
+                                                     f"addon, which is not loaded ({state}): declared once it is")
+                        self.app_held[app] = state
+                        self.app_memory.pop(app, None)
+                        continue
+                    self.app_held.pop(app, None)
                     ours = json.dumps(decl, sort_keys=True, ensure_ascii=False, default=repr)
                     theirs = await self.app_described(app)
                     if theirs is not None and self.app_memory.get(app) == (ours, theirs):

@@ -651,6 +651,26 @@ class Host:
                     addons=addons, where=where, game=game,
                     player=self.player_of(e, m, allowed, approval, game, addons, side))
 
+    HELD = ("absent", "outdated", "restart", "missing", "disabled", "off")   # game states whose addons register nothing
+
+    def held_games(self):
+        """{extension id: (game state, the names its game half would register)} of the enabled extensions whose game
+        half is not loaded in the game now (game_of: absent, outdated, restart, missing, disabled or off): an app of
+        theirs that hears its own source cannot be declared (WuxianKit refuses a source that is not there); the
+        names: its WuxianKit extension ids and its own id"""
+        side = self.side()
+        out = {}
+        with self.lock:
+            entries = [dict(e) for e in self.load()["extensions"] if e.get("enabled")]
+        for e in entries:
+            m, _ = M.check_manifest(e["path"])
+            if m is None or m.get("id") != e["id"] or not m.get("addons"):
+                continue
+            game = self.game_of(m, self.addon_rows(e, m), side)
+            if game and game["state"] in self.HELD:
+                out[e["id"]] = (game["state"], set(game["extensions"]) | {e["id"]})
+        return out
+
     def rows(self):
         side = self.side()
         with self.lock:
