@@ -5,8 +5,10 @@ build_server(backend) makes it over any object with the async methods of daemon.
 watch, snap, snap_bytes, trace, inspect, try_, check, history, checkpoint, restore, reload, logs, say, doctor, addons,
 errors, new_addon, install, the local extensions' local_extensions, local_manifest, local_call, extension_add,
 extension_remove, extension_load, extension_stop, extension_set, extension_check, extension_logs, new_extension,
-extension_pack, extension_summary, extension_install, reactions, reaction_set, reaction_clear, and the extension
-catalog's extensions; versions_wait reads status again and again). The daemon mounts it at /mcp
+extension_pack, extension_summary, extension_install, reactions, reaction_set, reaction_clear, verify, and the extension
+catalog's extensions; versions_wait reads status again and again). The API manual (api_search, api_get, api_manual) and
+the Blizzard UI index (ui_search, ui_get) are read in this process (apidocs.py, uidocs.py), with what the game answered
+before (seen.py); api_verify asks the game through the backend and keeps its answers. The daemon mounts it at /mcp
 (Streamable HTTP) over the
 Service itself; `wuxian mcp` (main) serves it on stdio for hosts that start the server themselves, over HttpBackend,
 which calls the running daemon through cli.client (and starts it when a tool needs it and none runs: an agent that
@@ -31,7 +33,7 @@ from mcp.server.mcpserver import Image
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
-from .. import __version__, apidocs, compat, guide as guides
+from .. import __version__, apidocs, compat, guide as guides, seen, uidocs
 from . import kit as kit_tools
 from .changes import ListChanges, advertise
 from .presence import Presence
@@ -139,6 +141,9 @@ class HttpBackend:
 
     async def inspect(self, target=None, mouse=False, depth=1, snap=False, snap_format=None):
         return await self._call("inspect", target, mouse, depth, snap, snap_format)
+
+    async def verify(self, names, members=False):
+        return await self._call("verify", names, members)
 
     async def addon_events(self, addon=None, topic=None, since=0, limit=100, wait=0):
         return await self._call("addon_events", addon, topic, since, limit, wait)
@@ -545,6 +550,8 @@ def build_server(backend, name="wuxian"):
         wrong ## Interface.
         With `live` (default true) and the game online, names the API manual does not know are looked up in the running
         game: nil there is an error where it surely fails, a warning where it is only tested or kept in a local.
+        A name the game answered before (api_verify, an earlier check) is settled from that answer, also offline; a
+        global Blizzard's UI defines (ui_search) is a note "blizzard-ui" (on_demand: it needs C_AddOns.LoadAddOn first).
         Only the files this client loads are checked (the .toc lines for its game type, camelot, and the XML they load);
         the addons it depends on, when installed, define globals too."""
         return await call(backend.check(target, live))
@@ -1112,11 +1119,17 @@ def build_server(backend, name="wuxian"):
         checked against that client in the game (`scanned`: the date; NotInClient comes from that scan), not the retail
         or Classic one. This client also switches parts of the game off by its GameRules (api_manual "gamerules": the
         encounter journal, macros, some panels ...): an idea that leans on one is settled in the running game with
-        `run` `return C_GameRules.IsGameRuleActive(Enum.GameRule.<Name>)`. To be sure a function is there in the
-        running game, `run` `return type(C_X.Y)`."""
+        `run` `return C_GameRules.IsGameRuleActive(Enum.GameRule.<Name>)`. To be sure a name is there in the running
+        game: `api_verify` (its answer is kept; results show it as `seen`). Blizzard's own UI code (TooltipDataProcessor,
+        PlayerFrame, templates, mixins) is not here: `ui_search`."""
         ix = await asyncio.to_thread(apidocs.index)
         about = ix.about()
-        return dict(results=ix.search(query, kind, limit, call), manual=about["version"], client=about.get("client"),
+        results = ix.search(query, kind, limit, call)
+        kept = await asyncio.to_thread(seen_of, [r["name"] for r in results])
+        for r in results:
+            if r["name"] in kept:
+                r["seen"] = kept[r["name"]]
+        return dict(results=results, manual=about["version"], client=about.get("client"),
                     scanned=(about.get("scan") or {}).get("scanned"))
 
     @mcp.tool(annotations=READ_ONLY)
@@ -1126,12 +1139,26 @@ def build_server(backend, name="wuxian"):
         a table (an enum's values, a structure's fields). A short name shared by several namespaces returns the
         candidates. `note` says when the name you gave is not what this client has: a global that is gone (e.g.
         IsAddOnLoaded: call C_AddOns.IsAddOnLoaded), or a widget method listed under the type that defines it
-        (Frame:SetPoint: ScriptRegionResizing:SetPoint, which a Frame inherits). A namespace: api_search "C_Map."."""
+        (Frame:SetPoint: ScriptRegionResizing:SetPoint, which a Frame inherits). A namespace: api_search "C_Map.".
+        `seen`: what the running game answered for it before (api_verify). Blizzard's UI (frames, mixins): ui_get."""
         ix = await asyncio.to_thread(apidocs.index)
         entry = ix.get(name)
+        blizzard = None                                  # the name, when Blizzard's UI index has it (ui_get)
+        if entry is None or entry.get("note"):
+            ui = await asyncio.to_thread(uidocs.index)
+            got = ui.get(str(name or "").strip())
+            blizzard = str(name or "").strip() if got is not None and "candidates" not in got else None
         if entry is None:
+            if blizzard:
+                raise ToolError(f"not_found: {name} is not in the API manual (the C API); Blizzard's UI defines it: "
+                                f"ui_get {{\"name\": \"{blizzard}\"}}")
             raise ToolError(f"not_found: {name} is not in the API manual, nor a global of this client; api_search "
-                            f"finds near names (a namespace: api_search \"C_Map.\")")
+                            f"finds near names (a namespace: api_search \"C_Map.\"), ui_search Blizzard's UI")
+        if blizzard and entry.get("note"):
+            entry["note"] += f". Blizzard's UI defines {blizzard}: ui_get it"
+        kept = await asyncio.to_thread(seen_of, [entry["name"]] if entry.get("name") else [])
+        if kept:
+            entry["seen"] = next(iter(kept.values()))
         return entry
 
     @mcp.tool(annotations=READ_ONLY)
@@ -1146,6 +1173,71 @@ def build_server(backend, name="wuxian"):
         if found is None:
             raise ToolError(f"not_found: no manual topic {topic!r}; api_manual() lists them")
         return found if isinstance(found, dict) else dict(topics=found, about=ix.about())
+
+    def seen_of(names):
+        """(worker thread) {name: {type, at}} of the names the game answered before (seen.py), for this client"""
+        try:
+            build = None if isinstance(backend, HttpBackend) else getattr(backend, "seen_build", lambda: None)()
+            return {n: seen.brief(r) for n, r in seen.many(build or seen.current(), names).items()}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def ui_index():
+        ui = uidocs.index()
+        if ui.missing:
+            raise ToolError(uidocs.NOT_INSTALLED)
+        return ui
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def ui_search(query: str, kind: Literal["function", "table", "mixin", "method", "frame", "template", "event"]
+                        | None = None, limit: int = 20) -> dict[str, Any]:
+        """Search Blizzard's own UI code of this client (its Lua and XML; built in, no game needed): global frames,
+        templates, mixins, tables, functions and their methods, and the events its files register. For what the API
+        manual (api_search) does not have: TooltipDataProcessor, PlayerFrame, a template to inherit. Examples:
+        {"query": "TooltipDataProcessor"}, {"query": "ActionButton", "kind": "template"}. Names and structure only, no
+        code. Each result has `where` (file:line), `addon` and `load`: "on_demand" means the name exists only after
+        C_AddOns.LoadAddOn(addon) or when the game loads it. `not_loaded`: Blizzard addons this client never loads
+        whose name the query names (Blizzard_EncounterJournal). `ui_get` gives one entry in full."""
+        ui = await asyncio.to_thread(ui_index)
+        about = ui.about()
+        out = dict(results=ui.search(query, kind, limit), index=about["version"], client=about.get("client"))
+        if not out["results"] and ui.not_loaded(query):
+            out["not_loaded"] = ui.not_loaded_text(query)
+        return out
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def ui_get(name: str) -> dict[str, Any]:
+        """One entry of Blizzard's UI in full: a function's or method's parameters, a table's or mixin's members, a frame's
+        or template's widget type, inherits, mixins and child keys (parentKey). Examples: {"name":
+        "TooltipDataProcessor"}, {"name": "PlayerFrame.PlayerFrameContainer.PlayerPortrait"} (a child by its keys),
+        {"name": "TooltipDataProcessor.AddTooltipPostCall"}. A member name alone answers `candidates`. `also`: other
+        files that define the same name. `seen`: what the running game answered for it before (api_verify)."""
+        ui = await asyncio.to_thread(ui_index)
+        entry = ui.get(name)
+        if entry is None:
+            gone = ui.not_loaded_text(name)
+            raise ToolError(f"not_found: {name} is not in Blizzard's UI index" + (f"; {gone}" if gone else "")
+                            + "; ui_search finds near names, api_get the C API (C_ namespaces, global functions)")
+        key = entry.get("name") or (entry.get("child") or {}).get("name")
+        kept = await asyncio.to_thread(seen_of, [key] if key else [])
+        if kept:
+            entry["seen"] = kept[key]
+        return entry
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def api_verify(names: list[str], members: bool = False) -> dict[str, Any]:
+        """Ask the running game what each name is (needs link online: call `status` first). Answers its type ("nil":
+        not in this client, or its Blizzard addon is not loaded) and, with members true, a table's own member names
+        (200 at most each; a frame's children by key, a mixin's functions). Example: {"names": ["TooltipDataProcessor",
+        "PlayerFrame.PlayerFrameContainer", "C_Spell.GetSpellName"], "members": true}. 1 to 100 names: globals, Foo.bar
+        or Foo:bar; an event name in capitals (PLAYER_SWING) is checked with C_EventUtils.IsEventValid: {type: "event",
+        valid: true|false}. Read-only in the game: it reads _G, calls nothing else. Use it to settle what api_get and
+        ui_get cannot (is it in this client? which members?). The answers are kept for this client (level "presence":
+        it is there, of this type; not that a call works): api_search, api_get, ui_get and check show them as `seen`,
+        and a verdict can say "seen in the game"."""
+        if not isinstance(names, list) or not 1 <= len(names) <= 100:
+            raise ToolError("bad_request: names: a list of 1 to 100 names")
+        return await call(backend.verify(names, members))
 
     # WuxianKit's tools, when the game runs it; over HTTP its watch asks now and then instead of waiting in a thread
     mcp.kit_tools = presence.kit = kit_tools.attach(mcp, backend, wait=0 if isinstance(backend, HttpBackend) else 300,

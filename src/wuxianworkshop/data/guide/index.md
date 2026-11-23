@@ -11,6 +11,8 @@ the game, click.
 Everything you need is in this server: this guide, the API manual (`api_search`, `api_get`, `api_manual`),
 WuxianKit's docs (`wk_docs`) and the tools that act. Do not answer from what you remember of the retail game or of
 Classic: this client is its own, and the manual is this client's.
+Blizzard's own UI (frames, templates, mixins: `TooltipDataProcessor`, `PlayerFrame`) is in `ui_search` /
+`ui_get`, not the manual; `api_verify` asks the running game what a name is and keeps the answer ("seen in the game").
 
 ## Three questions
 

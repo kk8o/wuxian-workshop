@@ -104,7 +104,8 @@ class Packs(unittest.TestCase):
         """/api/status asks first: the versions come from the files' first bytes, and only the newest is read whole"""
         (self.cached / "api.json.gz").write_bytes(pack_bytes("2026.10.07.1"))
         with mock.patch.object(content, "read_pack") as whole:
-            self.assertEqual(self.packs.status(), {"api": {"version": "2026.10.07.1", "source": "downloaded"}})
+            self.assertEqual(self.packs.status(), {"api": {"version": "2026.10.07.1", "source": "downloaded"},
+                                                   "ui": {"version": None, "source": None}})     # no ui pack here
             whole.assert_not_called()
         self.assertEqual(self.packs.version("api"), "2026.10.07.1")
         with mock.patch.object(content, "read_pack", wraps=content.read_pack) as whole:

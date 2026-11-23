@@ -2,6 +2,7 @@ r"""Checks an addon's files before they go to the game (写完先检查): what w
 with the file and the line, together with what may be wrong.
 
     check(path, addons=None) -> report        a file or an addon folder (the files its .toc loads on this client)
+    apply_live(report, types) / apply_seen(report, kept)   the running game's answers, now or kept (seen.py)
     syntax(path) -> None or the first syntax error ({file, line, code, message, hint})
     report = {target, addon, files, ok, errors: [finding], warnings: [...], notes: [...], unresolved: {name: [where]},
               unconfirmed: {name: [where]}, guarded: {name: [where]}, libraries}
@@ -52,6 +53,12 @@ Without a game scan in the pack, a global only the exe's Usage strings vouch for
 lists where it is read, for the running game to settle: a Usage string names some functions without their namespace
 (GetGarrisonInfo is C_Garrison.GetGarrisonInfo in the game) and the login screen's too; 385 of their 866 such names are
 nil in 1.60.1.70338.
+A global the API manual does not know but the Blizzard UI defines (the "ui" pack's index, uidocs.py: TooltipDataProcessor,
+PlayerFrame, a mixin) is no finding and not unresolved: a note ("blizzard-ui") says where it is defined and, for a
+Blizzard addon loaded on demand, that it exists only after C_AddOns.LoadAddOn. A name the game answered before (kept in
+seen.py: api_verify, an earlier live step) settles as the live step would (apply_seen; type nil: "undefined").
+A name that looks like one of a Blizzard addon this client does not load (the pack's left_out, by the addon's name:
+EncounterJournal, Blizzard_EncounterJournal) stays unresolved, with a note ("blizzard-left-out") that says so.
 Names read from a table the addon (or one it depends on) gives functions as their globals with setfenv (oUF's tags:
 _TAGS, Hex, _COLORS) are not globals: a note ("setfenv") lists them.
 Files in a library folder (Libs, Lib, Libraries) are compiled and give their definitions, but only their syntax errors
@@ -146,6 +153,7 @@ CONDITIONS = re.compile(r"\s*((?:\[\s*(?:Allow|Exclude)Load\w*[^\[\]]*\]\s*)+)$"
 CONDITION = re.compile(r"\[\s*((?:Allow|Exclude)Load\w*)\s*([^\[\]]*)\]", re.I)
 DEPENDENCIES = {"dependencies", "requireddeps", "optionaldeps"}      # and any other ## Dep... (the client's rule)
 ENV_NAME = re.compile(r"env(ironment)?$", re.I)     # a table functions get as their globals: _ENV, Env, env, configEnv
+BLIZZARD_NOTES = 20               # "blizzard-ui" notes one by one; the rest in one
 GUARDED_TYPO = "a warning only because it is behind a condition here"   # a guarded name the client has a near one of
 GUARDED_HINT = ("kept in a local (local X = X), tested or behind a condition here: nothing uses it unconditionally; "
                 "fine if only the code for other game versions needs it")
@@ -1349,12 +1357,18 @@ def _calls_and_secrets(s, rel, k, add, own):
     return maybe
 
 
-def check(path, addons=None, ix=None):
-    """the report on a file or an addon folder (see the module docstring)"""
+def check(path, addons=None, ix=None, ui=None):
+    """the report on a file or an addon folder (see the module docstring); ix: an API manual's index (apidocs.ApiIndex),
+    ui: a Blizzard UI index (uidocs.UiIndex), the packs in use when not given"""
     path = Path(path)
     if not path.exists():
         raise LintError(f"{path}: no such file or folder")
     k = known() if ix is None else Known(ix)
+    if ui is None:
+        from .. import uidocs
+        ui = uidocs.index()
+    blizzard = {}                             # a global the Blizzard UI defines -> (its entry, the places it is read)
+    left_out = {}                             # a name of a Blizzard addon this client does not load -> the hint's text
     folder = path if path.is_dir() else None
     if folder is None and addons is not None:
         try:
@@ -1465,6 +1479,12 @@ def check(path, addons=None, ix=None):
                     f"{use} ({GUARDED_TYPO})" if (name, line) in s["guarded"] else use)
                 guarded(name, line)
             else:
+                defined_by = ui.defines(name)
+                if defined_by is not None:           # the Blizzard UI's own (TooltipDataProcessor, PlayerFrame)
+                    blizzard.setdefault(name, (defined_by, []))[1].append(f"{rel}:{line}")
+                    continue
+                if ui.not_loaded(name, True):       # a left-out Blizzard addon's, by its name: a hint
+                    left_out.setdefault(name, ui.not_loaded_text(name, True))
                 near = k.near(name)
                 if near:
                     add(rel, line, "typo", f"{name} is neither the client's nor this addon's", f"did you mean {near}?")
@@ -1554,6 +1574,24 @@ def check(path, addons=None, ix=None):
     elif path.is_file() and toc is not None and _key(path) not in reached:
         note("not-loaded", f"{rel_of(path)} is not loaded on this client ({GAME_TYPE}): no .toc line for it reaches it",
              "checked anyway")
+    for i, name in enumerate(sorted(blizzard)):
+        if i == BLIZZARD_NOTES:
+            rest = sorted(blizzard)[i:]
+            note("blizzard-ui", f"{len(rest)} more globals are defined by the Blizzard UI: {', '.join(rest[:30])}",
+                 "ui_get each for where and when it is defined")
+            break
+        e, used = blizzard[name]
+        addon, load, _ = ui.addon_of(e)
+        when = (f"on_demand: needs C_AddOns.LoadAddOn(\"{addon}\")" if load == "on_demand" else "always loaded")
+        file, _, line = used[0].rpartition(":")
+        report["notes"].append(dict(file=file, line=int(line or 0), code="blizzard-ui",
+                                    message=f"{name} is defined by the Blizzard UI: {ui.where(e)} ({addon}, {when})",
+                                    hint=(f"before using it: C_AddOns.LoadAddOn(\"{addon}\"), or wait for ADDON_LOADED "
+                                          f"with \"{addon}\"; ui_get {name} for its structure" if load == "on_demand"
+                                          else f"ui_get {name} for its structure")))
+    for name in sorted(left_out)[:BLIZZARD_NOTES]:
+        note("blizzard-left-out", f"{name}: {left_out[name]}",
+             "the name is guessed from the addon's name; it is nil in this client: api_verify settles it")
     if env_read:
         note("setfenv", f"{len(env_read)} names are read from a function environment set with setfenv, not from the "
                         f"globals: {', '.join(sorted(env_read)[:20])}", "not checked")
@@ -1613,6 +1651,22 @@ def apply_live(report, types):
     """the report with the game's answers ({name: type}): a name the game has is no finding; one it does not have is
     an error ("undefined": nil when the line runs), a warning where a nil value is guarded there (report["guarded"]);
     for the unresolved names and the ones only the exe's Usage strings vouch for (report["unconfirmed"]) alike"""
+    _settle(report, types, "is nil in the running game")
+    report["live"] = dict(checked=len(types))
+    return report
+
+
+def apply_seen(report, kept):
+    """the report with what the game answered before (seen.many: {name: {type, at}} for live_names), as apply_live
+    takes answers: report["seen"] {settled: how many}; the names left are for the live step"""
+    types = {n: r.get("type") for n, r in (kept or {}).items() if isinstance(r, dict) and r.get("type")}
+    if types:
+        _settle(report, types, "was nil in the game (kept from an earlier answer: api_verify asks again)")
+        report["seen"] = dict(settled=len(types))
+    return report
+
+
+def _settle(report, types, nil):
     def settled(name):
         return types.get(name) not in (None, "nil")
     guarded = report.get("guarded", {})
@@ -1629,8 +1683,7 @@ def apply_live(report, types):
                 continue
             for where in where_all:
                 file, _, line = where.rpartition(":")
-                f = dict(file=file, line=int(line or 0), code="undefined", message=f"{name} is nil in the running game",
-                         hint=hint)
+                f = dict(file=file, line=int(line or 0), code="undefined", message=f"{name} {nil}", hint=hint)
                 if where in guarded.get(name, ()):
                     nil_guarded.append(dict(f, hint=GUARDED_HINT))
                 else:
@@ -1646,9 +1699,9 @@ def apply_live(report, types):
                 continue                                   # the game has it: the manual or our lists did not
             if f"{f['file']}:{f['line']}" in guarded.get(name, ()):     # a near name the client has stays the hint
                 hint = f"{f['hint']} ({GUARDED_TYPO})" if f.get("hint", "").startswith("did you mean") else GUARDED_HINT
-                keep.append(dict(f, code="undefined", message=f"{name} is nil in the running game", hint=hint))
+                keep.append(dict(f, code="undefined", message=f"{name} {nil}", hint=hint))
             else:
-                report["errors"].append(dict(f, code="undefined", message=f"{name} is nil in the running game"))
+                report["errors"].append(dict(f, code="undefined", message=f"{name} {nil}"))
             continue
         keep.append(f)
     report["warnings"] = keep + nil_guarded
@@ -1658,5 +1711,3 @@ def apply_live(report, types):
     for level in ("errors", "warnings"):
         report[level].sort(key=lambda f: (f["file"], f["line"]))
     report["ok"] = not report["errors"]
-    report["live"] = dict(checked=len(types))
-    return report

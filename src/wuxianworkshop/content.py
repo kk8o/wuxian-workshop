@@ -1,5 +1,5 @@
-r"""Content packs: data the program uses that changes more often than the program (first the API manual, the "api" pack;
-apidocs.py reads it). Each pack is one gzip'd JSON file with "pack" and "version" at the top. The program carries one
+r"""Content packs: data the program uses that changes more often than the program (NAMES: the API manual, the "api" pack
+that apidocs.py reads, and the Blizzard UI index, the "ui" pack that uidocs.py reads). Each pack is one gzip'd JSON file with "pack" and "version" at the top. The program carries one
 copy of each (wuxianworkshop/data/<pack>.json.gz, made by scripts\build_api_pack.py); a newer one downloaded from the
 website goes to %LOCALAPPDATA%\WuxianWorkshop\data\<pack>.json.gz, and whichever is newer is used.
 
@@ -28,6 +28,7 @@ from . import __version__
 from .paths import home
 from .signing import BadSignature, fetch_signed
 
+NAMES = ("api", "ui")                            # the packs this program reads
 MANIFEST = "https://wuxianwow.com/workshop/data/manifest.json"
 BUNDLED = Path(__file__).resolve().parent / "data"
 TIMEOUT = 30
@@ -144,7 +145,7 @@ class Packs:
 
     def status(self):
         """for /api/status, the page's first request: no pack is read whole for it"""
-        return {name: dict(zip(("version", "source"), self.peek(name))) for name in ("api",)}
+        return {name: dict(zip(("version", "source"), self.peek(name))) for name in NAMES}
 
 
 def fetch(url, limit=MAX_PACK):

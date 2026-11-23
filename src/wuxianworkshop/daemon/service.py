@@ -9,7 +9,8 @@ Before an addon's code goes to the game (load, the start of a watch, a watched f
 (agent/history.py): load and watch keep it before they answer, the saves of a watch on the history thread. Its Lua is
 checked first (agent/lint.py): a syntax error keeps it out of the game (load answers 422 check_failed, a watched save is
 not loaded), the other findings come with load's answer; check() is the whole report, the running game asked about the
-names it could not settle.
+names it could not settle. What the game answers (the check's live step, verify: the MCP tool api_verify) is kept per
+client build (seen.py), and a kept answer settles a name in later checks without asking again.
 Local extensions (local/host.py) are WuxianKit's extensions on this computer: processes that speak JSON-RPC over stdio,
 registered, started on their first call, checked, stopped and their output read here, over the same HTTP and MCP; their
 capabilities are called with local_call (which also calls WuxianKit's see / keep / point capabilities in the game), their
@@ -37,7 +38,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .. import __version__, agents, apidocs, compat, content, extensions, i18n, scaffold
+from .. import __version__, agents, apidocs, compat, content, extensions, i18n, scaffold, seen
 from ..local import drive as local_drive
 from ..local import gameside as local_gameside
 from ..local import manifest as local_manifest
@@ -2806,7 +2807,26 @@ class Service:
             report = lint.check(path, self.worker.addons)
         except (lint.LintError, OSError) as e:
             return dict(errors=[], warnings=[], unresolved=[], note=str(e))
+        self.settle_seen(report)
         return dict(errors=report["errors"], warnings=report["warnings"], unresolved=sorted(report["unresolved"]))
+
+    def seen_build(self):
+        """the client build the game's answers are kept under (seen.py): the running game's, else the newest known"""
+        try:
+            build = (self.worker.game_status() or {}).get("build")
+        except Exception:                          # a stand-in worker without one (tests)
+            build = None
+        return seen.current(build)
+
+    def settle_seen(self, report):
+        """(any thread) the names of a check's report the game answered before, settled from what is kept"""
+        names = lint.live_names(report)
+        if names:
+            try:
+                lint.apply_seen(report, seen.many(self.seen_build(), names))
+            except (OSError, ValueError):
+                pass
+        return report
 
     async def check(self, target, live=True):
         """the whole check of a file or an addon (agent/lint.py): syntax with Lua 5.1, globals and APIs against this
@@ -2822,6 +2842,7 @@ class Service:
             report = await asyncio.to_thread(lint.check, path, addons)
         except lint.LintError as e:
             raise ApiError(400, "bad_target", str(e)) from None
+        await asyncio.to_thread(self.settle_seen, report)
         names = lint.live_names(report)
         if live and names:
             comp = self.worker.comp
@@ -2836,11 +2857,63 @@ class Service:
                 else:
                     if isinstance(types, dict):
                         lint.apply_live(report, types)
+                        await asyncio.to_thread(self.keep_seen, types)
                     else:
                         report["live"] = dict(error=f"the game's answer was not understood: {str(types)[:80]}")
         self.journal.add("INFO", f"check {report['addon'] or target}: {len(report['errors'])} errors, "
                                  f"{len(report['warnings'])} warnings" + (" (asked the game)" if report.get("live", {}).get("checked") else ""))
         return report
+
+    def keep_seen(self, types, members=None, more=None, valid=None):
+        """(worker of asyncio.to_thread) the game's answers kept for the running game's build (seen.py); {} when they
+        could not be"""
+        try:
+            return seen.record(self.seen_build(), types, members, more, valid)
+        except (OSError, ValueError) as e:
+            self.journal.add("INFO", f"the game's answers were not kept: {e}")
+            return {}
+
+    VERIFY_NAME = re.compile(r"^[A-Za-z_]\w*(?:[.:][A-Za-z_]\w*)*\Z")
+    VERIFY_MAX, VERIFY_MEMBERS, VERIFY_BYTES = 100, 200, 160 * 1024
+
+    async def verify(self, names, members=False):
+        """the type of each global or dotted name in the running game (Foo, Foo.bar, Foo:bar; read from _G and the
+        tables' metatables' __index tables, nothing called but C_EventUtils.IsEventValid for a name in capitals and
+        underscores: {type: "event", valid}) and, with members, a table's member names (VERIFY_MEMBERS
+        each, VERIFY_BYTES of names in all); the answers are kept (seen.py). {client, build, answers: {name: {type,
+        members?, more?}}}"""
+        if not (isinstance(names, list) and 1 <= len(names) <= self.VERIFY_MAX
+                and all(isinstance(n, str) and len(n) <= 128 and self.VERIFY_NAME.match(n) for n in names)):
+            raise ApiError(400, "bad_request", f"names: a list of 1 to {self.VERIFY_MAX} global or dotted names "
+                                               f"(Foo, Foo.bar, Foo:bar)")
+        names = list(dict.fromkeys(names))
+        code = probes.verify(names, bool(members), self.VERIFY_MEMBERS, self.VERIFY_BYTES)
+        data = await self.probe(code, 20000)
+        if not isinstance(data, dict):
+            raise ApiError(400, "probe_failed", f"the game's answer was not understood: {str(data)[:80]}")
+        answers, types, lists, more, valid = {}, {}, {}, {}, {}
+        for name in names:
+            got = data.get(name) if isinstance(data.get(name), dict) else {}
+            kind = got.get("type")
+            if kind not in seen.TYPES:                     # not answered: nothing to keep
+                answers[name] = dict(type=None, error="no answer for it")
+                continue
+            types[name] = kind
+            answers[name] = dict(type=kind)
+            if kind == "event":                            # C_EventUtils.IsEventValid's answer
+                answers[name]["valid"] = valid[name] = got.get("valid") is True
+            if members and kind == "table":
+                listed = got.get("members") if isinstance(got.get("members"), list) else []
+                answers[name]["members"] = lists[name] = sorted(str(m) for m in listed)
+                left = got["count"] - len(listed) if isinstance(got.get("count"), int) else 0
+                if left > 0:
+                    answers[name]["more"] = more[name] = left
+        await asyncio.to_thread(self.keep_seen, types, lists, more, valid)
+        try:
+            client = (self.worker.game_status() or {}).get("version")
+        except Exception:                                  # a stand-in worker without one (tests)
+            client = None
+        return dict(client=client, build=self.seen_build(), answers=answers)
 
     async def checkpoint(self, addon, note=""):
         """a version of the addon's files kept now (the latest one, new false, when nothing changed since)"""

@@ -30,6 +30,10 @@ likely to be protected: look at it first.
 - For the text: your own frame with a font string is always yours to show. `api_search` the widget methods you
   will call.
 - The limits: `api_manual {"topic": "protected"}`, `{"topic": "secret"}`.
+- A part that leans on Blizzard's own UI (a tooltip hook, a unit frame, a template): `ui_search` /
+  `ui_get` it, then `api_verify {"names": ["TooltipDataProcessor"]}` once the game runs: the verdict can then say
+  "seen in the game". Say which it is: declared (the manual, the ui index), present (`api_verify`, `seen`), works (a
+  `try` with a valid input) or restricted (blocked, or secret in that state).
 
 Read `call` on each: `ok`, `limited` (read `why`), `protected`. One `protected` part does not end the idea: it ends
 that part. Say what is left without it. A `note` from `api_get` means the name you had in mind is not this client's:

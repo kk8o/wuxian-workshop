@@ -144,6 +144,8 @@ class UsageNames(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"WUXIAN_HOME": str(Path(self.tmp.name) / "home")})   # its own seen
+        self.env.start()
         addons = Path(self.tmp.name) / "AddOns"
         (addons / "ChkU").mkdir(parents=True)
         (addons / "ChkU" / "ChkU.toc").write_text("## Interface: 16001\nCore.lua\n", encoding="utf-8")
@@ -161,6 +163,7 @@ class UsageNames(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.known.stop()
+        self.env.stop()
         self.tmp.cleanup()
 
     async def test_offline_and_online(self):

@@ -513,6 +513,68 @@ def api_scan(part, names=None):
     return LUA_JSON + head + SCAN_BODY
 
 
+# api_verify (service.verify): what each name is in the game, read only: rawget from _G down, and from a table's
+# metatable's __index when that is a table (a frame's methods); no __index function runs. The one function called is
+# C_EventUtils.IsEventValid (when the client has it), for a name in capitals and underscores: an event (PLAYER_SWING) is
+# {type = "event", valid = true}; one it does not know is {type = "event", valid = false} unless a global has the name
+VERIFY_BODY = r"""
+local function field(t, k)
+	local v = rawget(t, k)
+	if v == nil then
+		local mt = getmetatable(t)
+		local idx = type(mt) == "table" and rawget(mt, "__index") or nil
+		if type(idx) == "table" then v = rawget(idx, k) end
+	end
+	return v
+end
+local out, budget = {}, BYTES
+local EVENTS = rawget(_G, "C_EventUtils")
+EVENTS = type(EVENTS) == "table" and EVENTS or nil
+for _, n in ipairs(NAMES) do
+	local v = _G
+	for part in n:gmatch("[^.:]+") do
+		if type(v) ~= "table" then v = nil break end
+		v = field(v, part)
+	end
+	local row = {type = type(v)}
+	local isEvent = EVENTS and n:find("^[A-Z][A-Z0-9]*_[A-Z0-9_]*$") and rawget(EVENTS, "IsEventValid")
+	if type(isEvent) == "function" then
+		local ok, valid = pcall(isEvent, n)
+		if ok and valid then
+			row = {type = "event", valid = true}
+		elseif v == nil then
+			row = {type = "event", valid = false}
+		end
+	end
+	if MEMBERS and type(v) == "table" then
+		local keys = {}
+		for k in pairs(v) do
+			if type(k) == "string" then keys[#keys + 1] = k end
+		end
+		table.sort(keys)
+		local shown = {}
+		for i = 1, math.min(#keys, EACH) do
+			if budget < #keys[i] + 4 then break end
+			budget = budget - #keys[i] - 4
+			shown[i] = keys[i]
+		end
+		row.members, row.count = shown, #keys
+	end
+	out[n] = row
+end
+return J(out)
+"""
+
+
+def verify(names, members=False, each=200, most=160 * 1024):
+    """the chunk that answers {name: {type, members?: [names, sorted], count?}} for global or dotted names (Foo.bar,
+    Foo:bar), at most `each` member names of a table and `most` bytes of them in all; an event's name (capitals and
+    underscores, C_EventUtils.IsEventValid) {type: "event", valid}"""
+    head = (f"local NAMES = {{{', '.join(lua_str(n) for n in names)}}}\n"
+            f"local MEMBERS, EACH, BYTES = {'true' if members else 'false'}, {int(each)}, {int(most)}\n")
+    return LUA_JSON + head + VERIFY_BODY
+
+
 def answer_chunk(chunk, key, whole=False):
     """a probe chunk run so that a long answer comes back: it returns the first piece after a line "1/<pieces>", and
     keeps the answer in the game under `key` for the pour of the rest when there is more (the chunk's lines keep their

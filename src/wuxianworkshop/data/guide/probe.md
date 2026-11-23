@@ -26,6 +26,12 @@ installed, and the player only plays.
    Not knowing the name: search by words (`{"query": "bag free slots"}`), one kind (`"kind": "event"`), or a
    namespace's start (`{"query": "C_Container."}`). Whether the last client update changed it: `api_manual
    {"topic": "changes"}`.
+   Blizzard's own UI is not in the manual: `ui_search {"query": "TooltipDataProcessor"}` and
+   `ui_get {"name": "PlayerFrame"}` give its frames, templates, mixins and tables (`load` `on_demand`: only after
+   `C_AddOns.LoadAddOn`); `api_verify {"names": ["C_X.Y", "PlayerFrame.PlayerFrameContainer"], "members": true}` settles
+   in the running game whether a name is there, and keeps the answer. A verdict keeps four things apart: declared
+   (the manual, the ui index), present (`api_verify`, `seen`), works (a `try` with a valid input), restricted
+   (blocked, or secret in that state).
 2. **Read the rules that decide it.** `api_manual` lists the topics. The ones that settle most verdicts: `protected`
    and `secure-templates` (what only a click of the player's may do), `secret` (values an addon may show and not
    read), `taint`, `gamerules`, `forever-api` (what only this client has), `toc`. This client switches some of the

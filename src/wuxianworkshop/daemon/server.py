@@ -511,6 +511,11 @@ def make_app(service, access, handle, mcp=None):
         return await service.api_scan(b.get("part"), b.get("names"))
 
     @api
+    async def verify(request):
+        b = await body_of(request)
+        return await service.verify(b.get("names"), b.get("members") is True)
+
+    @api
     async def addon_events(request):
         b = await body_of(request)
         return await service.addon_events(b.get("addon"), b.get("topic"), b.get("since", 0), b.get("limit", 100),
@@ -706,6 +711,7 @@ def make_app(service, access, handle, mcp=None):
         Route("/api/trace", trace, methods=["POST"]),
         Route("/api/inspect", inspect, methods=["POST"]),
         Route("/api/api_scan", api_scan, methods=["POST"]),
+        Route("/api/verify", verify, methods=["POST"]),
         Route("/api/addon_events", addon_events, methods=["POST"]),
         Route("/api/call", call_, methods=["POST"]),
         Route("/api/addon_api", addon_api, methods=["POST"]),
