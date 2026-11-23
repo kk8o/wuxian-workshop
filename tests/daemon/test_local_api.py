@@ -293,7 +293,7 @@ class LocalApi(LocalDaemon, unittest.TestCase):
         self.assertEqual((mine["from"], mine["where"], mine["risk"], mine["package"], mine["local"]),
                          ("folder", "both", "local", None, packed["summary"]["local"]))
         self.assertEqual(mine["game"], [dict(folder="WuxianGx", title="WuxianGx", notes=None, version="1.2.0",
-                                             author=None, needs=[], path=str(self.addons / "WuxianGx"),
+                                             author=None, requires={}, needs=[], path=str(self.addons / "WuxianGx"),
                                              cannot=None)])
         self.assertEqual(self.ok("POST", "/api/local/summary", {"path": packed["file"]}), packed["summary"])
         facts = {k: v for k, v in mine.items() if k != "fingerprint"}          # (by its id: with what a yes allows)

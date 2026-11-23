@@ -335,12 +335,23 @@ class ApiIndex:
                 s = 30
             else:
                 s = 10                              # found in the description only
-            scored.append((-s, len(e["name"]), e["name"], e))
-        scored.sort(key=lambda x: x[:3])
+            scored.append((-s, KINDS.index(e["kind"]), len(e["name"]), e["name"], e))   # a tie: functions first
+        scored.sort(key=lambda x: x[:4])
         return [e for *_, e in scored], words
+
+    def inherited(self, name):
+        """the widget methods named as `name`'s method ("Frame:SetPoint" -> the SetPoint of every widget type that
+        lists it): widget types inherit methods, and the manual lists each under the type that defines it"""
+        obj, sep, method = str(name or "").strip().partition(":")
+        if not sep or not method:
+            return []
+        return [e for e in self.by_short.get(method.lower(), []) if e.get("obj") and e["kind"] == "function"]
 
     def search(self, query, kind=None, limit=20, call=None):
         found, words = self._ranked(query, kind, call)
+        if not found and ":" in str(query or ""):       # Frame:SetPoint: listed under ScriptRegionResizing
+            found = [e for e in self.inherited(query) if (not kind or e["kind"] == kind)
+                     and (not call or (e["call"] in ("ok", "limited") if call == "usable" else e["call"] == call))]
         if not words:
             return []
         results = [self.brief(e) for e in found[:max(1, min(int(limit), 200))]]
@@ -393,13 +404,32 @@ class ApiIndex:
         return out
 
     def get(self, name):
-        key = str(name or "").strip().lower()
-        found = self.by_name.get(key) or self.by_short.get(key) or []
-        if len(found) == 1:
-            return self.full(found[0])
+        """one entry in full, or {candidates}; with `note` when the name as given is not what the client has: a short
+        name that is no global here (IsAddOnLoaded: C_AddOns.IsAddOnLoaded), or a widget method listed under another
+        type (Frame:SetPoint: ScriptRegionResizing's)"""
+        raw = str(name or "").strip()
+        key, note = raw.lower(), None
+        found = self.by_name.get(key)
+        if not found:
+            found = self.by_short.get(key) or []
+            if found and not any(c in key for c in ".:") and raw not in ((self.runtime or {}).get("globals") or ()):
+                names = ", ".join(e["name"] for e in found[:4])
+                note = (f"{raw} is not a global of this client: call {names}" if len(found) == 1 else
+                        f"{raw} is not a global of this client; these have that name: {names}")
+        if not found:
+            found = self.inherited(raw)
+            if found:
+                note = (f"{raw} is not listed as such: widget types inherit methods, and the manual lists each under "
+                        f"the type that defines it ({', '.join(e['name'] for e in found[:6])})")
         if not found:
             return None
-        return dict(candidates=[self.brief(e) for e in found])
+        out = self.full(found[0]) if len(found) == 1 else dict(candidates=[self.brief(e) for e in found])
+        return dict(out, note=note) if note else out
+
+    def changes(self):
+        """the manual's changes from one client build to the next, the latest first: [{from, to, date, added, changed,
+        removed}]"""
+        return self.pack.get("changes") or []
 
     def manual(self, topic=None, lang=None):
         """the topics, or one: in English when lang is "en" and the pack has the English text"""

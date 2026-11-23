@@ -20,8 +20,9 @@ in agent/history.py, reason "update": it can be put back), writes the new one be
 .toc's Interface the client's, as for the bundled addons. A removal keeps a version too ("remove"), then the folder goes.
 The catalog is taken only with its signature (extensions.json.sig, signing.py). WUXIAN_EXTENSIONS_FEED overrides the
 catalog's URL (a URL or a local extensions.json, taken unsigned): for tests, and to try a catalog before it is uploaded.
-The daemon keeps the addons it last read (id, folder, version) in the state folder (extension-catalog.json): the agent's
-WuxianKit tools (mcp/kit.py) tell by it the addons the catalog lists.
+The daemon keeps the addons it last read (KEPT_FIELDS: id, folder, version, title, needs, min_app) in the state folder
+(extension-catalog.json): the agent's WuxianKit tools (mcp/kit.py) tell by it the addons the catalog lists, and the
+daemon starts from it (Catalog.load) so the version report knows the catalog before its first read.
 """
 import hashlib
 import io
@@ -29,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -104,17 +106,51 @@ def entries(data):
     return out
 
 
+KEPT_FIELDS = ("id", "folder", "version", "title", "needs", "min_app")   # what the store keeps of an entry (KEPT)
+
+
 class Catalog:
     """the catalog as last read; refresh() reads it again (blocking: run it in a thread). store: the file its addons
-    are kept in when read (id, folder, version: listed_folders), None: none"""
+    are kept in when read (KEPT_FIELDS: listed_folders, and the version report before the next read), None: none.
+    load() takes the store's addons while nothing was read yet: they say what is there and its versions, but are not
+    installed (no file, size, SHA-256: download refuses them) until a read of the catalog itself"""
 
     def __init__(self, url=None, fetcher=fetch, clock=time.time, store=None):
         self.url, self.fetch, self.clock, self.store = url or catalog_url(), fetcher, clock, store
         self.addons, self.updated, self.checked, self.error, self.missing = [], None, None, "", False
+        self.reading = threading.Lock()      # one read at a time (the page's and the daemon's background ones)
+
+    def load(self):
+        """the addons kept in store, while no read has given any (checked stays None: the next look reads it); a store
+        that is not there or cannot be read changes nothing"""
+        if not self.store or self.addons or self.checked is not None:
+            return self
+        try:
+            data = json.loads(Path(self.store).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return self
+        if not isinstance(data, dict) or not isinstance(data.get("addons"), list):
+            return self
+        out = []
+        for e in data["addons"]:
+            if (isinstance(e, dict) and isinstance(e.get("id"), str) and ID.match(e["id"])
+                    and isinstance(e.get("folder"), str) and FOLDER.match(e["folder"])
+                    and isinstance(e.get("version"), str) and e["version"]):
+                kept = {k: e[k] for k in KEPT_FIELDS if k in e}
+                if "needs" in kept:
+                    kept["needs"] = compat.clean_needs(kept["needs"])
+                out.append(kept)
+        if not self.addons and self.checked is None:
+            self.addons, self.updated = out, data.get("updated")
+        return self
 
     def refresh(self):
         """reads the catalog again; on failure what was read before stands, and error says why in the page's words
         (missing: there is no catalog at its address, which is not a fault)"""
+        with self.reading:
+            return self._refresh()
+
+    def _refresh(self):
         from .i18n import tr
         self.missing = False
         try:
@@ -148,7 +184,7 @@ class Catalog:
             path = Path(self.store)
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.name + ".tmp")
-            kept = [{k: e[k] for k in ("id", "folder", "version")} for e in self.addons]
+            kept = [{k: e[k] for k in KEPT_FIELDS if k in e} for e in self.addons]
             tmp.write_text(json.dumps({"updated": self.updated, "addons": kept}), encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
@@ -161,7 +197,9 @@ class Catalog:
         return dict(url=self.url, updated=self.updated, checked=self.checked, error=self.error, missing=self.missing)
 
     def download(self, entry):
-        """the entry's zip, its size and SHA-256 checked"""
+        """the entry's zip, its size and SHA-256 checked (an entry kept from an earlier read, load(): CatalogError)"""
+        if not all(isinstance(entry.get(k), t) for k, t in (("file", str), ("size", int), ("sha256", str))):
+            raise CatalogError(f"{entry.get('id')}: the extension catalog has not been read from the website yet")
         if "://" in self.url:
             where = urllib.parse.urljoin(self.url.rsplit("/", 1)[0] + "/", entry["file"])
         else:

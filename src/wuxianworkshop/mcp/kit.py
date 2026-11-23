@@ -198,6 +198,81 @@ def newer(manifest):
     return p if isinstance(p, int) and not isinstance(p, bool) and p > PROTOCOL else None
 
 
+VERSION_STEP = ("call `status` and tell the player its versions.next.text (what to update and where: the player "
+                "clicks it, never you; versions_wait waits for it)")
+
+
+def why_not_loaded(ext):
+    """the version a WuxianKit extension row lacks, in words: its unmet (outdated: what its .toc's X-Wuxian-Requires asks
+    for and the game has not) or built / floor (too_old); "" when the row says neither"""
+    gate = ext.get("gate") or ext.get("state")
+    if gate == "outdated":
+        unmet = [u for u in ext.get("unmet") or [] if isinstance(u, dict) and u.get("name")]
+        said = ", ".join(f"{u['name']} {u.get('needs')}" + (f" (has {u['has']})" if u.get("has") else "") for u in unmet)
+        return f"needs {said}" if said else "a version its .toc asks for is not there"
+    if gate == "too_old":
+        built, floor = ext.get("built"), ext.get("floor")
+        return (f"made for WuxianKit {built}; this WuxianKit runs extensions made for {floor} or later" if built and floor
+                else "made for a WuxianKit older than this one's floor")
+    return ""
+
+
+def state_lines(exts):
+    """wk_docs' overview of the extensions without tools, by why: off (the player turns one on), outdated / too_old
+    (WuxianKit did not load it for its version: turning it on is refused until it is updated), disabled (in the game's
+    addon list), missing (the game cannot load its addon)"""
+    groups = {}
+    for e in exts:
+        state = e.get("state")
+        if state != "on":
+            groups.setdefault(state if state in ("off", "outdated", "too_old", "disabled", "missing") else "other",
+                              []).append(e)
+    lines = []
+
+    def ids(rows, why=None):
+        return ", ".join(f"`{e['id']}`" + (f" ({why(e)})" if why and why(e) else "") for e in rows)
+    if groups.get("off"):
+        lines += ["", f"Off, so without tools: {ids(groups['off'])}. The player can turn one on in the game's /wk window "
+                      "(or, if they ask you to, propose wk_kit_extension_set with {\"extension\": \"<id>\", "
+                      "\"value\": true})."]
+    held = groups.get("outdated", []) + groups.get("too_old", [])
+    if held:
+        lines += ["", f"Not loaded for its version, so without tools: {ids(held, why_not_loaded)}. WuxianKit refuses to "
+                      f"turn one on until it is updated: {VERSION_STEP}."]
+    if groups.get("disabled"):
+        lines += ["", f"Disabled in the game's addon list, so without tools: {ids(groups['disabled'])}. The player "
+                      "enables its addon there (the AddOns button of the character screen, or the game's addon list), "
+                      "then restarts the game or reloads the UI."]
+    if groups.get("missing"):
+        lines += ["", f"The game cannot load its addon, so without tools: "
+                      f"{ids(groups['missing'], lambda e: e.get('reason') or '')}. The tool `addons` shows the addon "
+                      "(a dependency missing or turned off, or files broken): tell the player what it says."]
+    if groups.get("other"):
+        lines += ["", f"Without tools: {ids(groups['other'], lambda e: str(e.get('state') or ''))}."]
+    return lines
+
+
+def state_sentence(ext):
+    """wk_docs {"extension"}: why an extension of the game has no tools now, in one sentence; None while it is on"""
+    state = ext.get("state")
+    if state == "on":
+        return None
+    if state == "off":
+        return "It is off: its tools come when the player turns it on in the game's /wk window."
+    if state in ("outdated", "too_old"):
+        return (f"It is {state}, not loaded for its version ({why_not_loaded(ext)}), so it has no tools: WuxianKit "
+                f"refuses to turn it on until it is updated. {VERSION_STEP[0].upper()}{VERSION_STEP[1:]}.")
+    if state == "disabled":
+        return ("It is disabled in the game's addon list, so it has no tools: the player enables its addon there (the "
+                "AddOns button of the character screen, or the game's addon list), then restarts the game or reloads "
+                "the UI.")
+    if state == "missing":
+        reason = ext.get("reason")
+        return (f"The game cannot load its addon{f' ({reason})' if reason else ''}, so it has no tools: the tool `addons` "
+                "shows why (a dependency missing or turned off, or files broken); tell the player.")
+    return f"It is {state}, so it has no tools now."
+
+
 def update_note(protocol):
     return (f"The game's WuxianKit speaks protocol {protocol}, newer than this 无限工坊 knows ({PROTOCOL}): update "
             "无限工坊 to use its tools. wk_docs still gives its guides.")
@@ -1286,13 +1361,12 @@ class KitTools:
                     n = 0 if later else sum(1 for c in ext.get("capabilities") or []
                                             if c.get("id") not in INTERNAL and c.get("kind") in KINDS)
                     where = f", from {source(ext, self.listed)}" if foreign(ext) else ""
+                    gate = (f"; the game loaded it although it is {ext['gate']} ({why_not_loaded(ext)}): "
+                            f"{VERSION_STEP}") if ext.get("gate") in ("outdated", "too_old") else ""
                     lines.append(f"- `{ext['id']}` ({text(ext.get('title')) or ext['id']}, {n} tool{'' if n == 1 else 's'}"
-                                 f"{where}): before using them, call wk_docs with {{\"extension\": \"{ext['id']}\"}}")
-            off = [e["id"] for e in self.exts.values() if e.get("state") != "on"]
-            if off:
-                lines += ["", f"Off, so without tools: {', '.join(off)}. The player can turn one on in the game's /wk window "
-                              "(or, if they ask you to, propose wk_kit_extension_set with {\"extension\": \"<id>\", "
-                              "\"value\": true})."]
+                                 f"{where}): before using them, call wk_docs with {{\"extension\": \"{ext['id']}\"}}"
+                                 f"{gate}")
+            lines += state_lines(e for e in self.exts.values() if e["id"] != "kit")
         else:
             lines = ["# WuxianKit", "",
                      "No WuxianKit in the game right now (call `status`: the game may be away, or WuxianKit is not "
@@ -1459,8 +1533,12 @@ class KitTools:
         title, body = (head.group(1).strip(), body[head.end():]) if head else (ext.get("title") or eid, body)
         lines = [f"# {title}", "", f"Extension id `{eid}` (tools wk_{eid}_*), from the addon {ext.get('addon') or '?'}; "
                  f"the player sees it as {text(ext.get('title')) or eid}.", ""]
-        if ext.get("state") != "on":
-            lines += [f"It is {ext.get('state')}: its tools come when the player turns it on in the game's /wk window.", ""]
+        said = state_sentence(ext)
+        if said:
+            lines += [said, ""]
+        elif ext.get("gate") in ("outdated", "too_old"):
+            lines += [f"The game loaded it although it is {ext['gate']} ({why_not_loaded(ext)}): its tools work, and "
+                      f"it may not work as its version expects. {VERSION_STEP[0].upper()}{VERSION_STEP[1:]}.", ""]
         if eid in self.local_problems:
             lines += [f"A local extension on this computer has the id `{eid}` too. The game's counts, so the local one "
                       "has no tools and no docs here: whoever wrote it gives it another id.", ""]

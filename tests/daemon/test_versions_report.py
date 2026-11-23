@@ -210,16 +210,83 @@ class Versions(unittest.TestCase):
             self.assertEqual(self.items()["voice"]["installed"], "1.3")
 
     def test_the_hosts_version_rows(self):
-        """Host.version_rows: id, title, version, requires and addons of each manifest; one that cannot be read keeps
-        its id"""
+        """Host.version_rows: id, title, version, requires, addons and drives (an app with driver "local") of each
+        manifest; one that cannot be read keeps its id"""
         from tests.local.util import make_extension
         folder = make_extension(Path(self.addons).parent / "ext", "voice")
         self.svc.local.add(str(folder))
+        driver = make_extension(Path(self.addons).parent / "drv", "drv", apps=[
+            {"app": "cocreate", "title": "数据共创", "driver": "local", "hear": ["cocreate:snapshot"]}])
+        self.svc.local.add(str(driver))
         rows = self.svc.local.version_rows()
-        self.assertEqual([(r["id"], r["version"], r["addons"]) for r in rows], [("voice", "0.1.0", [])])
+        self.assertEqual([(r["id"], r["version"], r["addons"], r["drives"]) for r in rows],
+                         [("voice", "0.1.0", [], False), ("drv", "0.1.0", [], True)])
         (folder / "wuxian-extension.json").write_text("{", encoding="utf-8")
-        self.assertEqual(self.svc.local.version_rows(), [dict(id="voice", title="voice", version=None, requires={},
-                                                              addons=[])])
+        self.assertEqual(self.svc.local.version_rows()[0], dict(id="voice", title="voice", version=None, requires={},
+                                                                addons=[], drives=False))
+
+    def test_the_catalog_without_the_page(self):
+        """(I-A) the catalog kept on disk is known from start(), and the daemon reads the catalog itself in the
+        background (catalog_check: not again within half of CATALOG_AGE of a read); status's versions read the catalog
+        in memory only, never the website"""
+        from wuxianworkshop import extensions
+        toc(self.addons / "WuxianKit", "0.10.0")
+        self.svc.kit_seen = "0.10.0"
+        store = extensions.catalog_store()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text('{"addons": [{"id": "wuxiankit", "folder": "WuxianKit", "version": "0.10.1"}]}',
+                         encoding="utf-8")
+        self.assertEqual(self.items()["wuxiankit"]["state"], "ok")                  # nothing read yet
+
+        def start(svc):
+            """svc.start() with nothing of it running: [the names of the Schedulers it made]"""
+            svc.worker.run = lambda: None
+            with mock.patch.object(service, "Scheduler") as scheduler, mock.patch.object(svc.local, "autostart"), \
+                    mock.patch.object(service.content, "ContentUpdater"), \
+                    mock.patch.object(svc, "updater", SimpleNamespace(supported=False, status=lambda: {})), \
+                    mock.patch.object(svc.ext_catalog, "refresh", side_effect=AssertionError("the website")):
+                svc.start()
+                svc.thread.join(1)
+            return {c.kwargs.get("name"): c for c in scheduler.call_args_list}
+        self.assertFalse(self.svc.read_catalog)                                     # (not the real daemon)
+        self.assertNotIn("wuxian-catalog", start(self.svc))
+        items = self.items()
+        self.assertEqual((items["wuxiankit"]["state"], items["wuxiankit"]["latest"]), ("update", "0.10.1"))
+        self.assertIn("update WuxianKit to 0.10.1", items["wuxiankit"]["text"])
+        reads = []
+        self.svc.ext_catalog.refresh = lambda: reads.append(1) or setattr(self.svc.ext_catalog, "checked", time.time())
+        self.svc.catalog_check()
+        self.svc.catalog_check()                                                    # just read: not again
+        self.assertEqual(len(reads), 1)
+        self.svc.ext_catalog.checked = time.time() - self.svc.CATALOG_AGE
+        self.svc.catalog_check()
+        self.assertEqual(len(reads), 2)
+        self.assertFalse(Service(lambda on_debug, log: Worker(), journal=Journal(), sync_addons=True,
+                                 read_catalog=False).read_catalog)
+        real = Service(lambda on_debug, log: Worker(), journal=Journal(), sync_addons=True)
+        self.assertTrue(real.read_catalog)
+        made = start(real)["wuxian-catalog"]
+        self.assertEqual((made.args[0], made.kwargs["first"], made.kwargs["every"]),
+                         (real.catalog_check, service.CATALOG_FIRST, Service.CATALOG_AGE))
+
+    def test_the_update_state_in_the_snapshot(self):
+        """update_app's sentence follows the updater's state (versions_snapshot's app.update)"""
+        self.svc.updater = SimpleNamespace(status=lambda: dict(state="ready", latest="99.0.0"))
+        report = self.svc.versions()
+        self.assertEqual(report["items"][0]["id"], "workshop")
+        self.assertIn("重启并更新 (Restart and update)", report["items"][0]["text"])
+
+    def test_a_local_extensions_verdict(self):
+        """local_verdict: the text of a local extension's item when it is not fine (the host's player update), else
+        None"""
+        toc(self.addons / "WuxianKit", "0.10.0")
+        self.svc.kit_seen = "0.10.0"
+        rows = [dict(id="voice", title="语音", version="1.0", requires={"kit": "0.11.0"}, addons=[])]
+        with mock.patch.object(self.svc, "versions_local_rows", lambda: rows):
+            self.assertTrue(self.svc.local_verdict("voice").startswith("语音 needs WuxianKit 0.11.0"))
+            rows[0]["requires"] = {"kit": "0.10.0"}
+            self.assertIsNone(self.svc.local_verdict("voice"))
+            self.assertIsNone(self.svc.local_verdict("nobody"))
 
 
 class McpStatus(unittest.TestCase):
@@ -257,8 +324,11 @@ class McpStatus(unittest.TestCase):
     def test_the_tool(self):
         mcp = server.build_server(self.Backend(__version__))
         tool = next(t for t in asyncio.run(mcp.list_tools()) if t.name == "status")
-        self.assertIn('Severity "blocked" or "pending": tell the user\n  versions.next.text', tool.description)
-        self.assertIn("once per session", tool.description)
+        said = " ".join(tool.description.split())
+        for words in ('Severity "blocked" or "pending": tell the user versions.next.text', "then wait with versions_wait",
+                      "once per session", "versions.items lists only what is not ok", "each with its own `text`",
+                      "addons_update", "kit.outdated", "never run `wuxian update apply`", "重启并更新 (Restart and update)"):
+            self.assertIn(words, said)
         got = self.call(mcp)["versions"]
         self.assertEqual(got["next"]["action"], "update_app")
         self.assertEqual([i["id"] for i in got["items"]], ["workshop"])            # what is ok is left out

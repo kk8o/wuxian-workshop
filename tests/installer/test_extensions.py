@@ -93,18 +93,45 @@ class Catalog(unittest.TestCase):
             self.assertEqual(cat.addons, [entry])                          # what was read stands
 
     def test_the_catalog_is_kept_for_the_agent(self):
-        """a catalog read is kept (its addons' id, folder and version) when the Catalog has a store; a failed read
-        leaves what was kept"""
+        """a catalog read is kept (its addons' id, folder, version, title, needs and min_app) when the Catalog has a
+        store; a failed read leaves what was kept"""
         make_catalog(self.dir, make_zip())
         store = self.dir / "state" / X.KEPT
         cat = X.Catalog(url=str(self.dir / "extensions.json"), store=store).refresh()
         self.assertEqual(json.loads(store.read_text(encoding="utf-8"))["addons"],
-                         [{"id": "demo", "folder": "Demo", "version": "1.0.0"}])
+                         [{"id": "demo", "folder": "Demo", "version": "1.0.0", "title": {"zh": "示例", "en": "Demo"},
+                           "min_app": "0.1.0"}])
         self.assertEqual(X.listed_folders(store), {"Demo"})
         (self.dir / "extensions.json").write_text("{not json", encoding="utf-8")
         cat.refresh()
         self.assertEqual(X.listed_folders(store), {"Demo"})
         self.assertIsNone(X.listed_folders(self.dir / "none.json"))
+
+    def test_a_catalog_starts_from_the_one_kept(self):
+        """load(): the store's addons while nothing was read (the version report knows them before the first read);
+        they are never downloaded, and a read replaces them; a store that is not there or not a catalog: nothing"""
+        store = self.dir / "state" / X.KEPT
+        store.parent.mkdir(parents=True)
+        store.write_text(json.dumps({"updated": "2026-11-20", "addons": [
+            {"id": "wuxiankit", "folder": "WuxianKit", "version": "0.10.1", "title": {"zh": "扩展框架"},
+             "needs": {"workshop": "0.10.0", "x": "y"}},
+            {"id": "Bad Id", "folder": "x", "version": "1"}, {"id": "nover", "folder": "NoVer"}, "junk"]}),
+            encoding="utf-8")
+        cat = X.Catalog(url=str(self.dir / "extensions.json"), store=store).load()
+        self.assertEqual((cat.addons, cat.updated, cat.checked), ([{"id": "wuxiankit", "folder": "WuxianKit",
+                                                                    "version": "0.10.1", "title": {"zh": "扩展框架"},
+                                                                    "needs": {"workshop": "0.10.0"}}],
+                                                                  "2026-11-20", None))
+        with self.assertRaisesRegex(X.CatalogError, "has not been read from the website yet"):
+            cat.download(cat.addons[0])
+        make_catalog(self.dir, make_zip())
+        self.assertEqual([e["id"] for e in cat.refresh().addons], ["demo"])          # a read replaces them ...
+        self.assertEqual([e["id"] for e in cat.load().addons], ["demo"])             # ... and load does not come back
+        for text in ("{not json", json.dumps({"addons": "no"}), json.dumps([1])):
+            store.write_text(text, encoding="utf-8")
+            self.assertEqual(X.Catalog(url="x", store=store).load().addons, [])
+        self.assertEqual(X.Catalog(url="x", store=self.dir / "none.json").load().addons, [])
+        self.assertEqual(X.Catalog(url="x").load().addons, [])
 
     def test_every_member_is_checked(self):
         for extra, why in (({"Demo/../evil.lua": "x"}, "not a file of"), ({"Other/x.lua": "x"}, "not a file of"),

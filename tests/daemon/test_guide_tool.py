@@ -148,6 +148,24 @@ class WhatTheySay(unittest.TestCase):
         for action in host.PLAYER_ACTIONS:
             self.assertIn(f"`{action}`", text)
 
+    def test_the_versions(self):
+        """what the chapters say of X-Wuxian-Requires, the floor and the step the player takes: WuxianKit 0.10.0 on does
+        not load an addon whose field is not met, an older one does not read it (the Lua's guard does); the three
+        places to raise together; the floor judges only a local extension with a game half"""
+        game = " ".join(guide.text("game-extension").split())
+        for words in ("WuxianKit 0.10.0 and later does not load it", "An older WuxianKit does not read the field",
+                      'Kit:Requires("0.10.0")) then return end', "Keep the two at the same version",
+                      "`row.game.state` `outdated`", "`versions_wait`"):
+            self.assertIn(words, game)
+        self.assertNotIn("An older one does not load it", game)
+        local = " ".join(guide.text("local-extension").split())
+        for words in ("raise the three together: `requires.kit`, the `.toc` item and `Kit:Requires`",
+                      "the oldest of its `requires.kit` and its addons' `WuxianKit` items",
+                      "Only a local extension with a game half", "`game.state` is `outdated`",
+                      '`{action: "update", text}`', "`workshop` 0.10.0 for any 0.10.x"):
+            self.assertIn(words, local)
+        self.assertIn("the versions it requires", " ".join(guide.text("after").split()))
+
 
 class Tool(unittest.TestCase):
     def setUp(self):

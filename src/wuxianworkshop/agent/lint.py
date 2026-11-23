@@ -1460,8 +1460,9 @@ def check(path, addons=None, ix=None):
             elif name in env_names:                  # from a setfenv table, not from the globals
                 env_read.setdefault(name, []).append(f"{rel}:{line}")
             elif name in k.moved:                    # the global went, its namespace has it (GetSpellInfo -> C_Spell)
+                use = f"use {' or '.join(sorted(k.moved[name])[:3])}"
                 add(rel, line, "moved", f"{name} is not a global of this client",
-                    f"use {' or '.join(sorted(k.moved[name])[:3])}")
+                    f"{use} ({GUARDED_TYPO})" if (name, line) in s["guarded"] else use)
                 guarded(name, line)
             else:
                 near = k.near(name)

@@ -9,7 +9,8 @@ summary: Something the player uses in the game by themselves (a window, a bar, a
 # An addon (插件)
 
 When the idea is something the player uses in the game by themselves (a window, a bar, a slash command, a change to
-how something looks) and no agent has to be there while it runs.
+how something looks) and no agent has to be there while it runs. The player asked whether it can be done (能不能做)?
+Answer that first, with the evidence: `guide {"topic": "can-the-game"}`; build it when they want it built.
 
 ## An addon, or an extension in the game?
 

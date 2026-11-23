@@ -1951,10 +1951,11 @@ function appState() {
         const pill = a ? this.lxAddonPill(a) : 'warn';
         return { key: 'game-absent', cls: pill === 'off' ? '' : pill, text: a ? this.lxAddonState(a, short) : t('未安装') };
       }
-      const cls = { unknown: 'warn', restart: 'warn', missing: 'warn', disabled: 'warn', installed: 'ok', on: 'ok' }[s] || '';
-      return { key: 'game-' + s, cls,
-               text: t({ unknown: '游戏目录未知', offline: '游戏未连接', restart: '待重启游戏', missing: '游戏中未加载',
-                         disabled: '插件未启用', off: '未启用', installed: '已安装', on: '运行中' }[s] || '—') };
+      // outdated: WuxianKit did not load it for its version; the row's player (update) says what to update (lxPlayer)
+      const cls = { unknown: 'warn', outdated: 'bad', restart: 'warn', missing: 'warn', disabled: 'warn', installed: 'ok', on: 'ok' }[s] || '';
+      return { key: 'game-' + s, cls, hint: s === 'outdated' ? ((r.player && r.player.text) || '') : '',
+               text: t({ unknown: '游戏目录未知', offline: '游戏未连接', outdated: '版本不符', restart: '待重启游戏',
+                         missing: '游戏中未加载', disabled: '插件未启用', off: '未启用', installed: '已安装', on: '运行中' }[s] || '—') };
     },
     lxReason(r) {                              // the 原因 line: why it is not running ('' for a row in the game only at
       if (!r || !r.why || r.state === 'game') return '';      // rest: its why only says where it runs, the tag does).

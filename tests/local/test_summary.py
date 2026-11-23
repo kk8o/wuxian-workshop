@@ -15,8 +15,9 @@ from wuxianworkshop.local import summary as S
 from .test_pack import extension, put
 
 
-def toc(title, notes=None, deps=None, gid=None, site=None, author=None, version="1.2.0"):
+def toc(title, notes=None, deps=None, gid=None, site=None, author=None, version="1.2.0", requires=None):
     lines = ["## Interface: 16001", f"## Title: {title}", f"## Version: {version}"]
+    lines += [f"## X-Wuxian-Requires: {requires}"] if requires else []
     lines += [f"## Notes: {notes}"] if notes else []
     lines += [f"## Author: {author}"] if author else []
     lines += [f"## Dependencies: {deps}"] if deps else []
@@ -53,7 +54,8 @@ class OfFolder(Case):
                   **{"pass": ["DEEPSEEK_API_KEY"]}, start="workshop", pack={"exclude": ["*.wav"]},
                   apps=[{"app": "voice_app", "title": "声音", "prompt": "voice"}])
         game_addon(self.folder, "WuxianVoice", notes="声音的游戏部分", author="某人",
-                   deps="WuxianKit, EllesmereUI, WuxianVoice_Options, ellesmereui")
+                   deps="WuxianKit, EllesmereUI, WuxianVoice_Options, ellesmereui",
+                   requires="WuxianKit 0.10, workshop 0.10.0, bad")
         game_addon(self.folder, "WuxianVoice_Options", deps="WuxianVoice")
         put(self.folder, "skills/speak.md", b"# speak\n")
         put(self.folder, "skills/tune.md", b"# tune\n")
@@ -76,11 +78,17 @@ class OfFolder(Case):
         self.assertNotIn("1.2", json.dumps(s["local"]))
         self.assertEqual(s["executables"], ["bin/helper.DLL", "bin/tts.exe"])
         one, two = s["game"]
+        self.assertEqual(s["requires"], {})                          # the manifest says none
         self.assertEqual(one, dict(folder="WuxianVoice", title="WuxianVoice", notes="声音的游戏部分", version="1.2.0",
-                                   author="某人", needs=[dict(addon="EllesmereUI", installed=False)],
+                                   author="某人", requires={"WuxianKit": "0.10.0", "workshop": "0.10.0"},
+                                   needs=[dict(addon="EllesmereUI", installed=False)],
                                    path=str(self.addons / "WuxianVoice"), cannot="broken"))   # (the .dll in it)
-        self.assertEqual((two["folder"], two["needs"], two["path"], two["cannot"]),
-                         ("WuxianVoice_Options", [], None, None))
+        self.assertEqual((two["folder"], two["requires"], two["needs"], two["path"], two["cannot"]),
+                         ("WuxianVoice_Options", {}, [], None, None))
+        said = S.lines(s)
+        self.assertIn("    X-Wuxian-Requires: WuxianKit 0.10.0, workshop 0.10.0 (WuxianKit does not load it without "
+                      "these versions)", said)
+        self.assertFalse(any(line.startswith("  requires:") for line in said))
         self.assertEqual(s["agent"], dict(docs="AGENT.md", skills=["speak", "tune"], apps=["voice_app"], adds=[]))
         (self.addons / "EllesmereUI").mkdir()
         self.assertEqual(S.of_folder(m, self.addons)["game"][0]["needs"], [dict(addon="EllesmereUI", installed=True)])
@@ -167,8 +175,10 @@ class OfAddon(Case):
                           "https://example.com/eui"))
         self.assertEqual((s["where"], s["risk"], s["local"], s["package"], s["executables"]),
                          ("game", "game", None, None, []))
+        self.assertEqual(s["requires"], {})
         self.assertEqual(s["game"], [dict(folder="WuxianKit_EllesmereUI", title="EllesmereUI 适配",
                                           notes="让 Agent 调整 EllesmereUI 的布局", version="0.3.1", author="某人",
+                                          requires={},
                                           needs=[dict(addon="EllesmereUI", installed=False)], path=str(folder),
                                           cannot=None)])              # (it is in the game: nothing to install)
         self.assertEqual(s["agent"], dict(docs="AGENT.md", skills=["eui-layout"], apps=[], adds=[]))
@@ -194,8 +204,9 @@ class Compare(Case):
         old = S.of_folder(self.manifest())
         self.assertEqual(S.compare(old, old), [])
         extension(self.folder, version="0.3.0", author="另一个人", run=["python", "main.py", "--fast"],
-                  env={"B": "2"}, addons=["WuxianVoice"], **{"pass": ["HOME"]})
-        game_addon(self.folder, "WuxianVoice", deps="WuxianKit, Details")
+                  env={"B": "2"}, addons=["WuxianVoice"], **{"pass": ["HOME"]},
+                  requires={"workshop": "0.10.0", "kit": "0.10.0"})
+        game_addon(self.folder, "WuxianVoice", deps="WuxianKit, Details", requires="WuxianKit 0.10.0")
         put(self.folder, "bin/tts.exe", b"MZ")
         new = S.of_folder(self.manifest())
         changes = {c["field"]: c for c in S.compare(old, new)}
@@ -209,6 +220,10 @@ class Compare(Case):
         self.assertEqual(changes["executables"], dict(field="executables", added=["bin/tts.exe"], removed=[]))
         self.assertEqual(changes["addons"], dict(field="addons", added=["WuxianVoice"], removed=[]))
         self.assertEqual(changes["needs"], dict(field="needs", added=["Details"], removed=[]))
+        self.assertEqual(changes["requires"], dict(field="requires", added=["WuxianKit 0.10.0", "workshop 0.10.0",
+                                                                          "WuxianVoice: WuxianKit 0.10.0"], removed=[]))
+        self.assertEqual(new["requires"], {"kit": "0.10.0", "workshop": "0.10.0"})
+        self.assertIn("  requires: WuxianKit 0.10.0, workshop 0.10.0", S.lines(new))
         self.assertEqual((changes["files"]["old"], changes["files"]["new"]), (old["files"], new["files"]))
         self.assertNotIn("title", changes)
         back = {c["field"]: c for c in S.compare(new, old)}          # a program that goes: said as much

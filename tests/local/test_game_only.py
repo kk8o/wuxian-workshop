@@ -150,7 +150,37 @@ class Rows(GameCase):
         self.lists(None)
         self.assertIn(f"新装的插件「{ADDON}」", self.host.get("loot_peek")["player"]["text"])
         self.assertEqual(set(H.PLAYER_ACTIONS), {"approve", "replace_addon", "start_game", "restart_game", "enable_addon",
-                                                 "turn_on"})
+                                                 "turn_on", "update"})
+
+    def test_a_game_half_not_loaded_for_its_version(self):
+        """(I-C) WuxianKit did not load its extension (outdated / too_old): game.state outdated (not restart: no end
+        to that wait), player update with the version report's sentence (verdict), else one of WuxianKit's row"""
+        self.game_only()
+        self.host.install("loot_peek")
+        asked = []
+        self.host.verdict = lambda eid: asked.append(eid) or None
+        for state in ("outdated", "too_old"):
+            self.lists(state)
+            self.assertEqual(self.game_of(), ("outdated", "update"))
+        self.assertEqual(self.host.get("loot_peek")["player"]["text"],
+                         f"WuxianKit did not load {ADDON} for its version: update 掉落一瞥")
+        self.assertEqual(set(asked), {"loot_peek"})
+        self.listed["loot_peek"].update(gate="too_old", built="0.5.0", floor="0.6.0")
+        self.host.kit_version = lambda: "0.10.0"
+        self.assertEqual(self.host.get("loot_peek")["player"]["text"],
+                         "掉落一瞥 was made for WuxianKit 0.5.0; WuxianKit 0.10.0 runs extensions made for 0.6.0 or later: "
+                         "update 掉落一瞥")
+        self.host.verdict = lambda eid: "the report's sentence"
+        self.assertEqual(self.host.get("loot_peek")["player"], dict(action="update", text="the report's sentence"))
+
+        def broken(eid):
+            raise RuntimeError("no report")
+        self.host.verdict = broken
+        self.assertEqual(self.host.get("loot_peek")["player"]["action"], "update")
+        self.lists("on")
+        self.listed["loot_peek"]["gate"] = "outdated"                                # loaded anyway: it runs
+        self.assertEqual(self.game_of(), ("on", None))
+        self.assertEqual(H.GAME_STATES.index("outdated"), H.GAME_STATES.index("restart") - 1)
 
     def test_the_worst_of_its_ids_and_none(self):
         self.game_only("two", addons=("TwoA", "TwoB"), gid="")                       # both addons say the id "two"

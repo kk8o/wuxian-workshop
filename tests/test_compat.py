@@ -98,7 +98,7 @@ class Judge(unittest.TestCase):
         self.assertEqual(report["next"], dict(
             severity="blocked", action="update_app", id="wuxiankit_guides", target="workshop",
             text="WuxianKit_Guides needs WuxianKit 0.7.1; WuxianKit 0.7.1 needs 无限工坊 0.10.1: update 无限工坊 first"))
-        self.assertEqual(report["items"], [
+        self.assertEqual([{k: v for k, v in i.items() if k != "text"} for i in report["items"]], [
             dict(id="workshop", kind="workshop", title="无限工坊", running="0.10.0", latest="0.10.1", state="update",
                  action="update_app"),
             dict(id="wowbridge", kind="bridge", title="WoWBridge", folder="WoWBridge", running="0.10.0", installed="0.10.1",
@@ -110,6 +110,48 @@ class Judge(unittest.TestCase):
                  unmet=[dict(name="WuxianKit", needs="0.7.1", has="0.7.0")], state="blocked", action="update",
                  via="wuxiankit"),
             dict(id="mcp", kind="agent", title="Agent 连接", state="pending", action="restart_agent")])
+        # every item that is not fine says its own sentence (I-B); next's is the one of its item
+        texts = {i["id"]: i["text"] for i in report["items"]}
+        self.assertEqual(texts["workshop"], "无限工坊 0.10.1 is available (this is 0.10.0): update 无限工坊")
+        self.assertEqual(texts["wowbridge"], "WoWBridge 0.10.1 is installed but the game still runs 0.10.0: " + C.RESTART)
+        self.assertEqual(texts["wuxiankit"], "WuxianKit 0.7.1 is available (0.7.0 is installed); WuxianKit 0.7.1 needs "
+                                             "无限工坊 0.10.1: update 无限工坊 first")
+        self.assertEqual(texts["wuxiankit_guides"], report["next"]["text"])
+        self.assertTrue(texts["mcp"].startswith("an agent's 无限工坊 (wuxian) MCP server runs older code"))
+
+    def test_items_without_a_step_say_nothing(self):
+        """ok, ahead and unknown items carry no text"""
+        report = C.judge(snap(folders={"WuxianKit": there("0.7.1", "0.7.1"), "WuxianKit_Guides": there("0.3.0")},
+                              catalog=[KIT_071, GUIDES]))
+        self.assertEqual([(i["id"], i["state"], "text" in i) for i in report["items"]],
+                         [("workshop", "ok", False), ("wuxiankit", "ok", False), ("wuxiankit_guides", "ahead", False)])
+
+    def test_update_app_says_what_the_player_clicks(self):
+        """update_app's sentence follows the updater's state (app.update) and the App's real labels"""
+        def said(state, latest="0.10.1", local=()):
+            return C.judge(snap(app=dict(version="0.10.0", latest=latest, update=state), local=list(local)))["next"]["text"]
+        where = "on the App's 设置 (Settings) page, 关于与更新 (About & updates)"
+        self.assertEqual(said("available"), "无限工坊 0.10.1 is available (this is 0.10.0): update 无限工坊; the player "
+                                            f"clicks 下载 0.10.1 (Download 0.10.1) {where}, then 重启并更新 (Restart and "
+                                            "update) once it is downloaded")
+        self.assertTrue(said("downloading").endswith(f"无限工坊 0.10.1 is downloading: then the player clicks 重启并更新 "
+                                                     f"(Restart and update) {where}"))
+        self.assertTrue(said("ready").endswith(f"无限工坊 0.10.1 is downloaded: the player clicks 重启并更新 (Restart and "
+                                               f"update) {where}"))
+        self.assertTrue(said("unsupported").endswith("the player downloads the new version from "
+                                                     "https://wuxianwow.com/workshop"))
+        self.assertEqual(said(None), "无限工坊 0.10.1 is available (this is 0.10.0): update 无限工坊")   # none known
+        needy = [dict(id="voice", title="语音", version="1.0", requires={"workshop": "0.11.0"}, addons=[])]
+        self.assertEqual(said("current", None, needy), "语音 needs 无限工坊 0.11.0: update 无限工坊; the player clicks "
+                                                       f"检查更新 (Check for updates) {where}")
+        self.assertEqual(said("available", "0.10.1", needy), "语音 needs 无限工坊 0.11.0: update 无限工坊; no 无限工坊 "
+                                                             "0.11.0 is out yet (the newest is 0.10.1): the player clicks "
+                                                             f"检查更新 (Check for updates) {where} later")
+        self.assertTrue(said("unsupported", "0.10.1", needy).endswith("https://wuxianwow.com/workshop"))
+        self.assertEqual(item(C.judge(snap(app=dict(version="0.10.0", latest="0.11.0", update="ready"), local=needy)),
+                              "voice")["text"],
+                         "语音 needs 无限工坊 0.11.0: update 无限工坊; 无限工坊 0.11.0 is downloaded: the player clicks "
+                         f"重启并更新 (Restart and update) {where}")
 
     def test_the_kit_fix_when_the_workshop_is_new_enough(self):
         report = C.judge(snap(app=dict(version="0.10.1", latest=None),
@@ -316,6 +358,41 @@ class Floor(unittest.TestCase):
                                        "WuxianChat": ext("1.0", {"WuxianKit": "0.6.0"}, "1.0")}, local=[x]))
         self.assertEqual(next(i for i in report["items"] if i["id"] == "chat")["state"], "ok")
 
+    def test_the_floor_only_for_a_game_half(self):
+        """(I-D) a local extension without addons and without an app it drives is never too old; its requires.kit
+        still counts as a minimum. One that drives an app in the game is judged as one with addons"""
+        folders = {"WuxianKit": kit("0.6.0", "0.10.0")}
+        local = dict(id="notes", title="笔记", version="1.0", requires={"kit": "0.5.0"}, addons=[])
+        self.assertEqual(item(C.judge(snap(folders=folders, local=[local])), "notes")["state"], "ok")
+        self.assertEqual(item(C.judge(snap(folders=folders, local=[dict(local, requires={})])), "notes")["state"], "ok")
+        driver = item(C.judge(snap(folders=folders, local=[dict(local, drives=True)])), "notes")
+        self.assertEqual((driver["state"], driver["old"]), ("blocked", dict(built="0.5.0", floor="0.6.0")))
+        self.assertEqual(driver["text"], "笔记 was made for WuxianKit 0.5.0; WuxianKit 0.10.0 runs extensions made for "
+                                         "0.6.0 or later: update 笔记")
+        needy = item(C.judge(snap(folders=folders, local=[dict(local, requires={"kit": "0.11.0"})])), "notes")
+        self.assertEqual((needy["state"], needy["unmet"]), ("blocked", [dict(name="WuxianKit", needs="0.11.0",
+                                                                             has="0.10.0")]))
+
+    def test_the_sentence_of_a_game_half_not_loaded(self):
+        """gate_text: what WuxianKit's row of an addon it did not load says, when the report has no sentence"""
+        row = dict(state="outdated", gate="outdated", unmet=[dict(name="WuxianKit", needs="0.11.0", has="0.10.0")])
+        self.assertEqual(C.gate_text("聊天", row, "0.10.0", "WuxianChat"),
+                         "WuxianChat needs WuxianKit 0.11.0 (the game has 0.10.0): update WuxianKit on the App's "
+                         "Extensions (扩展) page, then restart the game fully")
+        self.assertEqual(C.gate_text("聊天", dict(row, unmet=[dict(name="workshop", needs="0.11.0")])),
+                         "聊天 needs 无限工坊 0.11.0: update 无限工坊")
+        self.assertEqual(C.gate_text("聊天", dict(row, unmet=[dict(name="EllesmereUI", needs="2.0.0", has="1.0")])),
+                         "聊天 needs EllesmereUI 2.0.0 (the game has 1.0): update EllesmereUI, then restart the game fully")
+        old = dict(state="too_old", gate="too_old", built="0.5.0", floor="0.6.0")
+        self.assertEqual(C.gate_text("聊天", old, "0.10.0"),
+                         "聊天 was made for WuxianKit 0.5.0; WuxianKit 0.10.0 runs extensions made for 0.6.0 or later: "
+                         "update 聊天")
+        self.assertEqual(C.gate_text("聊天", dict(old, built=None), None),
+                         "聊天 was made for WuxianKit 0.7.0; this WuxianKit runs extensions made for 0.6.0 or later: "
+                         "update 聊天")
+        self.assertEqual(C.gate_text("聊天", {}, None, "WuxianChat"),
+                         "WuxianKit did not load WuxianChat for its version: update 聊天")
+
     def test_too_old_with_a_catalog_update(self):
         report = C.judge(snap(app=dict(version="0.10.0", latest="0.10.1"),
                               folders={"WuxianKit": kit("0.6.0"), "WuxianKit_Old": ext("0.1.0", {"WuxianKit": "0.5.0"})},
@@ -323,7 +400,8 @@ class Floor(unittest.TestCase):
         self.assertEqual(item(report, "wuxiankit_old"), dict(
             id="wuxiankit_old", kind="addon", title="旧扩展", folder="WuxianKit_Old", running=None, installed="0.1.0",
             latest="0.2.0", needs={"WuxianKit": "0.5.0"}, old={"built": "0.5.0", "floor": "0.6.0"}, state="blocked",
-            action="update"))
+            action="update", text="旧扩展 was made for WuxianKit 0.5.0; WuxianKit 0.7.1 runs extensions made for 0.6.0 or "
+                                  "later: update 旧扩展"))
         self.assertEqual(report["next"], dict(
             severity="blocked", action="update", id="wuxiankit_old", target="wuxiankit_old",
             text="旧扩展 was made for WuxianKit 0.5.0; WuxianKit 0.7.1 runs extensions made for 0.6.0 or later: "

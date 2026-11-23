@@ -61,6 +61,7 @@ add anything the template does not show.
 | `turn_on` | the extension is off in `/wk` | its tools come back |
 | `approve` | it came as a package, or was found in the extensions folder: not made by you in this session | nothing of it runs before |
 | `replace_addon` | the game's AddOns holds a folder of the addon's name that is not the extension's (most often one installed by hand): only the player replaces it (替换 on the Extensions page; the one there is kept in the history) | its addon is installed; a new one needs a restart |
+| `update` | WuxianKit did not load the addon for its version (`row.game.state` `outdated`): its `X-Wuxian-Requires` is not met, or it was made for a WuxianKit below the floor. The text (the same as `status`'s `versions.next.text`) says what to update | `extension_wait` answers at once; `versions_wait` waits while the player updates; then the player restarts the game |
 
 Until the first restart a new addon is there only as long as the hot load lasts: it works now, and a UI reload
 drops it. Tell the player once the idea is worth keeping.
@@ -72,8 +73,11 @@ player adds it on the Extensions (扩展) page of the 无限工坊 App. Without 
 (`guide {"topic": "addon"}`).
 
 When it needs a WuxianKit (or 无限工坊) of some version on, say so in the `.toc`: `## X-Wuxian-Requires: WuxianKit
-0.10.0` (comma separated `<name> <version>`, name `workshop` or an addon folder). An older one does not load it and
-`status`'s `versions.next.text` tells the player what to update. `new_extension` writes the WuxianKit generation of
+0.10.0` (comma separated `<name> <version>`, name `workshop` or an addon folder). WuxianKit 0.10.0 and later does not
+load it while that is not met (`outdated` in `/wk`, `row.game.state` `outdated`), and `status`'s `versions.next.text`
+tells the player what to update. An older WuxianKit does not read the field: the first line of the template's Lua,
+`if not (Kit and Kit.Requires and Kit:Requires("0.10.0")) then return end`, stops the addon there. Keep the two at
+the same version, and the manifest's `requires.kit` with them. `new_extension` writes the WuxianKit generation of
 the day (`## X-Wuxian-Requires: WuxianKit 0.10.0`): what the extension is made for.
 
 The other way round, WuxianKit's `.toc` says `## X-WuxianKit-Floor: 0.6.0`: the oldest WuxianKit an extension may

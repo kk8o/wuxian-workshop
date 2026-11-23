@@ -26,7 +26,8 @@ automatic update: a package is a file one person gives another.
 
 The answer says what goes out. Tell the player `skipped` (what stayed out), every line of `warnings`, and `summary`:
 what the other player will see before they approve (the name, the author as the manifest says it, the command, the
-game addons, what it needs in the game). Give them `sha256` to send along, so the other side can tell the file is
+game addons, what it needs in the game: the addons each depends on, and the versions it requires, `requires` and each
+game addon's `requires`). Give them `sha256` to send along, so the other side can tell the file is
 the one that was sent. On the other computer the player's agent can read it first: `guide {"topic": "review"}`.
 
 ## 3. Make it an AI app

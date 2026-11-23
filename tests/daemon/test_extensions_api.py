@@ -118,7 +118,9 @@ class ExtensionsApi(unittest.TestCase):
                                                "known: update WuxianKit yourself")
             status, error = self.refusal({"action": "install", "id": "later"})
             self.assertEqual((status, error["code"], error["message"]),
-                             (409, "needs_app", "Later 1.0.0 needs 无限工坊 99.0.0: update 无限工坊"))
+                             (409, "needs_app", "Later 1.0.0 needs 无限工坊 99.0.0: update 无限工坊; this copy of "
+                                                "无限工坊 does not update itself: the player downloads the new version "
+                                                "from https://wuxianwow.com/workshop"))   # (a copy run from a folder)
             self.assertFalse((self.addons / "Child").exists())
             (self.addons / "Child").mkdir()                       # put there by hand: blocked in the report
             (self.addons / "Child" / "Child.toc").write_text("## Version: 1.0.0\n## X-Wuxian-Requires: WuxianKit 9.0\n",
@@ -155,7 +157,7 @@ class ExtensionsApi(unittest.TestCase):
             self.assertEqual([(s["id"], s["official"], s["from"], s["risk"]) for s in found],
                              [("guild", False, "game", "game"), ("guides", True, "game", "game")])
             self.assertEqual(found[0]["game"], [dict(folder="WuxianGuild", title="WuxianGuild", notes="WuxianGuild 的说明",
-                                                     version="1.2.0", author=None,
+                                                     version="1.2.0", author=None, requires={},
                                                      needs=[dict(addon="EllesmereUI", installed=False)],
                                                      path=str(self.addons / "WuxianGuild"), cannot=None)])
         finally:

@@ -10,7 +10,10 @@ package replaces a version, a pack's result, extension_summary). It says what is
      "where": "game" | "local" | "both",
      "risk": "game" | "local",                   local: a program runs on this computer with the player's rights;
                                                  game: only addons, which run in the game under its limits
+     "requires": {"workshop"?, "kit"?},          the manifest's lowest versions ({} for an addon found in the game)
      "game": [{"folder", "title", "notes", "version", "author",
+               "requires": {name: version},          its .toc's X-Wuxian-Requires (compat.parse_requires; {} when
+                                                     none): without these versions WuxianKit does not load it
                "needs": [{"addon", "installed"}],    the other addons its .toc depends on (not WuxianKit, not its own);
                                                      installed None when the game's AddOns folder is not known
                "path",                               where it is in the game's AddOns now, None when it is not there
@@ -89,6 +92,7 @@ def addon(folder, addons_dir=None, own=()):
         toc = (read_toc(folder / d["toc"]) if d["toc"] else None) or {}
     except OSError:
         d, toc = dict(title=folder.name, notes=None, version=None, author=None, deps=[]), {}
+    from ..compat import FIELD, parse_requires
     mine = {n.lower() for n in own} | set(OWN_ADDONS) | {folder.name.lower()}
     needs, seen = [], set()
     for dep in d["deps"]:
@@ -97,8 +101,9 @@ def addon(folder, addons_dir=None, own=()):
         seen.add(dep.lower())
         needs.append(dict(addon=dep, installed=(_there(addons_dir, dep) is not None) if addons_dir else None))
     at = _there(addons_dir, folder.name)
+    declared = next((v for k, v in toc.items() if k.lower() == FIELD.lower()), None)
     return dict(folder=folder.name, title=d["title"], notes=d["notes"], version=d["version"], author=d["author"],
-                needs=needs, path=str(at) if at else None, cannot=None), toc
+                requires=parse_requires(declared), needs=needs, path=str(at) if at else None, cannot=None), toc
 
 
 CANNOT = ("listed", "foreign", "broken")
@@ -155,7 +160,8 @@ def of_folder(m, addons_dir=None, source="folder", package=None, listed=None):
     notes = m["notes"] or next((g["notes"] for g in game if g["notes"]), None)
     return dict({"from": source}, id=m["id"], title=m["title"], version=m["version"], notes=notes, author=m["author"],
                 homepage=m["homepage"], package=dict(package) if package else None, where=M.where_of(m),
-                risk="local" if m["run"] else "game", game=game, replaces=replaces(game),
+                risk="local" if m["run"] else "game", requires=dict(m.get("requires") or {}), game=game,
+                replaces=replaces(game),
                 addons_dir=str(addons_dir) if addons_dir else None,
                 local=local,
                 executables=[rel for rel, _ in files
@@ -185,7 +191,7 @@ def of_addon(folder, addons_dir=None):
     row["path"] = str(folder)
     return dict({"from": "game"}, id=eid, title=row["title"], version=row["version"], notes=row["notes"],
                 author=row["author"], homepage=site if site.startswith(("http://", "https://")) else None, package=None,
-                where="game", risk="game", game=[row], replaces=[],
+                where="game", risk="game", requires={}, game=[row], replaces=[],
                 addons_dir=str(addons_dir if addons_dir else folder.parent),
                 local=None, executables=[],
                 agent=dict(docs="AGENT.md" if docs.is_file() else None, skills=_skills(folder / "skills"), apps=[],
@@ -222,6 +228,18 @@ def detected(addons_dir, skip=(), official=()):
 
 # --- what differs ----------------------------------------------------------------------------------------------------
 
+SHOWN = dict(workshop="workshop", kit="WuxianKit")      # a manifest's requires as an addon's .toc names them
+
+
+def requires_list(s):
+    """what a summary requires, as texts: the manifest's ("workshop 0.10.0", "WuxianKit 0.10.0") and each game addon's
+    .toc ("LootPeek: WuxianKit 0.10.0")"""
+    out = [f"{SHOWN.get(k, k)} {v}" for k, v in sorted((s.get("requires") or {}).items())]
+    for g in s.get("game") or []:
+        out += [f"{g['folder']}: {k} {v}" for k, v in (g.get("requires") or {}).items()]
+    return out
+
+
 def _facts(s):
     """a summary as the flat facts compare() goes through: {field: a text, a number, None, or a list of texts}"""
     local, agent = s.get("local") or {}, s.get("agent") or {}
@@ -234,13 +252,14 @@ def _facts(s):
         start=local.get("start") if local else None, env=list(local.get("env") or []),
         **{"pass": list(local.get("pass") or [])},
         executables=list(s.get("executables") or []), addons=[g["folder"] for g in s.get("game") or []], needs=needs,
+        requires=requires_list(s),
         docs=agent.get("docs"), skills=list(agent.get("skills") or []), apps=list(agent.get("apps") or []),
         adds=[f"{a['app']}: " + ", ".join(k for k in ("wake", "skill") if a.get(k)) for a in agent.get("adds") or []],
         files=s.get("files"), size=s.get("size"))
 
 
-FIELDS = ("version", "title", "author", "homepage", "where", "run", "python", "start", "env", "pass", "executables",
-          "addons", "needs", "docs", "skills", "apps", "adds", "files", "size")
+FIELDS = ("version", "title", "author", "homepage", "where", "requires", "run", "python", "start", "env", "pass",
+          "executables", "addons", "needs", "docs", "skills", "apps", "adds", "files", "size")
 
 
 def compare(old, new):
@@ -289,12 +308,18 @@ def lines(s):
     if any(who):
         out.append("  from: " + ", ".join(w for w in who if w))
     out.append(f"  runs: {WHERE.get(s.get('where'), s.get('where'))}")
+    wants = [f"{SHOWN.get(k, k)} {v}" for k, v in sorted((s.get("requires") or {}).items())]
+    if wants:
+        out.append("  requires: " + ", ".join(wants))
     for g in s.get("game") or []:
         needs = ", ".join(n["addon"] + {True: "", False: " (not installed)", None: ""}[n.get("installed")]
                           for n in g.get("needs") or [])
         out.append(f"  game addon: {g['folder']}" + (f" {g['version']}" if g.get("version") else "")
                    + (f", needs {needs}" if needs else "")
                    + (f", at {g['path']}" if g.get("path") else ", not in the game's AddOns"))
+        if g.get("requires"):
+            out.append("    X-Wuxian-Requires: " + ", ".join(f"{k} {v}" for k, v in g["requires"].items())
+                       + " (WuxianKit does not load it without these versions)")
         there = f" {g['there']}" if g.get("there") else ""
         if g.get("cannot") == "foreign" and g.get("same") and g.get("newer"):
             out.append(f"    NOT INSTALLED: the game's AddOns holds the same addon in a newer version{there}, "

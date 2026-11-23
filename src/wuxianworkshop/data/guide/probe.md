@@ -21,9 +21,16 @@ installed, and the player only plays.
    - `protected`: secure code only. An addon cannot call it, so that part of the idea is a "cannot".
 
    `api_get {"name": "..."}` gives one entry in full: arguments, returns, an event's payload, an enum's values.
+   Its `note` says when the name you remember is not this client's: a global that moved (`IsAddOnLoaded`: call
+   `C_AddOns.IsAddOnLoaded`), or a widget method listed under the type that defines it (`Frame:SetPoint`).
+   Not knowing the name: search by words (`{"query": "bag free slots"}`), one kind (`"kind": "event"`), or a
+   namespace's start (`{"query": "C_Container."}`). Whether the last client update changed it: `api_manual
+   {"topic": "changes"}`.
 2. **Read the rules that decide it.** `api_manual` lists the topics. The ones that settle most verdicts: `protected`
    and `secure-templates` (what only a click of the player's may do), `secret` (values an addon may show and not
-   read), `taint`, `gamerules`, `forever-api` (what only this client has), `toc`.
+   read), `taint`, `gamerules`, `forever-api` (what only this client has), `toc`. This client switches some of the
+   game off by its rules (`gamerules`: a panel, the encounter journal, macros ...): an idea that leans on one of those
+   needs `run {"code": "return C_GameRules.IsGameRuleActive(Enum.GameRule.<Name>)"}` in the running game.
 3. **Try it in the running game.** `status` first: the link must be online. Then:
    - `run {"code": "return type(C_X.Y)"}`: is it there at all;
    - `try {"code": "...", "events": "BAG_*"}`: do it once and read `ok`, `action`, `errors`, `blocked`, `events`;

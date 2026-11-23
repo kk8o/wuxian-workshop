@@ -18,12 +18,15 @@ version syntax; none, or one that does not parse: nothing is too old). What an e
 X-Wuxian-Requires item for WuxianKit; for a local extension the oldest of its requires.kit and what its addons declare; else
 LEGACY (0.7.0: declarations began with WuxianKit 0.10.0, so an undeclared one was made for 0.7.0 or earlier, the best
 case assumed). Too old iff built_for < floor. Only extension addons (their .toc says `## X-WuxianKit-Extension`, or the
-game's WuxianKit reports them) and local extensions are judged; the `workshop` item plays no part, WuxianKit itself and
-its built-in extensions are never too old.
+game's WuxianKit reports them) and local extensions with a game half (addons, or an app they drive: "drives") are
+judged (one without is never too old; its requires.kit still counts as a minimum); the `workshop` item plays no part,
+WuxianKit itself and its built-in extensions are never too old.
 
 The judge (judge()) is a pure function over a plain snapshot of what the daemon knows (Service.versions_snapshot):
 
-    {"app": {"version": "0.10.1", "latest": "0.10.2" | None},     # this App, and the update feed's newer one
+    {"app": {"version": "0.10.1", "latest": "0.10.2" | None,      # this App, and the update feed's newer one
+             "update": the updater's state (updater.py: available / downloading / ready / unsupported / idle /
+                       checking / current / error) | None},
      "kit_needs": "0.7.0",                                         # what the App needs of WuxianKit (KIT_NEEDS)
      "folders": {"<Folder>": {"there": bool, "installed": .toc Version on disk | None, "running": what the game
                  process runs (WoWBridge's HELLO, WuxianKit's kit.ready, an extension addon's kit row `toc`) | None,
@@ -33,7 +36,8 @@ The judge (judge()) is a pure function over a plain snapshot of what the daemon 
                           the running one's, else its .toc's X-WuxianKit-Floor | None}},
      "catalog": [catalog entries: {id, folder, version, title, needs?, min_app?}],
      "extensions": ["<Folder>", ...],      # extension addons the game's WuxianKit reports that the catalog does not list
-     "local": [{"id", "title", "version", "requires": {workshop?, kit?}, "addons": ["<Folder>", ...]}],
+     "local": [{"id", "title", "version", "requires": {workshop?, kit?}, "addons": ["<Folder>", ...],
+                "drives": it drives an app in the game (an apps[].driver "local")}],
      "agents": {"seen": n, "stale": n} | None}
 
 and gives status.versions (I2): {next, items}. Items in this order: workshop, bridge (WoWBridge), kit (WuxianKit),
@@ -54,8 +58,11 @@ not, update of the catalog entry of that folder whose version meets it unless th
 those first, DEPTH deep at most), else none. next: {severity, action, id (the item it is for), target (the item or
 catalog entry the action acts on; None for none), via (with action update: the catalog entry to install when it is
 another item's), text (English: agents read it, error messages end with it; the App renders its own words from the
-other fields)}. When next is an agent item's, the report also has agent_next: the next without the agent items, what
-an agent whose own MCP server is not stale is told (brief: another agent's server is the App page's business).
+other fields)}. Every item whose state is blocked, pending or update carries its own `text` too: the sentence next
+would have if it were that item's. update_app's sentence says what the player clicks, by the updater's state
+(app.update: available, downloading, ready, unsupported; none known: "update 无限工坊" alone). When next is an agent
+item's, the report also has agent_next: the next without the agent items, what an agent whose own MCP server is not
+stale is told (brief: another agent's server is the App page's business).
 
 What the report does not do: refuse anything for a local extension. A local extension is the player's (or the agent's)
 work in progress: its item shows blocked when it needs a newer WuxianKit or is too old for the floor, but 无限工坊
@@ -79,6 +86,8 @@ HAS = re.compile(r"^\s*v?(\d{1,9}(?:\.\d{1,9})*)")
 RESTART = "restart the game fully (not /reload: the game reads .toc files and new files only when it starts)"
 CLOSE = (f"close the game fully (not /reload) so {APP_TITLE} puts its new WoWBridge in place, then start the game "
          f"again")
+SITE = "https://wuxianwow.com/workshop"
+WHERE = "on the App's 设置 (Settings) page, 关于与更新 (About & updates)"
 
 
 # --- I1: the declaration and the comparison ---------------------------------------------------------------------------
@@ -255,7 +264,7 @@ class _Judge:
     def __init__(self, snap):
         snap = snap or {}
         app = snap.get("app") or {}
-        self.app, self.latest = app.get("version"), app.get("latest")
+        self.app, self.latest, self.update = app.get("version"), app.get("latest"), app.get("update")
         self.kit_needs = snap.get("kit_needs")
         self.folders = {k.lower(): (k, dict(v)) for k, v in (snap.get("folders") or {}).items()
                         if isinstance(k, str) and isinstance(v, dict)}
@@ -335,7 +344,8 @@ class _Judge:
         link = f"{subject} needs {self.shown(u['name'])} {u['needs']}"
         name = u["name"]
         if name.lower() == WORKSHOP:
-            return dict(action="update_app", target="workshop", links=[link], first=("update_app", "workshop"))
+            return dict(action="update_app", target="workshop", links=[link], needs=u["needs"],
+                        first=("update_app", "workshop"))
         folder, f = self.folder(name)
         if f and f.get("running") is not None and has_tuple(f.get("installed")) is not None \
                 and met(u["needs"], f["installed"]) and not met(u["needs"], f["running"]):
@@ -364,6 +374,9 @@ class _Judge:
         action = step["action"]
         if action == "update_app":
             tail = f"update {APP_TITLE}" + (" first" if len(links) > 1 else "")
+            how = self.app_how(step.get("needs"))
+            if how:
+                tail += f"; {how}"
         elif action == "update":
             e = step.get("entry") or {}
             tail = f"update {e.get('folder')} to {e.get('version')} on the App's Extensions (扩展) page" if e \
@@ -380,6 +393,28 @@ class _Judge:
         else:
             tail = "nothing to do"
         return "; ".join(links) + (": " if links else "") + tail
+
+    def app_how(self, needs=None):
+        """what the player clicks to update this App, by the updater's state (app.update); "" when it is not known.
+        needs: the version needed (an unmet one): a newest known that is older does not help"""
+        state, v = self.update, self.latest
+        if state != "unsupported" and needs and v and not met(needs, v):
+            return (f"no {APP_TITLE} {needs} is out yet (the newest is {v}): the player clicks 检查更新 (Check for "
+                    f"updates) {WHERE} later")
+        if state == "available" and v:
+            return (f"the player clicks 下载 {v} (Download {v}) {WHERE}, then 重启并更新 (Restart and update) once it is "
+                    f"downloaded")
+        if state == "downloading":
+            return (f"{APP_TITLE} {v or 'the new version'} is downloading: then the player clicks 重启并更新 (Restart and "
+                    f"update) {WHERE}")
+        if state == "ready":
+            return (f"{APP_TITLE} {v or 'the new version'} is downloaded: the player clicks 重启并更新 (Restart and "
+                    f"update) {WHERE}")
+        if state == "unsupported":
+            return f"this copy of {APP_TITLE} does not update itself: the player downloads the new version from {SITE}"
+        if state in ("idle", "checking", "current", "error", "available"):
+            return f"the player clicks 检查更新 (Check for updates) {WHERE}"
+        return ""
 
     # the items
 
@@ -510,7 +545,8 @@ class _Judge:
                 restart = f"{name} {f['installed']} is installed but the game still runs {f['running']}"
         unmet = self.unmet(needs)
         item = dict(id=iid, kind="local", title=title_of(x.get("title")) or x["id"], installed=x.get("version"))
-        old = None if unmet else self.too_old(oldest([built] + declared))
+        game_half = bool(x.get("addons")) or bool(x.get("drives"))   # the floor is only for one with a game half
+        old = None if unmet or not game_half else self.too_old(oldest([built] + declared))
         step = None
         if unmet:
             state = "blocked"
@@ -606,6 +642,9 @@ def judge(snap, focus=None):
     alone next is (None when that item is fine or not there)"""
     j = _Judge(snap)
     pairs = j.items()
+    for item, step in pairs:                         # every item that is not fine says its own sentence
+        if step is not None and item["state"] in SEVERITY:
+            item["text"] = j.text(step, step.get("head") or ())
     chosen = [p for p in pairs if p[0]["id"] == focus] if focus is not None else pairs
     out = dict(next=_next(j, chosen), items=[item for item, _ in pairs])
     if out["next"] is not None and any(i["kind"] == "agent" and i["id"] == out["next"]["id"] for i, _ in pairs):
@@ -620,6 +659,34 @@ def fix_text(snap, subject, unmet):
     j = _Judge(snap)
     j.items()
     return j.text(j.resolve(subject, unmet))
+
+
+def gate_text(title, row, kit=None, addon=None):
+    """(local/host.py) the sentence for an extension's game addon that WuxianKit did not load for its version, made of
+    WuxianKit's row of it (row: {gate or state: outdated / too_old, unmet: [{name, needs, has}], built, floor}) when the
+    version report has none: what it needs and what to update, or what it was made for and the floor. kit: the
+    WuxianKit known (None: not known); addon: its folder"""
+    row = row if isinstance(row, dict) else {}
+    gate = row.get("gate") or row.get("state")
+    unmet = [u for u in row.get("unmet") or [] if isinstance(u, dict) and isinstance(u.get("name"), str)
+             and isinstance(u.get("needs"), str)]
+    if gate == "outdated" and unmet:
+        said = "; ".join(f"{addon or title} needs {_Judge.shown(u['name'])} {u['needs']}"
+                         + (f" (the game has {u['has']})" if isinstance(u.get("has"), str) and u["has"] else "")
+                         for u in unmet)
+        name = unmet[0]["name"]
+        if name.lower() == WORKSHOP:
+            todo = f"update {APP_TITLE}"
+        elif name.lower() == KIT.lower():
+            todo = "update WuxianKit on the App's Extensions (扩展) page, then restart the game fully"
+        else:
+            todo = f"update {name}, then restart the game fully"
+        return f"{said}: {todo}"
+    floor = needs_version(row.get("floor")) if isinstance(row.get("floor"), str) else None
+    if gate == "too_old" and floor:
+        built = row.get("built") if isinstance(row.get("built"), str) and row.get("built") else LEGACY
+        return f"{_Judge.old_text(dict(title=title, built=built, floor=floor, kit=kit))}: update {title}"
+    return f"WuxianKit did not load {addon or title} for its version: update {title}"
 
 
 def install_gate(snap, entry):
@@ -665,7 +732,7 @@ def agent_stale(versions, note=None):
     if mine is None:
         mine = dict(id="mcp", kind="agent", title="Agent 连接")
         items.append(mine)
-    mine.update(state="pending", action="restart_agent")
+    mine.update(state="pending", action="restart_agent", text=text)
     nxt = versions.get("next")
     if not isinstance(nxt, dict) or nxt.get("id") == "mcp" or SEVERITY.get(nxt.get("severity"), 0) < SEVERITY["pending"]:
         nxt = dict(severity="pending", action="restart_agent", id="mcp", target="mcp", text=text)

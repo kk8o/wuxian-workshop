@@ -873,6 +873,46 @@ class KitTools(unittest.TestCase):
         self.assertTrue(text.endswith("Listen for 2 hours."))
         self.assertIn("grants nothing", text)
 
+    def test_the_extensions_without_tools_by_why(self):
+        """wk_docs says why each extension has no tools, as its state says it: off (the player turns it on), outdated /
+        too_old (not loaded for its version: the player updates it, as status's versions.next.text says), disabled (the
+        game's addon list), missing (the game cannot load it); one the game loaded although its gate is set is on, with
+        the version step"""
+        from wuxianworkshop.mcp.server import build_server
+
+        m = self.manifest(chat_on=False)
+        m["extensions"] += [
+            {"id": "fx", "title": "Fx", "addon": "WxFx", "state": "outdated", "gate": "outdated",
+             "unmet": [{"name": "WuxianKit", "needs": "0.11.0", "has": "0.10.0"}]},
+            {"id": "relic", "title": "Relic", "addon": "WxRelic", "state": "too_old", "gate": "too_old",
+             "built": "0.5.0", "floor": "0.6.0"},
+            {"id": "napping", "title": "Napping", "addon": "WxNap", "state": "disabled"},
+            {"id": "broken", "title": "Broken", "addon": "WxBroken", "state": "missing", "reason": "DEP_MISSING"}]
+        demo = next(e for e in m["extensions"] if e["id"] == "demo")
+        demo.update(gate="outdated", unmet=[{"name": "workshop", "needs": "0.11.0"}])
+        mcp = build_server(self.backend(m))
+        overview = asyncio.run(mcp.call_tool("wk_docs", {})).content[0].text
+        self.assertIn("Off, so without tools: `chat`. The player can turn one on", overview)
+        self.assertIn("Not loaded for its version, so without tools: `fx` (needs WuxianKit 0.11.0 (has 0.10.0)), `relic` "
+                      "(made for WuxianKit 0.5.0; this WuxianKit runs extensions made for 0.6.0 or later). WuxianKit "
+                      "refuses to turn one on until it is updated: call `status` and tell the player its "
+                      "versions.next.text", overview)
+        self.assertIn("Disabled in the game's addon list, so without tools: `napping`.", overview)
+        self.assertIn("The game cannot load its addon, so without tools: `broken` (DEP_MISSING).", overview)
+        self.assertIn("the game loaded it although it is outdated (needs workshop 0.11.0)", overview)   # demo runs
+        self.assertNotIn("`fx`, `relic`, `napping`", overview)                     # not lumped together as off
+        each = {eid: asyncio.run(mcp.call_tool("wk_docs", {"extension": eid})).content[0].text
+                for eid in ("chat", "fx", "relic", "napping", "broken", "demo")}
+        self.assertIn("It is off: its tools come when the player turns it on", each["chat"])
+        self.assertIn("It is outdated, not loaded for its version (needs WuxianKit 0.11.0 (has 0.10.0)), so it has no "
+                      "tools: WuxianKit refuses to turn it on until it is updated. Call `status`", each["fx"])
+        self.assertIn("It is too_old, not loaded for its version (made for WuxianKit 0.5.0;", each["relic"])
+        self.assertIn("It is disabled in the game's addon list", each["napping"])
+        self.assertIn("The game cannot load its addon (DEP_MISSING)", each["broken"])
+        self.assertIn("The game loaded it although it is outdated", each["demo"])
+        for text in each.values():
+            self.assertNotIn("turns it on in the game's /wk window", text.replace(each["chat"], ""))
+
     def test_what_a_skill_needs(self):
         """a skill's needs (the client's abilities, unknown words kept) and mcp (other servers it uses: `<name> <https
         URL>`, an item of another shape left out); the overview says them with the arguments"""

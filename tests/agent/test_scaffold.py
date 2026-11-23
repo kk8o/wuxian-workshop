@@ -66,7 +66,15 @@ class Templates(unittest.TestCase):
         self.assertIn("## Title: 你好世界", toc)
         self.assertIn("## SavedVariables: HelloWorldDB", toc)
         self.assertIn("@AGENTS.md", (self.addons / "HelloWorld" / "CLAUDE.md").read_text(encoding="utf-8"))
-        self.assertIn("load", (self.addons / "HelloWorld" / "AGENTS.md").read_text(encoding="utf-8"))
+        notes = (self.addons / "HelloWorld" / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("load", notes)
+        for said in ("`versions.next`", "`blocked` 或 `pending`", "`versions_wait`"):          # step 1: the versions
+            self.assertIn(said, notes)
+        with mock.patch.object(scaffold, "language", return_value="en"):
+            scaffold.create(self.addons, "HelloEnglish")
+        notes = (self.addons / "HelloEnglish" / "AGENTS.md").read_text(encoding="utf-8")
+        for said in ("`versions.next`", "`blocked` or `pending`", "`versions_wait`", "mention it once"):
+            self.assertIn(said, notes)
         s = Session(self, bridge=False, locale="zhCN")
         ns = s.lua.table()
         self.run_addon(s, "HelloWorld", ns)
@@ -127,8 +135,11 @@ class Extensions(unittest.TestCase):
                           "requires": {"workshop": scaffold.workshop_version()}, "run": ["python", "main.py"],
                           "start": "use"})
         from wuxianworkshop import __version__
-        self.assertTrue(__version__.startswith(scaffold.workshop_version()), scaffold.workshop_version())
-        self.assertRegex(scaffold.workshop_version(), r"^\d+(\.\d+)+$")
+        generation = ".".join(__version__.split(".")[:2]) + ".0"      # 0.10.0 of 0.10.2: not the patch (I-E)
+        self.assertEqual(scaffold.workshop_version(), generation)
+        for version, want in (("0.10.2", "0.10.0"), ("0.10.2-dev3", "0.10.0"), ("0.11.0", "0.11.0"), ("dev", None)):
+            with mock.patch("wuxianworkshop.__version__", version):
+                self.assertEqual(scaffold.workshop_version(), want, version)
         main = (folder / "main.py").read_text(encoding="utf-8")
         compile(main, "main.py", "exec")
         compile((folder / "tests" / "test_main.py").read_text(encoding="utf-8"), "test_main.py", "exec")
@@ -201,8 +212,10 @@ class Extensions(unittest.TestCase):
         for said in ("## The game half", "`addons/ZoneTrail`", "`wk_zones_where`", "`wk_zones_game_where`",
                      'extension_install {"id": "zones"}', 'load {"target": "ZoneTrail"}', "restarts the game",
                      'reaction_set {"spec": {"hear": "bus:zones_game.moved", "call": "zones.moved", "item": "event", '
-                     '"cooldown": 0}}'):
+                     '"cooldown": 0}}', "`wk_kit_extensions`", "`gate`", "`versions.next.text`",
+                     "`game.state` outdated", 'Kit:Requires("0.10.0")', "`requires.kit`"):
             self.assertIn(said, agent)
+        self.assertIn("-- the same version as the .toc's X-Wuxian-Requires", lua)     # the guard stays at its version
 
     def test_the_game_half_passes_the_lint(self):
         """the game half's Lua as `check` and `load` see it: nothing wrong; WuxianKit alone is another addon's"""
@@ -271,7 +284,9 @@ class Extensions(unittest.TestCase):
         self.assertTrue(agent.startswith("# 掉落一瞥 (loot_peek)"), agent[:40])
         for said in ("`wk_loot_peek_where`", "`loot_peek.moved`", "`bus:loot_peek.moved`", "no process",
                      'extension_load {"id": "loot_peek"}', 'guide {"topic": "game-extension"}',
-                     'extension_wait {"id": "loot_peek"}', 'wk_docs {"extension": "loot_peek"}'):
+                     'extension_wait {"id": "loot_peek"}', 'wk_docs {"extension": "loot_peek"}',
+                     "`wk_kit_extensions`", "`gate`", "`versions.next.text`", "`game.state` outdated",
+                     'Kit:Requires("0.10.0")'):
             self.assertIn(said, agent)
         found = lint.check(folder / "addons" / "LootPeek")
         self.assertEqual((found["errors"], found["warnings"], list(found["unresolved"])), ([], [], ["WuxianKit"]))

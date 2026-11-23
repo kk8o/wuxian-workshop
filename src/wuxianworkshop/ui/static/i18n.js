@@ -993,6 +993,7 @@ const EN = {
   '需要扩展框架 {v} 以上': 'Needs WuxianKit {v} or later',
   '；': '; ',
   '版本不足': 'Needs an update',
+  '版本不符': 'Version mismatch',
   '更多': 'More',
   '打包中…': 'Packing…',
   '移除': 'Remove',

@@ -178,6 +178,38 @@ class GameOnly(LocalDaemon, unittest.TestCase):
             self.assertEqual((res["was"]["action"], res["timeout"]), ("start_game", True))
             self.assertGreaterEqual(looked.call_count, 3)                      # it looked again and again
 
+    def test_a_game_half_not_loaded_for_its_version(self):
+        """(I-C) WuxianKit lists it outdated / too_old (it did not load it): game.state outdated, never restart; the
+        player updates it, with the version report's sentence (else one made of WuxianKit's row); the wait is
+        settled at once"""
+        self.new()
+        self.ok("POST", "/api/local/load", {"id": "loot_peek"})
+        unmet = [dict(name="WuxianKit", needs="0.11.0", has="0.10.0")]
+        with mock.patch.object(self.svc, "kit_manifest_known",
+                               lambda: listed("outdated", gate="outdated", unmet=unmet)), \
+                mock.patch.object(self.svc, "local_verdict", lambda eid: f"the report's sentence for {eid}"):
+            t0 = time.monotonic()
+            res = self.wait(30)
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertEqual((res["timeout"], res["row"]["game"]["state"]), (False, "outdated"))
+            self.assertEqual(res["was"], {"action": "update", "text": "the report's sentence for loot_peek"})
+        with mock.patch.object(self.svc, "kit_manifest_known",
+                               lambda: listed("outdated", gate="outdated", unmet=unmet)), \
+                mock.patch.object(self.svc, "local_verdict", lambda eid: None):
+            self.assertEqual(self.wait()["row"]["player"]["text"],
+                             "LootPeek needs WuxianKit 0.11.0 (the game has 0.10.0): update WuxianKit on the App's "
+                             "Extensions (扩展) page, then restart the game fully")
+        with mock.patch.object(self.svc, "kit_manifest_known",
+                               lambda: listed("too_old", gate="too_old", built="0.5.0", floor="0.6.0")), \
+                mock.patch.object(self.svc, "local_verdict", lambda eid: None):
+            row = self.wait()["row"]
+            self.assertEqual((row["game"]["state"], row["player"]["action"]), ("outdated", "update"))
+            self.assertIn("was made for WuxianKit 0.5.0", row["player"]["text"])
+        with mock.patch.object(self.svc, "kit_manifest_known", lambda: listed("on", gate="outdated", unmet=unmet)):
+            self.assertEqual(self.wait()["row"]["game"]["state"], "on")          # loaded anyway: it runs
+        row = self.wait()["row"]                                                 # the real verdict: a string or none
+        self.assertNotEqual((row["player"] or {}).get("action"), "update")
+
     def test_wait_for_approval(self):
         """one with a process that the agent added: the player approves it in the App, and the wait is over"""
         folder = make_extension(self.root / "ext" / "fx", "fx")

@@ -239,7 +239,8 @@ AGENTS = """# {title}（{name}）· 给 Agent 的说明
 ## 开发循环
 
 1. `status`：`link.state` 是 `online` 或 `standby`（待命：第一个调用会自动连上）才继续；是 `offline` 的话请用户启动游戏、进入游戏世界
-   （不是角色选择界面），别最小化窗口，再查一次。
+   （不是角色选择界面），别最小化窗口，再查一次。再看 `versions.next`：`severity` 是 `blocked` 或 `pending` 时，把它的 `text`
+   告诉用户（点哪里由玩家点，你不替他更新），再用 `versions_wait` 等他做完；是 `update`（有新版本）只提一次。
 2. 改 `{name}.lua`（新文件记得写进 `{name}.toc`）。
 3. `check`，target `{name}`：不进游戏就找出会出错的地方——Lua 5.1 语法（客户端就是 5.1：没有 `//`、`goto`、位运算符）、
    这个客户端没有的库和函数（`os`、`io`、`utf8`、`require`、`table.unpack`…）、拼错的全局名和 API、忘了 `local` 的全局变量、
@@ -373,7 +374,9 @@ own API manual before you fix and try again.
 
 1. `status`: go on only when `link.state` is `online` or `standby` (standing by: the first call connects by itself);
    when it is `offline` ask the user to start the game, enter the world (not the character screen) and keep its window
-   un-minimized, then call it again.
+   un-minimized, then call it again. Then read `versions.next`: when its `severity` is `blocked` or `pending`, tell the
+   user its `text` (the player clicks; you never update anything yourself) and wait with `versions_wait`; `update` (a
+   newer version is out): mention it once.
 2. Change `{name}.lua` (a new file goes into `{name}.toc` too).
 3. `check`, target `{name}`: finds what would fail without the game: Lua 5.1 syntax (the client is 5.1: no `//`, `goto`,
    bitwise operators), libraries and functions this client lacks (`os`, `io`, `utf8`, `require`, `table.unpack`…),
@@ -725,6 +728,13 @@ changed (`extension_load {"id": "{{id}}"}`, or `extension_install {"id": "{{id}}
 addon only when it starts: the first time, the player restarts the game. Later changes to its Lua: `extension_load`,
 then `load {"target": "{{addon}}"}` (the workshop's hot load) or a UI reload.
 
+No `wk_{{gid}}_*` tools after that restart: read its row in `wk_kit_extensions`. A `gate` (outdated: a version its
+.toc's `X-Wuxian-Requires` asks for is not there; too_old: made for a WuxianKit below the floor) means WuxianKit did not
+load it, and this extension's row (`local_extensions`) has `game.state` outdated: tell the player `status`'s
+`versions.next.text` (what to update; the player does it). The first line of `{{addon}}.lua`,
+`Kit:Requires("{{kit}}")`, stops it on an older WuxianKit, which does not read that .toc field: when you raise the
+version, raise both, and the manifest's `requires.kit` with them.
+
 - `wk_{{gid}}_where`: returns `{zone, subzone}`, where the player is (a Read capability in the game).
 - the event `{{gid}}.moved` `{zone, subzone}`: the player entered another zone or subzone. The tool `events`
   shows it (`{"topic": "{{gid}}.*"}`); reactions hear it as `bus:{{gid}}.moved`.
@@ -771,6 +781,7 @@ local addonName, ns = ...
 WoWBridgeNS = WoWBridgeNS or {}                     -- the workshop's hot load (load {{addon}}) hands this file the same ns
 WoWBridgeNS[addonName] = ns
 local Kit = WuxianKit
+-- the same version as the .toc's X-Wuxian-Requires: an older WuxianKit does not read that field, this line stops it
 if not (Kit and Kit.Requires and Kit:Requires("{{kit}}")) then return end
 
 local L = Kit:Words {                               -- the player's words; L"KEY" in declarations, L.KEY at run time
@@ -836,6 +847,13 @@ and runs them in the running game (`loaded` says how that went). The game lists 
 only when it starts: until the player has restarted it once, the extension is there only while the hot load lasts (a
 UI reload drops it). `extension_wait {"id": "{{id}}"}` waits for what the player has to do. What fails: `errors`,
 `logs` (kinds OUT, ERR), `snap`.
+
+No `wk_{{id}}_*` tools after a restart: read its row in `wk_kit_extensions`. A `gate` (outdated: a version its .toc's
+`X-Wuxian-Requires` asks for is not there; too_old: made for a WuxianKit below the floor) means WuxianKit did not load
+it, and the extension's row (`local_extensions`) has `game.state` outdated: tell the player `status`'s
+`versions.next.text` (what to update; the player does it). The first line of `{{addon}}.lua`,
+`Kit:Requires("{{kit}}")`, stops it on an older WuxianKit, which does not read that .toc field: when you raise the
+version, raise both, and the manifest's `requires.kit` with them.
 """
 
 
@@ -861,11 +879,12 @@ def game_extension_id(eid):
 
 
 def workshop_version():
-    """this workshop's version as a manifest's requires takes it (dot-separated numbers: 0.9.13 of 0.9.13-dev), or
-    None"""
+    """this workshop's generation as a manifest's requires takes it: 0.<generation>.0 (0.10.0 of 0.10.2 or of
+    0.10.2-dev). A patch of the same generation is compatible, so a new extension does not ask for this very patch;
+    None when the version does not read"""
     from . import __version__
-    m = re.match(r"\d{1,6}(\.\d{1,6}){0,3}", str(__version__))
-    return m.group(0) if m and M.version_tuple(m.group(0)) else None
+    m = re.match(r"(\d{1,6})\.(\d{1,6})", str(__version__))
+    return f"{int(m.group(1))}.{int(m.group(2))}.0" if m and M.version_tuple(f"{m.group(1)}.{m.group(2)}.0") else None
 
 
 def addon_name_of(eid):

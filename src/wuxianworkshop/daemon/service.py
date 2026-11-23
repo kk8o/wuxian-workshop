@@ -95,6 +95,7 @@ MAX_CHAIN = 4                # hops of a call's caller.chain: one more is a loop
 CALL_TIMEOUT = 30.0          # seconds a capability has that declares no timeout (and a call of the game's)
 WAIT_MAX = 600.0             # seconds extension_wait waits at most
 WAIT_STEP = 2.0              # seconds between its looks at the extension's row
+CATALOG_FIRST = 10           # seconds after start that the daemon reads the extension catalog first (then CATALOG_AGE)
 LOCAL_KEPT = 30.0            # seconds the local extensions read for status's versions stand at most (a change of
                              # theirs, local_changed, forgets them at once)
 
@@ -173,7 +174,7 @@ def _seen(fut):
 
 class Service:
     def __init__(self, worker_factory, *, journal, mode="developer", game_dir=None, version=__version__, updater=None,
-                 sync_addons=False, extension_approval="ask"):
+                 sync_addons=False, extension_approval="ask", read_catalog=None):
         self.journal, self.mode, self.game_dir, self.version = journal, mode, game_dir, version
         # who approves a local extension's command (EXTENSION_APPROVALS): "ask" the player, once for each command, or
         # "auto", the workshop by itself (for developing extensions). The mode has no say in it
@@ -182,7 +183,12 @@ class Service:
         self.addon_sync, self.addons_pending = None, None
         self.updater, self.update_checks = updater, None      # updater.Updater; made in start() unless given
         self.content, self.content_checks = None, None        # content.ContentUpdater: newer content packs
-        self.ext_catalog = extensions.Catalog(store=extensions.catalog_store())   # the 扩展 page's, read when it looks
+        # the extension catalog: the one kept on disk from start() on, read again in the background every CATALOG_AGE
+        # (read_catalog; None: the real daemon's, as sync_addons) and when the 扩展 page looks: status's versions know
+        # it without the page and never wait for the website
+        self.ext_catalog = extensions.Catalog(store=extensions.catalog_store())
+        self.read_catalog = sync_addons if read_catalog is None else bool(read_catalog)
+        self.catalog_checks = None
         self.mcp_reports = {}        # pid -> what a stdio MCP server last reported (mcp_report): the 扩展 page's Agent 接入
         self.local_mcp = None        # the daemon's own /mcp server (set by the server): its connections, its WuxianKit tools
         self.mcp_lazy = None         # the server.LazyMcp that builds it after the daemon listens (None: no MCP)
@@ -217,7 +223,8 @@ class Service:
                                taken=self.kit_extension_ids, kit_version=self.kit_version_known,
                                addons_dir=self.game_addons_known,
                                interface=self.client_interface_known,
-                               game_side=self.game_side_known, on_report=self.local_report)   # local/host.py
+                               game_side=self.game_side_known, on_report=self.local_report,
+                               verdict=lambda eid: self.local_verdict(eid))   # local/host.py
         self.drive = local_drive.Drive(self.drive_kit, self.drive_wake, self.link_word,     # local/drive.py: the apps
                                        note=lambda text: self.journal.add("INFO", text),   # their programs drive
                                        path=state_dir() / local_drive.FILE,
@@ -262,7 +269,12 @@ class Service:
         self.content_checks = Scheduler(self.content.check, first=40, name="wuxian-content").start()
         if self.sync_addons_on:
             self.addon_sync = Scheduler(self.sync_addons, first=8, every=30, name="wuxian-addons").start()
-        self.local.autostart()               # the local extensions that start with 无限工坊 (start "workshop")
+        self.ext_catalog.load()              # the catalog kept on disk: known at once, read again in the background
+        if self.read_catalog:
+            first = CATALOG_FIRST if self.ext_catalog.addons else 1        # none kept: read it at once
+            self.catalog_checks = Scheduler(self.catalog_check, first=first, every=self.CATALOG_AGE,
+                                            name="wuxian-catalog").start()
+        self.local.autostart()              # the local extensions that start with 无限工坊 (start "workshop")
 
     def close(self):
         """stop the worker; whoever waits for a job hears that the daemon is going"""
@@ -275,7 +287,7 @@ class Service:
                 pass
         self.notes.close()                   # the wakes still held for their notes go into the journal
         self.history_pool.shutdown(wait=False, cancel_futures=True)
-        for checks in (self.update_checks, self.content_checks, self.addon_sync):
+        for checks in (self.update_checks, self.content_checks, self.addon_sync, self.catalog_checks):
             if checks is not None:
                 checks.stop()
         self.worker.stop()
@@ -838,7 +850,8 @@ class Service:
     # --- versions (compat.py): what runs, what is installed, what is needed, and the one step to take first ----------
 
     def versions_snapshot(self, light=False):
-        """(compat.judge's input) what the daemon knows now: this program and its update feed, WoWBridge (its HELLO
+        """(compat.judge's input) what the daemon knows now: this program and its update feed (its latest, and the
+        updater's state: what update_app's text tells the player to click), WoWBridge (its HELLO
         against its .toc), WuxianKit (kit_seen against its .toc; its floor: the running one's manifest's, else its
         .toc's X-WuxianKit-Floor), the extension addons the game's WuxianKit reports
         (their rows' toc / needs / unmet, WuxianKit 0.10.0 on; only from the manifest of the WuxianKit this game process
@@ -896,7 +909,8 @@ class Service:
             for name in list(f["needs"]):
                 if name.lower() != compat.WORKSHOP:
                     look(name)
-        return dict(app=dict(version=self.version, latest=(up or {}).get("latest")), kit_needs=KIT_NEEDS,
+        return dict(app=dict(version=self.version, latest=(up or {}).get("latest"), update=(up or {}).get("state")),
+                    kit_needs=KIT_NEEDS,
                     folders=dict(folders.values()), catalog=catalog, extensions=found, local=local,
                     agents=None if light else self.agents_seen())
 
@@ -1512,11 +1526,21 @@ class Service:
     # --- the extension catalog (extensions.py): the 扩展 page --------------------------------------------------------
 
     CATALOG_AGE = 600                         # seconds a catalog read stands before the page's next look reads it again
+                                              # (and between two of the daemon's own reads: catalog_check)
+
+    def catalog_check(self):
+        """(the background reads, Scheduler: every CATALOG_AGE) the extension catalog read again unless a look of the
+        page did that in the last half of CATALOG_AGE; what was read before stands when it fails. The version report
+        follows at once (versions_snapshot reads the catalog in memory)"""
+        cat = self.ext_catalog
+        if cat.checked is None or not 0 <= time.time() - cat.checked < self.CATALOG_AGE / 2:
+            cat.refresh()
 
     async def extensions(self, refresh=False):
         """the extension catalog's addons and what the game folder holds of each: {catalog: {url, updated, checked,
-        error}, addons: [the catalog's entry with there, installed (its .toc's version), state and missing (the folders
-        it needs that are not there)], addons_dir, app, detected}. detected: the addons in the game's AddOns that give
+        error}, addons: [the catalog's entry with there, installed (its .toc's version), state, missing (the folders
+        it needs that are not there) and, for needs_app / needs_kit, gate (install_gate's {code, text, unmet} or
+        None)], addons_dir, app, detected}. detected: the addons in the game's AddOns that give
         WuxianKit an extension and that neither the catalog lists nor a local extension put there, read from the
         folder (the game need not run): [their summary (local/summary.py of_addon) with official: the extension is
         one of WuxianKit's own]"""
@@ -1529,11 +1553,15 @@ class Service:
             addons = None
 
         def look():
-            out, kit = [], self.kit_judged(addons)
+            out, kit, snap = [], self.kit_judged(addons), None
             for e in cat.addons:
                 there, version = extensions.installed(addons, e["folder"]) if addons else (False, None)
-                out.append(dict(e, there=there, installed=version, state=extensions.state_of(e, there, version, kit),
-                                missing=extensions.missing(addons, e) if addons else []))
+                row = dict(e, there=there, installed=version, state=extensions.state_of(e, there, version, kit),
+                           missing=extensions.missing(addons, e) if addons else [])
+                if row["state"] in ("needs_app", "needs_kit") and compat.needs_of(e):   # the install gate's verdict
+                    snap = snap or self.versions_snapshot()
+                    row["gate"] = compat.install_gate(snap, e)
+                out.append(row)
             return out
 
         def found():
@@ -1552,7 +1580,7 @@ class Service:
         if not isinstance(ext_id, str) or not ext_id:
             raise ApiError(400, "bad_request", "id: an addon of the extension catalog")
         cat = self.ext_catalog
-        entry = cat.get(ext_id)
+        entry = cat.get(ext_id) if cat.checked is not None else None   # only kept on disk (load): read it first
         if entry is None:
             await asyncio.to_thread(cat.refresh)
             entry = cat.get(ext_id)
@@ -2247,13 +2275,23 @@ class Service:
 
     def game_side_known(self):
         """(the local host's game_side) what the game says of the extensions' game halves now: {online: the game can
-        be reached (the link is up, or stands by: a call opens a session), extensions: {id: {addon, state, version}}
-        as the WuxianKit manifest known now lists them}"""
+        be reached (the link is up, or stands by: a call opens a session), extensions: {id: {addon, state, version,
+        and an addon's gate, unmet, built, floor: why WuxianKit did not load it (outdated / too_old)}} as the WuxianKit
+        manifest known now lists them}"""
         manifest = self.kit_manifest_known() or {}
+        keys = ("addon", "state", "version", "gate", "unmet", "built", "floor")
         return dict(online=bool(self.link_is_up()) or self.link_word() == "standby",
-                    extensions={x["id"]: dict(addon=x.get("addon"), state=x.get("state"), version=x.get("version"))
+                    extensions={x["id"]: {k: x.get(k) for k in keys}
                                 for x in manifest.get("extensions") or []
                                 if isinstance(x, dict) and isinstance(x.get("id"), str)})
+
+    def local_verdict(self, eid):
+        """(the local host's verdict) the version report's sentence for a local extension (its item's text, I-B) when
+        that item is not fine, else None. Blocking: it reads .toc files"""
+        report = self.versions()
+        item = next((i for i in report.get("items") or [] if i.get("kind") == "local"
+                     and i.get("id") in (eid, f"local:{eid}") and i.get("state") in compat.SEVERITY), None)
+        return (item or {}).get("text") or None
 
     def kit_version_known(self):
         """(the local host's kit_version) the version of WuxianKit in the manifest known now (its kit), or None"""
@@ -2532,14 +2570,16 @@ class Service:
         """waits for what only the player can do before a local extension works (its row's player): {row, was,
         timeout}. was: the row's player when the wait began (None: nothing to wait for, answered at once); it ends
         when that is done (the row's player is then the next thing, or None), or after seconds (WAIT_MAX at most):
-        timeout true. A game that is restarted goes away first: after restart_game, start_game is the same wait"""
+        timeout true. A game that is restarted goes away first: after restart_game, start_game is the same wait.
+        update (game.state outdated: WuxianKit did not load its game half for its version) is settled, answered at
+        once: nothing ends it but a new version of the extension or of WuxianKit, and a restart after that"""
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds != seconds or seconds < 0:
             raise ApiError(400, "bad_request", f"seconds: how long to wait, 0 to {WAIT_MAX:g}")
         end = time.monotonic() + min(float(seconds), WAIT_MAX)
         row = await self.extension_waiting(id)
         was = row.get("player")
-        if was is None:
-            return dict(row=row, was=None, timeout=False)
+        if was is None or was.get("action") == "update":
+            return dict(row=row, was=was, timeout=False)
         same = {was["action"]} | ({"start_game"} if was["action"] == "restart_game" else set())
         while True:
             left = end - time.monotonic()
@@ -2877,7 +2917,7 @@ class Service:
 
         def start():
             comp = self.worker.companion()
-            self.ready(comp, "run")
+            self.ready(comp, {"=run": "run", "=call": "call", "=respond": "respond"}.get(chunk, "a request to the game"))
             if hold and hasattr(comp, "hold"):
                 comp.hold(hold)                   # in the code's packet: prints and errors do not ring
             job = comp.code(data, chunk, addon or "-")

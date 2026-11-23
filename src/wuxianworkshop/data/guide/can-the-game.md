@@ -32,7 +32,10 @@ likely to be protected: look at it first.
 - The limits: `api_manual {"topic": "protected"}`, `{"topic": "secret"}`.
 
 Read `call` on each: `ok`, `limited` (read `why`), `protected`. One `protected` part does not end the idea: it ends
-that part. Say what is left without it.
+that part. Say what is left without it. A `note` from `api_get` means the name you had in mind is not this client's:
+use the one it gives. `NotInClient`: this client lacks it, that part is a "cannot"; `Undocumented`: it is there,
+try it before you rely on it. And this client's own rules: `api_manual {"topic": "gamerules"}` (a part of the
+game it switches off) and `{"topic": "forever-api"}`.
 
 ## 3. Try each part in the running game
 
@@ -43,6 +46,9 @@ that part. Say what is left without it.
   often, with what?
 - the show: `try {"code": "<make a frame, set its text, show it>"}`, then `snap`: is it there? Read `blocked` and
   `errors`.
+
+The game not running (`status`: link offline): give the verdict from the manual, say plainly that it is not tried
+in the game yet, and name the one `run` or `try` that would settle it once the player is in the world.
 
 ## 4. The verdict
 

@@ -99,14 +99,17 @@ from .rpc import (BAD_ARGS, BUSY, CANCELLED, FAILED, INIT_TIMEOUT, NO_METHOD, PI
 
 STATES = ("off", "stopped", "starting", "running", "hung", "stopping", "exited", "backoff", "game")
 # game: an extension in the game only (addons and no run): it has no process, WuxianKit runs it in the game
-GAME_STATES = ("unknown", "absent", "offline", "restart", "missing", "disabled", "off", "installed", "on")
+GAME_STATES = ("unknown", "absent", "offline", "outdated", "restart", "missing", "disabled", "off", "installed", "on")
 # (a row's game.state, the worst first) unknown: the game folder is not known; absent: an addon of it is not in the
-# game's AddOns as it is here; offline: the game is not linked; restart: the game has not seen its addon yet; missing,
-# disabled, off, on: as WuxianKit lists its extension; installed: in AddOns, and none of its addons declares a
-# WuxianKit extension, so the game says no more
-PLAYER_ACTIONS = ("approve", "replace_addon", "start_game", "restart_game", "enable_addon", "turn_on")
+# game's AddOns as it is here; offline: the game is not linked; outdated: WuxianKit did not load its extension for its
+# version (its row's state outdated or too_old: an X-Wuxian-Requires not met, or made for a WuxianKit below the
+# floor); restart: the game has not seen its addon yet; missing, disabled, off, on: as WuxianKit lists its extension;
+# installed: in AddOns, and none of its addons declares a WuxianKit extension, so the game says no more
+GATES = ("outdated", "too_old")       # the states of a WuxianKit row that its version kept from loading (its gate)
+PLAYER_ACTIONS = ("approve", "replace_addon", "start_game", "restart_game", "enable_addon", "turn_on", "update")
 # a row's player.action; replace_addon: the game's AddOns holds a folder of an addon's name that is not the extension's
-# (one the player installed by hand, most often), which only the player replaces (the App's 替换)
+# (one the player installed by hand, most often), which only the player replaces (the App's 替换); update: its game
+# half is outdated, the text says what to update (the version report's sentence: compat)
 WAKE_PING = 30.0                      # seconds between two pings of an extension while a wake waits for its answer
 BACKOFF = (1.0, 5.0, 30.0, 120.0)     # seconds before a call starts it again, after 1, 2, 3 and more failed starts
 HELD_EVENTS = 100                     # events of an extension that has not answered initialize yet, kept at most
@@ -188,11 +191,13 @@ class Host:
     by it); addons_dir(): the game's AddOns folder or None while the game folder is not known, and interface(): the
     client's Interface number or None (what installs an extension's game addons reads both: put_addons);
     game_side(): what the game says of its side now, {online: the link is up, extensions: {id: {addon, state,
-    version}} as the WuxianKit manifest known now lists them}, or None (a row's game and player are made of it)"""
+    version, gate, unmet, built, floor}} as the WuxianKit manifest known now lists them}, or None (a row's game and
+    player are made of it); verdict(id): the version report's sentence for that local extension (compat: its item's
+    text) or None, asked only for a game half WuxianKit did not load for its version (player update)"""
 
     def __init__(self, root=None, *, version=__version__, note=None, on_event=None, on_call=None, on_change=None,
                  python=None, sdk=None, auto=None, home=None, taken=None, kit_version=None, addons_dir=None,
-                 interface=None, game_side=None, on_report=None):
+                 interface=None, game_side=None, on_report=None, verdict=None):
         self.root = Path(root) if root is not None else state_dir()
         self.version = version
         self.note = note or (lambda text: None)
@@ -205,6 +210,7 @@ class Host:
         self.addons_dir = addons_dir or (lambda: None)
         self.interface = interface or (lambda: None)
         self.game_side = game_side or (lambda: None)
+        self.verdict = verdict or (lambda eid: None)
         self.looked = None            # when discover() last looked at the home folder (time.monotonic())
         self.passed = {}              # a folder there that was not registered (its path, case folded) -> why, as noted
         self.sdk = Path(sdk) if sdk is not None else sdk_dir()
@@ -413,8 +419,8 @@ class Host:
             state = "installed"
         else:
             said = [(side["extensions"].get(i) or {}).get("state") for i in ids]
-            state = min((s if s in ("missing", "disabled", "off", "on") else "restart" for s in said),
-                        key=GAME_STATES.index)
+            state = min(("outdated" if s in GATES else s if s in ("missing", "disabled", "off", "on") else "restart"
+                         for s in said), key=GAME_STATES.index)
         return dict(extensions=ids, state=state)
 
     @staticmethod
@@ -435,11 +441,12 @@ class Host:
         }[action]
         return dict(action=action, text=text)
 
-    def player_of(self, e, m, allowed, approval, game, addons=()):
+    def player_of(self, e, m, allowed, approval, game, addons=(), side=None):
         """a row's player: what the player has to do before the extension works, {action: one of PLAYER_ACTIONS,
         text: the sentence for them}, or None (nothing: what is left is the agent's, or it works). First the
         approval, then a folder in AddOns to replace (addons: its addon_rows; replace_addon for the first foreign
-        folder that is not the same addon in a newer version: that one is kept), then its game half"""
+        folder that is not the same addon in a newer version: that one is kept), then its game half (outdated:
+        update, with the version report's sentence for it, verdict(); else one made of WuxianKit's row, side: side())"""
         if m is None or not e["enabled"] or self.unmet_error(m) is not None:
             return None
         title = m.get("title") or e["id"]
@@ -448,9 +455,25 @@ class Host:
         theirs = next((a for a in addons or () if G.replaceable(a) and not a.get("newer")), None)
         if theirs is not None:
             return self.player_says("replace_addon", title, addon=theirs["folder"], same=bool(theirs.get("same")))
+        if (game or {}).get("state") == "outdated":
+            return dict(action="update", text=self.update_text(e, m, title, game, side))
         action = {"offline": "start_game", "restart": "restart_game", "disabled": "enable_addon",
                   "off": "turn_on"}.get((game or {}).get("state"))
         return self.player_says(action, title, addon=m["addons"][0]) if action else None
+
+    def update_text(self, e, m, title, game, side=None):
+        """the sentence of player update: the version report's for this local extension (verdict()), else one made of
+        the first row WuxianKit did not load for its version (compat.gate_text: its unmet, or its built and floor)"""
+        try:
+            said = self.verdict(e["id"])
+        except Exception:
+            said = None
+        if isinstance(said, str) and said:
+            return said
+        side = side if side is not None else self.side()
+        rows = [(side.get("extensions") or {}).get(i) or {} for i in (game or {}).get("extensions") or ()]
+        row = next((r for r in rows if r.get("state") in GATES), {})
+        return compat.gate_text(title, row, self.kit(), addon=row.get("addon") or (m.get("addons") or [None])[0])
 
     def kit(self):
         """the installed WuxianKit's version, or None when it is not known now"""
@@ -612,7 +635,8 @@ class Host:
             state, why = "game", "it is in the game only: WuxianKit runs it there, the workshop starts no process"
         desc = e.get("described") or {}
         addons, approval, allowed = self.addon_rows(e, m), self.reg.approval(e), A.allowed(self, e)
-        game = self.game_of(m, addons, side if side is not None else self.side())
+        side = side if side is not None else self.side()
+        game = self.game_of(m, addons, side)
         return dict(id=e["id"], title=(m or {}).get("title") or e["id"], version=(m or {}).get("version"),
                     path=e["path"], enabled=e["enabled"], start=(m or {}).get("start") or "use", state=state,
                     since=since, why=why, pid=pid, started=started, exit_code=exit_code, error=err,
@@ -625,7 +649,7 @@ class Host:
                     origin=self.origin(e), author=(m or {}).get("author"), homepage=(m or {}).get("homepage"),
                     requires=dict((m or {}).get("requires") or {}), unmet=self.unmet(m),
                     addons=addons, where=where, game=game,
-                    player=self.player_of(e, m, allowed, approval, game, addons))
+                    player=self.player_of(e, m, allowed, approval, game, addons, side))
 
     def rows(self):
         side = self.side()
@@ -633,9 +657,10 @@ class Host:
             return [self.row(e, side) for e in self.load()["extensions"]]
 
     def version_rows(self):
-        """[{id, title, version, requires, addons}] of the registered extensions, from their manifests alone (the
-        version report's: no process, no game side, no approval). One whose manifest cannot be read (or says another
-        id) has its id as its title and nothing else"""
+        """[{id, title, version, requires, addons, drives}] of the registered extensions, from their manifests alone
+        (the version report's: no process, no game side, no approval; drives: an app of it has driver "local", so it
+        has a game half without addons too: compat judges the floor only for one with a game half). One whose manifest
+        cannot be read (or says another id) has its id as its title and nothing else"""
         with self.lock:
             entries = [dict(e) for e in self.load()["extensions"]]
         out = []
@@ -645,7 +670,8 @@ class Host:
                 m = {}
             out.append(dict(id=e["id"], title=m.get("title") or e["id"], version=m.get("version"),
                             requires=dict(m.get("requires") or {}),
-                            addons=[a for a in m.get("addons") or [] if isinstance(a, str)]))
+                            addons=[a for a in m.get("addons") or [] if isinstance(a, str)],
+                            drives=any(isinstance(a, dict) and a.get("driver") == "local" for a in m.get("apps") or [])))
         return out
 
     def get(self, eid):
