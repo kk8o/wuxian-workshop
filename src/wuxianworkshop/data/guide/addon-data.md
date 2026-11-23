@@ -44,7 +44,9 @@ Three outcomes are common:
 - a Read capability per question: `guide_step` ("where next"), `boss_loot` taking `{"boss": "string"}`;
 - an Event where they tell you of a change: `step_changed`;
 - `## OptionalDeps:` both addons in the `.toc`; every capability answers `{available: false, why}` when its addon
-  is missing or changed.
+  is missing or changed;
+- `## X-Wuxian-Requires: WuxianKit 0.10.0` stays in the `.toc` (`new_extension` writes it): the WuxianKit it is
+  made for.
 
 `extension_load {"id": "my_addons"}`, then try each tool while the player has the addon's window open, and
 `events {"topic": "my_addons.*", "since": -1, "wait": 60}` while they finish a step.

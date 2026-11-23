@@ -35,7 +35,9 @@ Prefer, in this order: a function or event the addon documents for others; its d
 
 `new_extension {"id": "...", "where": "game"}`, then, as in `guide {"topic": "game-extension"}`:
 
-- The `.toc` adds `## OptionalDeps: <TheirAddon>`, so that theirs loads first when it is there.
+- The `.toc` adds `## OptionalDeps: <TheirAddon>`, so that theirs loads first when it is there. Keep the line
+  `new_extension` wrote, `## X-Wuxian-Requires: WuxianKit 0.10.0`: the WuxianKit it is made for (`game-extension`,
+  "It needs WuxianKit").
 - One Read capability per question the agent will ask ("the current step", "what this boss drops"), each guarded:
   the addon missing, not loaded yet, or of a shape you do not know answers `{available: false, why: "..."}`, never
   an error.

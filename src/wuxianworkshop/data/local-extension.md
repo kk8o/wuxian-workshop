@@ -409,8 +409,9 @@ files in `addons/<Name>/` (`<Name>.toc` and what it lists; an addon's kinds of f
 with a Read capability and an event, and a `main.py` that uses both.
 
 - Its id: the WuxianKit extension in the addon cannot have the local extension's id (their tools share the names
-  `wk_<id>_...`); the template's is `<id>_game`. Its `.toc` says `## Dependencies: WuxianKit`, `## LoadOnDemand: 1`
-  and `## X-WuxianKit-Extension: <id>_game`. How to write the Lua: WuxianKit's skill `kit-extension` (`wk_docs
+  `wk_<id>_...`); the template's is `<id>_game`. Its `.toc` says `## Dependencies: WuxianKit`, `## LoadOnDemand: 1`,
+  `## X-WuxianKit-Extension: <id>_game` and `## X-Wuxian-Requires: WuxianKit 0.10.0` (the WuxianKit it is made
+  for, the same as the manifest's `requires.kit`; see `requires` above). How to write the Lua: WuxianKit's skill `kit-extension` (`wk_docs
   {"skill": "kit-extension"}`).
 - The halves meet in the workshop. The local half calls the game half's capabilities:
   `ext.call("<id>_game.<name>")` (`no_capability`: the addon is not loaded in the game; `down`: the game is not
