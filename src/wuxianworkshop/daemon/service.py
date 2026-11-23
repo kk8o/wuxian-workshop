@@ -70,6 +70,9 @@ TRY_HOLD = 5                              # seconds past try's window the addon 
 # the settings' link_mode: "auto" a session always while an app that wants it runs (its link "live"), else one while
 # things pass; "always" a session always. Anything else that is kept (0.9.14's "demand") is read as "auto"
 LINK_MODES = ("auto", "always")
+HOLD_KEPT = 900.0            # seconds after the game exited (or another process came) that the apps which held the link
+                             # still hold it, till kit.apps says which run in the new one: then openings that failed give
+                             # them up
 KIT_NEEDS = "0.7.0"          # the WuxianKit the local side works with: an older one in the game is told nothing of the
                              # local extensions (no list, no apps, no reports), and status says it is outdated
 NO_KIT = "has no WoWBridge handle"   # in a call_failed of a call of WuxianKit: the game runs none
@@ -190,6 +193,7 @@ class Service:
         self.link_mode = "auto"          # the settings' link_mode in use
         self.holding = threading.Lock()  # the holders and what the loop was told of them
         self.holders = set()             # the apps that run and want the link live (link_mode auto: a session always)
+        self.holders_kept = None         # time.monotonic() the game went while they held it: kept, not known to run
         self.app_titles = {}             # app -> its title as kit.apps or a local declaration said it (status)
         self.link_always = None          # what the loop was last told: a session always ...
         self.link_by = ()                # ... and the titles of the apps that keep it (the game's panel names them)
@@ -558,7 +562,7 @@ class Service:
         """(any thread) the apps that hold the link now, all of them (kit.apps read again; none: the game exited). The
         loop hears of it when they, or their titles, changed"""
         with self.holding:
-            self.holders = set(apps)
+            self.holders, self.holders_kept = set(apps), None
             self.apply_link()
 
     def held_by(self):
@@ -569,10 +573,16 @@ class Service:
         return [dict(id=app, title=self.app_titles.get(app) or app) for app in apps]
 
     def game_gone(self):
-        """(worker thread) the game process exited, or another one runs now: no app of it holds the link, and which
-        WuxianKit the next one runs is not known"""
+        """(worker thread) the game process exited, or another one runs now: which WuxianKit the next one runs is not
+        known. The apps that held the link hold it on (their extensions run on, and WuxianKit opens them again): the next
+        process gets its session without waiting for a doorbell no one may see (the window covered), and kit.apps,
+        read once it is up, says which run (holders_are). Openings that fail HOLD_KEPT s after give them up"""
         self.kit_seen = None
-        self.holders_are(())
+        with self.holding:
+            if self.holders:
+                self.holders_kept = time.monotonic()
+                self.journal.add("INFO", "link: the game process went; the apps that held the link ("
+                                 + ", ".join(sorted(self.holders)) + ") hold it on until the game says which run")
 
     def link_word(self):
         """(any thread) how the link to the game is now: "online" (frames come), "standby" (a call opens a session) or
@@ -604,8 +614,15 @@ class Service:
 
     def open_failed(self, text):
         """(worker thread) the game did not answer the packet that was to open a session: the calls in it fail now, not
-        at their timeout (the Companion's note has put the text in the journal already)"""
+        at their timeout (the Companion's note has put the text in the journal already). Apps kept holding the link
+        across a game process (game_gone) let go of it once that is HOLD_KEPT s ago"""
         self.fail_pending(text)
+        with self.holding:
+            if self.holders_kept is not None and time.monotonic() - self.holders_kept >= HOLD_KEPT:
+                self.journal.add("INFO", "link: the game has not said for a while which apps run: the ones that held "
+                                         "the link before let go of it")
+                self.holders, self.holders_kept = set(), None
+                self.apply_link()
 
     def link_bye(self, why):
         """(worker thread) the player ended the session (/wb hide, "hide") or turned the link off ("off")"""
@@ -663,6 +680,8 @@ class Service:
             link.update(state=comp.link_state() if standby else "online" if comp.link_up else "offline",
                         standby=standby, opening=standby and comp.opening is not None,
                         in_session=standby and bool(comp.session),
+                        unanswered=getattr(comp, "unanswered", 0) if standby else 0,   # openings in a row with no frames
+                        full=getattr(comp, "full", False) is True,                      # no mailbox slot left
                         hidden=standby and getattr(comp, "hidden", False) is True,   # why it is offline
                         rested=dict(at=round(comp.rested[0], 3), why=comp.rested[1]) if standby and comp.rested else None)
             link.update(session=comp.current, slot_next=comp.slot,

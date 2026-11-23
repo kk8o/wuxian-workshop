@@ -34,7 +34,7 @@ def _typed(dll, restype, **argtypes):
 _typed(user32, wt.BOOL, IsWindowVisible=(wt.HWND,), IsWindow=(wt.HWND,), IsIconic=(wt.HWND,),
        GetClientRect=(wt.HWND, ctypes.POINTER(wt.RECT)), ClientToScreen=(wt.HWND, ctypes.POINTER(wt.POINT)),
        EnumWindows=(WNDENUMPROC, wt.LPARAM))
-_typed(user32, wt.HWND, GetWindow=(wt.HWND, wt.UINT))
+_typed(user32, wt.HWND, GetWindow=(wt.HWND, wt.UINT), WindowFromPoint=(wt.POINT,), GetAncestor=(wt.HWND, wt.UINT))
 _typed(user32, wt.DWORD, GetWindowThreadProcessId=(wt.HWND, ctypes.POINTER(wt.DWORD)))
 _typed(user32, ctypes.c_int, GetClassNameW=(wt.HWND, wt.LPWSTR, ctypes.c_int), GetWindowTextLengthW=(wt.HWND,),
        GetWindowTextW=(wt.HWND, wt.LPWSTR, ctypes.c_int), ReleaseDC=(wt.HWND, wt.HDC))
@@ -250,6 +250,20 @@ class GdiReader:
             gdi32.DeleteObject(self.bmp)
             gdi32.DeleteDC(self.mdc)
         self.size = self.mdc = self.bmp = self.old = self.thread = None
+
+
+GA_ROOT = 2
+
+
+def covered(win, x, y):
+    """whether another window shows at the client point (x, y) of the game window: GDI reads the screen, so a frame
+    there is not seen. False when it cannot be told"""
+    try:
+        with physical():
+            h = user32.WindowFromPoint(wt.POINT(win.x + x, win.y + y))
+            return bool(h) and user32.GetAncestor(h, GA_ROOT) != win.hwnd
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 def grab_client(win, max_w=None, max_h=None, x=0, y=0, reader=None):

@@ -48,7 +48,7 @@ from ..core.game import addons_dir, process_start, read_build_info
 from ..core.locate import locate
 from ..paths import logs_dir, state_dir
 from ..transport import capture
-from ..transport.capture import GdiReader, WgcSource, grab_client
+from ..transport.capture import GdiReader, WgcSource, covered, grab_client
 from ..transport.link import IDLE, Companion
 
 if sys.stdout is not None:                                       # None in a detached process
@@ -71,6 +71,12 @@ STANDBY_FROM = (0, 9, 14)                        # the WoWBridge that stands by 
 DOORBELL_EVERY = 1.0                             # seconds between peeks (GDI) at the frame's place while standing by
 DOORBELL_SCAN = 5.0                              # seconds between looks over the whole window while that place is not
 DOORBELL_SCAN_KNOWN = 30.0                       # known, and once it is (the window resized, the frame moved meanwhile)
+DOORBELL_FRESH = 60.0                            # seconds after the window changed (restored, moved, resized, a new
+                                                 # process) in which the whole window is looked over every DOORBELL_SCAN s
+                                                 # as when the place is not known: the frame may be elsewhere now, and a
+                                                 # login HELLO shows 10 s only
+COVER_MIN = 3.0                                  # seconds the frame's place was covered by another window before it
+                                                 # counts as seen again once it is not (Companion.window_back)
 ROOM = (520, 136)                                # the room the addon keeps on the screen for its biggest frame (pixels;
                                                  # Frame.lua Room): it keeps the frame that far from the right and bottom
 _TOC_VERSION = re.compile(r"(?m)^## Version:\s*(\d+)\.(\d+)\.(\d+)")
@@ -168,6 +174,8 @@ class CompanionLoop:
         self.bell_file = state_dir() / "doorbell.json"
         self.bell = self._load_bell()                # the frame's place in client pixels (x, y) for the doorbell, or None
         self.bell_last = self.bell_scan = 0.0        # time.monotonic() of the last peek and the last look over the window
+        self.bell_fresh = 0.0                        # ... until when the window counts as just changed (DOORBELL_FRESH)
+        self.covered_since = None                    # since when another window covers the frame's place (standing by)
         self.in_session = False                      # the last round read a session (the place is kept when it ends)
         self.frame_at = None                         # where in the client area a frame was last found (its corner)
         self.comp = None
@@ -292,7 +300,7 @@ class CompanionLoop:
             self.wgc = None
             self.log("no session: only the doorbell is read (GDI, at the frame's place)")
         now = time.monotonic()
-        if now - self.bell_scan >= (DOORBELL_SCAN_KNOWN if self.bell else DOORBELL_SCAN):
+        if now - self.bell_scan >= (DOORBELL_SCAN_KNOWN if self.bell and now >= self.bell_fresh else DOORBELL_SCAN):
             self.bell_scan = now
             self.search_fails, self.last_search = 0, 0.0
             self.frame_at = None
@@ -303,6 +311,7 @@ class CompanionLoop:
         if now - self.bell_last >= DOORBELL_EVERY:
             self.bell_last = now
             at = self._bell_at(win)
+            self._cover(win, comp, at, now)
             t0 = time.perf_counter()
             try:
                 img = grab_client(win, *ROI_SMALL, *at, reader=self.gdi)
@@ -314,6 +323,18 @@ class CompanionLoop:
         if not comp.session:
             self.same, self.misses = None, 0
             self.gdi.close()
+
+    def _cover(self, win, comp, at, now):
+        """whether another window covers the frame's place: once it has for COVER_MIN s and does no more, the window
+        counts as seen again (Companion.window_back: what waits in the game rings at once, not after its backoff)"""
+        x, y = at
+        if covered(win, x + MARGIN + 4, y + MARGIN + 4):
+            if self.covered_since is None:
+                self.covered_since = now
+        elif self.covered_since is not None:
+            if now - self.covered_since >= COVER_MIN:
+                comp.window_back(f"the frame's place uncovered after {now - self.covered_since:.0f} s")
+            self.covered_since = None
 
     def _on_up(self, sid):
         if self.on_up is not None:
@@ -486,6 +507,7 @@ class CompanionLoop:
                 self.wgc = None
             self.changes.append(dict(at=round(now, 3), client=[win.w, win.h], origin=[win.x, win.y], dpi=win.dpi,
                                      changing=0, restored=True, relock=None, failed=0))
+            comp.window_back("the window restored")
         g = (win.x, win.y, win.w, win.h, win.dpi)
         if self.geom is not None and g != self.geom:        # E2: moved, resized, another monitor or mode
             self.moving_since = self.moving_since or now
@@ -581,9 +603,11 @@ class CompanionLoop:
 
     def _window_changed(self):
         """the window moved, was resized, restored or is a new one: the frame is searched for at the first interval
-        again, and a frame decoded before is not taken as still up"""
+        again, and a frame decoded before is not taken as still up; the doorbell looks over the whole window often for a
+        while (DOORBELL_FRESH)"""
         self.search_fails = 0
         self.same = None
+        self.bell_fresh = time.monotonic() + DOORBELL_FRESH
 
     def _gone(self):
         """no game window: when the process the Companion knew has exited too (not just its window, which may come

@@ -70,7 +70,10 @@ more for prints and errors, which do not ring), or when the player ends it, or o
 frame ("BYE;why=idle|hide|off|rest"), on_bye. A session whose frames stopped for SESSION_LOST s is taken as over too (a
 covered window: the BYE was not seen). The companion also writes "here <ms> <app>" (present: at the start, and every
 PRESENCE_EVERY seconds while there is no session) and "bye <ms>" (farewell: it quits), whether frames come or not
-(_direct). Whether the addon stands by (standby) comes from outside (the daemon reads the installed WoWBridge's
+(_direct). The game window seen again (window_back: restored, its frame's place uncovered) opens a session always at once
+rather than at ALWAYS_AGAIN, and otherwise says "here" (at most every BACK_EVERY s): any packet ends the addon's doorbell
+backoff, so what waits there rings now. Openings the game did not answer in a row are counted (unanswered: the status
+says so from UNANSWERED_WARN on). Whether the addon stands by (standby) comes from outside (the daemon reads the installed WoWBridge's
 version); a HELLO with less than STANDBY says it does not (legacy, until the game process ends).
 """
 import os
@@ -110,10 +113,14 @@ REST_SETTLE = 3.0               # seconds after a rest in which the addon's fram
 PRESENCE_EVERY = 600.0          # seconds between "here" packets while there is no session
 OLD_PROCESS = 15.0              # seconds a game process ran before the app saw it, past which its addon may have read
                                 # proc.ttf (the login screen comes first: an app that saw the start writes it before)
-OLD_ROOM = 512                  # mailbox slots that must be left to go on after the last process's
+OLD_ROOM = 64                   # mailbox slots that must be left to go on after the last process's (with fewer, the
+                                # mailbox starts over: an addon that read the old stamp waits higher up until its HELLO
+                                # says where; with more, it is never emptied under an addon that reads on)
 STANDBY_ACK = 2.0               # seconds within which a session that may end soon acknowledges (lazy: ack_lazy)
 IDLE = 3.0                      # seconds after the last thing passed that the addon ends a session (what passes is done)
 ALWAYS_AGAIN = 60.0             # seconds between openings while the settings want a session always and none comes
+BACK_EVERY = 60.0               # seconds between the "here" packets the game window seen again writes (window_back)
+UNANSWERED_WARN = 3             # openings the game did not answer in a row from which the status says so
 BY_MOST = 2                     # titles of the apps that keep a session always that a WELCOME names (by=) ...
 BY_BYTES = 24                   # ... and the bytes of each, at most (UTF-8, cut at a character)
 APP_ID = f"{os.getpid():x}{int(time.time()) % 1000000:x}"   # this program run: a new one ends the session going on
@@ -389,6 +396,8 @@ class Companion(AgentCommands):
         self.idle, self.always = IDLE, False   # the addon ends a session after idle s with nothing passing; always: never
         self.by = ()                  # the titles of the apps that keep it always (none: the settings do): the WELCOME's by=
         self.always_tried = None      # when the last opening for always went
+        self.back_said = None         # when the window seen again last said "here" (window_back)
+        self.unanswered = 0           # openings in a row the game did not answer (frames came: 0)
         self.on_open_failed = None    # (text) -> None: no frames came after an opening
         self.on_bye = None            # (why) -> None: the player ended the session ("hide") or turned the link off
         self.rested = None            # (when, why) the last session ended
@@ -414,6 +423,7 @@ class Companion(AgentCommands):
         self.pings, self.reload_sent, self.reload_later, self.watch_jobs = {}, None, False, {}
         self.legacy, self.session, self.opening, self.stamped, self.link_up = False, False, None, None, False
         self.said_here = False                      # "here" once at the start of each game process (also in a session)
+        self.unanswered, self.back_said = 0, None
         self.floor = 1                              # slots below were written by an earlier program in this process
         return len([r for r in stale if r[0] != MB.WELCOME])
 
@@ -484,7 +494,7 @@ class Companion(AgentCommands):
                 return                              # the BYE of a session already over, read again
             if self.resting is not None and 0 <= now - self.resting < REST_SETTLE:
                 return                              # the last frames before the addon read the rest
-            self.session = True                     # the doorbell: the addon has something to send
+            self.session, self.unanswered = True, 0     # the doorbell: the addon has something to send
             self.note("the doorbell: a frame while standing by, a session")
         self.stats["frames"] += 1
         self.last_frame = now
@@ -714,6 +724,24 @@ class Companion(AgentCommands):
             self._direct([(MB.COMMAND, f"here {int(now * 1000)} {APP_ID}".encode())], now)
             self.said_here = True
 
+    def window_back(self, why):
+        """the game window can be seen again (restored, the frame's place uncovered): with a session always wanted one
+        opens now, not at ALWAYS_AGAIN; else a "here" (at most every BACK_EVERY s) tells the addon an app reads again,
+        which ends its doorbell's backoff (Link.lua OnPacket): what waits there rings at once. Nothing while a session
+        is on or none can open"""
+        now = self.clock()
+        if self.session or not self.can_open():
+            return
+        if self.always:
+            self.always_tried = None                # _stand_by opens it
+            self.note(f"{why}: a session always, opening it now")
+            return
+        if self.back_said is not None and now - self.back_said < BACK_EVERY:
+            return
+        self.back_said = now
+        self.present()
+        self.note(f"{why}: \"here\" said, so what waits in the game rings at once")
+
     def farewell(self):
         """ "bye": this program quits; a session going on ends"""
         now = self.clock()
@@ -780,9 +808,12 @@ class Companion(AgentCommands):
         if self.opening is not None:
             if self.link_up:
                 self.note(f"session open: frames {now - self.opening:.2f} s after the stamped packet")
-                self.opening = None
+                self.opening, self.unanswered = None, 0
             elif now - self.opening >= OPEN_WAIT:
-                self._open_failed(now, f"no frames came within {OPEN_WAIT:.0f} s of the request")
+                self.unanswered += 1
+                self._open_failed(now, f"no frames came within {OPEN_WAIT:.0f} s of the request"
+                                  + (f"; {self.unanswered} in a row, the addon reads slot {self.addon_slot} as its last "
+                                     f"frame said, the next written is {self.slot}" if self.unanswered > 1 else ""))
             return
         if self.session:
             if not self.link_up and now - (self.last_frame or 0) >= SESSION_LOST:

@@ -62,7 +62,10 @@
 -- doorbell until it is back). The addon stands by only after an app said "here" or stamped a packet (db.appNew): an
 -- older app does neither, and the addon shows its HELLO as ever; and entering the world in a new game process with no app
 -- heard within LOGIN_QUIET s (an app started after the addon read the mailbox, or an older one) shows it LOGIN_SHOW s. Off, the mailbox is still read (no backlog builds up
--- meanwhile) and only "here" and "bye" are heard. A session kept across /reload (db.link) shows its HELLO at once, as
+-- meanwhile) and only "here" and "bye" are heard. Standing by with an app that should be there (no "bye") and no packet
+-- for PROBE_AFTER s (it says "here" every 600 s), the HELLO shows LOGIN_SHOW s: it says which mailbox slot the addon
+-- reads, so an app that writes elsewhere (it emptied the mailbox after this process had read the last one's stamp) learns
+-- it; again after twice that, at most PROBE_MAX. A session kept across /reload (db.link) shows its HELLO at once, as
 -- ever; a new app ("here" with another <app>) reads the frames of one going on and takes it over.
 -- Who keeps a session (0.10.0, for the panel's first line: L.Kept): a WELCOME with idle=0 means a session always, by the
 -- app's settings, or, when it also says by=<title>,<title> (the first few) and byn=<how many>, by the apps that hold the
@@ -96,7 +99,10 @@ local POUR_QUIET = 20                            -- seconds without a mailbox pa
 local STAMP_TTL = 8                              -- seconds an app's stamped packet opens a session for: the app gives up on
                                                  -- it after 12 s (link.py OPEN_WAIT), so what came with it runs then or never
 local HELLO_GIVEUP = 30                          -- seconds of HELLO without a packet before an addon that can stand by does
-local RING_AGAIN, RING_MAX = 60, 600             -- seconds before the doorbell rings again after nobody answered it (doubling)
+local RING_AGAIN, RING_MAX = 60, 300             -- seconds before the doorbell rings again after nobody answered it (doubling)
+local PROBE_AFTER, PROBE_MAX = 1260, 3600        -- seconds standing by without a packet from an app that should be there
+                                                 -- before the HELLO says where the addon reads (2 x its "here" + 60 s);
+                                                 -- doubling, at most PROBE_MAX
 local FLAT_AFTER = 4                             -- seconds of HELLO unanswered after which an addon that never heard an
                                                  -- app that stands by draws every other HELLO in mode 1 (apps before 0.9.9)
 local LEAVE_SHOW = 0.8                           -- seconds the BYE frame stays up before the frame goes
@@ -143,6 +149,7 @@ local held                   -- the frame is unlocked (L.Hold): a session, that 
 local heardApp               -- an app that stands by said "here" or stamped a packet since this UI loaded
 local loginCheck             -- when to show the HELLO if no app was heard by then (LOGIN_QUIET)
 local helloLimit             -- seconds this HELLO shows unanswered before standing by again (nil: HELLO_GIVEUP)
+local probeAt, probeWait     -- when the HELLO shows to say where the addon reads, with no packet till then; the next wait
 local kept                   -- who keeps the session, as the last WELCOME of an app that stands by said: { always, by =
                              -- { titles }, n = how many hold it }; nil: not heard since the UI loaded, or the app is gone
 local slots0                 -- { left, at }: the app messages left when the link started (L.SlotsPace)
@@ -589,6 +596,7 @@ local function OnPacket(pkt)
 	db.heardAt = time()                              -- (kept across /reload: L.Reachable)
 	stats.packets = stats.packets + 1
 	ringAfter, ringBackoff = 0, RING_AGAIN           -- an app reads the mailbox: the doorbell may ring at once
+	probeAt, probeWait = now + PROBE_AFTER, PROBE_AFTER
 	local opened = Say(pkt)
 	if pkt.session == ns.session and pkt.ack > 0 then       -- also standing by: what the app has needs no session
 		lastAck = pkt.ack
@@ -660,6 +668,10 @@ function L.Tick()
 	elseif state == "standby" and db.appNew and not appAway and now >= ringAfter
 			and (held or (Wanted() and (heardApp or not loginCheck))) then
 		Open(false)                          -- the doorbell (after a login, not before LOGIN_QUIET unless an app was heard)
+	elseif state == "standby" and db.appNew and not appAway and not loginCheck and probeAt and now >= probeAt then
+		probeWait = math.min(probeWait * 2, PROBE_MAX)
+		probeAt = now + probeWait
+		Open(false, LOGIN_SHOW)              -- no packet for long: the app may write elsewhere; the HELLO says where
 	end
 	if loginCheck and now >= loginCheck then
 		loginCheck = nil
@@ -1032,6 +1044,7 @@ function L.Start(savedDb, print, on, initial)
 	else
 		state, helloSince = "hello", GetTime()
 	end
+	probeAt, probeWait = GetTime() + PROBE_AFTER, PROBE_AFTER
 	Mailbox.Start(db, OnPacket)
 	slots0 = slots0 or { left = L.SlotsLeft(), at = GetTime() }
 	tickers = { C_Timer.NewTicker(mailEvery, Mailbox.Tick), C_Timer.NewTicker(0.05, L.Step), C_Timer.NewTicker(0.5, L.Tick) }

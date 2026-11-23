@@ -16,6 +16,7 @@ from unittest import mock
 from tests.daemon.test_standby_daemon import Worker
 from wuxianworkshop.daemon.api import ApiError
 from wuxianworkshop.daemon.journal import Journal
+from wuxianworkshop.daemon import service
 from wuxianworkshop.daemon.service import Service
 from wuxianworkshop.paths import settings_file
 from wuxianworkshop.transport import link
@@ -209,7 +210,9 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         self.emit("kit.app", {"app": "cocreate", "on": False, "why": "stopped"})
         await self.settle()
         self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ("语音搭子 2",)))
-        self.svc.game_gone()
+        self.svc.game_gone()                                                 # they hold it on into the next process
+        self.assertEqual((self.told[-1], kept[-1]), ((True, link.IDLE), ("语音搭子 2",)))
+        await self.svc.holders_from([])                                      # ... till kit.apps says none run
         self.assertEqual((self.told[-1], kept[-1]), ((False, link.IDLE), ()))
 
     async def test_kit_ready_reads_kit_apps(self):
@@ -305,8 +308,18 @@ class Holders(unittest.IsolatedAsyncioTestCase):
         self.emit("kit.app", {"app": "companion", "on": True, "link": "live"})
         await self.settle()
         self.assertEqual(self.svc.worker.on_game_gone, self.svc.game_gone)
-        self.svc.worker.on_game_gone()
+        self.svc.worker.on_game_gone()                                       # held on: the next process's session
+        self.assertEqual((await self.held(), self.told[-1]), (["companion"], (True, link.IDLE)))
+        self.svc.open_failed("no frames")                                    # the next game not up yet: kept
+        self.assertEqual(await self.held(), ["companion"])
+        self.svc.holders_kept -= service.HOLD_KEPT                           # failing that much later: let go
+        self.svc.open_failed("no frames")
         self.assertEqual((await self.held(), self.told[-1]), ([], (False, link.IDLE)))
+        self.emit("kit.app", {"app": "companion", "on": True, "link": "live"})
+        await self.settle()
+        self.svc.worker.on_game_gone()
+        await self.svc.holders_from([{"id": "companion", "on": False, "link": "live"}])   # the new game: not running
+        self.assertEqual((await self.held(), self.svc.holders_kept), ([], None))
 
 
 class LoopSaysTheGameIsGone(unittest.TestCase):

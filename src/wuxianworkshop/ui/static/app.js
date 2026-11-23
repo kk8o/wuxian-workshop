@@ -576,6 +576,8 @@ function appState() {
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'player') return t('未读取');
       if (this.status.link.state !== 'online' && this.status.link.blocked === 'missing') return t('等待安装');
       const st = this.status.link.state || (this.status.game.found ? 'waiting' : 'offline');
+      if (this.status.link.full && st !== 'online') return t('信件用完');
+      if (st === 'standby' && this.status.link.unanswered >= 3) return t('待命 · 游戏没有应答');
       if (st === 'standby') return t('就绪 · 待命');
       if (st === 'offline' && this.status.link.hidden) return t('游戏已最小化');
       if (st === 'online' && this.status.link.in_session) return t('就绪 · 正在传');
@@ -585,6 +587,8 @@ function appState() {
       if (!this.status) return 'muted';
       const st = this.status.link.state;
       if (st !== 'online' && ['restart', 'missing'].includes(this.status.link.blocked)) return 'warn';
+      if (st !== 'online' && this.status.link.full) return 'warn';
+      if (st === 'standby' && this.status.link.unanswered >= 3) return 'warn';    // (UNANSWERED_WARN in link.py)
       return (st === 'online' || st === 'standby') ? 'ok' : (st === 'offline' || !st) ? 'muted' : 'warn';
     },
     get linkWhy() {                            // one line under 离线: why, and what to do
@@ -593,6 +597,10 @@ function appState() {
       if (s.link.blocked === 'restart') return t('安装加入了运行中的游戏不认识的新文件：完整退出并重启游戏后才能连接（/reload 不够）。');
       if (s.link.blocked === 'player') return t('旧设置里是玩家模式，正在切回开发模式…');
       if (s.link.blocked === 'missing') return t('这个游戏目录还没有装 WoWBridge：退出游戏后程序自动装上，再启动游戏即可连接。');
+      if (s.link.full) return t('这个游戏进程的信件用完了：完整退出游戏再进即可恢复（/reload 不够）。');
+      if (s.link.state === 'standby' && !s.link.opening && s.link.unanswered >= 3) {
+        return t('待命，但游戏连续几次没有应答：已进入游戏世界的话先 /reload；仍不行请完整退出游戏再进。');
+      }
       if (s.link.state === 'standby') {
         return s.link.opening ? t('正在连上游戏…')
           : t('待命：游戏里不显示帧码；有东西要传时自动连上（约半秒）。');
