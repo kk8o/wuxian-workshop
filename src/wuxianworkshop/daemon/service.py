@@ -3183,15 +3183,35 @@ class Service:
                 done += 1
                 results.append(dict(file=name or chunk_file(res.get("chunk") or ""), job=job, ok=res["ok"],
                                     error=res.get("error"), stack=res.get("stack"), ms=res.get("ms"),
-                                    values=res.get("values")))
+                                    values=res.get("values"), **({"note": res["note"]} if res.get("note") else {})))
         finally:
             for job in jobs:                   # also when the caller went away
                 self.pending.pop(job, None)
         body = dict(files=results, addon=addon, ok=all(r["ok"] for r in results), reset=reset, kept=kept, check=found)
+        later = await asyncio.to_thread(self.toc_after_start, Path(w.addons), addon)
+        if later:
+            body["restart"] = (f"{later} changed after the game started: the game reads a .toc only when it starts "
+                               f"(its Interface, files, SavedVariables): what the .toc changes takes a full restart of "
+                               f"the game (a UI reload is not enough); this hot load works meanwhile")
         if results and not done:
             raise ApiError(504, "timeout", f"no result for {len(results)} file(s) within {int(timeout * 1000)} ms: is the "
                                            f"game running with WoWBridge online?", files=results, addon=addon)
         return body
+
+    def toc_after_start(self, addons, addon):
+        """(worker thread) the name of the addon's .toc when it was written after the running game started, else None"""
+        try:
+            started = float((self.worker.game_status() or {}).get("start") or 0)
+            folder = addons / str(addon or "")
+            if not started or not addon or not folder.is_dir():
+                return None
+            for toc in folder.glob("*.toc"):
+                stem, name = toc.stem.lower(), str(addon).lower()
+                if (stem == name or stem.startswith(name + "_")) and toc.stat().st_mtime > started:
+                    return toc.name
+        except (OSError, TypeError, ValueError):
+            return None
+        return None
 
     async def watch(self, action="list", target=None):
         if action not in ("start", "stop", "list"):

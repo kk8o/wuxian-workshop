@@ -14,6 +14,11 @@
 -- Lifecycle: a first part flagged "reset" calls WoWBridgeNS[addon].OnUnload() before the code runs (pcall) and
 -- OnReload(<what OnUnload returned>) after it; "unload" and "reload" do one half each, so that a whole-addon load calls
 -- OnUnload before its first file and OnReload after its last.
+-- Named frames: the client keeps a global name on the first frame made with it (CreateFrame with a name already taken
+-- makes the new frame, and _G still holds the old one), so a hot load would leave the addon's globals on its old frames
+-- and their old scripts. The same halves note the named frames before the load and, after it, point each name the load
+-- made anew at its new frame and quiet the old one (events off, OnUpdate off, hidden); never a name the game set
+-- (issecurevariable). The result says which ("rebound named frames").
 -- Compressed jobs (link features 3, 0.9.9): a first part may say "z:<bytes>:<Adler-32, hex>" right after its count (a
 -- colon cannot stand in an addon's folder name); the job's parts then join into raw DEFLATE (Inflate.lua), which must
 -- come out at that size and checksum before the job runs. One that does not fails with "could not be unpacked", and the
@@ -28,6 +33,7 @@ WoWBridgeNS = WoWBridgeNS or {}       -- addon name -> its namespace; an addon r
 WoWBridgeNS[addonName] = ns
 local jobs = {}
 local unloaded = {}                   -- addon -> { value = what OnUnload returned }, until the reload half runs
+local named = {}                      -- addon -> { [name] = frame } of the named frames before its load, until it ends
 local DONE_KEPT = 500                 -- job ids kept as run
 local STALE = 900000                  -- ms: a job older than this is not run
 
@@ -202,6 +208,44 @@ local function Unload(addon, space)
 	return ok and " (OnUnload ok)" or (" (OnUnload error: %s)"):format(Text(value))
 end
 
+-- { [name] = frame } of the frames whose global name holds them now
+local function NamedFrames()
+	local out = {}
+	if type(EnumerateFrames) ~= "function" then return out end
+	local f = EnumerateFrames()
+	while f do
+		local ok, name = pcall(f.GetName, f)
+		if ok and type(name) == "string" and rawget(_G, name) == f then out[name] = f end
+		f = EnumerateFrames(f)
+	end
+	return out
+end
+
+-- after a load: each name it made a new frame with, while _G still held the old one, now holds the new frame; the old
+-- one is quieted. A note for the RUN result ("" when none)
+local function Rebind(addon)
+	local before = named[addon]
+	named[addon] = nil
+	if not before or type(EnumerateFrames) ~= "function" then return "" end
+	local moved, f = {}, EnumerateFrames()
+	while f do
+		local ok, name = pcall(f.GetName, f)
+		local old = ok and type(name) == "string" and before[name]
+		if old and old ~= f and rawget(_G, name) == old
+				and not (type(issecurevariable) == "function" and issecurevariable(_G, name)) then
+			_G[name] = f
+			pcall(old.UnregisterAllEvents, old)
+			pcall(old.SetScript, old, "OnUpdate", nil)
+			pcall(old.Hide, old)
+			moved[#moved + 1] = name
+		end
+		f = EnumerateFrames(f)
+	end
+	if #moved == 0 then return "" end
+	local shown = table.concat(moved, ", ", 1, math.min(#moved, 6)) .. (#moved > 6 and ", ..." or "")
+	return (" (rebound named frames to the new ones, the old hidden: %s)"):format(shown)
+end
+
 local function Reload(addon, space)
 	local kept = unloaded[addon]
 	unloaded[addon] = nil
@@ -265,13 +309,16 @@ local function RunJob(id, job)
 			space, note = {}, (" (no namespace registered for %s: it got a new one, kept for its later loads)"):format(job.addon)
 			WoWBridgeNS[job.addon] = space
 		end
-		if job.flag == "reset" or job.flag == "unload" then note = note .. Unload(job.addon, space) end
+		if job.flag == "reset" or job.flag == "unload" then
+			note = note .. Unload(job.addon, space)
+			if job.addon ~= "-" then named[job.addon] = NamedFrames() end
+		end
 		if job.addon == "-" then
 			res = Pack(xpcall(function() return f() end, Traceback))
 		else
 			res = Pack(xpcall(function() return f(job.addon, space) end, Traceback))
 		end
-		if job.flag == "reset" or job.flag == "reload" then note = note .. Reload(job.addon, space) end
+		if job.flag == "reset" or job.flag == "reload" then note = note .. Reload(job.addon, space) .. Rebind(job.addon) end
 	end
 	local ms = debugprofilestop() - t0
 	local values, failure = "", nil

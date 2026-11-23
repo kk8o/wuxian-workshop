@@ -285,12 +285,24 @@ function IsShiftKeyDown() return __shift end
 function HideUIPanel() end
 __locale = "enUS"
 function GetLocale() return __locale end
+-- as 1.60.1.71037 does: a name already taken keeps its first frame (the new one has the name, _G does not point at it)
 function CreateFrame(kind, name, parent)
 	local f = new(kind, parent)
-	if name then _G[name], f.__name = f, name end
+	if name then
+		f.__name = name
+		if rawget(_G, name) == nil then _G[name] = f end
+	end
 	frames[#frames + 1] = f
 	return f
 end
+function EnumerateFrames(after)
+	if after == nil then return frames[1] end
+	for i, f in ipairs(frames) do
+		if f == after then return frames[i + 1] end
+	end
+end
+__secure = {}                           -- names the game itself set (issecurevariable)
+function issecurevariable(t, name) return t == _G and __secure[name] == true end
 function __fire(event, ...)
 	for _, f in ipairs(frames) do
 		if f.events[event] and f.scripts.OnEvent then f.scripts.OnEvent(f, event, ...) end

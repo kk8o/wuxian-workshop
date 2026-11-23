@@ -833,6 +833,41 @@ class ProtocolV08(unittest.TestCase):
         finally:
             s.close()
 
+    def test_a_hot_load_rebinds_its_named_frames(self):
+        """the client keeps a taken global name on the first frame (seen in 1.60.1.71037): after a load, a name the
+        load made anew points at the new frame, the old one is quieted and hidden; a name the game set is left alone;
+        the result's note names them"""
+        s, comp, logs, got = self.start()
+
+        def runs():
+            return [t for k, t in got if k == "RUN"]
+        try:
+            g = s.lua.globals()
+            foo = s.addons / "Foo"
+            foo.mkdir()
+            (foo / "Foo.toc").write_text("Core.lua\n", encoding="utf-8")
+            (foo / "Core.lua").write_text(
+                'FooBuilds = (FooBuilds or 0) + 1\n'
+                'local f = CreateFrame("Frame", "FooFrame", UIParent)\n'
+                'f.build = FooBuilds\n'
+                'f:RegisterEvent("BAG_UPDATE")\n'
+                'f:Show()\n'
+                'CreateFrame("Frame", "GameTooltipFake", UIParent)\n', encoding="utf-8")
+            s.lua.execute(b'CreateFrame("Frame", "GameTooltipFake") __secure.GameTooltipFake = true')
+            comp.command("load Foo/Core.lua")
+            s.run(6)
+            self.assertEqual(g[b"FooFrame"][b"build"], 1)
+            old = g[b"FooFrame"]
+            comp.command("load Foo/Core.lua")                           # again: a second FooFrame
+            s.run(6)
+            self.assertEqual(g[b"FooFrame"][b"build"], 2)               # the name holds the new frame
+            self.assertFalse(old.IsShown(old))                          # the old one hidden, its events off
+            self.assertEqual(len(list(old[b"events"].keys())), 0)
+            self.assertRegex(runs()[-1], r"\(rebound named frames to the new ones, the old hidden: FooFrame\)$")
+            self.assertNotIn("GameTooltipFake", runs()[-1])             # the game's own name: left alone
+        finally:
+            s.close()
+
     def test_set_switches(self):
         """/wb set: forwardDebug off keeps errors from the companion, hotLoad off refuses code; both are kept per
         character and survive a /reload; autoLink off keeps the link from starting"""

@@ -27,7 +27,8 @@ Answer that first, with the evidence: `guide {"topic": "can-the-game"}`; build i
 1. `new_addon {"name": "MyAddon", "title": "...", "template": "basic"}` (`"window"` adds a draggable window). It
    writes the `.toc`, the Lua and an `AGENTS.md` in the game's AddOns: read that file and follow it.
 2. Edit the files. Look every API up before you use it (`api_search`).
-3. `load {"target": "MyAddon"}`: it checks the files, then runs them in the running game. Fix every error in its
+3. `load {"target": "MyAddon"}`: it checks the files, then runs them in the running game (a frame name it makes
+   again, `CreateFrame("Frame", "MyFrame")`, then holds the new frame: a file's `note` says so). Fix every error in its
    `check`; a syntax error sends nothing.
 4. `try {"slash": "/myaddon"}` or `try {"code": "...", "frame": "MyAddonFrame"}`: read `ok`, `errors`, `prints`,
    `blocked`. `snap` and `inspect` show how it looks and where it sits.

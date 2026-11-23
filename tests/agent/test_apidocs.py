@@ -350,6 +350,13 @@ class Carried(unittest.TestCase):
         self.assertEqual(scan["carried"] or scan["client"], ix.about()["client"])   # one carried to it (--carry-scan)
         self.assertTrue(ix.get("C_Garrison.GetGarrisonInfo")["undocumented"])     # the documentation leaves it out
         self.assertEqual(ix.get("Constants.LegacyConsts")["fields"][2]["n"], "LEGACY_TREE_PROFESSIONS_ID")
+        # names the game has that the manual lists otherwise, or not at all (Sonnet runs in the game, 0.10.2)
+        self.assertIn("call C_AddOns.IsAddOnLoaded", ix.get("IsAddOnLoaded")["note"])         # gone: the C_ one
+        self.assertIn("call InCombatLockdown", ix.get("InCombatLockdown")["note"])           # the global is there,
+        self.assertIn("which this client lacks", ix.get("InCombatLockdown")["note"])         # the C_ entry is not
+        frames = ix.get("EnumerateFrames")                                                    # there, undocumented
+        self.assertEqual((frames["kind"], frames["why"]), ("global", ["Undocumented"]))
+        self.assertIsNone(ix.get("NoSuchGlobalAnywhere"))
 
 
 if __name__ == "__main__":

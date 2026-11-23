@@ -412,15 +412,25 @@ class ApiIndex:
         found = self.by_name.get(key)
         if not found:
             found = self.by_short.get(key) or []
+            names = ", ".join(e["name"] for e in found[:4])
             if found and not any(c in key for c in ".:") and raw not in ((self.runtime or {}).get("globals") or ()):
-                names = ", ".join(e["name"] for e in found[:4])
                 note = (f"{raw} is not a global of this client: call {names}" if len(found) == 1 else
                         f"{raw} is not a global of this client; these have that name: {names}")
+            elif found and not any(c in key for c in ".:"):   # InCombatLockdown: the global is there, documented or not
+                lacks = all("NotInClient" in (e.get("why") or ()) for e in found)
+                note = (f"{raw} is a global function of this client (the game scan has it): call {raw}. The manual "
+                        f"has the name only as {names}" + (", which this client lacks" if lacks else ""))
         if not found:
             found = self.inherited(raw)
             if found:
                 note = (f"{raw} is not listed as such: widget types inherit methods, and the manual lists each under "
                         f"the type that defines it ({', '.join(e['name'] for e in found[:6])})")
+        if not found and raw in ((self.runtime or {}).get("globals") or ()):     # EnumerateFrames: there, undocumented
+            scan = self.runtime or {}
+            return dict(name=raw, kind="global", call="limited", why=["Undocumented"],
+                        note=(f"{raw} is a global of this client (the game scan of {scan.get('client')}, "
+                              f"{scan.get('scanned')}), and the manual does not describe it: its arguments and returns "
+                              f"are not known here; try it in the game"))
         if not found:
             return None
         out = self.full(found[0]) if len(found) == 1 else dict(candidates=[self.brief(e) for e in found])
