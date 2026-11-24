@@ -38,9 +38,11 @@ installed, and the player only plays.
    game off by its rules (`gamerules`: a panel, the encounter journal, macros ...): an idea that leans on one of those
    needs `run {"code": "return C_GameRules.IsGameRuleActive(Enum.GameRule.<Name>)"}` in the running game.
 3. **Try it in the running game.** `status` first: the link must be online. Then:
-   - `run {"code": "return type(C_X.Y)"}`: is it there at all;
+   - `api_verify {"names": ["C_X.Y", "SOME_EVENT"]}`: is it there at all (kept: later answers say "seen");
    - `try {"code": "...", "events": "BAG_*"}`: do it once and read `ok`, `action`, `errors`, `blocked`, `events`;
-   - `trace {"seconds": 15, "events": "LOOT_*"}` while the player does the thing: which events fire, with what;
+   - `trace {"seconds": 15, "events": "LOOT_*"}` while the player does the thing: which events fire, with what.
+     Tell them first, where they look: `say {"text": "…请现在拾取一件物品…"}` puts the line in their game chat
+     (they may not be reading this conversation), then start the trace;
    - `inspect {"target": "SomeFrame"}`, or `{"mouse": true}` with the player's mouse on it: what a frame is, where,
      and whose;
    - `snap`: what the screen shows.
