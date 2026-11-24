@@ -10,7 +10,6 @@ local T = {}
 T.enUS = {
 	-- chat
 	CONNECTED = "connected to the app · /wb opens the panel",
-	RECONNECTED = "connected to the app again",
 	MET_APP = "the Wuxian Workshop app is here: the frame code stays hidden and shows for a few seconds when something has to pass · /wb opens the panel",
 	WAITING_CHAT = "waiting for the app: start Wuxian Workshop on this PC · /wb opens the panel",
 	OFFLINE = "lost the app: %d messages waiting",
@@ -47,9 +46,6 @@ T.enUS = {
 	FLUSHED = "%d messages waiting to go up dropped",
 	LINK_STATUS = "link %s · %d app messages left · %d packets read · %d waiting · %d acknowledged (avg %.2f s, max %.2f s) · "
 		.. "%d parts shown again · drawing %.1f ms avg, %.1f ms max",
-	AGENT_CODE = "the agent ran %s: %s",
-	AGENT_OK = "ok",
-	AGENT_ERROR = "error",
 	-- dialogs
 	RELOAD_ASK = "The agent asks for a UI reload",
 	RELOAD_REASON = "Reason: %s",
@@ -107,7 +103,6 @@ T.enUS = {
 	COUNTS = "Runs %s · Failed %s · Errors %s · Blocked %s",
 	RANGE = "%d-%d / %d",
 	RECENT_NONE = "Nothing since the last reload",
-	RUN_SNIPPET = "a Lua snippet",
 	NOTICE_UNLOCKED = "The frame can be dragged: put it where it covers nothing, then lock it",
 	NOTICE_HOTLOAD = "Hot loading is off: the agent's code does not run",
 	BTN_TURN_ON = "Turn on",
@@ -213,7 +208,6 @@ T.enUS = {
 
 T.zhCN = {
 	CONNECTED = "已连接 App · /wb 打开面板",
-	RECONNECTED = "已重新连接 App",
 	MET_APP = "已连上无限工坊 App：帧码平时收起，有东西要传时出现几秒 · /wb 打开面板",
 	WAITING_CHAT = "等待 App：在这台电脑上打开无限工坊 App · /wb 打开面板",
 	OFFLINE = "与 App 失去连接，%d 条消息待发",
@@ -249,9 +243,6 @@ T.zhCN = {
 	FLUSHED = "已清空待发消息 %d 条",
 	LINK_STATUS = "链路%s · App 消息余量 %d · 已读 %d 个包 · 待发 %d 条 · 已确认 %d 条（平均 %.2f 秒，最长 %.2f 秒）· "
 		.. "补发 %d 段 · 绘制平均 %.1f 毫秒，最长 %.1f 毫秒",
-	AGENT_CODE = "Agent 运行 %s：%s",
-	AGENT_OK = "成功",
-	AGENT_ERROR = "出错",
 	RELOAD_ASK = "Agent 请求重载界面",
 	RELOAD_REASON = "原因：%s",
 	RELOAD_NOW = "立即重载",
@@ -302,7 +293,6 @@ T.zhCN = {
 	BTN_CONSOLE = "调试输出 →",
 	COUNTS = "运行 %s · 失败 %s · 报错 %s · 拦截 %s",
 	RECENT_NONE = "重载界面后还没有活动",
-	RUN_SNIPPET = "一段 Lua",
 	NOTICE_UNLOCKED = "帧码可以拖动：放到不挡东西的地方再锁定",
 	NOTICE_HOTLOAD = "热加载已关闭：Agent 发来的代码不会运行",
 	BTN_TURN_ON = "打开",

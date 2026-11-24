@@ -163,8 +163,7 @@ local lastPacket, lastAck = nil, 0
 local beat, ctlId = 0, 0
 local hellos = 0              -- HELLO frames drawn (every other one flat: Control)
 local pong                   -- a ping id to answer
-local connected              -- the link was online before in this UI session: the chat says "again"
-local offlineSaid            -- the chat said the link was lost: it says when it is back
+local connected              -- the link was online before in this UI session: the chat says only the first
 local stats = { packets = 0, acked = 0, resent = 0, sum = 0, max = 0, draws = 0, drawSum = 0, drawMax = 0, lost = 0 }
 local burst                  -- { n, last, t0, acked, sum, max, resent0 }
 local stream                 -- { n, last, t0, acked, sum, max, resent0, ending }
@@ -433,7 +432,7 @@ function L.Command(text)
 	if cmd == "ping" then
 		pong = rest
 	elseif cmd == "flush" then
-		Print(ns.L.FLUSHED:format(L.Flush()))
+		ns.Console.Add("LINK", ns.L.FLUSHED:format(L.Flush()))
 	elseif cmd == "reload" then
 		-- "reload <nonce>": on this client only a click or key press may reload the UI (ReloadUI and ConsoleExec from a
 		-- timer: "interface action failed"), so a button asks the user. The nonce is saved first: a packet read again
@@ -449,7 +448,7 @@ function L.Command(text)
 	elseif handlers[cmd] then
 		handlers[cmd](rest)
 	else
-		Print(ns.L.COMMAND:format(text))
+		ns.Console.Add("LINK", ns.L.COMMAND:format(text))
 	end
 end
 
@@ -610,12 +609,10 @@ local function OnPacket(pkt)
 	if state ~= "online" and not opened then
 		state, helloJob, lastBusy = "online", nil, now
 		db.link = "session"
-		if not db.appNew then                          -- an app that does not stand by: online as ever
-			Print(connected and ns.L.RECONNECTED or ns.L.CONNECTED)
-		elseif offlineSaid then                        -- sessions come and go unsaid; a loss said is said back
-			Print(ns.L.RECONNECTED)
+		if not db.appNew and not connected then        -- an app that does not stand by: its first connection is said;
+			Print(ns.L.CONNECTED)                        -- losses and returns go in the Console only
 		end
-		connected, offlineSaid = true, nil
+		connected = true
 		ns.Console.Add("LINK", ns.L.CON_LINK_UP)
 		for _, m in ipairs(queue) do m.again = 0 end    -- what went up while nobody read it goes again within rto
 	end
@@ -656,11 +653,7 @@ function L.Tick()
 	local now = GetTime()
 	if state == "online" and lastPacket and now - lastPacket > P.offline then
 		state, helloSince = "hello", now
-		if not db.appNew or Wanted() then           -- standing by, a loading screen is no news; data waiting is
-			Print(ns.L.OFFLINE:format(#queue))
-			offlineSaid = true
-		end
-		ns.Console.Add("LINK", ns.L.CON_LINK_DOWN)
+		ns.Console.Add("LINK", #queue > 0 and ns.L.OFFLINE:format(#queue) or ns.L.CON_LINK_DOWN)
 	elseif state == "hello" and db.appNew and now - math.max(helloSince or 0, lastPacket or 0) > (helloLimit or HELLO_GIVEUP) then
 		StandBy()                            -- nobody answers: stand by rather than show HELLO; ring again later
 		ringAfter, ringBackoff = now + ringBackoff, math.min(ringBackoff * 2, RING_MAX)
@@ -714,7 +707,7 @@ local function Shape(m, body)
 	local frags, pending, at = {}, {}, 1
 	while at <= #body do
 		if #frags == 255 then                   -- the rest is cut
-			Print(ns.L.CUT:format(#body - 1, at - 2))
+			ns.Console.Add("LINK", ns.L.CUT:format(#body - 1, at - 2))
 			body = body:sub(1, at - 1)
 			break
 		end

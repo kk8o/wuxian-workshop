@@ -210,8 +210,11 @@ class Stuck(unittest.TestCase):
             s.run(0.3)
         s.run(1)
         s.comp.command("flush")
-        self.until(s, lambda: len(re.findall("waiting to go up dropped", s.chat())) == 2, 10)
-        self.assertEqual(len(re.findall("waiting to go up dropped", s.chat())), 2)
+        lines = s.ns[b"Console"][b"Lines"]                  # the companion's flush: in the debug window, not the chat
+        dropped = lambda: [x for x in lines().values() if b"waiting to go up dropped" in x]
+        self.until(s, lambda: len(dropped()) == 1, 10)
+        self.assertEqual(len(dropped()), 1)
+        self.assertEqual(len(re.findall("waiting to go up dropped", s.chat())), 1)
         cut["on"] = False
         s.run(10)
         self.assertEqual(self.outs(), ["next"])

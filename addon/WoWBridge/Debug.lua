@@ -152,6 +152,7 @@ if setprinthandler and getprinthandler then
 	local previous = getprinthandler()
 	setprinthandler(function(...)
 		pcall(OnPrint, ...)
+		if (ns.agentRuns or 0) > 0 then return end    -- the agent's code: its prints go to it and the Console only
 		return previous(...)
 	end)
 end

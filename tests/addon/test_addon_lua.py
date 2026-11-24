@@ -146,11 +146,14 @@ class Link(unittest.TestCase):
             # an outage: no packets for 20 s, the addon goes offline, then reconnects
             s2.comp_running = False
             s2.run(20)
-            self.assertRegex(s2.chat(), r"lost the app: \d+ messages waiting")
+            self.assertNotIn("lost the app", s2.chat())                    # the debug window says it, not the chat
+            self.assertTrue(any(re.search(r"lost the app: \d+ messages waiting|the link to the app is down", x)
+                                for x in console_lines(s2)), console_lines(s2)[-5:])
             s2.comp_running = True
             s2.run(10)
             self.assertEqual(s2.chat().count("connected to the app · /wb opens the panel"), 2)   # before and after /reload
-            self.assertEqual(s2.chat().count("connected to the app again"), 1)                   # then the reconnect
+            self.assertNotIn("connected to the app again", s2.chat())                            # the return: unsaid
+            self.assertIn("connected to the app", console_lines(s2)[-1])
         finally:
             s.close()
 
@@ -523,7 +526,18 @@ class DebugWindow(unittest.TestCase):
             s.slash("set toasts off")
             comp.command("run return 1")
             s.run(6)
-            self.assertIn("the agent ran a Lua snippet: ok", s.chat())  # no notice: the chat says it
+            self.assertNotIn("the agent ran", s.chat())                 # no notice: the debug window has it, not the chat
+            printed = lambda: [v.decode() for v in s.lua.globals()[b"__printed"].values()]   # the game's own print
+            comp.command('run print("from the agent")')               # the agent's prints: to it and the window only
+            s.run(6)
+            self.assertNotIn("from the agent", printed())
+            s.ns[b"Console"][b"Show"](b"all")
+            lines = console_lines(s)
+            s.slash("log")
+            self.assertTrue(any("from the agent" in x for x in lines), lines[-4:])
+            self.assertTrue(any("agent  ran a Lua snippet" in x for x in lines), lines[-4:])
+            s.lua.execute(b'print("from an addon")')                  # an addon's own print goes to the chat as ever
+            self.assertIn("from an addon", printed())
 
             # the agent's word to the player (say): the chat and the screen, the notices off too, long enough to read,
             # and a notice of the agent's code does not cover it (0.10.2 in the game: a busy chat under the mailbox
@@ -724,7 +738,8 @@ class EarlyAndSlots(unittest.TestCase):
             s.run(65)
             self.assertNotIn("lost the app", s.chat())
             s.run(30)
-            self.assertIn("lost the app: 0 messages waiting", s.chat())
+            self.assertNotIn("lost the app", s.chat())                 # the debug window has it
+            self.assertIn("the link to the app is down", console_lines(s)[-1])
         finally:
             s.close()
 
@@ -1232,8 +1247,8 @@ class PanelAndLanguage(unittest.TestCase):
             panel[b"restart"].Click(panel[b"restart"])                # 重新连接: the link starts over ...
             self.assertEqual(s.ns[b"Link"][b"State"](), b"hello")
             s.run(8)
-            self.assertEqual([line.split("|r ", 1)[1] for line in s.chat().splitlines()[said:]],
-                             ["connected to the app again"])          # ... and the chat says only that it is back
+            self.assertEqual(s.chat().splitlines()[said:], [])         # ... the card says it is back, not the chat
+            self.assertEqual(s.ns[b"Link"][b"State"](), b"online")
 
             tabs[1].Click(tabs[1])                                    # 设置
             self.assertTrue(pages[b"settings"][b"shown"])
@@ -1289,7 +1304,7 @@ class PanelAndLanguage(unittest.TestCase):
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"text"].decode(), card[b"hint"][b"shown"],
                               card[b"h"]), ("未连接 · 请打开无限工坊 App", "重新连接", True, 74))
             s.run(8)
-            self.assertIn("已重新连接 App", s.chat())
+            self.assertNotIn("重新连接 App", s.chat())
             self.assertEqual((card[b"state"][b"text"].decode(), card[b"act"][b"shown"], card[b"h"]), ("已连接", False, 42))
             s.slash("")                                               # /wb alone: the panel again (closes it)
             self.assertFalse(panel[b"shown"])

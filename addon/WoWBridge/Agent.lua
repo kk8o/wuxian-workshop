@@ -326,11 +326,13 @@ local function RunJob(id, job)
 			note = note .. Unload(job.addon, space)
 			if job.addon ~= "-" then named[job.addon] = NamedFrames() end
 		end
+		ns.agentRuns = (ns.agentRuns or 0) + 1         -- its prints go to the agent and the Console, not the chat (Debug.lua)
 		if job.addon == "-" then
 			res = Pack(xpcall(function() return f() end, Traceback))
 		else
 			res = Pack(xpcall(function() return f(job.addon, space) end, Traceback))
 		end
+		ns.agentRuns = ns.agentRuns - 1
 		if job.flag == "reset" or job.flag == "reload" then note = note .. Reload(job.addon, space) .. Rebind(job.addon) end
 	end
 	local ms = debugprofilestop() - t0
@@ -356,10 +358,6 @@ local function RunJob(id, job)
 	if job.name == "=probe" then return end              -- the app's own look into the game, not the agent's code
 	Count(job.name, ok)
 	pcall(ns.Console.Job, job.name, job.addon, job.flag, ok, ms, values, failure and (failure .. note) or nil)
-	if ns.Setting("toasts") == false then                 -- no notice on the screen: the chat says it, as before
-		local what = job.name:sub(1, 1) == "=" and ns.L.RUN_SNIPPET or short
-		ns.Print(ns.L.AGENT_CODE:format(what, ok and ns.L.AGENT_OK or ns.L.AGENT_ERROR))
-	end
 end
 
 local FLAGS = { reset = true, unload = true, reload = true }
@@ -559,7 +557,9 @@ local function RunCall(id, job)
 		elseif type(req) ~= "table" then
 			failure = "its data is not a JSON object"
 		else
+			ns.agentRuns = (ns.agentRuns or 0) + 1
 			local ok, a, why = pcall(Answer, job.verb, req)
+			ns.agentRuns = ns.agentRuns - 1
 			if not ok then failure = Text(a) elseif a == nil then failure = why else text = a end
 		end
 	end

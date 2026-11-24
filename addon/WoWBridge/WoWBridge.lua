@@ -105,7 +105,7 @@ end
 local function Draw(f)
 	local R, G, B = Frame.Build(f.W, f.H, f.mode, f.toggle, f.ftype, session, f.msg, f.payload, f.part, f.parts)
 	if not R then
-		Print(L.FRAME_ERROR:format(tostring(G)))
+		ns.Console.Add("ERR", L.FRAME_ERROR:format(tostring(G)))
 		return false
 	end
 	Frame.Show(f.W, f.H, f.cell, R, G, B)
