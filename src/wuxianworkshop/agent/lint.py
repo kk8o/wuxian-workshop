@@ -1659,7 +1659,9 @@ def apply_live(report, types):
 def apply_seen(report, kept):
     """the report with what the game answered before (seen.many: {name: {type, at}} for live_names), as apply_live
     takes answers: report["seen"] {settled: how many}; the names left are for the live step"""
-    types = {n: r.get("type") for n, r in (kept or {}).items() if isinstance(r, dict) and r.get("type")}
+    def kind(r):          # a name in capitals the game has nothing for is kept as an event it does not know: nil here
+        return "nil" if r.get("type") == "event" and r.get("valid") is False else r.get("type")
+    types = {n: kind(r) for n, r in (kept or {}).items() if isinstance(r, dict) and r.get("type")}
     if types:
         _settle(report, types, "was nil in the game (kept from an earlier answer: api_verify asks again)")
         report["seen"] = dict(settled=len(types))

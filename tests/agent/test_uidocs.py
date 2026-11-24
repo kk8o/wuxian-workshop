@@ -114,6 +114,14 @@ class Index(unittest.TestCase):
                          {"TooltipDataProcessor.AddTooltipPostCall", "TooltipDataProcessor"})
         self.assertIsNone(ui.get("NoSuchThing"))
         self.assertIsNone(ui.get("EncounterJournal.nothere"))
+        # a member the table lists without an entry of its own (review, 0.10.2: not_found, and the candidates sent the
+        # agent back to the same name)
+        types = ui.get("TooltipDataProcessor.AllTypes")
+        self.assertEqual((types["member"], types["of"]["name"]),
+                         ({"name": "TooltipDataProcessor.AllTypes", "kind": "value"}, "TooltipDataProcessor"))
+        self.assertEqual(ui.get("TooltipDataProcessor:AllTypes")["member"]["name"], "TooltipDataProcessor.AllTypes")
+        self.assertEqual(ui.get("AllTypes")["candidates"][0]["member"], "TooltipDataProcessor.AllTypes")
+        self.assertIsNone(ui.get("TooltipDataProcessor.Nope"))
 
     def test_left_out_and_bootstrap(self):
         ui = index()
@@ -272,6 +280,18 @@ class Check(Home):
         self.assertFalse(r["ok"])
         empty = self.check(code)
         self.assertNotIn("seen", lint.apply_seen(empty, {}))
+
+    def test_a_name_in_capitals_the_game_lacks_stays_an_error(self):
+        """api_verify answers a nil name in capitals as an event the game does not know: kept so, it is still nil for
+        the check (review, 0.10.2: a missing name went quiet once api_verify had asked about it)"""
+        r = self.check("X_Y()\n")                          # (from four letters on, capitals pass as the UI's own)
+        self.assertEqual(r["unresolved"], {"X_Y": ["Core.lua:1"]})
+        lint.apply_seen(r, {"X_Y": {"type": "event", "valid": False}})
+        self.assertEqual([f["code"] for f in r["errors"]], ["undefined"])
+        self.assertFalse(r["ok"])
+        r = self.check("X_Y()\n")
+        lint.apply_seen(r, {"X_Y": {"type": "event", "valid": True}})
+        self.assertEqual((r["errors"], r["unresolved"]), ([], {}))
 
 
 if __name__ == "__main__":

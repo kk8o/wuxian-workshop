@@ -33,7 +33,7 @@ WoWBridgeNS = WoWBridgeNS or {}       -- addon name -> its namespace; an addon r
 WoWBridgeNS[addonName] = ns
 local jobs = {}
 local unloaded = {}                   -- addon -> { value = what OnUnload returned }, until the reload half runs
-local named = {}                      -- addon -> { [name] = frame } of the named frames before its load, until it ends
+local named = {}                      -- addon -> the frames before its load (NamedFrames), until it ends
 local DONE_KEPT = 500                 -- job ids kept as run
 local STALE = 900000                  -- ms: a job older than this is not run
 
@@ -208,40 +208,53 @@ local function Unload(addon, space)
 	return ok and " (OnUnload ok)" or (" (OnUnload error: %s)"):format(Text(value))
 end
 
--- { [name] = frame } of the frames whose global name holds them now
+-- the frames before a load: names = { [name] = frame } of the frames their global name holds now, all = every frame (by
+-- itself), so that after it only the frames the load made are looked at
 local function NamedFrames()
-	local out = {}
-	if type(EnumerateFrames) ~= "function" then return out end
+	local names, all = {}, {}
+	if type(EnumerateFrames) ~= "function" then return { names = names, all = all } end
 	local f = EnumerateFrames()
 	while f do
+		all[f] = true
 		local ok, name = pcall(f.GetName, f)
-		if ok and type(name) == "string" and rawget(_G, name) == f then out[name] = f end
+		if ok and type(name) == "string" and rawget(_G, name) == f then names[name] = f end
 		f = EnumerateFrames(f)
 	end
-	return out
+	return { names = names, all = all }
 end
 
--- after a load: each name it made a new frame with, while _G still held the old one, now holds the new frame; the old
--- one is quieted. A note for the RUN result ("" when none)
+-- after a load: each name it made a new frame with (the newest, when it made several), while _G still held the frame of
+-- before, now holds the new frame; the old one is quieted. Frames that were there before the load (another addon's two of
+-- one name, an older build of this one) are left alone; a secure name, and a protected frame in combat, too. A note for
+-- the RUN result ("" when none)
 local function Rebind(addon)
 	local before = named[addon]
 	named[addon] = nil
 	if not before or type(EnumerateFrames) ~= "function" then return "" end
-	local moved, f = {}, EnumerateFrames()
+	local newest, f = {}, EnumerateFrames()
 	while f do
-		local ok, name = pcall(f.GetName, f)
-		local old = ok and type(name) == "string" and before[name]
-		if old and old ~= f and rawget(_G, name) == old
+		if not before.all[f] then
+			local ok, name = pcall(f.GetName, f)
+			if ok and type(name) == "string" and before.names[name] then newest[name] = f end
+		end
+		f = EnumerateFrames(f)
+	end
+	local combat = type(InCombatLockdown) == "function" and InCombatLockdown()
+	local moved = {}
+	for name, new in pairs(newest) do
+		local old = before.names[name]
+		local guarded = combat and type(old.IsProtected) == "function" and old:IsProtected()
+		if rawget(_G, name) == old and not guarded
 				and not (type(issecurevariable) == "function" and issecurevariable(_G, name)) then
-			_G[name] = f
+			_G[name] = new
 			pcall(old.UnregisterAllEvents, old)
 			pcall(old.SetScript, old, "OnUpdate", nil)
 			pcall(old.Hide, old)
 			moved[#moved + 1] = name
 		end
-		f = EnumerateFrames(f)
 	end
 	if #moved == 0 then return "" end
+	table.sort(moved)
 	local shown = table.concat(moved, ", ", 1, math.min(#moved, 6)) .. (#moved > 6 and ", ..." or "")
 	return (" (rebound named frames to the new ones, the old hidden: %s)"):format(shown)
 end

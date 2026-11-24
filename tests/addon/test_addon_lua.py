@@ -540,6 +540,11 @@ class DebugWindow(unittest.TestCase):
             self.assertTrue(g[b"WoWBridgeToast"][b"shown"])
             s.run(5)
             self.assertFalse(g[b"WoWBridgeToast"][b"shown"])            # 8 s, then gone
+            comp.say("拾" * 200)                                         # a long word: the chat has it whole
+            s.run(1)
+            self.assertIn("> " + "拾" * 200, s.chat())
+            self.assertEqual(con[b"lastToast"].decode(), "拾" * 80 + "…")
+            s.run(21)
             s.slash("set toasts off")
 
             stats, before = s.ns[b"Agent"][b"stats"], len(console_lines(s))
@@ -882,6 +887,23 @@ class ProtocolV08(unittest.TestCase):
             self.assertEqual(len(list(old[b"events"].keys())), 0)
             self.assertRegex(runs()[-1], r"\(rebound named frames to the new ones, the old hidden: FooFrame\)$")
             self.assertNotIn("GameTooltipFake", runs()[-1])             # the game's own name: left alone
+
+            # frames that were there before a load are not looked at (review, 0.10.2: a third load put the name back on
+            # the first build, and any load took over another addon's second frame of a name)
+            s.lua.execute(b'local a = CreateFrame("Frame", "OtherTip") a.which = "first" a:RegisterEvent("BAG_UPDATE") '
+                          b'a:Show() local b = CreateFrame("Frame", "OtherTip") b.which = "second"')
+            (foo / "Other.lua").write_text("FooOther = 1\n", encoding="utf-8")
+            comp.command("load Foo/Other.lua")
+            s.run(6)
+            self.assertEqual(g[b"FooFrame"][b"build"], 2)
+            tip = g[b"OtherTip"]
+            self.assertEqual(tip[b"which"], b"first")
+            self.assertTrue(tip.IsShown(tip))
+            self.assertNotIn("rebound", runs()[-1])
+            comp.command("load Foo/Core.lua")                           # a third build: the name holds it
+            s.run(6)
+            self.assertEqual(g[b"FooFrame"][b"build"], 3)
+            self.assertRegex(runs()[-1], r"the old hidden: FooFrame\)$")
         finally:
             s.close()
 

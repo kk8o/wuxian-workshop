@@ -233,7 +233,7 @@ class UiIndex:
             if others:
                 out["also"] = [self.brief(e) for e in others[:10]]
             return out
-        child = self._child(raw)
+        child = self._child(raw) or self._member(raw)
         if child:
             return child
         members = self.by_member.get(low.rstrip("()")) if not re.search(r"[.:]", raw) else None
@@ -263,6 +263,25 @@ class UiIndex:
                 return dict(child=dict(name=f"{e['n']}.{hit}", type=keys[hit],
                                        keys={k[len(hit) + 1:]: t for k, t in keys.items() if k.startswith(hit + ".")}),
                             of=out, note=f"{e['n']}.{hit} is a child of {e['n']} (its parentKey), a {keys[hit]}")
+        return None
+
+    def _member(self, raw):
+        """"Table.member" / "Mixin:member": a member the table's or mixin's entry lists without an entry of its own (set
+        in its constructor: TooltipDataProcessor.AllTypes)"""
+        m = re.fullmatch(r"([^.:]+(?:\.[^.:]+)*)[.:]([^.:]+)", raw)
+        if not m:
+            return None
+        head, key = m[1], m[2].rstrip("()")
+        for e in self.by_name.get(head.lower(), ()):
+            if e["k"] not in ("table", "mixin"):
+                continue
+            hit = next((x for x in e.get("m") or () if x.lower().rstrip("()") == key.lower()), None)
+            if hit is not None:                              # ("x()": a function member)
+                kind = "function" if hit.endswith("()") else "value"
+                hit = hit.rstrip("()")
+                return dict(member=dict(name=f"{e['n']}.{hit}", kind=kind), of=self.brief(e),
+                            note=f"{hit} is a member of {e['n']} (set where {e['n']} is defined); the index has no "
+                                 f"entry of its own for it")
         return None
 
 

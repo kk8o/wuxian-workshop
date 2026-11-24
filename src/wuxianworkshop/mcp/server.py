@@ -730,7 +730,9 @@ def build_server(backend, name="wuxian"):
 
     @mcp.tool(annotations=WRITES)
     async def say(text: str) -> dict[str, Any]:
-        """Print a line in the player's own chat window, like print(): only the player sees it. It is NOT a chat
+        """Print a line in the player's own chat window, like print(), and show it at the top of their screen for a
+        few seconds (a busy chat or a window may hide the chat): only the player sees it. Use it to ask them to do
+        something in the game now (loot, open a window), short: the screen shows some 80 characters. It is NOT a chat
         message: it goes to no channel and no other player. To send real chat, use wk_chat_send (a proposal the player
         confirms)."""
         return await call(backend.say(text))
@@ -1210,15 +1212,16 @@ def build_server(backend, name="wuxian"):
         """One entry of Blizzard's UI in full: a function's or method's parameters, a table's or mixin's members, a frame's
         or template's widget type, inherits, mixins and child keys (parentKey). Examples: {"name":
         "TooltipDataProcessor"}, {"name": "PlayerFrame.PlayerFrameContainer.PlayerPortrait"} (a child by its keys),
-        {"name": "TooltipDataProcessor.AddTooltipPostCall"}. A member name alone answers `candidates`. `also`: other
-        files that define the same name. `seen`: what the running game answered for it before (api_verify)."""
+        {"name": "TooltipDataProcessor.AddTooltipPostCall"}. A member name alone answers `candidates`; a table's member
+        with no entry of its own answers `member` (TooltipDataProcessor.AllTypes). `also`: other files that define the
+        same name. `seen`: what the running game answered for it before (api_verify)."""
         ui = await asyncio.to_thread(ui_index)
         entry = ui.get(name)
         if entry is None:
             gone = ui.not_loaded_text(name)
             raise ToolError(f"not_found: {name} is not in Blizzard's UI index" + (f"; {gone}" if gone else "")
                             + "; ui_search finds near names, api_get the C API (C_ namespaces, global functions)")
-        key = entry.get("name") or (entry.get("child") or {}).get("name")
+        key = entry.get("name") or (entry.get("child") or entry.get("member") or {}).get("name")
         kept = await asyncio.to_thread(seen_of, [key] if key else [])
         if kept:
             entry["seen"] = kept[key]

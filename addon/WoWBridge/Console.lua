@@ -203,9 +203,10 @@ end
 -- The notice
 ---------------------------------------------------------------------------
 
--- said: the agent's word to the player (K.Say): gold, a few lines at most, as long as it takes to read, and shown with
--- the notices off too (they are about the agent's code; this asks the player to do something)
-local SAY_W = 560
+-- said: the agent's word to the player (K.Say): gold, a few lines at most (the chat has the whole), as long as it takes
+-- to read, and shown with the notices off too (they are about the agent's code; this asks the player to do something).
+-- A notice that comes while it shows is not drawn over it (the window lists it as ever)
+local SAY_W, SAY_CUT = 560, 240                      -- (bytes: some 80 Chinese characters, three lines)
 local function Toast(text, failed, said)
 	K.lastToast = text
 	if ns.Setting("toasts") == false and not said then return end
@@ -227,7 +228,7 @@ local function Toast(text, failed, said)
 			if self.said then self.said = nil else K.Show("runs") end
 		end)
 	end
-	if toast.said and not said then return end          -- the player still reads the agent's word: a notice waits
+	if toast.said and not said then return end          -- the player still reads the agent's word
 	local c = said and C.gold or failed and C.bad or C.ok
 	S.Edges(toast.edges, c)
 	S.Tint(toast.dot, c)
@@ -256,7 +257,7 @@ end
 -- the agent's word to the player (say, Link.lua): in the chat, and on the screen where a busy chat or a window over it
 -- does not hide it (the player may not read the conversation; the agent may wait for them: loot, open a window ...)
 function K.Say(text)
-	Toast(text, false, true)
+	Toast(Cut(text, SAY_CUT), false, true)
 end
 
 -- the agent's code ran (Agent.lua): name its chunk ("@Interface/AddOns/<addon>/<file>" for a file, "=run" for a snippet),
