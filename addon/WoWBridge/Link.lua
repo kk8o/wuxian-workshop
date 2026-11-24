@@ -525,6 +525,7 @@ local function Record(r, pkt)
 		L.Welcome(r.data)
 	elseif r.kind == "TEXT" then
 		Print("> " .. r.data)
+		pcall(ns.Console.Say, r.data)                -- on the screen too: a busy chat, or a window over it, hides it
 	elseif r.kind == "COMMAND" then
 		L.Command(r.data)
 	elseif r.kind == "CODE" then

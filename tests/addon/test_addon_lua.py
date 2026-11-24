@@ -525,6 +525,23 @@ class DebugWindow(unittest.TestCase):
             s.run(6)
             self.assertIn("the agent ran a Lua snippet: ok", s.chat())  # no notice: the chat says it
 
+            # the agent's word to the player (say): the chat and the screen, the notices off too, long enough to read,
+            # and a notice of the agent's code does not cover it (0.10.2 in the game: a busy chat under the mailbox
+            # hid a "loot something now" and the trace caught nothing)
+            comp.say("请现在拾取一件物品")
+            s.run(1)
+            self.assertIn("> 请现在拾取一件物品", s.chat())
+            self.assertEqual(con[b"lastToast"].decode(), "请现在拾取一件物品")
+            self.assertTrue(g[b"WoWBridgeToast"][b"shown"])
+            s.slash("set toasts on")
+            comp.command("run error('again')")
+            s.run(4)
+            self.assertEqual(g[b"WoWBridgeToast"][b"text"][b"text"].decode(), "请现在拾取一件物品")
+            self.assertTrue(g[b"WoWBridgeToast"][b"shown"])
+            s.run(5)
+            self.assertFalse(g[b"WoWBridgeToast"][b"shown"])            # 8 s, then gone
+            s.slash("set toasts off")
+
             stats, before = s.ns[b"Agent"][b"stats"], len(console_lines(s))
             runs, said = stats[b"runs"], s.chat().count("the agent ran")
             comp.code(b"return true", "=probe")                         # the app's own look (a try's end marker)

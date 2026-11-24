@@ -203,9 +203,12 @@ end
 -- The notice
 ---------------------------------------------------------------------------
 
-local function Toast(text, failed)
+-- said: the agent's word to the player (K.Say): gold, a few lines at most, as long as it takes to read, and shown with
+-- the notices off too (they are about the agent's code; this asks the player to do something)
+local SAY_W = 560
+local function Toast(text, failed, said)
 	K.lastToast = text
-	if ns.Setting("toasts") == false then return end
+	if ns.Setting("toasts") == false and not said then return end
 	if not toast then
 		toast = CreateFrame("Button", "WoWBridgeToast", UIParent)
 		toast:SetFrameStrata("FULLSCREEN_DIALOG")        -- above the panel, which may be open where it shows
@@ -221,21 +224,39 @@ local function Toast(text, failed)
 		toast.text:SetPoint("LEFT", toast.dot, "RIGHT", 9, 0)
 		toast:SetScript("OnClick", function(self)
 			self:Hide()
-			K.Show("runs")
+			if self.said then self.said = nil else K.Show("runs") end
 		end)
 	end
-	local c = failed and C.bad or C.ok
+	if toast.said and not said then return end          -- the player still reads the agent's word: a notice waits
+	local c = said and C.gold or failed and C.bad or C.ok
 	S.Edges(toast.edges, c)
 	S.Tint(toast.dot, c)
+	toast.text:SetWidth(0)
 	toast.text:SetText(text)
-	toast:SetWidth(math.min(640, math.floor(toast.text:GetStringWidth() + 0.5) + 42))
+	local w = math.floor(toast.text:GetStringWidth() + 0.5)
+	if said and w > SAY_W then                           -- a longer word wraps
+		toast.text:SetWidth(SAY_W)
+		toast.text:SetWordWrap(true)
+		toast.text:SetJustifyH("LEFT")
+		w = SAY_W
+	end
+	toast:SetHeight(math.max(30, math.floor(toast.text:GetStringHeight() + 0.5) + 16))
+	toast:SetWidth(math.min(640, w + 42))
 	toast:SetAlpha(1)
 	toast:Show()
+	toast.said = said or nil
 	toast.serial = (toast.serial or 0) + 1
 	local serial = toast.serial
-	C_Timer.After(failed and 6 or 3, function()
-		if toast.serial == serial then toast:Hide() end
+	local chars = #text:gsub("[\128-\191]", "")
+	C_Timer.After(said and math.max(8, math.min(20, 4 + chars * 0.25)) or failed and 6 or 3, function()
+		if toast.serial == serial then toast:Hide(); toast.said = nil end
 	end)
+end
+
+-- the agent's word to the player (say, Link.lua): in the chat, and on the screen where a busy chat or a window over it
+-- does not hide it (the player may not read the conversation; the agent may wait for them: loot, open a window ...)
+function K.Say(text)
+	Toast(text, false, true)
 end
 
 -- the agent's code ran (Agent.lua): name its chunk ("@Interface/AddOns/<addon>/<file>" for a file, "=run" for a snippet),
