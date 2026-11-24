@@ -36,9 +36,11 @@ class LocalOption(LocalDaemon, unittest.TestCase):
     def test_the_roster_has_the_options(self):
         self.add()
         self.assertTrue(until(lambda: self.kit.roster is not None and len(self.kit.roster) == 1), self.kit.calls)
-        self.assertNotIn("options", self.kit.roster[0])                   # not described yet
+        self.assertIn(self.kit.roster[0].get("options"), (None, [VOLUME]))   # described or not yet: the host starts
+        # a new extension by itself to read its description, as the list goes (CI, 0.10.2: it was first)
         self.ok("POST", "/api/local/call", {"cap": "fx.echo", "args": {"text": "hi"}})
-        self.assertTrue(until(lambda: self.options() == [VOLUME]), self.kit.roster)
+        self.assertTrue(until(lambda: self.options() == [VOLUME] and self.kit.roster[0]["running"] is True),
+                        self.kit.roster)                                   # (settled: the list says it runs)
         told = len(self.told())
         self.ok("POST", "/api/local/set", {"id": "fx", "options": {"volume": 30}})     # in the App: to /wk too
         self.assertTrue(until(lambda: self.options() == [dict(VOLUME, value=30)]), self.kit.roster)

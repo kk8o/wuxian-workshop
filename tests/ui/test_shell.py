@@ -192,6 +192,9 @@ class RunningDaemon(unittest.TestCase):
         handle = shell.start_fake()
         try:
             info = {"port": handle.port, "token": handle.token}
+            deadline = time.time() + 30          # its first answer may take longer than a request waits (2 s) on a busy
+            while shell._request(info, "GET", "/api/status") is None and time.time() < deadline:   # CI runner
+                time.sleep(0.1)
             self.assertEqual(shell.running_instance(info), (info, True))         # the fake says its window showed
             attached = shell.AttachedBackend(info)
             self.assertTrue(attached.alive())
