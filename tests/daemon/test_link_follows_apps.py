@@ -304,6 +304,30 @@ class Holders(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.svc.status())["kit"], {"version": "0.7.0"})
             told.assert_awaited()
 
+    async def test_a_game_without_wuxiankit_is_asked_nothing_more(self):
+        """no WuxianKit answers (not installed, disabled in the addon list): the list of local extensions is not sent,
+        nor anything else: each call would be a red line and a notice in the player's game (0.10.2, a player's
+        report: "调用 WuxianKit.kit.local.set 出错：WuxianKit has no WoWBridge handle")"""
+        read, called = [], []
+
+        async def kit_read(name, args=None):
+            read.append(name)
+            raise ApiError(400, "call_failed", "WuxianKit has no WoWBridge handle: it did not call WoWBridge.Bind")
+
+        async def call_exposed(addon, name, args=None, timeout_ms=10000, shared=None, most=None):
+            called.append(name)
+            return {"result": {}}
+        with mock.patch.object(self.svc, "kit_read", kit_read), mock.patch.object(self.svc, "link_is_up", lambda: True), \
+                mock.patch.object(self.svc, "ui_session", lambda: 7), \
+                mock.patch.object(self.svc, "call_exposed", call_exposed), \
+                mock.patch.object(self.svc, "drive_sync", mock.AsyncMock()) as synced:
+            await self.svc.reconcile_local_apps()
+            await self.svc.reconcile_local_apps(ready=True)
+        self.assertEqual(read, ["kit.revision", "kit.revision"])          # asked quietly (not listed in the game)
+        self.assertEqual(called, [])
+        self.assertEqual(synced.await_count, 2)
+        self.assertEqual((await self.svc.status())["kit"], {"version": None})
+
     async def test_the_game_exits(self):
         self.emit("kit.app", {"app": "companion", "on": True, "link": "live"})
         await self.settle()

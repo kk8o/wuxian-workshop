@@ -208,6 +208,7 @@ class Service:
         self.link_by = ()                # ... and the titles of the apps that keep it (the game's panel names them)
         self.kit_seen = None             # the version of the WuxianKit in the game as this game process said it (its
                                          # kit.ready, else its manifest read when the link came up); None: not known
+        self.kit_missing = False         # this game answered that it runs no WuxianKit (kit_asked): it is told nothing
         self.versions_local = None       # (time.monotonic(), [what versions_snapshot needs of each local extension])
         self.versions_failed = None      # the message of versions()'s last failure: said once in the journal
         self.tells = None            # (kind, text) the Companion reported during the worker call in progress
@@ -595,7 +596,7 @@ class Service:
         known. The apps that held the link hold it on (their extensions run on, and WuxianKit opens them again): the next
         process gets its session without waiting for a doorbell no one may see (the window covered), and kit.apps,
         read once it is up, says which run (holders_are). Openings that fail HOLD_KEPT s after give them up"""
-        self.kit_seen = None
+        self.kit_seen, self.kit_missing = None, False
         with self.holding:
             if self.holders:
                 self.holders_kept = time.monotonic()
@@ -1902,6 +1903,7 @@ class Service:
         if topic == "kit.ready":
             version = data.get("version") if isinstance(data, dict) else None
             self.kit_seen = version if isinstance(version, str) and version else None
+            self.kit_missing = False
             self.reactions_open = False
             self.soon(self.reconcile_local_apps(ready=True))
             self.soon(self.reactions_hear_again())
@@ -1941,16 +1943,20 @@ class Service:
     async def kit_asked(self):
         """(reconcile_local_apps) the version of the WuxianKit in the game when no kit.ready of this game process
         said it (this program started while the game ran on): its manifest's, the one known when its revision is
-        still the game's, else read from the game; kept as kit_seen. None: no WuxianKit answers"""
+        still the game's, else read from the game; kept as kit_seen. None: no WuxianKit answers (kit_missing: the
+        game said it runs none: not installed, disabled, or loaded before WoWBridge)"""
         if self.kit_seen is not None:
             return self.kit_seen
         try:
             said = await self.kit_read("kit.revision")
+            self.kit_missing = False
             revision = said.get("revision") if isinstance(said, dict) else None
             manifest = self.kit_manifest_known()
             if not (isinstance(manifest, dict) and revision is not None and manifest.get("revision") == revision):
                 manifest = await self.kit_read("kit.manifest")
-        except ApiError:
+        except ApiError as e:
+            if e.code == "call_failed" and NO_KIT in str(e.message or ""):
+                self.kit_missing = True
             return None
         version = manifest.get("kit") if isinstance(manifest, dict) else None
         self.kit_seen = version if isinstance(version, str) and version else None
@@ -2083,7 +2089,7 @@ class Service:
         """(any thread) the local extensions changed (their options in the App, a description, a process that
         started or stopped): WuxianKit's /wk window told the list again when it is another, while the game is online
         now (it is told at the next kit.ready or link-up anyway; nothing opens the link for it)"""
-        if self.ui_session() is not None and self.link_is_up():
+        if self.ui_session() is not None and self.link_is_up() and not self.kit_missing:
             self.soon(self.tell_roster())
 
     async def reconcile_local_apps(self, ready=False):
@@ -2097,7 +2103,8 @@ class Service:
         the apps that run are set; ready (a new UI session): those of the apps that do not run go, as when they
         stopped (their kit.app event may have been missed). An app a program drives that runs in the game while that
         program does not is stopped (why "extension"). Last, the drive is told which apps to keep open now
-        (drive_sync). A WuxianKit older than KIT_NEEDS is told none of it (kit_outdated)"""
+        (drive_sync). A WuxianKit older than KIT_NEEDS is told none of it (kit_outdated), and a game that runs none
+        (kit_missing) is asked nothing more"""
         if self.declaring is None:
             self.declaring = asyncio.Lock()
         try:
@@ -2106,6 +2113,11 @@ class Service:
                     return
                 was = self.kit_outdated()
                 await self.kit_asked()
+                if self.kit_missing:
+                    # no WuxianKit in this game: nothing to tell it. A call of it would only be a red line, and a
+                    # notice, in the player's game (0.10.2, a player's report)
+                    await self.drive_sync()
+                    return
                 old = self.kit_outdated()
                 if old:
                     if old != was or ready:
