@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Packs dist\wuxian\ (scripts\build.ps1) into a Velopack release in dist\releases\: the Setup exe, a portable zip, the
-  full package (and a delta against the previous one when it is still there), releases.<channel>.json, and latest.json
+  full package (no deltas: see src\wuxianworkshop\updater.py), releases.<channel>.json, and latest.json
   for the website's download page (scripts\release_manifest.py).
 .DESCRIPTION
   Runs `vpk pack` with packId WuxianWorkshop.App (Velopack installs into %LOCALAPPDATA%\WuxianWorkshop.App\, apart from
@@ -55,7 +55,7 @@ $Title = -join [char[]](0x65E0, 0x9650, 0x5DE5, 0x574A)
 # and scripts\wuxian_entry.py runs velopack.App().run() before anything else.
 $vpkArgs = @("pack", "--packId", "WuxianWorkshop.App", "--packVersion", $Version, "--packDir", $PackDir, "--mainExe", "wuxian.exe",
           "--outputDir", $OutDir, "--channel", $Channel, "--packTitle", $Title, "--packAuthors", "Wuxian Workshop",
-          "--icon", $Icon, "--skipVeloAppCheck")
+          "--icon", $Icon, "--skipVeloAppCheck", "--delta", "None")
 if ($Notes) { $vpkArgs += @("--releaseNotes", (Resolve-Path $Notes).Path) }
 & vpk @vpkArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

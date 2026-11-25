@@ -1,5 +1,5 @@
 r"""Updates of the program through Velopack. The feed is a folder of static files on wuxianwow.com (FEED: releases.win.json,
-the full and delta .nupkg; scripts\pack.ps1 makes them). A copy installed by the Setup exe (%LOCALAPPDATA%\
+the full .nupkg; scripts\pack.ps1 makes them). A copy installed by the Setup exe (%LOCALAPPDATA%\
 WuxianWorkshop.App\current\wuxian.exe; the program's own files stay in %LOCALAPPDATA%\WuxianWorkshop) checks the feed
 FIRST_CHECK seconds after the daemon starts and every CHECK_EVERY after that, downloads when asked, and applies the
 update once the program exits: wait_exit_then_apply_updates starts Velopack's Update.exe, the daemon shuts down as on
@@ -11,6 +11,12 @@ Velopack and offers the version Velopack found only when it is the signed entry:
 Velopack checks the download by these, and the package (packages\<file name> in the install folder) is hashed again
 after the download and before Update.exe applies it. The signed entry of a downloaded version is kept (state\update.json):
 a download from before the last exit is ready only when it is the one that was checked. A local feed is read unsigned.
+
+Always the full package, never deltas (download() empties the UpdateInfo's DeltasToTarget and BaseRelease: velopack 1.2.161
+fetches the deltas with UpdateOptions' MaximumDeltasBeforeFallback -1 or 0 too; pack.ps1 makes none since 0.10.3): the
+full package Velopack rebuilds from the installed one and the deltas is not the published file byte for byte,
+so its SHA-256 never matched the signed entry. Updates from 0.9.14 on were refused once after their download (state
+"error", no 重启并更新) and the package deleted; the second try, the base gone, downloaded the full one and passed.
 
 Updater.status() -> {supported, reason, state, current, latest, size, notes, progress, error, checked}; state is one
 of "idle", "checking", "current" (no newer version), "available", "downloading", "ready" (downloaded, applied at
@@ -48,12 +54,13 @@ def feed():
     return os.environ.get("WUXIAN_UPDATE_FEED") or FEED
 
 
-def velopack_manager(source):
-    """Velopack's UpdateManager for the feed; raises when this copy was not installed by its Setup exe"""
+def velopack_manager(source, locator=None):
+    """Velopack's UpdateManager for the feed; raises when this copy was not installed by its Setup exe. locator: where
+    the install is (a test's made-up one; None: this program's own)"""
     import velopack
     if source.startswith(("http://", "https://")):
         source = velopack.HttpSource(source, velopack.HttpOptions([], TIMEOUT_MS))
-    return velopack.UpdateManager(source)
+    return velopack.UpdateManager(source, None, locator)
 
 
 def install_root():
@@ -186,11 +193,12 @@ class Updater:
         return self.status()
 
     def download(self):
-        """downloads the version check() found (deltas when the feed has them); the status after it"""
+        """downloads the full package of the version check() found; the status after it"""
         if not self.supported or self.state != "available" or self.info is None:
             return self.status()
         self._set(state="downloading", progress=0, error="")
         try:
+            self.info.DeltasToTarget, self.info.BaseRelease = [], None     # the full package, the signed file (the module's text)
             self.um.download_updates(self.info, lambda p: self._set(progress=int(p)))
         except Exception as e:
             self._set(state="error", error=tr("下载更新失败：", "the update download failed: ") + _short(e))

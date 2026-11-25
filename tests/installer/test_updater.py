@@ -297,8 +297,10 @@ class Feed(http.server.SimpleHTTPRequestHandler):
     """the site's files; Velopack's request for the feed (it adds ?localVersion=…) gets `velopack_feed` when set: a
     server that gives Velopack another feed than the program"""
     velopack_feed = None
+    asked = []                                   # the paths requested
 
     def do_GET(self):
+        Feed.asked.append(self.path)
         if self.velopack_feed is not None and self.path.startswith("/feed/releases.win.json?"):
             body = self.velopack_feed
             self.send_response(200)
@@ -355,7 +357,7 @@ class RealVelopack(unittest.TestCase):
         (self.site / "feed" / self.name).write_bytes(self.pkg)
         self.feed = self.write_feed(self.pkg)
         signed.sign(self.site / "feed" / "releases.win.json")
-        Feed.velopack_feed = None
+        Feed.velopack_feed, Feed.asked = None, []
         self.addCleanup(setattr, Feed, "velopack_feed", None)
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Feed, directory=str(self.site)))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -369,11 +371,15 @@ class RealVelopack(unittest.TestCase):
         quiet.__enter__()
         self.addCleanup(quiet.__exit__, None, None, None)
 
-    def write_feed(self, pkg, to=None):
+    def write_feed(self, pkg, to=None, delta=None):
         asset = dict(PackageId="WuxianWorkshop.App", Version="0.9.11", Type="Full", FileName=self.name,
                      SHA1=hashlib.sha1(pkg).hexdigest(), SHA256=hashlib.sha256(pkg).hexdigest(), Size=len(pkg),
                      NotesMarkdown="## 0.9.11", NotesHtml="")
-        data = json.dumps({"Assets": [asset]}).encode("utf-8")
+        assets = [asset]
+        if delta is not None:                    # a delta of 0.9.11 against 0.9.10, as vpk made them before 0.10.3
+            assets.append(dict(asset, Type="Delta", FileName="WuxianWorkshop.App-0.9.11-delta.nupkg",
+                               SHA1=hashlib.sha1(delta).hexdigest(), SHA256=hashlib.sha256(delta).hexdigest(), Size=len(delta)))
+        data = json.dumps({"Assets": assets}).encode("utf-8")
         if to is None:
             (self.site / "feed" / "releases.win.json").write_bytes(data)
         return data
@@ -384,10 +390,8 @@ class RealVelopack(unittest.TestCase):
                                                   ManifestPath=self.root / "current" / "sq.version",
                                                   CurrentBinaryDir=self.root / "current", IsPortable=False)
 
-        def manager(source):
-            return self.velopack.UpdateManager(self.velopack.HttpSource(source, self.velopack.HttpOptions([], 10_000)),
-                                               None, loc)
-        return updater.Updater(source=self.url, manager=manager, root=self.root, store=self.store)
+        return updater.Updater(source=self.url, manager=lambda source: updater.velopack_manager(source, loc), root=self.root,
+                               store=self.store)
 
     def test_a_signed_release(self):
         u = self.updater()
@@ -397,6 +401,23 @@ class RealVelopack(unittest.TestCase):
         self.assertEqual((self.root / "packages" / self.name).read_bytes(), self.pkg)
         s = self.updater().status()                              # the next start, before the update is applied
         self.assertEqual((s["state"], s["latest"]), ("ready", "0.9.11"))
+
+    def test_the_full_package_even_with_a_delta_and_its_base(self):
+        """0.9.14 to 0.10.2 in the game: Velopack built the full package from the installed one and the deltas, not the
+        published file, its SHA-256 not the signed one: refused after the download (no 重启并更新), the second try passed"""
+        with zipfile.ZipFile(self.root / "packages" / "WuxianWorkshop.App-0.9.10-full.nupkg", "w") as z:
+            z.writestr("WuxianWorkshop.App.nuspec", nuspec("0.9.10"))     # the installed version's package: a delta's base
+            z.writestr("lib/app/wuxian.exe", b"MZ")
+        delta = b"PK not a delta"
+        (self.site / "feed" / "WuxianWorkshop.App-0.9.11-delta.nupkg").write_bytes(delta)
+        self.write_feed(self.pkg, delta=delta)
+        signed.sign(self.site / "feed" / "releases.win.json")
+        u = self.updater()
+        self.assertEqual(u.check()["state"], "available")
+        s = u.download()
+        self.assertEqual(s["state"], "ready", s["error"])
+        self.assertEqual((self.root / "packages" / self.name).read_bytes(), self.pkg)
+        self.assertEqual([p for p in Feed.asked if "delta" in p], [])
 
     def test_velopack_given_another_package(self):
         Feed.velopack_feed = self.write_feed(self.pkg + b"\0", to="velopack")   # the same file, another size and SHA-256
